@@ -319,13 +319,15 @@ async function kubernetesApi(t, directory, namespaces, denied, execution = null)
           body += chunk;
         }
         const attributes = JSON.parse(body).spec.resourceAttributes;
-        const allowed = allows(attributes);
-        reviews.push({ ...attributes, allowed });
+        // `allows` answers a decision, or a whole review status such as an evaluation error.
+        const decision = allows(attributes);
+        const status = typeof decision === "object" ? decision : { allowed: decision };
+        reviews.push({ ...attributes, allowed: status.allowed });
         reply(201, {
           kind: "SelfSubjectAccessReview",
           apiVersion: "authorization.k8s.io/v1",
           spec: { resourceAttributes: attributes },
-          status: { allowed },
+          status,
         });
         return;
       }
@@ -524,7 +526,7 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
       secretName: "occ-installation-startup",
       key: "installation.yaml",
     };
-    values = JSON.stringify(exampleValues);
+    values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
     const exampleInstallation = await example("installation.yaml");
     exampleInstallation.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [
       "10.42.0.0/16",
@@ -1624,6 +1626,76 @@ test("a two-cluster execution chart with the new tenant grants passes the startu
     ],
   );
   assert.ok(f.executionReads.includes("/api/v1/namespaces/kube-system"));
+});
+
+// An execution authorizer that cannot evaluate the reviews leaves the check incomplete:
+// the helper says which kubeconfig and access the Pod needed, and still stops first.
+test("an unevaluated two-cluster tenant grant review stops the startup preflight as incomplete", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: { installation: (installation) => installation },
+    executionCluster: {
+      namespaces: tenantNamespaces,
+      allows: () => ({ allowed: false, evaluationError: "webhook authorizer unavailable" }),
+    },
+  });
+  await assert.rejects(f.run(), (error) => {
+    for (const component of ["api", "worker"]) {
+      assert.match(
+        error.stderr,
+        new RegExp(
+          `the ${component} startup preflight stopped: Kubernetes Compute startup preflight could not complete: The execution cluster tenant grant review failed: could not evaluate .* in Namespace oce-unbound: webhook authorizer unavailable No OCC writer was stopped; the old release keeps serving\\. The Pod used its execution cluster kubeconfig, which must list Namespaces and create SelfSubjectAccessReviews there`,
+        ),
+      );
+    }
+    assert.doesNotMatch(error.stderr, /refused the candidate release|openclaw-execution chart/);
+    return true;
+  });
+  const state = await f.state();
+  assert.equal(state.version, 1);
+  assert.deepEqual(await f.events(), []);
+  assert.deepEqual(state.preflight.pods, {});
+  assert.deepEqual(state.preflight.networkpolicies, {});
+});
+
+// With runtime logs off, the release's tenant API role carries no log or Event reads, so
+// the preflight asks only for the rules that release needs.
+test("a two-cluster upgrade with runtime logs off needs no log grants in the execution chart", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: {
+      installation: (installation) => installation,
+      values: (values) => ({ ...values, agentRuntimeLogs: { enabled: false } }),
+    },
+    executionCluster: {
+      namespaces: tenantNamespaces,
+      allows: tenantGrants([...releaseTenantRules, "core patch pods"]),
+    },
+  });
+  await f.run();
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+  assert.deepEqual(
+    f.accessReviews
+      .filter((review) => review.namespace === "oce-tenant")
+      .map(rule)
+      .sort(),
+    [
+      "apps list deployments",
+      "core get pods",
+      "core get pods",
+      "core get pods/proxy",
+      "core list pods",
+      "core patch pods",
+    ],
+  );
 });
 
 // The helper waits for every preflight Pod and saves its status and log before it

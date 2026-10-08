@@ -289,6 +289,66 @@ function publishRuntimeFailure(check, code, cause) {
   };
 }
 
+// A provider-owned Codex Harness gets only the transport token's verifier and
+// no Compute status port, and Compute cannot reach it through a Pod proxy. While
+// a startup failure is held nothing else listens on the app-server port, so the
+// failure is served there, through the provider's bearer-passthrough exposure,
+// to a caller presenting the token the verifier names. Compute reads it and
+// fails the revision with the code the status port would have reported.
+function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
+  const verifier = process.env.APP_TOKEN_SHA;
+  const port = Number(process.env.APP_SERVER_PORT);
+  if (
+    runtimeStatusPort() !== undefined ||
+    typeof verifier !== "string" ||
+    !/^[a-f0-9]{64}$/.test(verifier) ||
+    !Number.isSafeInteger(port) || port < 1 || port > 65535
+  ) {
+    return;
+  }
+  requireNonEmptyString(check, "Runtime failure check");
+  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Runtime failure code is invalid.");
+  }
+  const { createHash: heldFailureHash } = require("node:crypto");
+  const expected = Buffer.from(verifier, "hex");
+  const body = JSON.stringify({
+    runtimeFailure: {
+      component: "agent",
+      check,
+      checkedAt: new Date().toISOString(),
+      code,
+      ...(cause === undefined ? {} : { cause }),
+    },
+  });
+  const server = pluginCreateServer((request, response) => {
+    const authorization = typeof request.headers.authorization === "string"
+      ? /^Bearer ([!-~]+)$/i.exec(request.headers.authorization)
+      : null;
+    const supplied = authorization === null
+      ? undefined
+      : heldFailureHash("sha256").update(authorization[1]).digest();
+    if (supplied === undefined || !pluginTimingSafeEqual(supplied, expected)) {
+      response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
+      response.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(body);
+  });
+  // Keep holding the failure even if it cannot be served; Compute then times out.
+  server.on("error", (error) => {
+    console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
+  });
+  server.listen(port, "0.0.0.0");
+}
+
 function publishRuntimeReady() {
   if (runtimeStatusPort() === undefined) return;
   runtimeStartupFailure = undefined;
@@ -1878,6 +1938,7 @@ function codexPluginStartupFailureCode(error) {
 const AUTH_PROBE_FAILURE_HELPER = String.raw`
 function holdFailedAuthentication(check = "model-probe", code = "UNAVAILABLE", cause) {
   publishRuntimeFailure(check, code, cause);
+  serveHeldRuntimeFailureToTransportPeer(check, code, cause);
   console.error("Harness model authentication probe failed.");
   setInterval(() => {}, 3600000);
 }
@@ -2173,7 +2234,9 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   const fileConfig = transfer.config ??= {};
   // Provider-owned Harnesses can relocate the workspace. Deployment-backed
   // Kubernetes Harnesses retain the canonical path when no override is present.
-  const remoteRoot = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT || "/home/node/workspace";
+  const nativeWorkspace = process.env.OPENCLAW_NATIVE_WORKER_PROFILE === undefined
+    ? undefined : config.agents?.defaults?.workspace;
+  const remoteRoot = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT || nativeWorkspace || "/home/node/workspace";
   // Codex stages reply artifacts while its client is live, even when both
   // hosts use the same workspace path. A shared path no longer means shared files.
   if (entries.codex) {
@@ -3655,18 +3718,21 @@ const { spawn } = require("node:child_process");
 ${WORKSPACE_ASSET_HELPERS}
 
 function publishRuntimeFailure() {}
+function serveHeldRuntimeFailureToTransportPeer() {}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupEnvelopePath = process.env.OPENCLAW_NODE_SETUP_ENVELOPE;
+const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
 const temporary = process.env.TMPDIR;
 const workerCapacity = Number(process.env.OPENCLAW_NATIVE_WORKER_CAPACITY);
 if (
   !inferenceConfig ||
   !state ||
   [Boolean(setupCode), Boolean(setupEnvelopePath)].filter(Boolean).length !== 1 ||
+  !workspace?.startsWith("/") ||
   !temporary ||
   !Number.isSafeInteger(workerCapacity) ||
   workerCapacity < 1 ||
@@ -3683,10 +3749,9 @@ if (authenticationFailure !== undefined) {
 } else {
 mkdirSync(state, { recursive: true });
 const workerConfigPath = join(state, "openclaw.json");
-const nativeConfig = JSON.parse(inferenceConfig);
 writeFileSync(workerConfigPath, JSON.stringify({
-  ...nativeConfig,
-  agents: { defaults: { ...nativeConfig.agents?.defaults, workspace: "/home/node/workspace" } },
+  ...JSON.parse(inferenceConfig),
+  agents: { defaults: { workspace } },
   plugins: {
     allow: ["file-transfer"],
     slots: { memory: "none" },

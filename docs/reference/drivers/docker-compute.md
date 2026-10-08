@@ -56,6 +56,12 @@ port. The API and worker share the same application-role database connection
 and select `compute-docker-development` with implementation `docker-local`
 unless `OCC_CONFIG_PATH` explicitly selects another trusted Driver set.
 
+Engine requests have a 10-second deadline and observe the current Compute
+cancellation signal. If the connection closes before the response body is
+complete, the operation fails rather than staying pending. The Driver does
+not automatically retry an interrupted request; an already-sent engine
+operation may still have taken effect.
+
 Compose runs the shared initializer after migration and before the API or
 worker. Fresh setup creates the configured human administrator, service
 administrator, and singleton Installation; existing state is retained. Only

@@ -9,7 +9,7 @@ test("the full real plugin proof rejects shared or missing scenario databases be
   const script = `
     import assert from "node:assert/strict";
     const { createPluginDriverRealFixture } = await import(${JSON.stringify(fixtureModule)});
-    const scenarios = ["openclaw", "codex_linear", "codex_calendar", "codex_failure"];
+    const scenarios = ["openclaw", "codex_linear", "codex_failure"];
     const key = (scenario) => \`OCC_TEST_PLUGIN_DRIVER_\${scenario.toUpperCase()}_DATABASE_URL\`;
     const reset = () => {
       for (const scenario of scenarios) {

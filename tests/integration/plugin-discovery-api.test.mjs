@@ -83,6 +83,7 @@ async function createFixture(
   fixture.controller.selectDriver("plugin", driver.id);
   return {
     ...fixture,
+    state,
     namespace,
     calls,
     auditSink,
@@ -627,12 +628,40 @@ test("Saved Agent plugin discovery rejects unsupported Harness authentication or
   );
   grantAgentSecret(fixture, embedded, secret);
   const embeddedPath = `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/plugins`;
+  // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
+  // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
+  const account = await fixture.state.transact((unit) =>
+    unit.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: fixture.namespace.id,
+      name: `plugin-discovery-account-${randomUUID().slice(0, 8)}`,
+    }),
+  );
+  const managed = await fixture.createAgent(
+    fixture.namespace.id,
+    `Managed PAT Agent ${randomUUID()}`,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: fixture.namespace.id,
+          id: account.id,
+        },
+      },
+    },
+  );
+  const managedPath = `/namespaces/${fixture.namespace.id}/agents/${managed.id}/plugins`;
   const secretReads = trackSecretValueReads(fixture.secretDriver);
   for (const [prefix, suffix, body] of [
     [path, "", {}],
     [path, "/details", { pluginId: remoteId }],
     [embeddedPath, "", {}],
     [embeddedPath, "/details", { pluginId: remoteId }],
+    [managedPath, "", {}],
+    [managedPath, "/details", { pluginId: remoteId }],
   ]) {
     const unsupported = await fixture.request("POST", `${prefix}${suffix}`, { body });
     assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));

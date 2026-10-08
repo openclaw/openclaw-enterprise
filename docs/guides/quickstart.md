@@ -60,11 +60,13 @@ sandbox on the node. If that check fails, follow
 
 ## Open the platform console
 
-Import the printed browser CA certificate into your browser's trusted CA store
-using your browser's own certificate settings, then open the printed HTTPS
-browser console URL. Only import the public `browser-ca.crt`; keep its private
-key and the entire state directory private. Remove the CA from your browser's
-trust store when you discard this installation.
+Trust the printed public `browser-ca.crt` on the computer running your browser,
+then open the printed HTTPS console URL. Startup generates a local CA; it does
+not install it in a trust store. Without that step, the browser can report
+`NET::ERR_CERT_AUTHORITY_INVALID` even when the stack is ready. Follow
+[local browser CA trust and verification](operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
+for macOS instructions, certificate checks, and removal. Keep the CA private key
+and the entire state directory private.
 
 Open the printed URL on the machine that ran `./bin/occ dev up`. Kubernetes-only
 mode publishes the console port on that machine's loopback, and the hostname

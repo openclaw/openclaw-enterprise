@@ -317,6 +317,16 @@ export const HarnessAuthBindingSchema = Type.Union([
   ),
 ]);
 
+export const AgentCredentialSourcesSchema = Type.Array(
+  Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
+  {
+    maxItems: 8,
+    uniqueItems: true,
+    description:
+      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+  },
+);
+
 export const CredentialSourceReference = Type.Object(
   { kind: Type.Literal("credential_source"), namespaceId: NamespaceId, id: CredentialSourceId },
   {
@@ -686,6 +696,7 @@ export const CreateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -715,7 +726,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it.",
+          "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
@@ -732,6 +743,7 @@ export const UpdateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
@@ -827,6 +839,7 @@ export const ERROR_CODES = Object.freeze([
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
+  "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
   "MODEL_DISCOVERY_RATE_LIMITED",
@@ -900,6 +913,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
             description:
               "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+          }),
+          Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
+            description:
+              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
           }),
           Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
             description:

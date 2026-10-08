@@ -97,6 +97,90 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
 }
 
 /**
+ * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
+ * Installation no longer selects. Each subclass is raised only after the caller's grant and the
+ * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
+ * the fix for its own path. HTTP returns that message; every other 503 keeps the generic text.
+ */
+export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
+
+/**
+ * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
+ * write can replace the binding, so the fixed message says so.
+ */
+export class SecretBindingDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+    );
+    this.name = "SecretBindingDriverError";
+  }
+}
+
+/**
+ * An Agent's requested or bound Harness authentication Secret the selected Secret Driver cannot
+ * serve. The Agent's `harnessAuth` must name another Secret.
+ */
+export class HarnessAuthSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    );
+    this.name = "HarnessAuthSecretDriverError";
+  }
+}
+
+/**
+ * A Secret an Agent provisioning request or its accepted work uses that the selected Secret
+ * Driver cannot serve. Accepted work keeps its inputs, so only a new request can replace it.
+ */
+export class ProvisioningSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    );
+    this.name = "ProvisioningSecretDriverError";
+  }
+}
+
+const SECRET_STORAGE_DRIVER_MESSAGES = Object.freeze({
+  update:
+    "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+  delete:
+    "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
+});
+
+/**
+ * An exact Secret update or delete the selected Secret Driver cannot perform: OCC never writes or
+ * removes a value through a driver that does not own it.
+ */
+export class SecretStorageDriverError extends SecretDriverOwnershipError {
+  readonly operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES;
+
+  constructor(operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES) {
+    super(SECRET_STORAGE_DRIVER_MESSAGES[operation]);
+    this.name = "SecretStorageDriverError";
+    this.operation = operation;
+  }
+}
+
+/**
+ * A credential source registered through a Credential Gateway Driver the Installation no longer
+ * selects. OCC never binds, deploys, updates or deletes a source through a driver that did not
+ * register it. Raised only after the caller's grant and the source lookup, so it reveals nothing
+ * a 403 or 404 hides; one fixed message names the fix on every path. An Installation with no
+ * Credential Gateway, or a selected one that is unusable, is not this error.
+ */
+export class CredentialSourceDriverError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver instead. To update or delete this source, an administrator must first re-select the driver that registered it.",
+    );
+    this.name = "CredentialSourceDriverError";
+  }
+}
+
+/**
  * A running Agent has no active revision yet (its first deployment, or a redeploy after a
  * stop, is still activating). A lifecycle state, not an outage; it stays a
  * DependencyUnavailableError so callers that need a revision still answer 503.
@@ -189,9 +273,23 @@ export class ConfigurationHarnessError extends ScopeViolationError {
 }
 
 /**
+ * An Agent's `harnessAuth` names a credential source its `credentialSources` list does not
+ * hold. OCC raises it only after every source authorization, and the rule depends only on
+ * the request and the Agent the caller may already update, so HTTP reports it as an invalid
+ * request instead of hiding it as a scope miss.
+ */
+export class AgentCredentialSourceBindingError extends ScopeViolationError {
+  constructor() {
+    super("The Harness credential source must be listed in the Agent's credentialSources.");
+    this.name = "AgentCredentialSourceBindingError";
+  }
+}
+
+/**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
- * (including credential-source Harness authentication in Agent provisioning), or
+ * (including missing, runtime or credential-source Harness authentication in Agent
+ * provisioning), or
  * any of those, an Agent's Harness authentication, a credential source, or plugin discovery
  * naming a Secret in another Namespace. Messages are static, so HTTP reports them as an
  * invalid request instead of hiding them as a scope miss; Secret existence is still checked
@@ -577,6 +675,23 @@ export class SandboxRevisionUnsupportedError extends Error {
 }
 
 /**
+ * A Credential Gateway cannot attach this exact AgentRevision's credential sources: two of them
+ * would place their placeholders in the same Sandbox environment variable. The revision's
+ * source list and each source's config are fixed, so retrying cannot change the outcome; the
+ * worker fails the deployment with `code`. The message stays in the controller; status shows a
+ * fixed text.
+ */
+export class CredentialSourceRevisionError extends Error {
+  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT";
+
+  constructor(code: CredentialSourceRevisionError["code"], message: string) {
+    super(message);
+    this.name = "CredentialSourceRevisionError";
+    this.code = code;
+  }
+}
+
+/**
  * An AccessBinding Role carries Permissions that can never take effect through the
  * binding: `create` is checked against the Namespace, not an existing resource, and a
  * binding to an exact resource applies only Permissions of that resource's kind.
@@ -634,6 +749,45 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/**
+ * The selected Credential Gateway's catalog lacks a source type: registration names one it does
+ * not offer, or a configuration change dropped an existing source's type (OpenShell offers
+ * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
+ * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
+ * message names the fix.
+ */
+export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+    );
+    this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
+  issue:
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  deploy:
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  delete:
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+});
+
+/**
+ * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
+ * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
+ * issued access token cannot be deleted, since nothing can revoke the token. An Installation
+ * property, raised only after the caller's grant and the account lookup, so it reveals nothing
+ * a 403 or 404 hides. The fixed message names the fix.
+ */
+export class ServiceAccountDriverNotConfiguredError extends ResourceConflictError {
+  constructor(operation: "issue" | "deploy" | "delete") {
+    super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
+    this.name = "ServiceAccountDriverNotConfiguredError";
   }
 }
 

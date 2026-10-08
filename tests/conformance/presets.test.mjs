@@ -420,6 +420,15 @@ test("preset admission preserves credential structure and literal and default sc
       },
       /Harness authentication requires/,
     ],
+    // The managed account reference is closed and exactly typed.
+    ...[
+      { ...managedPat.source, kind: "secret" },
+      { ...managedPat.source, id: secretId },
+      { ...managedPat.source, name: "extra" },
+    ].map((source) => [
+      { agent: { harnessAuth: { ...managedPat, source } } },
+      /Harness authentication requires/,
+    ]),
     ...["1TOKEN", "TOKEN-NAME", "T".repeat(254), "HOME", "otel_exporter"].map((name) => [
       { configuration: { secretBindings: { [name]: binding } } },
       /reserved or invalid environment destination/,

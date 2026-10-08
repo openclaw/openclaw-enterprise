@@ -142,7 +142,7 @@ PR. It provides a shared template and distinguishes implemented from pending pat
 When the user or owning workflow requests an independent code review, use
 [autoreview](.agents/skills/autoreview/SKILL.md). Follow the
 [Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
-Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
+Keep only the shared-skill entrypoint here; shared fixes belong in `openclaw/agent-skills`.
 See [Developer skills](docs/testing/developer-skills.md) for provenance and updates.
 
 ## Product terminology

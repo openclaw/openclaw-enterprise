@@ -1371,56 +1371,48 @@ for (const mode of ["embedded", "dedicated"]) {
   });
 }
 
-test("Kubernetes projects the repository client into native exec paths without changing admitted configuration", async (t) => {
-  for (const roster of ["list", "entries"]) {
-    await t.test(roster, async () => {
-      const f = await fixture();
-      const shim = "/opt/oce/repository-credentials/bin";
-      f.revision.configuration.tools = {
-        allow: ["exec", "process"],
-        exec: {
-          host: "gateway",
-          mode: "full",
-          timeoutSec: 120,
-          pathPrepend: ["/operator/bin", shim, "/shared/bin", shim],
-        },
-      };
-      f.revision.configuration.agents.ownership = "explicit";
-      f.revision.configuration.agents.list = [
-        {
-          id: "custom",
-          tools: {
-            allow: ["exec"],
-            exec: { host: "gateway", mode: "full", pathPrepend: ["/agent/bin", shim] },
-          },
-        },
-        { id: "own-exec", tools: { exec: { mode: "full" } } },
-        { id: "inherits", tools: { allow: ["exec", "process"] } },
-        { id: "plain" },
-      ];
-      if (roster === "entries") {
-        f.revision.configuration.agents.entries = Object.fromEntries(
-          f.revision.configuration.agents.list.map(({ id, ...entry }) => [id, entry]),
-        );
-        delete f.revision.configuration.agents.list;
-      }
-      const original = structuredClone(f.revision.configuration);
-      deepFreeze(f.revision.configuration);
+// OCC refuses a nonempty agents.list and the pinned OpenClaw Gateway rejects any list, so
+// the projected roster is the keyed agents.entries.
+test("Kubernetes projects the repository client into native exec paths without changing admitted configuration", async () => {
+  const f = await fixture();
+  const shim = "/opt/oce/repository-credentials/bin";
+  f.revision.configuration.tools = {
+    allow: ["exec", "process"],
+    exec: {
+      host: "gateway",
+      mode: "full",
+      timeoutSec: 120,
+      pathPrepend: ["/operator/bin", shim, "/shared/bin", shim],
+    },
+  };
+  f.revision.configuration.agents.ownership = "explicit";
+  f.revision.configuration.agents.entries = {
+    custom: {
+      tools: {
+        allow: ["exec"],
+        exec: { host: "gateway", mode: "full", pathPrepend: ["/agent/bin", shim] },
+      },
+    },
+    "own-exec": { tools: { exec: { mode: "full" } } },
+    inherits: { tools: { allow: ["exec", "process"] } },
+    plain: {},
+  };
+  const original = structuredClone(f.revision.configuration);
+  deepFreeze(f.revision.configuration);
 
-      // The actual runtime document must survive OpenClaw's exec environment
-      // construction; setting only the Kubernetes container PATH is insufficient.
-      await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-      const expected = structuredClone(original);
-      expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-      const custom = roster === "list" ? expected.agents.list[0] : expected.agents.entries.custom;
-      const ownExec =
-        roster === "list" ? expected.agents.list[1] : expected.agents.entries["own-exec"];
-      custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
-      ownExec.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), expected);
-      assert.deepEqual(f.revision.configuration, original);
-    });
-  }
+  // The actual runtime document must survive OpenClaw's exec environment
+  // construction; setting only the Kubernetes container PATH is insufficient.
+  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+  const expected = structuredClone(original);
+  expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
+  expected.agents.entries.custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
+  expected.agents.entries["own-exec"].tools.exec.pathPrepend = [
+    shim,
+    "/operator/bin",
+    "/shared/bin",
+  ];
+  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), expected);
+  assert.deepEqual(f.revision.configuration, original);
 });
 
 test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async () => {

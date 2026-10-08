@@ -2329,3 +2329,206 @@ for (const scenario of [
     assert.doesNotMatch(artifact + result.stdout + result.stderr, /secret-canary/);
   });
 }
+
+test("run publishes a failed wait's followed container log, redacted, beside Agent activity", async (t) => {
+  const root = await fixture(t);
+  const clusterDirectory = join(root, "cluster");
+  await mkdir(clusterDirectory);
+  const statePath = join(root, "state/k3d.json");
+  const resultsPath = join(root, "results/k3d.json");
+  await writeJson(statePath, {
+    lane: "k3d-lane",
+    resources: [
+      {
+        kind: "k3d-cluster",
+        status: "ready",
+        name: "owned-cluster",
+        directory: clusterDirectory,
+        kubeconfig: join(clusterDirectory, "kubeconfig"),
+        context: "k3d-owned-cluster",
+      },
+    ],
+  });
+  const pod = {
+    metadata: {
+      namespace: "occ-agent-a",
+      name: "gateway-0",
+      uid: "uid-1",
+      creationTimestamp: "2026-10-08T07:43:40Z",
+      deletionTimestamp: "2026-10-08T07:43:53Z",
+      deletionGracePeriodSeconds: 330,
+    },
+    spec: {
+      containers: [{ name: "gateway", env: [{ name: "TOKEN", value: "do-not-publish-env" }] }],
+    },
+    status: {
+      phase: "Running",
+      containerStatuses: [
+        { name: "gateway", ready: false, restartCount: 0, state: { running: { startedAt: "t" } } },
+      ],
+    },
+  };
+  const event = {
+    metadata: { namespace: "occ-agent-a", name: "gateway-0.kill", uid: "e1" },
+    involvedObject: { kind: "Pod", name: "gateway-0", namespace: "occ-agent-a" },
+    type: "Normal",
+    reason: "Killing",
+    message: "Stopping container gateway",
+    count: 1,
+    lastTimestamp: "2026-10-08T07:43:53Z",
+  };
+  const logLines = [
+    "2026-10-08T07:43:49.1Z [gateway] startup phase: config.auth starting",
+    "2026-10-08T07:43:53.2Z [gateway] received SIGTERM; shutting down",
+    "2026-10-08T07:43:53.3Z request Authorization: Bearer do-not-publish-header",
+    "2026-10-08T07:43:53.4Z provider token=do-not-publish-assignment refreshed",
+    "2026-10-08T07:43:53.5Z parent value secretauthvalue-parent seen",
+  ];
+  // Only the lane gives the child this value; the runner's own env never has it.
+  const childSecret = "childonlysecret-1754";
+  // One stand-in serves the runner's raw watches (which wait until stopped) and
+  // the test helper's log follow and snapshots; the log ends after a slow exit.
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  const kubectl = join(bin, "kubectl");
+  await writeFile(
+    kubectl,
+    [
+      `#!${process.execPath}`,
+      "const args = process.argv.slice(2);",
+      'if (args.includes("logs")) {',
+      `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
+      "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
+      "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
+      "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
+      '} else if (args.includes("get") && args.includes("pods")) {',
+      `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(pod)}] }));`,
+      '} else if (args.includes("get") && args.includes("events")) {',
+      `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(event)}] }));`,
+      "} else {",
+      "  setTimeout(() => {}, 60_000);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await chmod(kubectl, 0o755);
+  const helper = join(repositoryRoot, "tests/helpers/container-log-capture.mjs");
+  await writeFile(
+    join(root, "tests/integration/stop.test.mjs"),
+    [
+      'import test from "node:test";',
+      `import { followContainerLog } from ${JSON.stringify(helper)};`,
+      "let snapshots = 0;",
+      'test("gateway stop is confirmed", async (t) => {',
+      "  const log = followContainerLog({",
+      '    args: ["logs", "--follow", "--timestamps"],',
+      "    env: process.env,",
+      '    target: { namespace: "occ-agent-a", pod: "gateway-0", container: "gateway" },',
+      "    snapshot: async () => {",
+      '      if (process.env.SNAPSHOT_FAILS_AFTER === String(++snapshots)) throw new Error("read failed");',
+      '      const read = async (kind) => JSON.parse((await import("node:child_process"))',
+      '        .execFileSync("kubectl", ["get", kind, "-o", "json"], { encoding: "utf8" })).items;',
+      '      return { pods: await read("pods"), events: await read("events") };',
+      "    },",
+      "  });",
+      "  try {",
+      '    process.env.SNAPSHOT_FAILS_AFTER = "2";',
+      '    await log.attachOnFailure(t, "passing wait", async () => "settled");',
+      '    log.mark("stop requested");',
+      '    await log.attachOnFailure(t, "terminal response wait", async () => {',
+      '      throw new Error("timed out");',
+      "    });",
+      "  } finally {",
+      "    await log.stop();",
+      "  }",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/pass.test.mjs"),
+    'import test from "node:test";\ntest("passes", () => {});\n',
+  );
+  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    env: { OCC_TEST_CHILD_ONLY: childSecret },
+    files: [
+      { path: "tests/integration/stop.test.mjs", expectedTests: ["gateway stop is confirmed"] },
+      { path: "tests/integration/pass.test.mjs", expectedTests: ["passes"] },
+    ],
+  });
+  await writeJson(join(root, "scripts/ci/suites.json"), {
+    version: 1,
+    lanes: { "k3d-lane": "./k3d-lane.json" },
+    groups: {},
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, PATH: `${bin}:${process.env.PATH}` },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const { containerLogs } = JSON.parse(text);
+  // Only the failed wait writes a record: not the wait that settled, not the passing file.
+  assert.equal(containerLogs.length, 1);
+  const [log] = containerLogs;
+  assert.equal(log.file, "tests/integration/stop.test.mjs");
+  assert.equal(log.test, "gateway stop is confirmed");
+  assert.equal(log.reason, "terminal response wait");
+  assert.deepEqual(
+    [log.namespace, log.pod, log.container],
+    ["occ-agent-a", "gateway-0", "gateway"],
+  );
+  assert.deepEqual(
+    log.markers.map(({ label }) => label),
+    ["stop requested", "failed: terminal response wait"],
+  );
+  // The follow ran to the container's exit, unterminated last line included.
+  assert.equal(log.stream.ended, true);
+  assert.equal(log.stream.exitCode, 0);
+  assert.equal(log.stream.error, "follow note\n[redacted credential-bearing line]");
+  assert.deepEqual(log.lines, [
+    logLines[0],
+    logLines[1],
+    "[redacted credential-bearing line]",
+    "2026-10-08T07:43:53.4Z provider token=[redacted] refreshed",
+    "2026-10-08T07:43:53.5Z parent value [env:CI_RUNNER_PARENT_SECRET] seen",
+    "2026-10-08T07:43:53.6Z child value [env:OCC_TEST_CHILD_ONLY]",
+    "2026-10-08T07:44:22.0Z [gateway] exit 0",
+  ]);
+  // A failed read is marked, so it cannot pass for a Pod that is already gone.
+  assert.deepEqual(
+    log.snapshots.map(({ label, unavailable }) => [label, unavailable]),
+    [
+      ["at-failure", undefined],
+      ["after-log", true],
+    ],
+  );
+  const [snapshot] = log.snapshots;
+  assert.equal(snapshot.pods[0].deletedAt, "2026-10-08T07:43:53Z");
+  assert.equal(snapshot.pods[0].deletionGracePeriodSeconds, 330);
+  assert.equal(snapshot.pods[0].containers[0].startedAt, "t");
+  assert.deepEqual(
+    snapshot.events.map(({ reason, message }) => [reason, message]),
+    [["Killing", "Stopping container gateway"]],
+  );
+  assert.doesNotMatch(text, /do-not-publish|secretauthvalue|childonlysecret/);
+  // The record directory lived in the cluster's private directory and is gone.
+  assert.deepEqual(
+    (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
+    [],
+  );
+});

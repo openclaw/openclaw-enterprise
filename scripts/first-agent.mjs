@@ -519,10 +519,18 @@ function expectedHarnessAuth(record) {
       };
 }
 
+/** The Agent lists every bound source; harnessAuth names the listed credential source. */
+function expectedCredentialSources(record) {
+  return record.sandboxDriver === "openshell"
+    ? [{ sourceId: record.credentialSourceId }]
+    : undefined;
+}
+
 function assertManagedAgent(agent, record) {
   if (
     agent.configurationId !== record.configurationId ||
     !isDeepStrictEqual(agent.harnessAuth, expectedHarnessAuth(record)) ||
+    !isDeepStrictEqual(agent.credentialSources, expectedCredentialSources(record)) ||
     agent.executionMode !== (record.harness === "codex" ? "dedicated" : "embedded") ||
     agent.backendId !== null ||
     Object.keys(agent.plugins ?? {}).length
@@ -892,6 +900,9 @@ async function main(options) {
         configurationId: record.configurationId,
         executionMode: record.harness === "codex" ? "dedicated" : "embedded",
         harnessAuth: expectedHarnessAuth(record),
+        ...(expectedCredentialSources(record) === undefined
+          ? {}
+          : { credentialSources: expectedCredentialSources(record) }),
       });
     }
     assertManagedAgent(agent, record);

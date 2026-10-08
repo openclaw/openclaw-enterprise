@@ -16,6 +16,7 @@ import {
   CredentialSourceType,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
+  AgentCredentialSourcesSchema,
   InstallationId,
   KubernetesNamespaceName,
   Meta,
@@ -312,6 +313,7 @@ export const AgentSchema = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Union([BackendId, Type.Null()]),
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -334,6 +336,7 @@ const ConfigurationReadErrorSchema = Type.Object(
       Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
       Type.Literal("harnessAuth"),
+      Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
       Type.Literal("repositoryCredentials"),
       Type.Literal("configuration"),
@@ -343,7 +346,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -356,6 +359,7 @@ export const AgentReadSchema = Type.Union(
           "repositoryBindings",
           "repositoryAccess",
           "harnessAuth",
+          "credentialSources",
         ]).properties,
         configurationReadError: ConfigurationReadErrorSchema,
       },
@@ -768,7 +772,11 @@ export const CredentialWithdrawalSchema = Type.Object(
   {
     namespaceId: NamespaceId,
     agentId: AgentId,
-    revisionId: RevisionId,
+    revisionId: Type.String({
+      ...RevisionId,
+      description:
+        "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+    }),
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
@@ -970,6 +978,7 @@ export const AgentRevisionSchema = Type.Object(
     ),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: HarnessAuthBindingSchema,
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     repositoryCredentials: Type.Optional(RepositoryRevisionStateSchema),
     createdAt: Timestamp,
   },

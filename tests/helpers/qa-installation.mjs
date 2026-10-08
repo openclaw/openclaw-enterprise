@@ -129,6 +129,7 @@ export async function createQaInstallation(context, controlPlane, artifacts) {
     agents: [],
     forwards: [],
     retained: false,
+    pendingRepositories: new Set(),
     resources: createResourceScope({ cleanupTimeoutMs: 600_000 }),
     async record(name, value) {
       // API results are evidence only: a fixed JSON suffix, a confined basename,
@@ -417,9 +418,9 @@ export async function createQaInstallation(context, controlPlane, artifacts) {
         f.retained = true;
       }
     }
-    // A repository scenario sets retained before opening credentials and clears
-    // it only after all exact sessions reach DISPOSED. Never kill their broker.
-    if (f.retained) {
+    // Every in-flight repository Agent owns a cleanup obligation. One successful
+    // worker must never clear another worker's uncertain session.
+    if (f.retained || f.pendingRepositories.size > 0) {
       throw new Error(
         `QA cleanup requires recovery; retained owned installation at ${stateDirectory}`,
       );
@@ -527,22 +528,12 @@ export async function createQaInstallation(context, controlPlane, artifacts) {
   return f;
 }
 
-export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
-  assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
-  const preset = f.presets.find((value) => value.name === `Standard ${presetName}`);
-  const codex = presetName === "Codex";
-  const credential = await protectedText(
-    process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
-    "model credential",
+export async function prepareQaPreset(f, presetName) {
+  assert.ok(
+    !f.retained && f.pendingRepositories.size === 0,
+    "blocked by unresolved repository cleanup",
   );
-  const model =
-    process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
-  const rendered = renderPresetTemplate(preset.template, {
-    name: `qa-${f.suffix}-${presetName}${nameSuffix}`,
-    model,
-    modelSecret: "provided-through-secret-api",
-  });
-  const values = rendered.configuration.values;
+  const codex = presetName === "Codex";
   const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
   const gatewayResources = f.configuration.drivers.compute.configuration.resources.gateway;
   // The full native repository workload exceeded the launcher's 2 GiB default.
@@ -562,6 +553,29 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     };
     await f.saveInstallation(f.configuration);
   }
+}
+
+export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
+  assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
+  const preset = f.presets.find((value) => value.name === `Standard ${presetName}`);
+  const codex = presetName === "Codex";
+  const credential = await protectedText(
+    process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
+    "model credential",
+  );
+  const model =
+    process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
+  const rendered = renderPresetTemplate(preset.template, {
+    name: `qa-${f.suffix}-${presetName}${nameSuffix}`,
+    model,
+    modelSecret: "provided-through-secret-api",
+  });
+  const values = rendered.configuration.values;
+  assert.equal(
+    f.configuration.drivers.plugin?.id,
+    codex ? "codex-plugin" : "occ-plugin",
+    "prepare the preset before starting parallel Agent scenarios",
+  );
   values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
   values.gateway.controlUi = {
     ...values.gateway.controlUi,
@@ -586,8 +600,10 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     harnessAuth: auth,
   });
   agent.preset = presetName;
+  agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
+  f.agents.push(agent);
   if (f.controlPlane === "kubernetes") {
     const target = nativeAdminTarget({
       publicOrigin: f.consoleUrl,
@@ -617,7 +633,6 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
       values,
     });
   }
-  f.agents.push(agent);
   await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
   await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
   await f.deployAndWait(agent);

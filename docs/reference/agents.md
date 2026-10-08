@@ -154,14 +154,17 @@ an account does not issue its credential or change the model, Harness, or Backen
 
 **Development upgrade limitation:** migration `0049` rejects retained
 `chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
-or provisioning plans. It rolls back without converting or deleting those
-records. Changing the current Agent binding does not clear historical revisions;
-retained legacy state must be cleared before the upgrade can proceed. This is an
-intentional development-state break; in-place conversion is unsupported.
+or provisioning plans, and rolls back without converting them. No API deletes a
+revision or provisioning request on its own: delete each affected Agent, which
+also deletes its revisions and requests, and create it again after the upgrade.
+Changing the binding does not clear historical revisions. For a request that
+never created an Agent, see
+[clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 For dedicated Codex with a Credential Gateway, use
 `{ "method": "credential_source", "sourceId": "cs_…" }`; see
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
+It must also be listed in `credentialSources`.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
@@ -382,6 +385,8 @@ its compatibility limits before planning deployment.
   Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Backend binding or topology is incompatible.
+- `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The account has no access token,
+  and the Installation has no ChatGPT Backend to issue one.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation.

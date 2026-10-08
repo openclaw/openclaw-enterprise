@@ -103,13 +103,11 @@ lifecycle and enabled-plugin install/auth proofs.
   Diffs plugin.
 - `OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_REAL=1` for catalog-selected Linear in a
   normal dedicated Codex Agent turn.
-- `OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_REAL=1` for the retained Calendar
-  per-call approval and disabled-tool acceptance scenario.
 - `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_REAL=1` for dedicated Codex with one
   successful selected install followed by one selected install or authentication
   failure.
 - `OCC_TEST_PLUGIN_DRIVER_REAL=1` only when all scenario-specific environments
-  and four separate scenario-specific databases are prepared. The fixture
+  and three separate scenario-specific databases are prepared. The fixture
   rejects missing URLs and duplicate host, port, and database combinations
   before provisioning resources; do not use different host aliases for one database.
 
@@ -117,9 +115,8 @@ All native scenarios use Kubernetes. Provide
 `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`,
 `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`,
 `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`, and a scenario-specific database such as
-`OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL`. The Linear, Calendar and Codex failure scenarios
-require their own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL`,
-`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL` and
+`OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL`. The Linear and Codex failure scenarios
+require their own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL` and
 `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL`.
 The OpenClaw scenario also requires `OPENAI_API_KEY` in the process environment
 and a runtime image with `plugins install --no-enable` support. The repository's
@@ -142,12 +139,14 @@ on the test nodes and set `OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE` to its
 kubelet-relative path. Codex fixtures use a 4 GiB Gateway limit and a 2 GiB
 Harness limit; the namespace quota allows two Agent pairs and revision overlap.
 Provide enough cluster memory for the selected scenario and its other workloads.
-The [shipped QA matrix](qa-matrix.md) exercises Calendar approval coverage through
-both shipped installations. The existing `plugin-driver-real.test.mjs` Calendar
-entry point remains available with its imported service-account fixture until
-both matrix cells and the protected hosted lane are qualified. They share one
-policy scenario; neither entry point's presence proves a live pass.
-The proof needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
+The [shipped QA matrix](qa-matrix.md) owns Calendar per-call approval and
+disabled-tool coverage through both shipped installations. The focused
+`plugin-model` lane retains plugin installation, isolation, and failure recovery;
+it has no GitHub workflow entrypoint and is excluded from the `ci` and `full`
+groups. Without an opt-in flag, the native scenarios skip. Neither a green
+required CI run nor an unselected scenario proves live Calendar behavior.
+
+The matrix and the retained Codex failure proof need `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen harmless
 read during a normal Agent turn. Select an exact tool advertised by the connected
 account; the historical `list_calendars` tool is not available in every catalog.

@@ -514,6 +514,24 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
+    case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
+      return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
+    case "CREDENTIAL_WITHDRAWN":
+      return "The Harness credential source was withdrawn from this revision, so the revision cannot start. Bind a replacement source or another authentication method, then deploy again.";
+    case "CREDENTIAL_GATEWAY_MISMATCH":
+      return "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.";
+    case "HARNESS_AUTH_SOURCE_UNAVAILABLE":
+      return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
+    case "CREDENTIAL_SOURCE_UNAVAILABLE":
+      return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
+    case "SECRET_DRIVER_MISMATCH":
+      return "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.";
+    case "COMPUTE_DRIVER_MISMATCH":
+      return "The Installation no longer selects the Compute Driver this revision was admitted with. Deploy again to admit a revision for the selected driver.";
+    case "HARNESS_DESCRIPTOR_MISMATCH":
+      return "This revision's Harness or Harness version is no longer approved, for example after a controller upgrade. Deploy again to admit a revision with the approved version.";
+    case "SERVICE_ACCOUNT_BACKEND_MISMATCH":
+      return "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.";
     case "SANDBOX_ADMISSION_LIMIT_REACHED":
       return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
     default:

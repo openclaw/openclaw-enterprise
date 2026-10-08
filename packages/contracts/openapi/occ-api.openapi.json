@@ -692,6 +692,11 @@
                     "type": "string"
                   },
                   {
+                    "const": "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+                    "description": "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
+                    "type": "string"
+                  },
+                  {
                     "const": "REPOSITORY_OPTIONS_UNAVAILABLE",
                     "description": "Only repository-option discovery is unavailable after Agent create authorization. An Agent without repository bindings may be submitted and is authorized again. Other dependency failures do not carry this meaning.",
                     "type": "string"
@@ -11785,7 +11790,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
                       "items": {
                         "anyOf": [
                           {
@@ -11814,6 +11819,23 @@
                                 "format": "date-time",
                                 "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                                 "type": "string"
+                              },
+                              "credentialSources": {
+                                "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "sourceId": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["sourceId"],
+                                  "type": "object"
+                                },
+                                "maxItems": 8,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "desiredRuntimeState": {
                                 "anyOf": [
@@ -12097,6 +12119,7 @@
                                       { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
+                                      { "const": "credentialSources", "type": "string" },
                                       { "const": "secretBindings", "type": "string" },
                                       { "const": "repositoryCredentials", "type": "string" },
                                       { "const": "configuration", "type": "string" }
@@ -12165,7 +12188,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
                       },
                       "type": "array"
                     },
@@ -12233,7 +12256,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
         "operationId": "createAgent",
         "parameters": [
           {
@@ -12266,6 +12289,23 @@
                   "configurationId": {
                     "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
+                  },
+                  "credentialSources": {
+                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "sourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["sourceId"],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "executionMode": {
                     "anyOf": [
@@ -12532,6 +12572,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "desiredRuntimeState": {
                           "anyOf": [
@@ -12866,6 +12923,12 @@
             "condition": "bound_secret",
             "resourceKind": "secret",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
+            "scope": "request_body"
           }
         ]
       }
@@ -14206,7 +14269,7 @@
                       },
                       { "type": "null" }
                     ],
-                    "description": "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it."
+                    "description": "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -15077,6 +15140,23 @@
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
                         },
+                        "credentialSources": {
+                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
                         "desiredRuntimeState": {
                           "anyOf": [
                             { "const": "running", "type": "string" },
@@ -15447,6 +15527,23 @@
                               "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
                             },
+                            "credentialSources": {
+                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "sourceId": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["sourceId"],
+                                "type": "object"
+                              },
+                              "maxItems": 8,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
                             "desiredRuntimeState": {
                               "anyOf": [
                                 { "const": "running", "type": "string" },
@@ -15729,6 +15826,7 @@
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
+                                    { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
                                     { "const": "repositoryCredentials", "type": "string" },
                                     { "const": "configuration", "type": "string" }
@@ -15797,7 +15895,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -15862,7 +15960,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -15904,6 +16002,23 @@
                   "configurationId": {
                     "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
+                  },
+                  "credentialSources": {
+                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "sourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["sourceId"],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "executionMode": {
                     "anyOf": [
@@ -16139,6 +16254,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "desiredRuntimeState": {
                           "anyOf": [
@@ -16473,6 +16605,12 @@
             "condition": "bound_secret",
             "resourceKind": "secret",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
+            "scope": "requested"
           }
         ]
       }
@@ -16547,6 +16685,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16713,6 +16852,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16796,7 +16936,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Get the withdrawal state of a credential source for an Agent's active revision",
+        "summary": "Get the withdrawal state of a credential source for an Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" }
@@ -16805,7 +16945,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -16881,6 +17021,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "harness": {
                           "additionalProperties": false,
@@ -17223,6 +17380,12 @@
             "action": "operate",
             "condition": "bound_secret",
             "resourceKind": "secret",
+            "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
             "scope": "requested"
           }
         ]
@@ -20087,6 +20250,23 @@
                                 "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                                 "type": "string"
                               },
+                              "credentialSources": {
+                                "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "sourceId": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["sourceId"],
+                                  "type": "object"
+                                },
+                                "maxItems": 8,
+                                "type": "array",
+                                "uniqueItems": true
+                              },
                               "harness": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -20378,6 +20558,7 @@
                                       { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
+                                      { "const": "credentialSources", "type": "string" },
                                       { "const": "secretBindings", "type": "string" },
                                       { "const": "repositoryCredentials", "type": "string" },
                                       { "const": "configuration", "type": "string" }
@@ -20571,6 +20752,23 @@
                               "format": "date-time",
                               "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
+                            },
+                            "credentialSources": {
+                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "sourceId": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["sourceId"],
+                                "type": "object"
+                              },
+                              "maxItems": 8,
+                              "type": "array",
+                              "uniqueItems": true
                             },
                             "harness": {
                               "additionalProperties": false,
@@ -20861,6 +21059,7 @@
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
+                                    { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
                                     { "const": "repositoryCredentials", "type": "string" },
                                     { "const": "configuration", "type": "string" }
@@ -21385,6 +21584,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "desiredRuntimeState": {
                           "anyOf": [
@@ -23240,7 +23456,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for CredentialSource resources in the requested Namespace.",
+        "description": "Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.",
         "operationId": "createCredentialSource",
         "parameters": [
           {
@@ -23373,7 +23589,13 @@
         "summary": "Register a credential source with the selected Credential Gateway",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
+          {
+            "action": "operate",
+            "condition": "bound_secret",
+            "resourceKind": "secret",
+            "scope": "request_body"
+          }
         ]
       }
     },
@@ -23526,7 +23748,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested CredentialSource.",
+        "description": "Requires update permission on the requested CredentialSource. Requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
         "operationId": "updateCredentialSource",
         "parameters": [
           {
@@ -23650,7 +23872,13 @@
         "summary": "Push current or replacement Secret values to the Credential Gateway copy",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
-          { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
+          { "action": "update", "resourceKind": "credential_source", "scope": "requested" },
+          {
+            "action": "operate",
+            "condition": "bound_secret",
+            "resourceKind": "secret",
+            "scope": "requested"
+          }
         ]
       }
     },

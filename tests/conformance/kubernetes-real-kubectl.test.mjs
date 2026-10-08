@@ -14,6 +14,7 @@ import {
   probeDenial,
   retryKubectlRead,
 } from "../helpers/kubernetes-real.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -150,20 +151,18 @@ async function fakeKubectlExec(script, ...args) {
   }
 }
 
-async function closedLoopbackPort() {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address();
-  server.close();
-  await once(server, "close");
-  return port;
+// A loopback port that refuses connections until the test ends. A released port could be
+// taken by a test running in parallel, and the probe would then connect.
+async function refusingLoopbackPort(t) {
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  return refusing.port;
 }
 
 const quiet = { sleep: async () => {}, log: () => {} };
 
-test("the probe's own refused connection passes a deny check", async () => {
-  const port = await closedLoopbackPort();
+test("the probe's own refused connection passes a deny check", async (t) => {
+  const port = await refusingLoopbackPort(t);
   const denial = await assertProbeDenied(
     "refused loopback traffic",
     () => fakeKubectlExec(probeScript, "tcp", "127.0.0.1", String(port)),
@@ -207,8 +206,8 @@ test("a deny check fails when the probe never reports a denial", async () => {
   }
 });
 
-test("a deny check retries a dropped exec stream and accepts the probe's denial", async () => {
-  const port = await closedLoopbackPort();
+test("a deny check retries a dropped exec stream and accepts the probe's denial", async (t) => {
+  const port = await refusingLoopbackPort(t);
   let calls = 0;
   const denial = await assertProbeDenied(
     "refused loopback traffic after a dropped stream",
@@ -253,9 +252,9 @@ async function fakeKubectlExecInline(source, ...probeArguments) {
   return fakeKubectlExec(...args);
 }
 
-test("the inline probe's refused connection passes a deny check", async () => {
+test("the inline probe's refused connection passes a deny check", async (t) => {
   const source = await readFile(probeScript, "utf8");
-  const port = await closedLoopbackPort();
+  const port = await refusingLoopbackPort(t);
   const denial = await assertProbeDenied(
     "refused inline loopback traffic",
     () => fakeKubectlExecInline(source, "tcp", "127.0.0.1", port),
@@ -264,9 +263,9 @@ test("the inline probe's refused connection passes a deny check", async () => {
   assert.deepEqual(denial, { denied: true, code: "ECONNREFUSED" });
 });
 
-test("an inline deny check fails unless the probe reports a denial", async () => {
+test("an inline deny check fails unless the probe reports a denial", async (t) => {
   const source = await readFile(probeScript, "utf8");
-  const port = await closedLoopbackPort();
+  const port = await refusingLoopbackPort(t);
   // Reproduces the Gateway one-liner this replaced (not the inline probe): it
   // exits 1 on any socket error, a DNS error included.
   const exitOnAnyError = `const s=require('node:net').connect({host:process.argv[1],port:Number(process.argv[2])}); s.on('connect',()=>process.exit(0)); s.on('error',()=>process.exit(1));`;

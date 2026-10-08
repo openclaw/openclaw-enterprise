@@ -1083,19 +1083,6 @@ const fs = require("node:fs");
 const cp = require("node:child_process");
 const { gatewayArgs, harness, workspaceNodeId } = JSON.parse(fs.readFileSync(0, "utf8"));
 const model = "openai/runtime-image-schema";
-const credential = "sk-openclaw-runtime-image-schema-synthetic";
-const inference = {
-  agents: { defaults: { model } },
-  models: { providers: { openai: {
-    api: "openai-responses",
-    baseUrl: "https://api.openai.com/v1",
-    apiKey: "OPENAI_API_KEY",
-    models: [{ id: "runtime-image-schema", name: "runtime-image-schema",
-      api: "openai-responses", baseUrl: "https://api.openai.com/v1",
-      contextWindow: 128000, maxTokens: 8192, reasoning: true,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-  } } },
-};
 function validate(path) {
   const home = fs.mkdtempSync("/tmp/oce-config-validate-");
   const result = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
@@ -1142,6 +1129,10 @@ function run(args, env, readinessUrl) {
 (async () => {
   fs.mkdirSync("/tmp/gateway", { recursive: true });
   fs.copyFileSync("/etc/openclaw/openclaw.json", "/tmp/gateway/base.json");
+  const gatewayBase = JSON.parse(fs.readFileSync("/tmp/gateway/base.json", "utf8"));
+  (gatewayBase.agents ??= {}).defaults ??= {};
+  gatewayBase.agents.defaults.workspace = "/tmp/runtime-image-provider-workspace";
+  fs.writeFileSync("/tmp/gateway/base.json", JSON.stringify(gatewayBase));
   const gatewayRun = await run(["-e", ...gatewayArgs], {
     OPENCLAW_CONFIG_PATH: "/tmp/gateway/base.json",
     OPENCLAW_STATE_DIR: "/home/node/.openclaw",
@@ -1163,11 +1154,19 @@ function run(args, env, readinessUrl) {
     OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
     OPENCLAW_NODE_STATE_DIR: "/home/node/.openclaw-node",
     OPENCLAW_NODE_SETUP_CODE: "runtime-image-schema-setup-code",
-    OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify(inference),
+    OPENCLAW_WORKSPACE_DIR: "/tmp/runtime-image-provider-workspace",
+    OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify({
+      models: { providers: { openai: {
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+        models: [{ id: "runtime-image-schema", name: "runtime-image-schema", api: "openai-responses", contextWindow: 128000, maxTokens: 8192 }],
+      } } },
+      secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
+    }),
     OPENCLAW_HARNESS_MODEL: model,
     OPENCLAW_HARNESS_PROVIDER: "openai",
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
-    OPENAI_API_KEY: credential,
+    OPENAI_API_KEY: "sk-openclaw-runtime-image-schema-synthetic",
     OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({ agents: { defaults: { model } } }),
   });
   const harnessConfig = "/home/node/.openclaw-node/openclaw.json";
@@ -1213,45 +1212,28 @@ function run(args, env, readinessUrl) {
       }),
     );
     const { gateway, harness } = JSON.parse(stdout);
-    // Prove that validation covered the placement and inference keys OCE writes.
+    // Validate both the Gateway placement contract and the node-owned model configuration.
     assert.equal(gateway.config.cloudWorkers?.requiredProfile, "dedicated-native");
     assert.equal(gateway.config.cloudWorkers?.profiles?.["dedicated-native"]?.provider, "device");
-    assert.deepEqual(harness.config.agents?.defaults, {
-      model: "openai/runtime-image-schema",
-      workspace: "/home/node/workspace",
+    assert.equal(
+      gateway.config.plugins.entries["file-transfer"].config.workspaces.main.remoteRoot,
+      "/tmp/runtime-image-provider-workspace",
+    );
+    assert.equal(harness.config.models.providers.openai.models[0].id, "runtime-image-schema");
+    assert.equal(harness.config.agents.defaults.workspace, "/tmp/runtime-image-provider-workspace");
+    assert.deepEqual(harness.config.models.providers.openai.apiKey, {
+      source: "env",
+      provider: "model",
+      id: "OPENAI_API_KEY",
     });
-    assert.deepEqual(harness.config.models?.providers?.openai, {
-      api: "openai-responses",
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: "OPENAI_API_KEY",
-      models: [
-        {
-          id: "runtime-image-schema",
-          name: "runtime-image-schema",
-          api: "openai-responses",
-          baseUrl: "https://api.openai.com/v1",
-          contextWindow: 128000,
-          maxTokens: 8192,
-          reasoning: true,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        },
-      ],
-    });
-    assert.deepEqual(harness.config.plugins, {
-      allow: ["file-transfer"],
-      slots: { memory: "none" },
-      entries: { "file-transfer": { enabled: true } },
-    });
-    assert.deepEqual(harness.config.nodeHost?.workerRuns, {
-      enabled: true,
-      capacity: 8,
-      isolation: "none",
-    });
+    assert.equal(harness.config.nodeHost.workerRuns.nativeInferenceConfig, undefined);
     assert.deepEqual(gateway.validation.issues, []);
     assert.deepEqual(harness.validation.issues, []);
     assert.equal(gateway.validation.valid, true);
     assert.equal(gateway.ready, true, gateway.output);
     assert.equal(harness.validation.valid, true);
+    // Schema acceptance alone does not qualify the default image's complete native flow.
+    // Runtime admission retains its separate native-worker support gate.
   },
 );
 

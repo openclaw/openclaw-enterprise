@@ -36,18 +36,21 @@ the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
 The source archive and patch hashes identify the resulting custom build.
 
-The selected source accepts canonical node-local inference configuration under
-`models.providers` and the `cloudWorkers.requiredProfile` schema, but lacks
-complete required-placement activation for ordinary sessions. OCE therefore
-keeps `PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
-`packages/occ/src/native-worker-support.ts` false. Enabling the default capability
-requires a source pin containing both placement activation and the Codex
-native-child relay contract already required by OCE.
+Dedicated native OpenClaw requires both required worker placement
+(`cloudWorkers.requiredProfile`) and node-local inference from canonical
+`models.providers` configuration. The node snapshots its model credentials and
+projects each worker's managed workspace from its authorized launch descriptor;
+OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field.
 
-The images-runtime-startup lane runs the production Gateway and Harness
-entrypoints and validates their generated configuration with this image's
-OpenClaw. This proves schema compatibility; it does not prove required placement,
-enrollment, containment, or real model turns.
+The selected image remains unqualified for the complete dedicated native flow.
+`PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
+`packages/occ/src/native-worker-support.ts` stays false, so admission refuses
+that topology unless the operator declares an explicitly selected custom image.
+Default enablement requires a qualified source pin that also preserves OCE's
+Codex native-child relay contract. The images-runtime-startup lane runs the
+production Gateway and Harness entrypoints and validates their generated
+configurations with the image's CLI. Schema acceptance alone does not prove
+required placement, enrollment, containment, workspace access, or model execution.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |

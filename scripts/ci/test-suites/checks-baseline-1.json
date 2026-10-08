@@ -41,6 +41,7 @@
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.mjs",
     "tests/integration/secret-driver-startup.test.mjs",
     "tests/conformance/kubernetes-configuration.test.mjs",
@@ -171,6 +172,9 @@
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
       "path": "tests/conformance/platform-state-memory.test.mjs"

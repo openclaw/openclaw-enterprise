@@ -341,7 +341,11 @@ message ServiceEndpointResponse {
 }
 
 message DeleteSandboxResponse {
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+  // Immutable ID of the targeted Sandbox; empty for ALREADY_ABSENT.
+  string sandbox_id = 3;
 }
 
 // Upstream openshell.datamodel.v1.Provider. Credential values are write-only for

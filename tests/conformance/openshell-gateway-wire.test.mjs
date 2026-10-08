@@ -1,15 +1,26 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { getEventListeners } from "node:events";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createSecureServer } from "node:http2";
 import test from "node:test";
 import {
   GrpcOpenShellGatewayClient,
   OpenShellAdmissionLimitError,
   OpenShellRequestReplayRefusedError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import {
+  openShellProviderName,
+  openShellWorkspaceName,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
@@ -37,6 +48,115 @@ function bindWireServer(server) {
     ),
   );
 }
+
+test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t) => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, enums: String },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  let healthCalls = 0;
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      healthCalls += 1;
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  const port = await bindWireServer(server);
+  const targets = [];
+  const sockets = new Set();
+  const proxy = createServer();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    return socket;
+  };
+  // A real CONNECT tunnel avoids privileged listening ports. It accepts only
+  // the configured authorities and forwards their actual gRPC bytes to the peer.
+  proxy.on("connect", (request, socket, head) => {
+    targets.push(request.url);
+    track(socket);
+    if (!["gateway.example.test:80", "gateway.example.test:7777"].includes(request.url)) {
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    const upstream = track(
+      connect(port, "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length > 0) {
+          upstream.write(head);
+        }
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      }),
+    );
+    upstream.on("error", () => socket.destroy());
+    socket.on("close", () => upstream.destroy());
+  });
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const program = `
+    import { OpenShellGateway } from ${JSON.stringify(new URL("../../apps/controller/src/backends/openshell.ts", import.meta.url).href)};
+    const gateway = new OpenShellGateway(JSON.parse(process.argv[1]));
+    try {
+      await gateway.clientForNamespace("tenant-workspace").health(AbortSignal.timeout(2000));
+      process.stdout.write("healthy\\n");
+    } finally { gateway.close(); }
+  `;
+  for (const [configuration, target] of [
+    [{ endpoint: "gateway.example.test:80" }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test:80" }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test" }, "gateway.example.test:80"],
+    [{ serviceName: "gateway.example.test", scheme: "http", port: 80 }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test:7777" }, "gateway.example.test:7777"],
+  ]) {
+    const before = targets.length;
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        program,
+        JSON.stringify({ ...configuration, requestTimeoutMs: 1000 }),
+      ],
+      {
+        env: { PATH: process.env.PATH, grpc_proxy: `http://127.0.0.1:${proxy.address().port}` },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code) => resolve(code));
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    try {
+      assert.equal(await closed, 0, stderr);
+      assert.equal(stdout, "healthy\n");
+      assert.deepEqual(targets.slice(before), [target]);
+    } finally {
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      await closed;
+    }
+  }
+  assert.equal(healthCalls, 5);
+});
 
 test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", async () => {
   const proto = await loader.load(
@@ -115,7 +235,7 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
     },
     DeleteSandbox(call, callback) {
       deleteRequests.push(call.request);
-      callback(null, { deleted: true });
+      callback(null, { outcome: "DELETION_OUTCOME_COMPLETED", sandbox_id: "sandbox-id" });
     },
   });
   const port = await bindWireServer(server);
@@ -258,6 +378,107 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
       ),
       /OpenShell CreateSandbox returned no service URL map/,
     );
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const deletes = [];
+  const gets = [];
+  // Per Sandbox name: how DeleteSandbox answers, and what GetSandbox reports afterwards.
+  const scenarios = {
+    // Finding 857: OpenShell answers only after the Sandbox Pod's termination grace,
+    // which outlasts the ordinary request deadline.
+    "sandbox-slow": { delayMs: 1_500, outcome: "DELETION_OUTCOME_COMPLETED" },
+    "sandbox-accepted": { outcome: "DELETION_OUTCOME_ACCEPTED", presentFor: 2 },
+    "sandbox-no-outcome": { presentFor: 1 },
+    "sandbox-replaced": { outcome: "DELETION_OUTCOME_ACCEPTED", replacedBy: "sandbox-id-2" },
+    // Without the targeted ID only absence by name counts, so even a replacement holds the
+    // wait until the bound.
+    "sandbox-stuck": {
+      outcome: "DELETION_OUTCOME_ACCEPTED",
+      unnamed: true,
+      replacedBy: "sandbox-id-2",
+    },
+  };
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    DeleteSandbox(call, callback) {
+      deletes.push(call.request.name);
+      const scenario = scenarios[call.request.name];
+      setTimeout(
+        () =>
+          callback(null, {
+            ...(scenario.outcome === undefined ? {} : { outcome: scenario.outcome }),
+            ...(scenario.unnamed ? {} : { sandbox_id: "sandbox-id-1" }),
+          }),
+        scenario.delayMs ?? 0,
+      );
+    },
+    GetSandbox(call, callback) {
+      gets.push(call.request.name);
+      const scenario = scenarios[call.request.name];
+      const seen = gets.filter((name) => name === call.request.name).length;
+      if (scenario.replacedBy === undefined && seen > scenario.presentFor) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      callback(null, {
+        sandbox: {
+          metadata: {
+            id: scenario.replacedBy ?? "sandbox-id-1",
+            name: call.request.name,
+            workspace: call.request.workspace_scope.workspace,
+          },
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+    sandboxDeleteTimeoutMs: 3_000,
+  });
+  const remove = (name) =>
+    client.deleteSandbox({ name, workspace: "tenant-workspace" }, AbortSignal.timeout(10_000));
+
+  try {
+    await remove("sandbox-slow");
+    assert.deepEqual(gets, []);
+
+    await remove("sandbox-accepted");
+    assert.deepEqual(gets, ["sandbox-accepted", "sandbox-accepted", "sandbox-accepted"]);
+
+    await remove("sandbox-no-outcome");
+    assert.equal(gets.filter((name) => name === "sandbox-no-outcome").length, 2);
+
+    await remove("sandbox-replaced");
+    assert.equal(gets.filter((name) => name === "sandbox-replaced").length, 1);
+
+    const started = Date.now();
+    await assert.rejects(remove("sandbox-stuck"), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.match(error.message, /did not finish it within 3 s/);
+      return true;
+    });
+    assert.ok(Date.now() - started < 5_000);
+    assert.deepEqual(deletes, Object.keys(scenarios));
+
+    const aborted = new AbortController();
+    const cancelled = client.deleteSandbox(
+      { name: "sandbox-stuck", workspace: "tenant-workspace" },
+      aborted.signal,
+    );
+    setTimeout(() => aborted.abort(new Error("cancelled by test")), 700);
+    await assert.rejects(cancelled, /cancelled by test/);
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
@@ -742,6 +963,157 @@ test("OpenShell client retries setup after a failed first connection", async (t)
   }
 });
 
+function selfSignedCertificate(directory, name, subjectAltName) {
+  const keyPath = join(directory, `${name}.key`);
+  const certPath = join(directory, `${name}.crt`);
+  const generated = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      keyPath,
+      "-out",
+      certPath,
+      "-subj",
+      "/CN=openshell-gateway",
+      "-addext",
+      `subjectAltName=${subjectAltName}`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  return { keyPath, certPath };
+}
+
+// A TLS gRPC listener that answers Health and records the SNI of every connection
+// and the path of every request it receives.
+async function tlsHealthGateway(keyPath, certPath, bind, seen) {
+  const gateway = createSecureServer({
+    key: readFileSync(keyPath),
+    cert: readFileSync(certPath),
+  });
+  gateway.on("secureConnection", (socket) => seen.push(["sni", socket.servername]));
+  gateway.on("stream", (stream, headers) => {
+    seen.push(["request", headers[":path"]]);
+    stream.respond(
+      { ":status": 200, "content-type": "application/grpc" },
+      { waitForTrailers: true },
+    );
+    stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+    // HealthResponse { status: SERVICE_STATUS_HEALTHY } in one uncompressed gRPC frame.
+    stream.end(Buffer.from([0, 0, 0, 0, 2, 0x08, 0x01]));
+  });
+  await new Promise((resolve, reject) => {
+    gateway.once("error", reject);
+    gateway.listen(0, bind, resolve);
+  });
+  return gateway;
+}
+
+test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP and sends no SNI", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
+  // The probe only binds, so it needs no certificate.
+  const probe = createSecureServer();
+  const ipv6 = await new Promise((resolve) => {
+    probe.once("error", () => resolve(false));
+    probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+  });
+  const health = ["request", "/openshell.v1.OpenShell/Health"];
+  const cases = [
+    // A DNS endpoint is sent as SNI and verified by name, as before.
+    { name: "dns", san: "DNS:localhost", bind: "localhost", host: "localhost", sni: "localhost" },
+    // TLS forbids an IP in SNI: the certificate must carry the endpoint IP itself.
+    { name: "ipv4", san: "IP:127.0.0.1", bind: "127.0.0.1", host: "127.0.0.1", sni: false },
+    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", sni: false, needsIpv6: true },
+    // A hex IPv6 literal (IPv4-mapped, so it reaches the IPv4 loopback listener).
+    {
+      name: "ipv6-hex",
+      san: "IP:::ffff:7f00:1",
+      bind: "127.0.0.1",
+      host: "[::ffff:7f00:1]",
+      sni: false,
+      needsIpv6: true,
+    },
+    { name: "wrong-ip", san: "IP:127.0.0.2", bind: "127.0.0.1", host: "127.0.0.1" },
+    // A name certificate does not vouch for an IP endpoint, even one that resolves there.
+    { name: "name-for-ip", san: "DNS:localhost", bind: "127.0.0.1", host: "127.0.0.1" },
+  ];
+  for (const { name, san, bind, host, sni, needsIpv6 } of cases) {
+    await t.test(
+      name,
+      { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
+      async (t) => {
+        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const seen = [];
+        const gateway = await tlsHealthGateway(keyPath, certPath, bind, seen);
+        t.after(() => new Promise((resolve) => gateway.close(resolve)));
+        const client = new GrpcOpenShellGatewayClient({
+          endpoint: `https://${host}:${gateway.address().port}`,
+          rootCertificatePath: certPath,
+          requestTimeoutMs: 5_000,
+        });
+        t.after(() => client.close());
+        const signal = AbortSignal.timeout(10_000);
+        if (sni !== undefined) {
+          await client.health(signal);
+          assert.deepEqual(seen, [["sni", sni], health]);
+          return;
+        }
+        await assert.rejects(client.health(signal), (error) => {
+          assert.ok(error instanceof DependencyUnavailableError, String(error));
+          assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+          return true;
+        });
+        assert.deepEqual(
+          seen.filter(([kind]) => kind === "request"),
+          [],
+          "an unverified listener never receives a request",
+        );
+      },
+    );
+  }
+  // Clients of one IP endpoint never share a verified connection: a client that does not
+  // trust the gateway's certificate still fails while a trusting client is connected.
+  await t.test("untrusted-beside-trusted", async (t) => {
+    const { keyPath, certPath } = selfSignedCertificate(directory, "shared", "IP:127.0.0.1");
+    const other = selfSignedCertificate(directory, "other", "IP:127.0.0.1");
+    const seen = [];
+    const gateway = await tlsHealthGateway(keyPath, certPath, "127.0.0.1", seen);
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const endpoint = `https://127.0.0.1:${gateway.address().port}`;
+    const client = (rootCertificatePath) => {
+      const created = new GrpcOpenShellGatewayClient({
+        endpoint,
+        rootCertificatePath,
+        requestTimeoutMs: 5_000,
+      });
+      t.after(() => created.close());
+      return created;
+    };
+    await client(certPath).health(AbortSignal.timeout(10_000));
+    await assert.rejects(client(other.certPath).health(AbortSignal.timeout(10_000)), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError, String(error));
+      assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+      return true;
+    });
+    assert.deepEqual(
+      seen.filter(([kind]) => kind === "request"),
+      [health],
+      "an untrusting client never reaches the gateway over the trusting client's connection",
+    );
+  });
+});
+
 test("OpenShell client cancels an in-flight provider request", async () => {
   const proto = await loader.load(
     join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
@@ -1101,6 +1473,113 @@ test("OpenShell client serializes v0.1.3-pre.2 provider updates and detach recei
       ),
       /must be nonempty/,
     );
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell gateway rechecks a revoked source through the Sandbox's provider list", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const sourceId = "cs_recheck";
+  const provider = openShellProviderName(sourceId);
+  const namespace = { id: "ns_recheck", name: "tenant-workspace" };
+  const workspace = openShellWorkspaceName(namespace);
+  // The provider names each Sandbox lists; a missing entry is a Sandbox that does not exist.
+  const sandboxes = new Map([
+    ["os-listed", ["operator-static", provider]],
+    ["os-detached", ["operator-static"]],
+    // An empty repeated field is not encoded, so the client sees no providers list at all.
+    ["os-bare", []],
+  ]);
+  const calls = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      calls.push(["GetSandbox", call.request.name]);
+      // Sandbox names are scoped to the Namespace's workspace: another workspace has none.
+      const providers =
+        call.request.workspace_scope?.workspace === workspace
+          ? sandboxes.get(call.request.name)
+          : undefined;
+      if (providers === undefined) {
+        callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
+        return;
+      }
+      callback(null, {
+        sandbox: { metadata: { name: call.request.name }, spec: { providers } },
+      });
+    },
+    DetachSandboxProvider(call, callback) {
+      calls.push(["DetachSandboxProvider", call.request.sandbox, call.request.provider]);
+      const providers = sandboxes.get(call.request.sandbox);
+      sandboxes.set(
+        call.request.sandbox,
+        providers.filter((name) => name !== call.request.provider),
+      );
+      callback(null, { detached: true, receipt: { receipt_id: "receipt-recheck" } });
+    },
+    GetSandboxProviderStatus(call, callback) {
+      calls.push(["GetSandboxProviderStatus", call.request.sandbox, call.request.receipt_id]);
+      callback(null, {
+        status: {
+          receipt: { receipt_id: call.request.receipt_id },
+          state: "PROVIDER_READINESS_STATE_PENDING",
+          reason: "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR",
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: { mode: "unauthenticated" },
+  });
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/codex"] },
+    {
+      backend: {
+        drivers: { credential_gateway: "credential-gateway-openshell" },
+        client: { clientForNamespace: () => client },
+      },
+    },
+  );
+  const recheck = (resourceName) =>
+    gateway.withdraw({
+      namespace,
+      revision: { id: "rev_recheck" },
+      sandbox: { resourceName },
+      sourceId,
+      signal: AbortSignal.timeout(2_000),
+      recheck: true,
+    });
+  try {
+    // A Sandbox that lists the provider again, as after a late create, is detached once more;
+    // the fresh receipt is not yet confirmed.
+    assert.deepEqual(await recheck("os-listed"), {
+      sourceId,
+      state: "pending",
+      reason: "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR",
+    });
+    assert.deepEqual(sandboxes.get("os-listed"), ["operator-static"]);
+    // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing.
+    assert.deepEqual(await recheck("os-listed"), { sourceId, state: "revoked" });
+    assert.deepEqual(await recheck("os-detached"), { sourceId, state: "revoked" });
+    assert.deepEqual(await recheck("os-bare"), { sourceId, state: "revoked" });
+    assert.deepEqual(await recheck("os-missing"), { sourceId, state: "absent" });
+    assert.deepEqual(calls, [
+      ["GetSandbox", "os-listed"],
+      ["DetachSandboxProvider", "os-listed", provider],
+      ["GetSandboxProviderStatus", "os-listed", "receipt-recheck"],
+      ["GetSandbox", "os-listed"],
+      ["GetSandbox", "os-detached"],
+      ["GetSandbox", "os-bare"],
+      ["GetSandbox", "os-missing"],
+    ]);
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

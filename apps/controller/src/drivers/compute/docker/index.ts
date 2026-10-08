@@ -1362,6 +1362,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             },
             (response) => {
               const chunks: Buffer[] = [];
+              response.once("error", reject);
               response.on("data", (chunk: Buffer | string) =>
                 chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
               );

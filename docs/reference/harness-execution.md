@@ -55,14 +55,14 @@ supported runtime policy.
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
 
-Selectable model catalogs and model fallbacks under Agent defaults or entries
-must retain the selected provider. Additional catalog models also need an
+Selectable model catalogs and fallbacks under Agent defaults or entries
+must retain the selected provider. Additional catalog models need an
 explicit matching Harness runtime; fallbacks must resolve through the same
-policy checks to the same Harness. A provider's native `models` array is limited
+policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
 reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-native `agents.list` configurations remain unsupported. Admission preserves the
-fallback order in the immutable revision but does not implement fallback
+`agents.list` is unsupported; Kubernetes refuses retired rosters OpenClaw rejects. Admission
+preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 
 ## Admission and immutable execution
@@ -283,13 +283,15 @@ explicitly, and test bridges do not establish turnkey production support. See it
 
 ### Native worker support
 
-Dedicated native OpenClaw requires automatic required worker placement
-(`cloudWorkers.requiredProfile`) and node-local inference from canonical
-`models.providers` configuration. The pinned [runtime image](../../deploy/runtime/README.md)
-accepts those schemas but lacks complete placement activation for ordinary
-sessions. The default native-worker capability remains disabled: Deploy and
-provisioning refuse the topology, and the Console withholds it. Provisioning
-status reads still report previously accepted work; retry rechecks support.
+Dedicated native OpenClaw needs enforced worker placement
+(`cloudWorkers.requiredProfile`) and node-local inference. Compute renders the
+models and environment SecretRefs in canonical node `models.providers`
+configuration; there is no separate node inference-config setting.
+The pinned [runtime image](../../deploy/runtime/README.md) remains unqualified
+for the complete flow, so the default native-worker capability stays disabled.
+Deploy and provisioning refuse the topology with `400 INVALID_REQUEST`, and the
+Console withholds it. Provisioning status reads still report previously accepted
+work; retry rechecks support.
 
 An operator with a custom image containing both runtime features can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration).

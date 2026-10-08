@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-08
+last_updated_session: fix-780-781
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -97,6 +97,9 @@ provisioning plans through `serviceAccounts.hasReferences`. A conflict returns
 before any Driver call can revoke the credential or remove its Secret. Namespace locking serializes this
 check with draft changes and deployment admission; the PostgreSQL reference
 query observes active pointers and pending work together during worker cutover.
+With no ServiceAccount Driver selected (no ChatGPT Backend), an account holding
+an issued access token answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`
+naming the fix and stays, since nothing can revoke its token.
 
 ### 3. Issue the credential and create one account Secret
 
@@ -109,6 +112,9 @@ account-owned control-plane Secret. The private Backend binding retains workspac
 metadata. The private credential ID, internal
 credential reference, and audit changes commit together;
 confirmed failures compensate created provider and Kubernetes resources.
+With no ServiceAccount Driver selected (no ChatGPT Backend), issuance answers
+`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix after the grant and
+account lookup; a selected Driver that fails stays `503`.
 
 ### 4. Save Agent Backend intent and admit the revision
 
@@ -125,7 +131,8 @@ validates `access_token` ownership with
 `validateServiceAccountBackendBinding`. Managed access-token deployment requires
 the exact nonnull Backend, selected member Driver, workspace, account, recorded
 credential issuance, and dedicated Codex execution. An account without an issued
-credential cannot deploy. Admission freezes the account identity, exact credential
+credential cannot deploy; without a ChatGPT Backend that refusal is
+`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`. Admission freezes the account identity, exact credential
 reference, private Backend binding, and Agent `backendId` in the revision.
 Supplied API keys use the same [harness binding path](native-service-account-credential-delivery.md)
 through an OCC Secret; native account references are not model-auth selectors.
@@ -195,6 +202,9 @@ Refresh, rotation, and automated reconciliation remain deferred.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 17:45: Deleting an account that holds an issued access token, with no ChatGPT Backend, answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503`. (fix-816-819)
+- 2026-10-08 13:00: Issuance, and deploying an account without an access token, on an Installation with no ChatGPT Backend answer `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503` or `409`. (fix-780-781/d540)
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

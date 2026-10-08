@@ -29,6 +29,31 @@ async function jsonLines(path) {
     .map((line) => JSON.parse(line));
 }
 
+// True once `pid` no longer exists. A dying or zombie process still answers kill(pid, 0).
+function pidGone(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    if (error.code === "ESRCH") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+// Polls pidGone for at most five seconds.
+async function processGone(description, pid) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (pidGone(pid)) {
+      return;
+    }
+    await delay(25);
+  }
+  assert.fail(description);
+}
+
 // Stub lines for a saved-identity probe that appends a "probe" row to the events
 // file in the supervisor's HOME (the test directory) and never answers, keeping
 // the event loop busy as a slow probe does.
@@ -194,17 +219,7 @@ test(
     assert.equal(afterCodex.filter(({ kind }) => kind === "node").length, 1);
     process.kill(node.pid, 0);
     const descendant = initial.find(({ kind }) => kind === "grandchild");
-    await waitFor("old Codex descendant exited", () => {
-      try {
-        process.kill(descendant.pid, 0);
-        return false;
-      } catch (error) {
-        if (error.code === "ESRCH") {
-          return true;
-        }
-        throw error;
-      }
-    });
+    await waitFor("old Codex descendant exited", () => pidGone(descendant.pid));
 
     const renewedSetup = {
       url: "wss://gateway.example.test/node",
@@ -250,11 +265,18 @@ test(
     );
     assert.equal(afterEmptyToken.filter(({ kind }) => kind === "node").length, 3);
 
-    // Stop exits once the children are gone, without waiting for the probe.
+    // Stop exits once its children are gone, without waiting for the probe. It reaps
+    // its own children before exiting, so they are gone at once.
     supervisor.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null], output());
-    for (const { pid } of (await events()).filter(({ pid }) => pid !== undefined)) {
+    const recorded = (await events()).filter(({ pid }) => pid !== undefined);
+    for (const { pid } of recorded.filter(({ kind }) => kind !== "grandchild")) {
       assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    }
+    // The group kill also ends the Codex grandchild, but its new parent reaps it a
+    // moment later, and until then kill(pid, 0) still finds it.
+    for (const { pid } of recorded.filter(({ kind }) => kind === "grandchild")) {
+      await processGone(`Codex grandchild ${pid} still running 5 s after stop`, pid);
     }
   },
 );
