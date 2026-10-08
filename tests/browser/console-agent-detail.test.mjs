@@ -1989,7 +1989,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const nativeStatusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
-  const deniedNativeStatus = page.waitForResponse(
+  const nativeStatusResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}${nativeStatusPath}` &&
       response.request().method() === "GET",
@@ -2002,7 +2002,9 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
-  assert.equal((await deniedNativeStatus).status(), 403);
+  const nativeStatus = await nativeStatusResponse;
+  assert.equal(nativeStatus.status(), 200);
+  assert.equal((await nativeStatus.json()).data.status, "disabled");
   assert.equal(requests.filter((request) => request.path === nativeStatusPath).length, 1);
   requests.length = 0;
 

@@ -1,4 +1,8 @@
-import { submitChatTurnWithAssistantProof, textFromFrame, waitForStockUi } from "../helpers/native-ui-chat.mjs";
+import {
+  submitChatTurnWithAssistantProof,
+  textFromFrame,
+  waitForStockUi,
+} from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
