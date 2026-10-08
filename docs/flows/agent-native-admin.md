@@ -67,9 +67,21 @@ graph TD
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Disabled responses and ordinary-user denials keep it hidden. An Installation administrator denied access sees a self-assignment hint and **Refresh access**. Stopped, unavailable and unsupported responses show feedback; other read failures retain the error and **Refresh access**. Only `available` with an Agent URL shows **Open OpenClaw**, opening a new tab with `noopener noreferrer` and no launch request. After an audited `403`, tab `sessionStorage` caches the denied path for that session owner, preserving the same denial state on later views without another request. **Refresh access** forgets only this status path and rereads current authority, so a new assignment can take effect in the same tab. The [shared page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Logout, sign-in or a new tab asks afresh.
+Agent detail requests `${path}/native-admin` with the panel hidden. Disabled
+responses and ordinary-user denials keep it hidden. Denied Installation
+administrators see a self-assignment hint and **Refresh access**. Stopped,
+unavailable and unsupported responses show feedback; read failures retain the
+error and Refresh button. Only `available` with an Agent URL exposes **Open
+OpenClaw**, opening a new tab with `noopener noreferrer`.
 
-`updateCurrentAgent` calls `refresh()` when deployment polling or **Refresh deployment** observes changed `activeRevisionId` or `desiredRuntimeState`. A pending read queues one further read. The panel warns that native edits do not update durable OCE configuration.
+Tab `sessionStorage` caches audited `403` paths per session owner.
+**Refresh access** forgets only this path and retries, allowing a new assignment
+to take effect. Logout, sign-in or a new tab asks afresh. The [shared page
+cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back
+revalidation. `updateCurrentAgent` refreshes when polling or **Refresh
+deployment** observes changed `activeRevisionId` or `desiredRuntimeState`; a
+pending read queues one further read. The panel warns that native edits do not
+update durable OCE Configuration.
 
 ### 2. OCC protects the availability route
 
@@ -85,11 +97,25 @@ Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Dis
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getUsableActiveAgentRevision`
 
-The handler verifies the human session and Agent `use`, even when disabled. Enabled access requires a public origin and native domain. `getUsableActiveAgentRevision` selects the active revision and successor. A stopped Agent without an active revision raises `ResourceStateConflictError` and returns only `status: "stopped"`, including before first deployment. `NoActiveAgentRevisionError` returns `unavailable` while a desired-running Agent awaits activation. Other dependency failures return `503`. The panel reports the active revision. Authorization denial returns `403` with human IAM denial audit.
+Enabled access requires a public origin and native domain.
+`getUsableActiveAgentRevision` selects the active revision and successor. A
+stopped Agent without an active revision raises `ResourceStateConflictError`
+and returns `stopped`, including before first deployment.
+`NoActiveAgentRevisionError` returns `unavailable` while a desired-running Agent
+awaits activation. Other dependency failures return `503`; authorization denial
+returns `403` with human IAM audit evidence. The panel reports the active revision.
 
 A newer successor on a Compute Driver requiring stopped predecessors also produces `unavailable`: the worker removes the old workload before starting its replacement. A failed replacement leaves the old revision recorded as active without a serving workload. Both status and proxy admission check this boundary.
 
-OCC derives the native target from the active revision. A desired state other than `running` returns `stopped`. Compute qualifies trusted-proxy identity and role headers, enabled device approval, and approval scopes covering the selected role. If it cannot supply that descriptor or `nativeAdminConfigurationSupported` rejects `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the derived target and a reason identifying UI configuration, missing role, insufficient device approval or unsupported transport. A missing endpoint or one that is not a clean private `wss:` URL also returns `unsupported`. Only `available` carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits it from the browser response.
+OCC derives the target from the active revision; desired state other than
+`running` returns `stopped`. Compute qualifies trusted-proxy identity, role
+headers and device approval covering the selected role.
+`nativeAdminConfigurationSupported` checks `controlUi.enabled`, exact
+`allowedOrigins` and host-header/device-auth settings. Rejection returns
+`unsupported` with the target and a reason: UI configuration, missing role,
+insufficient device approval or unsupported transport. Missing endpoints and
+unclean private `wss:` URLs also return `unsupported`. Only `available` carries
+private `gatewayBase`, omitted from browser responses.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -125,7 +151,12 @@ The HTTP proxy bounds the path suffix, rejects missing or nonmatching `Origin` o
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. An exact-Agent authorization denial still records its attributable audit after a reset. An allowed admission checks whether the client socket was destroyed before and after resolving the private transport context, so a disconnected client does not open a gateway connection. A connected client proceeds with the selected active revision.
+The API intercepts `upgrade` before Fastify routing, accepts only derived Agent
+hosts and tracks sockets for `preClose` shutdown. It handles socket errors before
+awaiting admission, preventing uncaught TCP-reset errors. Authorization denial
+still audits after a reset. Allowed admission checks for client destruction
+before and after resolving private transport, preventing upstream connections
+for disconnected clients. Connected clients use the selected active revision.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
@@ -136,9 +167,28 @@ The proxy requires an exact, non-null Agent `Origin`, sanitizes the request and 
 `apps/controller/src/drivers/compute/kubernetes/runtime-access.ts:humanRuntimeAccess`
 `deploy/runtime/openclaw-trusted-proxy-role.patch`
 
-Kubernetes offers `platform-administrator` alongside configured roles. Migration converts effective human Agent `administer` grants into explicit `use` assignments backed by one entry Role per Namespace, visible through the Namespace Role list in Sharing; IAM never falls back to old grants after removal. For a role-free Gateway, only this explicit administrator assignment retains the existing service transport and shared profile. A supplied role configuration selects the human route; malformed role values never fall back to the shared administrator profile. With roles configured, the Driver supplies its reserved administrator policy or the selected configured policy over `/people/namespaces/<namespaceId>/agents/<agentId>`, with `oce:<Principal ID>` and a policy digest. The human route retains the serving Gateway’s revision ownership during preparation, so failed-candidate retirement preserves access. A role-free replacement leaves the old route for predecessor retirement to remove. Service traffic uses the disjoint `/namespaces` route. OCC replaces browser authority headers.
+Kubernetes offers `platform-administrator` alongside configured roles. Migration
+converts effective human Agent `administer` grants into explicit `use` assignments,
+with one entry Role per Namespace visible in Sharing. Removal never falls back
+to old grants. Without Gateway roles, only explicit administrator assignments use
+the existing service transport and shared profile. Configured roles select the
+human route; malformed values never fall back to the administrator profile.
 
-The Driver declares the managed `oce:` prefix and exact `occ-workspace-files` identity in trusted-proxy configuration. The Gateway verifies authentication and the role digest, rejects undeclared identities and profiles linked to multiple managed identities, then commits the role through native identity authority before admission. HTTP authorization checks the same policy. Role publication retires earlier authority with `401`; a new request uses the committed role. OCC never replays it. OpenClaw enforces its configured permissions. Backend service connections retain `oce-service`; independently authenticated local owners retain their existing access.
+The Driver supplies the reserved administrator or configured policy over
+`/people/namespaces/<namespaceId>/agents/<agentId>`, with `oce:<Principal ID>` and
+a policy digest. Preparation retains the serving revision's route ownership,
+protecting access from failed-candidate retirement. A role-free replacement leaves
+that route for predecessor retirement. Service traffic uses disjoint `/namespaces`;
+OCC replaces browser authority headers.
+
+Trusted-proxy configuration declares the managed `oce:` prefix and exact
+`occ-workspace-files` identity. The Gateway verifies authentication and the role
+digest, rejects undeclared identities and profiles with multiple managed
+identities, then commits the role through native identity authority before
+admission. HTTP checks the same policy. Role publication retires earlier authority
+with `401`; new requests use the committed role without OCC replay. OpenClaw
+enforces permissions. Backend connections retain `oce-service`; independently
+authenticated local owners retain access.
 
 WebSocket admission intersects client-requested operator scopes with the proxy ceiling using OpenClaw's native scope semantics. A broad UI request can therefore receive narrower session scopes without gaining general configuration or administrator access. Non-operator connections retain exact scope matching.
 
@@ -178,10 +228,10 @@ The init container cannot write through the gateway's later mount path.
 - Browser requests should not contain native-admin exchange, bootstrap, callback, launch-code, state, verifier, or Agent-specific session-cookie traffic.
 - The native gateway should never observe the OCE session cookie; inspect sanitized proxy inputs when testing this boundary.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
-- A client TCP reset during pending WebSocket admission should leave the API process running. If exact-Agent authorization then denies the request, its attributable denial audit should still appear; an allowed request should not open an upstream connection after the client disconnects.
+- A TCP reset during admission must not crash the API, suppress a denial audit or open an upstream connection for the disconnected client.
 - `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
-- Browser tests cover panel visibility, warning copy, available status, and opening the returned URL. Integration proof should cover shared-cookie admission, denied service API keys, unknown host denial, proxied asset loads, WebSocket reconnect, authorization lease renewal (the PostgreSQL suite shortens the 25-second interval), revision-change closure and reconnect, and a reversible native admin edit on a disposable Agent.
+- Browser tests cover visibility, warnings and launch. Integration covers shared-cookie admission, service-key and unknown-host denial, assets, WebSocket reconnect, lease renewal (PostgreSQL shortens the 25-second interval), revision-change closure and a reversible native edit on a disposable Agent.
 
 ## Related docs
 

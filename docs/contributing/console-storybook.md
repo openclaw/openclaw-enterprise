@@ -1,6 +1,6 @@
 # Console Storybook
 
-Production Console previews use in-memory fixtures. They contact no services and
+Console previews use in-memory fixtures. They contact no services and
 run no workloads. Use dummy credentials.
 
 ## Run locally
@@ -168,9 +168,11 @@ approvals, runtime images, and credential-service networking.
 
 ### Sharing
 
-Open **Share before first deployment**, **Share while stopped**, **Configured and deployed role permissions**, **Change OpenClaw role**, or **OpenClaw roles unavailable**. Review both permission summaries, share an existing Principal, change its role and remove the direct assignment. These previews demonstrate simulated UI states; backend lifecycle and native admission need the integration suites.
-
-In **Share an Agent**, check the hint explaining that administrators assign themselves an OpenClaw role too. Select `platform-administrator` and inspect its full native permissions before sharing the fixture person.
+Use **Share before first deployment**, **Share while stopped**, **Configured and
+deployed role permissions**, **Change OpenClaw role** and **OpenClaw roles
+unavailable**. Inspect permissions, share a Principal, change its role and remove
+the assignment. Self-assignment is explained above. These previews
+simulate UI; integration suites verify backend lifecycle and native admission.
 
 ### Return to loaded pages
 

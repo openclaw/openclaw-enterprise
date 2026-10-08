@@ -2,12 +2,11 @@
 
 ## Overview
 
-`ComputeDriver` prepares and removes Namespace infrastructure and runs Agent
-revisions. OCC selects one Driver per Installation, authorizes operations, and
-stores immutable revision configurations. Compute owns gateway, workload
-identity, routing, activation, and readiness; its backend owns underlying
-resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
-workload.
+`ComputeDriver` manages Namespace infrastructure and Agent revisions, including
+gateways, workload identity, routing, activation and readiness. OCC selects one
+Driver per Installation, authorizes operations and records immutable revisions.
+Backends own resources; a selected [SandboxDriver](sandbox.md) can create a
+dedicated Harness.
 
 See [Driver selection](selection.md) for supported combinations and package trust,
 the [feature matrix](compute-matrix.md), and
@@ -65,9 +64,15 @@ context is optional in TypeScript; the worker supplies it after authorization.
 
 ### Human runtime access
 
-A Driver that offers OpenClaw browser access must implement both `listAgentRuntimeRoles(configuration)` and `getAgentRuntimeAccess(revision, principalId, runtimeRole)`. `getGatewayEndpoint` alone supplies no human admission authority. These methods remain optional for Drivers that provide other Agent workflows.
+Browser access requires `listAgentRuntimeRoles(configuration)` and
+`getAgentRuntimeAccess(revision, principalId, runtimeRole)`; other Drivers may
+omit both. Saved Configuration supplies assignable roles without a runtime;
+immutable active Configuration supplies deployed summaries.
 
-The catalog derives assignable roles from a Configuration document without requiring a runtime or revision. OCC uses the saved Agent Configuration for management and the active revision’s immutable Configuration for deployed summaries. Admission returns a private endpoint and server-owned headers qualified for the exact person and role, or an unavailable reason. Unknown assignments and unsupported transport must fail closed; OCC never substitutes a service endpoint for a missing descriptor. Kubernetes currently implements this contract, including the explicit built-in administrator assignment. Docker and SSH do not offer this browser feature through endpoint discovery alone. See [Runtime access](../agent-native-admin.md) for authorization and configuration requirements.
+Admission returns a private endpoint and server-owned person/role headers, or an
+unavailable reason. Unknown roles and unsupported transport fail closed; service
+endpoints cannot substitute. Kubernetes supports browser access;
+Docker and SSH do not. See [Runtime access](../agent-native-admin.md).
 
 ### Optional additions
 
@@ -99,9 +104,9 @@ its active revision. The method does not check readiness, authorize the caller,
 grant backend route permissions, or save a URL in Agent Configuration. Connection
 errors are dependency failures.
 
-Workspace-file access uses this endpoint. The opt-in
+Workspace-file access uses this endpoint;
 [Agent native admin UI](../agent-native-admin.md#agent-host-identity) uses
-`getAgentRuntimeAccess`, which may resolve its endpoint through this method. Kubernetes implements
+`getAgentRuntimeAccess`. Kubernetes implements
 [private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
 
 ### Optional initial runtime credential provisioning
