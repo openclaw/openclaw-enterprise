@@ -49,8 +49,8 @@ graph TD
         O -->|No| P["Refuse initialization before migration DDL"]
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
         G --> CA{"OIDC CA configured?"}
-        CA -->|No| H["Start private API Deployment"]
-        CA -->|Yes| CB["Validate and combine IdP and Gateway CA bundles"]
+        CA -->|No| H["Run private API entrypoint"]
+        CA -->|Yes| CB["Validate IdP CA and combine selected Gateway roots"]
         CB -->|Valid| DB{"Explicit database CA and verified TLS?"}
         DB -->|Yes| H
         DB -->|No| CF

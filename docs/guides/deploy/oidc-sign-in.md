@@ -198,9 +198,10 @@ still apply. See the [trust contract](../../reference/settings/oidc.md).
 
 For rotation, use the same
 [stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in)
-before changing trust or replacing the Pod. Create a new versioned Secret and change `caSecretName`; the changed
-Pod template replaces the API Pod. If you update the contents of the IdP Secret
-or a combined Gateway CA Secret, explicitly replace the API Pod:
+before changing trust or replacing the Pod. Create a new versioned Secret and
+change `caSecretName`; the changed Pod template replaces the API Pod. If you
+update the contents of the IdP Secret or a combined Gateway CA Secret, explicitly
+replace the API Pod:
 
 ```bash
 kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
@@ -208,9 +209,10 @@ kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api
 ```
 
 Through restricted access, verify recovery sign-in, IdP sign-in and Gateway access
-before reopening ingress, retaining one serving controller. Replacing the single API replica interrupts service until it is ready. A Secret update alone does not refresh the assembled bundle or
-Node's startup trust; restarting only the API container keeps the init container's
-previous snapshot. Include old and new CA certificates together during an overlap,
+before reopening ingress, retaining one serving controller. Replacing the single
+API replica interrupts service until it is ready. A Secret update alone does not
+refresh the assembled bundle or Node's startup trust; restarting only the API
+container keeps the init container's previous snapshot. Include old and new CA certificates together during an overlap,
 then remove the old CA and replace the Pod again. Ordinary leaf renewal under the
 same CA needs no restart.
 

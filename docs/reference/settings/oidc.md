@@ -41,8 +41,9 @@ Before loading the server, the API checks its actual `OCC_DATABASE_URL` with the
 installed PostgreSQL client parser and refuses absent, unreadable, empty or invalid
 CA material, ineffective TLS settings, duplicate URL parameters and nested
 connection strings. Errors omit the URL and credentials. Password and workload-identity
-pools retain this explicit CA; database TLS uses neither the added IdP roots nor
-Node's default roots. This checks local configuration at each API process start, not database reachability.
+pools retain this explicit CA; database TLS does not inherit the added IdP roots or
+Node's default roots. This checks local configuration at each API process start,
+not database reachability.
 Change database CA material only during stopped maintenance, then replace the Pod.
 
 The init container combines the IdP bundle with the Gateway CA, when selected, in a
