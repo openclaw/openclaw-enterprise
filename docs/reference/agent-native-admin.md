@@ -2,7 +2,7 @@
 
 Agent OpenClaw access lets an explicitly assigned person open a deployed Gateway with their assigned runtime permissions. OCE decides who may enter and which configured OpenClaw role they receive. OpenClaw defines and enforces that role's permissions; each Agent's files, plugins and provider accounts remain shared.
 
-The feature is disabled by default. When enabled, the console shows **OpenClaw** on the Agent detail tabs only for callers with exact Agent `use` permission and a direct person/Agent `runtimeRole` assignment. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+The feature is disabled by default. A disabled status requires exact Agent `administer` permission but no runtime assignment. When enabled, the console shows **OpenClaw** on the Agent detail tabs only for callers with exact Agent `use` permission and a direct person/Agent `runtimeRole` assignment. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
 
 ## Who can open it
 

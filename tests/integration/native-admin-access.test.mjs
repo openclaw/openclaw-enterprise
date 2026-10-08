@@ -481,16 +481,29 @@ test("native admin status is unavailable while a newer revision replaces the act
   assert.equal(restored.data.activeRevisionId, replacement.id);
 });
 
-test("native admin disabled status still requires an exact person/Agent runtime assignment", async (t) => {
+test("disabled native admin status requires exact Agent administration without a runtime assignment", async (t) => {
   const context = await createNativeAdminFixture(t, { nativeAdminEnabled: false });
+
+  // Feature discovery must not require an assignment to a disabled runtime.
+  assert.equal(
+    (
+      await context.fixture.request(
+        "DELETE",
+        `/namespaces/${context.namespace.id}/iam/access-bindings/${context.runtimeBinding.id}`,
+      )
+    ).status,
+    204,
+  );
 
   const disabled = await nativeStatus(context);
   assert.equal(disabled.status, 200);
   assert.equal(disabled.data.status, "disabled");
 
-  const administerOnlySession = await createExactAgentUseSession(
+  const administerOnlySession = await createAgentPermissionSession(
     context,
     "native-admin-disabled-exact-administer",
+    [{ action: "administer", resourceKind: "agent" }],
+    { resourceKind: "agent", resourceId: context.agent.id },
   );
   const administerOnlyDisabled = await nativeStatus(context, { session: administerOnlySession });
   assert.equal(administerOnlyDisabled.status, 200);
@@ -505,8 +518,15 @@ test("native admin disabled status still requires an exact person/Agent runtime 
     "GET",
     `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
   );
-  assert.equal(missingStatus.status, 403);
-  assert.equal(missingStatus.body.error.code, "FORBIDDEN");
+  assert.equal(missingStatus.status, 404);
+  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
+  const hiddenMissingStatus = await context.fixture.request(
+    "GET",
+    `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
+    { session: limitedSession },
+  );
+  assert.equal(hiddenMissingStatus.status, 403);
+  assert.equal(hiddenMissingStatus.body.error.code, "FORBIDDEN");
 });
 
 async function issueServiceKeyForNativeAgent(context) {

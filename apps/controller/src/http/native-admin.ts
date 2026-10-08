@@ -537,7 +537,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     if (options.nativeAdmin?.enabled !== true) {
-      await controller.getUsableAgent(input.actorId, input.namespaceId, input.agentId);
+      await controller.getAdministerableAgent(input.actorId, input.namespaceId, input.agentId);
       return { status: "disabled" };
     }
     if (publicOrigin === undefined || nativeAdminDomain === undefined) {

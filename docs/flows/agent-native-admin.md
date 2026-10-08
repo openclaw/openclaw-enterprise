@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: "2026-10-08"
-last_updated_session: "authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c"
+last_updated_session: "authoring-run/3bee1cb2-aeb2-4700-8ff4-3da9ac7f098c"
 ---
 
 # Agent Native Admin UI Flow
@@ -26,12 +26,11 @@ and proxies native HTTP and WebSocket traffic.
 ```mermaid
 graph TD
   A["Console opens Agent detail tab"] --> B["GET exact Agent native-admin status"]
-  B --> C["Resolve OCC session and exact Agent use principal and assigned role"]
-  C --> D{"Exact Agent exists?"}
-  D -->|no| E["Return protected-route error"]
-  D -->|yes| F{"Installation enabled?"}
-  F -->|no| G["Return disabled"]
-  F -->|yes| H["Call resolveNativeAdminAvailability"]
+  B --> C["Resolve OCC session and human principal"]
+  C --> F{"Installation enabled?"}
+  F -->|no| D["Require exact Agent administer and existence"]
+  D --> G["Return disabled"]
+  F -->|yes| H["Require exact Agent use and runtime assignment"]
   H --> I{"Active revision selection available?"}
   I -->|no| J{"Authorized stopped Agent without an active revision?"}
   J -->|yes| X["Return stopped without an origin"]
@@ -78,7 +77,7 @@ Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Dis
 
 `createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. It reads the current controller through a getter so an app created before bootstrap uses the initialized controller on later requests. Shared route admission remains in `apps/controller/src/index.ts`.
 
-`GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires exact Agent `use` through the ordinary `admit` and `resolveIdentity` middleware. `read` or `operate` alone cannot admit the caller. Even `disabled` requires authorized Agent existence; it adds no unauthenticated discovery or separate `read` path.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` admits a human session through the ordinary `admit` and `resolveIdentity` middleware. When enabled, it requires exact Agent `use` and a runtime assignment; `read` or `operate` alone cannot admit the caller. When disabled, it requires exact Agent `administer` and existence before returning `disabled`, without requiring a runtime assignment.
 
 ### 3. Shared availability resolver checks feature and active revision state
 
@@ -197,6 +196,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 14:03: Return disabled status to exact-Agent administrators without requiring a runtime assignment. (authoring-run/3bee1cb2-aeb2-4700-8ff4-3da9ac7f098c - 346b1fe14)
 
 - 2026-10-08 03:40: Documented client reset handling during native-admin WebSocket admission and the denial-audit and upstream-connection ordering at inspected revision `002d0f796`. (authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c - 002d0f79639a9c814eb1fa2799530516a6c90cde)
 - 2026-10-05 17:34: Trace Namespace-scoped entry Roles and consistent human-route selection for runtime assignments. (authoring-run/593fb00e-b94d-46a0-a339-f3a8973764cb - aecffb24a16b5252c55ddf47bed2c66e622f1813)
