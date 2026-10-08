@@ -1485,12 +1485,39 @@ function localImportTag(cluster, envName) {
   return `localhost/${cluster.name}/${slug(envName)}-${randomSuffix()}:local`;
 }
 
+// Each image inspect or tag on the host engine, and each check or tag on a k3d node, is
+// one short command; a hung one (an unresponsive node or engine) fails the step with a
+// clear message instead of stalling it until the job timeout. A timeout is never read as
+// an absent image: its error carries no engine output, so nothing pulls or retries it.
+// Despite its name, the variable also bounds the source image inspects of lanes without
+// k3d, such as Images and Packaging and Logging Collector.
+const imageCommandTimeoutMs =
+  Number(process.env.OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS)
+    : 30_000;
+
+async function boundedImageCommand(args, what = "The container engine", shown = args) {
+  try {
+    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+      timeoutMs: imageCommandTimeoutMs,
+    });
+  } catch (error) {
+    if (error.timedOut === true) {
+      throw new Error(
+        `${what} did not answer within ${imageCommandTimeoutMs} ms (${shown.join(" ")}).`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
 async function dockerImageHasRepoDigest(image) {
   const expected = immutableDigest(image);
   if (!expected) {
     return false;
   }
-  const inspected = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+  const inspected = await boundedImageCommand([
     "image",
     "inspect",
     "--format",
@@ -1505,13 +1532,7 @@ async function dockerImageHasRepoDigest(image) {
 }
 
 async function dockerImageId(image) {
-  const inspected = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "image",
-    "inspect",
-    "--format",
-    "{{.Id}}",
-    image,
-  ]);
+  const inspected = await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", image]);
   const value = inspected.stdout.trim();
   const id = /^[a-f0-9]{64}$/i.test(value) ? `sha256:${value}` : value;
   assertDockerImageId(id, `Docker image ${image}`);
@@ -1526,7 +1547,7 @@ function assertDockerImageId(id, description) {
 
 async function ensureDockerSourceImage(state, image, envName) {
   if (stateOwnsImageTag(state, image)) {
-    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["image", "inspect", image]);
+    await boundedImageCommand(["image", "inspect", image]);
     return dockerImageId(image);
   }
   assertImmutableImageReference(image, envName);
@@ -1555,29 +1576,11 @@ async function ensureDockerSourceImage(state, image, envName) {
 // "no such image". Wait a bounded time for that one answer; any other failure is final.
 const criImageCacheWaitMs = 5_000;
 
-// Each check or tag on a node after the import is one short exec; a hung one (an
-// unresponsive node or engine) fails the step with a clear message instead of stalling
-// it until the job timeout. The timeout stops the engine CLI; a process it started inside
-// the node may keep running until the cluster is removed.
-const k3dImageCheckTimeoutMs =
-  Number(process.env.OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS) > 0
-    ? Number(process.env.OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS)
-    : 30_000;
-
+// Each check or tag on a node after the import is one short exec. The timeout stops the
+// engine CLI; a process it started inside the node may keep running until the cluster is
+// removed.
 async function k3dNodeImageCheck(node, args, what) {
-  try {
-    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["exec", node, ...args], {
-      timeoutMs: k3dImageCheckTimeoutMs,
-    });
-  } catch (error) {
-    if (error.timedOut === true) {
-      throw new Error(
-        `${what} on ${node} did not answer within ${k3dImageCheckTimeoutMs} ms (${args.join(" ")}).`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
+  return boundedImageCommand(["exec", node, ...args], `${what} on ${node}`, args);
 }
 
 async function inspectK3dCriImage(lane, node, reference, envName) {
@@ -1690,7 +1693,7 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     importReference = localImportTag(cluster, envName);
     const tagResource = addResource(state, "image-tag", { name: importReference });
     await writeState(statePath, state);
-    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["tag", image, importReference]);
+    await boundedImageCommand(["tag", image, importReference]);
     await markResourceReady(statePath, state, tagResource);
   }
 
@@ -1702,7 +1705,7 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     envName,
   });
   await writeState(statePath, state);
-  const inspected = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+  const inspected = await boundedImageCommand([
     "image",
     "inspect",
     "--format",

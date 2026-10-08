@@ -41,7 +41,7 @@ sessions leaves them valid. They never grant a session. The command prints one J
 | `2`  | Another client is connected to the database. Nothing changed; the output lists the backends.                                             |
 | `3`  | A precondition refused the operation (`reason` in the output, for example `DISABLED_ACCOUNTS` or `ACTIVATION_REFUSED`). Nothing changed. |
 | `1`  | Configuration, credential, or database failure.                                                                                          |
-| `64` | Invalid arguments.                                                                                                                       |
+| `64` | Invalid arguments, rejected before configuration or database access.                                                                     |
 
 ## Stop every writer
 

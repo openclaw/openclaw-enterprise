@@ -10,6 +10,7 @@ import test from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
+import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 
@@ -123,6 +124,12 @@ function finish(stdout = "") {
   process.stdout.write(stdout);
   process.exit(0);
 }
+// An engine or node command that does not answer; preparation must time it out. It exits
+// on its own later, so a regression cannot leave it running.
+async function hang() {
+  setTimeout(() => process.exit(124), 40_000);
+  await new Promise(() => {});
+}
 async function readInput() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
@@ -155,12 +162,20 @@ if (command === "docker" || command === "podman") {
     if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .State}}"])) {
       finish(JSON.stringify({ Status: "running", Running: true, OOMKilled: false, ExitCode: 0 }));
     }
-    if (equals(args.slice(0, 3), ["logs", "--tail=100", "--timestamps"])) {
+    if (equals(args.slice(0, 3), ["logs", "--tail=20000", "--timestamps"])) {
+      // The node's own error on stderr, followed by more kubectl retries against
+      // localhost:8080 than the old 100-line tail held (finding 15).
+      const retries = Array.from({ length: 150 }, (_, second) =>
+        new Date(Date.UTC(2026, 8, 23, 0, 1, second)).toISOString() +
+        " The connection to the server localhost:8080 was refused - did you specify the right host or port?\n").join("");
+      process.stderr.write("2026-09-23T00:00:30Z E0923 00:00:30.000000 1 kubelet_node_status.go:1] " +
+        "\"Error updating node status\" err=\"fixture node lease timeout\"\n" + retries);
       finish("2026-09-23T00:00:00Z network plugin is not ready\nTOKEN=do-not-publish-node-token\n");
     }
   }
   const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
+    if (scenario === "hung-host-digests") await hang();
     if (scenario === "image-absent-late-stderr" && !state.pulled) {
       // Keep the real stderr pipe open after the command exits, so its missing
       // image diagnostic arrives during stream drain rather than process exit.
@@ -182,15 +197,20 @@ if (command === "docker" || command === "podman") {
       );
       process.exit(1);
     }
-    const matching = scenario === "local-digest" || (state.pulled && scenario !== "pull-mismatch");
+    const matching = ["local-digest", "hung-host-id", "hung-host-tag", "hung-host-platform"].includes(scenario) ||
+      (state.pulled && scenario !== "pull-mismatch");
     finish(JSON.stringify([matching ? sourceImage : "registry.example/other@sha256:" + "d".repeat(64)]));
   }
   if (sourceImage && equals(args, ["pull", sourceImage])) {
     state.pulled = true;
     finish();
   }
-  if (sourceImage && equals(args, ["image", "inspect", "--format", "{{.Id}}", sourceImage])) finish(configId + "\n");
+  if (sourceImage && equals(args, ["image", "inspect", "--format", "{{.Id}}", sourceImage])) {
+    if (scenario === "hung-host-id") await hang();
+    finish(configId + "\n");
+  }
   if (sourceImage && args[0] === "tag" && args[1] === sourceImage) {
+    if (scenario === "hung-host-tag") await hang();
     state.tag = args[2];
     finish();
   }
@@ -236,7 +256,10 @@ if (command === "docker" || command === "podman") {
     state.tag = args[3];
     finish();
   }
-  if (equals(args, ["image", "inspect", state.tag])) finish("[]\n");
+  if (equals(args, ["image", "inspect", state.tag])) {
+    if (scenario === "hung-host-owned") await hang();
+    finish("[]\n");
+  }
   // Images and Packaging pulls its pinned Node base image after the builds.
   if (equals(args.slice(0, 4), ["image", "inspect", "--format", "{{json .RepoDigests}}"]) &&
       args[4]?.startsWith("docker.io/library/node:")) {
@@ -249,7 +272,10 @@ if (command === "docker" || command === "podman") {
   if (equals(args, ["image", "inspect", "--format", "{{.Id}}", state.tag])) {
     finish((command === "podman" ? configId.slice("sha256:".length) : configId) + "\n");
   }
-  if (equals(args, ["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", state.tag])) finish("linux/amd64\n");
+  if (equals(args, ["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", state.tag])) {
+    if (scenario === "hung-host-platform") await hang();
+    finish("linux/amd64\n");
+  }
   const expectedSave = command === "podman"
     ? ["image", "save", state.tag]
     : ["image", "save", "--platform", "linux/amd64", state.tag];
@@ -263,6 +289,12 @@ if (command === "docker" || command === "podman") {
     finish("synthetic image archive " + state.tag + "\n");
   }
   if (equals(args, ["image", "rm", "-f", state.tag])) finish();
+  // The hung tag never created its local tag, so the engine has nothing to remove.
+  if (scenario === "hung-host-tag" && equals(args.slice(0, 3), ["image", "rm", "-f"]) &&
+      args[3]?.startsWith("localhost/")) {
+    process.stderr.write("Error response from daemon: No such image: " + args[3] + "\n");
+    process.exit(1);
+  }
   if (state.runtime && equals(args, ["image", "rm", "-f", state.runtime])) finish();
   if (state.controller && equals(args, ["image", "rm", "-f", state.controller])) finish();
   if (equals(args.slice(0, 2), ["exec", "-i"]) && ["server-0", "agent-0"].some((suffix) =>
@@ -304,12 +336,6 @@ if (command === "docker" || command === "podman") {
       finish(scenario === "missing-proxy-source"
         ? "10.42.7.0 dev flannel.1\n"
         : "10.42.7.0 via 10.42.7.0 dev flannel.1 src 10.42.3.0\n");
-    }
-    // A node exec that does not answer; preparation must time it out. It exits on its own
-    // later, so a regression cannot leave it running.
-    async function hang() {
-      setTimeout(() => process.exit(124), 40_000);
-      await new Promise(() => {});
     }
     const ctr = ["ctr", "-n", "k8s.io", "images"];
     if (equals(args.slice(2), [...ctr, "list"])) {
@@ -580,25 +606,26 @@ for (const { scenario, error } of [
   { scenario: "missing-worker-cri", error: /synthetic CRI image not found/ },
   { scenario: "lagging-worker-cri" },
   { scenario: "absent-worker-cri", error: /level=fatal msg="no such image / },
-  // A hung check fails at its own timeout (1 s here), never retried as a cache miss.
+  // A hung check fails at its own timeout (3 s here, so a busy runner does not trip the
+  // host inspects that share it), never retried as a cache miss.
   {
     scenario: "hung-worker-cri",
-    error: /CRI on k3d-\S+-agent-0 did not answer within 1000 ms \(crictl inspecti \S+\)\./,
+    error: /CRI on k3d-\S+-agent-0 did not answer within 3000 ms \(crictl inspecti \S+\)\./,
   },
   {
     scenario: "hung-ctr-list",
     error:
-      /containerd on k3d-\S+-agent-0 did not answer within 1000 ms \(ctr -n k8s\.io images list\)\./,
+      /containerd on k3d-\S+-agent-0 did not answer within 3000 ms \(ctr -n k8s\.io images list\)\./,
   },
   {
     scenario: "hung-server-list",
     error:
-      /containerd on k3d-\S+-server-0 did not answer within 1000 ms \(ctr -n k8s\.io images list\)\./,
+      /containerd on k3d-\S+-server-0 did not answer within 3000 ms \(ctr -n k8s\.io images list\)\./,
   },
   {
     scenario: "hung-ctr-tag",
     error:
-      /containerd on k3d-\S+-agent-0 did not answer within 1000 ms \(ctr -n k8s\.io images tag \S+ \S+\)\./,
+      /containerd on k3d-\S+-agent-0 did not answer within 3000 ms \(ctr -n k8s\.io images tag \S+ \S+\)\./,
   },
   { scenario: "nonzero-import", error: /synthetic import command failure/ },
   { scenario: "nonzero-worker-import", error: /synthetic import command failure/ },
@@ -609,7 +636,7 @@ for (const { scenario, error } of [
       t,
       scenario,
       undefined,
-      scenario.startsWith("hung-") ? { OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "1000" } : {},
+      scenario.startsWith("hung-") ? { OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000" } : {},
     );
     const result = commands.prepare();
     assert.equal(result.error, undefined);
@@ -844,7 +871,12 @@ for (const { scenario, stage, error } of [
     for (const container of evidence.containers) {
       assert.equal(container.state.status, "ok");
       assert.equal(container.logs.status, "ok");
-      assert.match(container.logs.value, /network plugin is not ready/);
+      assert.match(
+        container.logs.value,
+        /network plugin is not ready\n.*Error updating node status/s,
+      );
+      assert.doesNotMatch(container.logs.value, /localhost:8080 was refused/);
+      assert.match(container.logs.value, /omitted 150 kubectl retry lines against localhost:8080/);
     }
     assert.doesNotMatch(artifactText, /do-not-publish/);
     assert.doesNotMatch(result.stderr, /do-not-publish/);
@@ -872,6 +904,39 @@ for (const { scenario, stage, error } of [
     assert.equal(await readFile(artifactPath, "utf8"), artifactText);
   });
 }
+
+test("k3d node log excerpts stay bounded and keep the start, later errors and the end", () => {
+  const at = (second) => new Date(Date.UTC(2026, 8, 23, 0, 0, second)).toISOString();
+  const info = (second) =>
+    `${at(second)} I0923 kubelet.go:1] "fixture progress ${second}" ${"x".repeat(200)}`;
+  const stdout = [
+    // An output cap can start a stream mid-line, past the keyword of a credential.
+    "=do-not-publish-cut-credential more",
+    `${at(0)} level=info msg="Starting k3s agent fixture"`,
+    ...Array.from({ length: 4_000 }, (_, second) => info(second + 1)),
+    `${at(4_001)} level=info msg="fixture end of log"`,
+  ].join("\n");
+  const stderr = [
+    `${at(2_000)} E0923 kubelet_node_status.go:1] "Error updating node status" err="fixture lease"`,
+    `${at(2_001)} level=error msg="fixture join token=do-not-publish-node-token"`,
+    // The credential keyword sits past the 1000-character line cut.
+    `${at(2_001)} level=warning msg="do-not-publish-long-line ${"y".repeat(1_100)} password=hidden"`,
+    ...Array.from(
+      { length: 500 },
+      (_, index) => `${at(2_002 + index)} The connection to the server localhost:8080 was refused`,
+    ),
+  ].join("\n");
+  const excerpt = nodeLogExcerpt(stdout, stderr);
+  assert.ok(excerpt.length < 42_000, `excerpt has ${excerpt.length} characters`);
+  assert.match(excerpt, /^\[diagnostics dropped 1 unstamped line fragments\]\n/);
+  assert.match(excerpt, /\n\[diagnostics omitted 500 kubectl retry lines against localhost:8080/);
+  assert.match(excerpt, /Starting k3s agent fixture/);
+  assert.match(excerpt, /Error updating node status/);
+  assert.match(excerpt, /\[redacted credential-bearing line\]/);
+  assert.match(excerpt, /fixture end of log"$/);
+  assert.match(excerpt, /\[diagnostics omitted \d+ lines; 3 of 3 error and warning lines/);
+  assert.doesNotMatch(excerpt, /do-not-publish|localhost:8080 was refused/);
+});
 
 for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
   test(`fixture preparation reports unavailable storage without publishing workload inputs: ${scenario}`, async (t) => {
@@ -953,6 +1018,74 @@ test("k3d preparation reuses only matching local immutable images and verifies f
       "cleanup must preserve the caller's immutable source image",
     );
   }
+});
+
+test("k3d preparation times out a hung host image command and never pulls for it", async (t) => {
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const imported = String.raw`localhost/\S+`;
+  for (const [scenario, shown] of [
+    ["hung-host-digests", escape(`image inspect --format {{json .RepoDigests}} ${immutableImage}`)],
+    ["hung-host-id", escape(`image inspect --format {{.Id}} ${immutableImage}`)],
+    ["hung-host-tag", `${escape(`tag ${immutableImage} `)}${imported}`],
+    [
+      "hung-host-platform",
+      `${escape("image inspect --format {{.Os}}/{{.Architecture}} ")}${imported}`,
+    ],
+  ]) {
+    const commands = await fixtureImageCommands(t, scenario, "k3d-model", {
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+      OPENAI_API_KEY: "test-only-key",
+      OCC_TEST_OPENAI_MODEL: "test-model",
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
+      OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
+    });
+    const result = commands.prepare();
+    assert.equal(result.status, 1, scenario);
+    assert.match(
+      result.stderr,
+      new RegExp(String.raw`The container engine did not answer within 3000 ms \(${shown}\)\.`),
+      scenario,
+    );
+    // A timeout is not an absent image: nothing pulls, and nothing reaches the cluster.
+    const calls = await commands.commands();
+    assert.equal(
+      calls.filter(
+        ({ command, args }) => ["docker", "podman"].includes(command) && args[0] === "pull",
+      ).length,
+      0,
+      scenario,
+    );
+    assert.equal(
+      calls.some(({ args }) => args[0] === "exec" && args[1] === "-i"),
+      false,
+      scenario,
+    );
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    assert.equal(
+      state.resources.some(({ kind, status }) => kind === "k3d-image" && status === "ready"),
+      false,
+      scenario,
+    );
+    const cleanup = commands.cleanup();
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+  }
+});
+
+test("fixture preparation times out a hung inspect of its own fixture image", async (t) => {
+  const commands = await fixtureImageCommands(t, "hung-host-owned", undefined, {
+    OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
+  });
+  const result = commands.prepare();
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /The container engine did not answer within 3000 ms \(image inspect localhost\/\S+\/fixture:local\)\./,
+  );
+  const cleanup = commands.cleanup();
+  assert.equal(cleanup.status, 0, cleanup.stderr);
 });
 
 test("ordinary k3d preparation forwards an immutable K3s override and retains the server version gate", async (t) => {

@@ -1592,15 +1592,30 @@ function canonicalProtobufValues(value: unknown): unknown {
   );
 }
 
+/**
+ * Decoding with `oneofs: true` adds a virtual `_field` property naming each set proto3
+ * `optional` field, for example `_user_namespaces: "user_namespaces"`. A request never
+ * carries those markers, so they are not Sandbox content.
+ */
+function withoutSyntheticOneofs(
+  record: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      ([key, value]) => !(key.startsWith("_") && value === key.slice(1)),
+    ),
+  );
+}
+
 function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefined): unknown {
   const template = asRecord(spec?.template);
   if (spec === undefined || template === undefined) {
     return spec;
   }
   return {
-    ...spec,
+    ...withoutSyntheticOneofs(spec),
     template: {
-      ...template,
+      ...withoutSyntheticOneofs(template),
       driver_config: canonicalProtobufValues(template.driver_config),
     },
   };

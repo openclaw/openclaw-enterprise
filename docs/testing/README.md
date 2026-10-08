@@ -5,6 +5,8 @@ These guides are for contributors verifying Enterprise changes. Run commands
 from the repository root. For installation and supported product settings, use
 the [deployment guide](../guides/deploy.md) and [settings reference](../reference/settings.md).
 
+For all four shipped installation/preset combinations, run the [credentialed QA matrix](qa-matrix.md).
+
 ## Run tests
 
 | Command                 | Tests selected                                                            |

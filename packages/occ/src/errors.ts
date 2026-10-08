@@ -2,6 +2,7 @@ import type {
   AuthorizationEvidence,
   AuthorizationRequest,
   ResourceRef,
+  SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
 export class AuthorizationDeniedError extends Error {
@@ -283,6 +284,89 @@ export class ResourceStateConflictError extends ResourceConflictError {
   constructor(message: string) {
     super(message);
     this.name = "ResourceStateConflictError";
+  }
+}
+
+const SECRET_CONSUMER_LABELS = [
+  ["agents", "Agent", "Agents"],
+  ["configurations", "Configuration", "Configurations"],
+  ["credentialSources", "credential source", "credential sources"],
+  [
+    "provisioningRequests",
+    "pending Agent provisioning request",
+    "pending Agent provisioning requests",
+  ],
+] as const satisfies readonly (readonly [keyof SecretConsumers, string, string])[];
+
+/** The HTTP error contract caps messages at 256 characters. */
+const SECRET_REFERENCED_MESSAGE_LIMIT = 256;
+
+/**
+ * Names each kind of readable reference and as many of its IDs as fit the message cap,
+ * one ID per kind in turn, so many Agents cannot crowd out a Configuration. References the
+ * caller cannot read are only counted. The Secret's `consumers` on GET has the full list.
+ */
+function secretReferencedMessage(consumers: Readonly<SecretConsumers>): string {
+  const kinds = SECRET_CONSUMER_LABELS.filter(([key]) => consumers[key].length > 0);
+  const shown = new Map<string, number>(kinds.map(([key]) => [key, 0]));
+  const suffix =
+    consumers.provisioningRequests.length > 0
+      ? "Remove those references, or let provisioning finish, first."
+      : "Remove those references first.";
+  const render = (): string => {
+    const parts: string[] = kinds.map(([key, singular, plural]) => {
+      const ids = consumers[key];
+      const label = ids.length === 1 ? singular : plural;
+      const count = shown.get(key) ?? 0;
+      if (count === 0) {
+        return `${label} (${ids.length})`;
+      }
+      const more = ids.length - count;
+      return `${label} ${ids.slice(0, count).join(", ")}${more === 0 ? "" : ` and ${more} more`}`;
+    });
+    if (consumers.unreadable > 0) {
+      parts.push(
+        `${consumers.unreadable} ${consumers.unreadable === 1 ? "resource" : "resources"} you cannot read`,
+      );
+    }
+    if (consumers.truncated) {
+      parts.push("and more");
+    }
+    return `The Secret is still referenced by ${parts.join("; ")}. ${suffix}`;
+  };
+  // Counts alone fit today (at most SECRET_CONSUMER_LIMIT references); the fallback below
+  // keeps the HTTP contract if a label or that limit grows.
+  const done = new Set<string>();
+  while (done.size < kinds.length) {
+    for (const [key] of kinds) {
+      if (done.has(key)) {
+        continue;
+      }
+      const count = shown.get(key) ?? 0;
+      shown.set(key, count + 1);
+      if (count + 1 > consumers[key].length || render().length > SECRET_REFERENCED_MESSAGE_LIMIT) {
+        shown.set(key, count);
+        done.add(key);
+      }
+    }
+  }
+  const message = render();
+  return message.length <= SECRET_REFERENCED_MESSAGE_LIMIT
+    ? message
+    : `The Secret is still referenced by other resources. ${suffix}`;
+}
+
+/**
+ * Secret deletion found current references. Raised only after the delete authorization;
+ * the message names the references the caller may read and counts the others.
+ */
+export class SecretReferencedError extends ResourceStateConflictError {
+  readonly consumers: Readonly<SecretConsumers>;
+
+  constructor(consumers: Readonly<SecretConsumers>) {
+    super(secretReferencedMessage(consumers));
+    this.name = "SecretReferencedError";
+    this.consumers = consumers;
   }
 }
 

@@ -21,9 +21,10 @@ in Agent configuration, images, examples, or logs.
 ## Register and install the GitHub App
 
 A GitHub organization owner or authorized App manager prepares the App; an OCC
-administrator configures the platform and Namespace policy. Team members then
-create and deploy Agents through their existing OCC permissions. GitHub App
-installation does not grant a person OCC access.
+administrator configures the platform and Namespace policy, creates each Agent,
+and [grants team members access](../topics/iam.md#let-a-person-run-an-existing-agent)
+to deploy and operate it. GitHub App installation does not grant a person OCC
+access.
 
 1. In the organization's **Settings → Developer settings → GitHub Apps**, create
    an App with a descriptive team name and your team's homepage. For an App used

@@ -20,7 +20,6 @@ interface CredentialStorage {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly accessToken: string;
-    readonly workspaceId: string;
   }): Promise<SecretReference>;
   deleteServiceAccountCredential(input: {
     readonly namespaceId: string;
@@ -117,7 +116,6 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       namespaceId: account.namespaceId,
       serviceAccountId: account.id,
       accessToken: credential.accessToken,
-      workspaceId: linked.workspaceId,
     });
     this.controller.registerRollback(() =>
       this.compute.deleteServiceAccountCredential({

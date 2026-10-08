@@ -17,9 +17,10 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -37,9 +38,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
   const explicitKeyOf = (namespaceId, agentId) => `${namespaceId}:${agentId}`;
   const statusOf = (binding) => statusByAgent.get(keyOf(binding)) ?? emptyStatus;
 
-  return {
-    id: options.id ?? "runtime-credential-compute",
-    capability: "compute",
+  return createReadyComputeDriver(options.id ?? "runtime-credential-compute", {
     implementation: "in-memory-runtime-credential-test",
     requiresAgentRuntimeCredentials: true,
     calls,
@@ -47,21 +46,6 @@ function createRuntimeCredentialComputeDriver(options = {}) {
       statusByAgent.set(explicitKeyOf(namespaceId, agentId), { ...status });
     },
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
     async getAgentRuntimeCredentialStatus(binding) {
       calls.push({ operation: "status", agentId: binding.agent.id });
       if (options.statusError !== undefined) {
@@ -110,12 +94,16 @@ function createRuntimeCredentialComputeDriver(options = {}) {
         ],
       };
     },
-  };
+  });
 }
 
 async function createFixture(t, options = {}) {
   const installationId = `ins_${randomUUID()}`;
-  const port = await availablePort();
+  // The port is part of the auth base URL and origin, so hold it until the app binds it; a
+  // released probe port can be taken by another socket while the account and app are built.
+  const reservation = await reservePort();
+  t.after(reservation.release);
+  const { port } = reservation;
   const origin = `http://127.0.0.1:${port}`;
   const auth = createControllerAuth({
     installationId,
@@ -169,8 +157,9 @@ async function createFixture(t, options = {}) {
       return controller;
     },
   });
-  await app.listen({ host: "127.0.0.1", port });
+  await app.listen({ host: "127.0.0.1", port, reusePort: reservation.reusePort });
   t.after(() => app.close());
+  await reservation.release();
   const adminSession = await signInWithEmailPassword({ origin, ...credentials });
   let bootstrapped = false;
 

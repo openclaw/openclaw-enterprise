@@ -58,6 +58,9 @@ are separate from channel Secrets; the current initial provisioning flow does no
 rotate an existing generated bundle.
 
 List all affected applications or Agents before restarting or deploying them.
+`occ secret get "$SECRET_ID" -o json` lists a Secret's consuming Agents in
+`consumers.agents`; a nonzero `consumers.unreadable` means some references are
+hidden from you (see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers)).
 A running process keeps the environment variables it received, even after the
 source Secret changes. For a model API key, the supported sequence is:
 

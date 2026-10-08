@@ -56,3 +56,16 @@ JSON
   Each secrets field is the ref that occ secret create -o json returns. The gateway
   keeps its own copy of the value; see
   https://docs-enterprise.openclaw.org/reference/credential-sources/`
+
+const iamServicePrincipalCreateExample = `  occ iam service-principal create --namespace <namespace-id>
+
+  The ServicePrincipal holds no grant. Bind a Role to it with
+  occ iam access-binding create, then issue its key with occ service-key create.`
+
+const serviceKeyCreateExample = `  occ service-key create --namespace <namespace-id> \
+    --service-principal <service-principal-id> --name nora-laptop --out nora.json
+  OCC_SERVICE_KEY_FILE=nora.json occ --namespace <namespace-id> agent list
+
+  Pass --namespace for a Namespace ServicePrincipal; for an Installation one, omit
+  it and unset OCC_NAMESPACE. You must already hold every grant of the ServicePrincipal. The key file is
+  the only copy of the key: hand it over privately and revoke it when unused.`

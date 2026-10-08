@@ -1,7 +1,8 @@
 // Runtime image startup smoke tests split from runtime-image-startup.test.mjs so
-// CI can run the files in parallel lanes: startup model probes and SIGTERM during
-// startup. Native worker enrollment and reconnect are in
-// runtime-image-native-worker.test.mjs.
+// CI can run the files in parallel lanes: startup model probes, SIGTERM during
+// startup, and ephemeral native worker reconnect from an expired replayed setup
+// code. Workspace node enrollment and the inactive Slack approver startup check
+// are in runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,6 +28,8 @@ import {
   waitForDockerLog,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
+  runGatewaySmoke,
+  temporaryGatewayConfiguration,
 } from "../helpers/runtime-image-startup.mjs";
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
@@ -661,5 +664,31 @@ test(
     await withStartupProbeEvidence(waiting, async () => {
       assert.equal(waiting.snapshot.events.some(observedValue("native", true)), false);
     });
+  },
+);
+
+test(
+  "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
+  imageTestOptions,
+  async (t) => {
+    // Pod restarts replay the enrollment Secret's setup code after its expiry.
+    const configurationPath = await temporaryGatewayConfiguration(t, "codex");
+    const { containerName } = await runGatewaySmoke(t, "codex", {
+      configurationPath: "/etc/openclaw/openclaw.json",
+      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+    });
+    const source = await readFile(
+      new URL("../fixtures/runtime-native-worker-restart.mjs", import.meta.url),
+      "utf8",
+    );
+    const { stdout } = await runDocker(
+      ["exec", containerName, "node", "--input-type=module", "-e", source],
+      { timeout: 300_000 * imageSmokeTimeoutMultiplier },
+    );
+    const result = JSON.parse(stdout);
+    assert.equal(result.sameIdentityAfterExpiredReplay, true);
+    assert.equal(result.singleBootstrapCompletion, true);
+    assert.equal(result.unpairedExpiredRejected, true);
   },
 );

@@ -76,8 +76,11 @@ Configuration in an explicitly selected external Namespace returns
 OCC Namespace leaves its tenant markers on the Kubernetes namespace, so
 selecting that namespace again ends `failed` until an operator clears them; see
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
-A `failed` Namespace does not say why; the worker logs only
-`code: NAMESPACE_INCOMPLETE`.
+A `failed` Namespace does not say why in the API. The worker's
+`worker.completed` line for `namespace.ensure` carries the Kubernetes Compute
+Driver's `reason`, such as `Existing Kubernetes namespace customer-support
+belongs to another tenant: its openclaw.dev/namespace label names a different
+Namespace.` It names the blocking marker's key, never another tenant's value.
 
 ## Lifecycle
 
@@ -203,6 +206,7 @@ workload is ready.
 
 ## Changelog
 
+- 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
 - 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)
 
 - 2026-09-01 14:51: Document initial default Namespace creation and unchanged repeat-bootstrap behavior. (codex/01a05ef1-ee29-7941-80f2-448bb0789969 - 872fa544c98bb7ad11b2d92d777e49229ececbf5)

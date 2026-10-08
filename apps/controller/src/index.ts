@@ -95,6 +95,7 @@ import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
+import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
   cappedPath,
@@ -102,12 +103,10 @@ import {
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
-  jsonPointer,
   RequestFailure,
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  type ErrorDetail,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import {
@@ -657,7 +656,10 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "deleteIAMRole" ||
     operation.operationId === "listIAMAccessBindings" ||
     operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "deleteIAMAccessBinding"
+    operation.operationId === "deleteIAMAccessBinding" ||
+    operation.operationId === "listIAMServicePrincipals" ||
+    operation.operationId === "createIAMServicePrincipal" ||
+    operation.operationId === "getIAMServicePrincipal"
   ) {
     return [
       { action: "administer", resourceKind: "installation", scope: "requested" },
@@ -1050,7 +1052,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     },
     ajv: {
       // `verbose` attaches each failure's schema and value, so contract errors can tell which
-      // shape of a discriminated union a request chose (http/errors.ts). Neither is logged or
+      // shape of a discriminated union a request chose (http/error-details.ts). Neither is logged or
       // returned: problems name only paths and the schema's accepted values, and http/errors.ts
       // drops both from the error once its problems are built. An onError hook runs before
       // that, so none may log `error.validation`.
@@ -1216,8 +1218,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               restrictionIds: authorizationEvidence.restrictionIds,
             },
           };
+    // A request admitted by a service key names that key (its non-secret ID), so an
+    // administrator can tell which of a ServicePrincipal's keys acted. `serviceKeyId` stays
+    // the key a key-management event acts on.
+    const admitted = admissions.get(request);
+    const actorKeyDetails =
+      admitted?.method === "api_key" && admitted.serviceKeyId !== undefined
+        ? { actorServiceKeyId: admitted.serviceKeyId }
+        : undefined;
     const details =
-      result?.details === undefined ? evidenceDetails : { ...evidenceDetails, ...result.details };
+      result?.details === undefined && actorKeyDetails === undefined
+        ? evidenceDetails
+        : { ...evidenceDetails, ...result?.details, ...actorKeyDetails };
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -2606,13 +2618,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             context,
           );
-          const audit = (key: { id: string; servicePrincipalId: string }) => {
+          // Names the key acted on by ID and its non-secret name; never the credential.
+          const audit = (key: { id: string; servicePrincipalId: string; name: string }) => {
             const base = event(operation, request, target, "mutation", context, decision.evidence);
             return {
               ...base,
               details: {
                 ...base.details,
                 serviceKeyId: key.id,
+                serviceKeyName: key.name,
                 servicePrincipalId: key.servicePrincipalId,
               },
             };

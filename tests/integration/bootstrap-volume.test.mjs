@@ -371,3 +371,54 @@ test("prepare-bootstrap-volume refuses unverifiable success reports without prin
   const calls = await invocations(statePath);
   assert.ok(!calls.some((args) => args.includes("delete") && args.includes("pod")));
 });
+
+test("prepare-bootstrap-volume preserves YAML-scalar namespace names as strings", async (t) => {
+  for (const namespace of ["true", "407", "null", "1e3"]) {
+    await t.test(namespace, async (t) => {
+      const { directory, kubeconfig, manifestPath } = await fixture(t);
+      await execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "production",
+          "--namespace",
+          namespace,
+          "--claim",
+          "claim",
+          "--image",
+          image,
+        ],
+        { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+      );
+      const manifest = loadYaml(await readFile(manifestPath, "utf8"));
+      assert.equal(manifest.metadata.namespace, namespace);
+    });
+  }
+});
+
+test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and values", async (t) => {
+  // Each key is also its value, so neither side of a selector may be left unquoted.
+  const keys = ["null", "yes", "on", "1e3", "0x10", "010"];
+  const { directory, kubeconfig, manifestPath } = await fixture(t);
+  await execute(
+    helper,
+    [
+      "--kubeconfig",
+      kubeconfig,
+      "--context",
+      "production",
+      "--namespace",
+      "openclaw-system",
+      "--claim",
+      "claim",
+      "--image",
+      image,
+      ...keys.flatMap((key) => ["--node-selector", `${key}=${key}`]),
+    ],
+    { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+  );
+  const manifest = loadYaml(await readFile(manifestPath, "utf8"));
+  assert.deepEqual(manifest.spec.nodeSelector, Object.fromEntries(keys.map((key) => [key, key])));
+});

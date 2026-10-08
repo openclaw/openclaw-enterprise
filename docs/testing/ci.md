@@ -23,7 +23,7 @@ Full CI has twenty required lanes. `checks-baseline-1` and `checks-baseline-2` s
 
 Hosted image builds use separate controller/runtime caches. Packaging exports on main pushes; model probes, runtime startup and the repository credential platform restore. A never-cancelled main [cache workflow](../../.github/workflows/ci-image-cache.yml) also exports; pull requests only read main's cache. The platform lane loads its cached runtime image into the Docker engine and derives its fixture from it with the default builder. Transfers time out after one minute, export failures are ignored, and builds load locally. Cache credentials stay in preparation. Local builds remain unchanged.
 
-Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases and Actions timestamps for slow setup or tests. Imports stream `docker image save` into node-local `ctr image import` on each owned k3d node (`image-stream-import`): k3d `tools-node` can hide per-node failures while exiting successfully. Imports are serialized per cluster, then preparation verifies digest and CRI references; each of those node checks, and the tag before them, times out after 30 seconds.
+Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases and Actions timestamps for slow setup or tests. [k3d image preparation](ci-k3d-images.md) covers how images reach the cluster nodes.
 
 `static-checks` runs `pnpm docs:check` and the [dependency policy](repository-boundaries.md). Pages above 1,500 visible words require review; above 2,500 fail except the approved [API reference](../reference/api.md) and `AGENTS.md` files. The generated API, site build, navigation, and links must pass. The [specification check](../contributing/specifications.md#status-and-review) also validates non-archived RFC metadata and spec link targets. Run `pnpm docs:check-length` for word counts alone.
 
@@ -99,7 +99,7 @@ kubeconfig, environment values and Pod specs are excluded. After a failed prepar
 run, local callers must run `node scripts/ci/cleanup.mjs --state <state-file>`.
 Diagnostics explain setup failures without establishing coverage.
 
-The `k3d-model`, `gateway-routing`, `slack`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable `NODE_BASE_IMAGE` for the build. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
+The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 
 Routing, OpenShell, and logging have CI preparation contracts. Routing installs
 pinned Gateway API, cert-manager v1.18.4 and Envoy Gateway v1.6.7 manifests and
@@ -149,33 +149,7 @@ A retry replaces its lane result artifact; other lanes keep theirs. Each attempt
 
 ### Select immutable images for local preparation
 
-Ordinary Kubernetes lanes default to the digest-pinned K3s 1.35 image in
-`defaultK3sImage` (`scripts/ci/prepare.mjs`), so cluster creation never queries
-k3d's online release channel. Set `OPENCLAW_CI_K3S_IMAGE` to another approved
-`image@sha256:<digest>` before
-`node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>` to
-override it. Both paths require the API server to report Kubernetes 1.35.x;
-OpenShell retains its separately pinned image. Mutable overrides fail before
-resource creation. Clean up a failed run's owned resources before reusing its state path.
-
-Preparation reuses a supplied immutable workload image in the local Docker daemon
-only when `docker image inspect` records the requested digest in `RepoDigests`;
-a mutable tag or unverified image is insufficient. Missing or mismatched images
-are pulled and rechecked before import. Other Docker inspection failures stop
-preparation. Cleanup removes owned import tags and preserves the supplied image.
-
-On GitHub-hosted runners, both observability lanes require 36 GiB free before
-building and importing images, removing unused SDKs only when less is free
-(concurrently, ten-minute deadline, per-directory timing receipts); local runs
-omit this guarded cleanup. Both use single-node clusters and overlap independent
-pulls, builds, and cluster setup, then serialize k3d imports per cluster to avoid
-importer races. The demo lane imports only its three services and a Node
-image for protocol fixtures; it does not build OCC. State writes remain
-serialized, and all in-flight operations settle before failure cleanup.
-
-Image imports time out after ten minutes. Preparation verifies each immutable
-reference on every schedulable node. Errors and timeouts fail preparation; lane
-cleanup removes the owned cluster and partial imports.
+See [k3d image preparation](ci-k3d-images.md#select-immutable-images-for-local-preparation).
 
 ### Integration coverage by trigger
 

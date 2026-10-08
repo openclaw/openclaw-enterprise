@@ -220,6 +220,11 @@ export interface SecretReference extends ResourceRef {
   readonly namespaceId: string;
 }
 
+export interface ServiceAccountReference extends ResourceRef {
+  readonly kind: "service_account";
+  readonly namespaceId: string;
+}
+
 export interface SecretIdentity {
   readonly id: string;
   readonly namespaceId: string;
@@ -242,6 +247,24 @@ export interface Secret extends SecretIdentity {
 
 export interface SecretMetadata extends SecretIdentity {
   readonly ref: SecretReference;
+}
+
+/**
+ * Current references that keep a Secret from deletion, limited to resources the caller may
+ * read. `unreadable` counts the examined references the caller may not read, without naming
+ * them; `truncated` means more references exist than OCC examined.
+ */
+export interface SecretConsumers {
+  readonly agents: readonly string[];
+  readonly configurations: readonly string[];
+  readonly credentialSources: readonly string[];
+  readonly provisioningRequests: readonly string[];
+  readonly unreadable: number;
+  readonly truncated: boolean;
+}
+
+export interface SecretDetail extends SecretMetadata {
+  readonly consumers: SecretConsumers;
 }
 
 export interface SecretBinding {
@@ -342,11 +365,23 @@ export interface CredentialWithdrawalStatus extends CredentialWithdrawal {
   readonly withdrawalInProgress: boolean;
 }
 
+/** A non-model credential source the Agent's Harness may use at its source's endpoints. */
+export interface AgentCredentialSourceBinding {
+  readonly sourceId: string;
+}
+
+/** Private admission metadata for one non-model source frozen into a revision. */
+export interface CredentialSourceSnapshot {
+  readonly sourceId: string;
+  readonly credentialGatewayId: string;
+  readonly sourceType: string;
+}
+
 export type HarnessAuthBinding =
   | { readonly method: "api_key"; readonly source: SecretReference }
   | { readonly method: "codex_pat"; readonly source: SecretReference }
   | { readonly method: "oauth"; readonly source: SecretReference }
-  | { readonly method: "chatgpt_service_account"; readonly serviceAccountId: string }
+  | { readonly method: "codex_pat"; readonly source: ServiceAccountReference }
   | { readonly method: "credential_source"; readonly sourceId: string }
   | { readonly method: "runtime" };
 
@@ -369,8 +404,8 @@ export type HarnessAuthSnapshot =
       readonly secretDriverId: string;
     }
   | {
-      readonly method: "chatgpt_service_account";
-      readonly serviceAccountId: string;
+      readonly method: "codex_pat";
+      readonly source: ServiceAccountReference;
       readonly credential: ServiceAccountCredential & { readonly kind: "access_token" };
       readonly backendBinding: {
         readonly backendId: string;
@@ -389,17 +424,19 @@ export type HarnessAuthSnapshot =
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */
 export type ResolvedHarnessAuth =
-  | (Extract<HarnessAuthSnapshot, { method: "api_key" | "codex_pat" | "oauth" }> & {
+  | (Extract<HarnessAuthSnapshot, { source: SecretReference }> & {
       readonly backendRef: SecretBackendRef;
     })
   | (Extract<HarnessAuthSnapshot, { method: "credential_source" }> & {
       readonly source: Readonly<CredentialSource>;
     })
-  | Extract<HarnessAuthSnapshot, { method: "chatgpt_service_account" | "runtime" }>;
+  | Extract<HarnessAuthSnapshot, { source: ServiceAccountReference } | { method: "runtime" }>;
 
 export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
+  /** Non-model sources resolved again at dispatch, in admission order. */
+  readonly credentialSources?: readonly Readonly<CredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
@@ -623,6 +660,7 @@ export interface Agent extends Scope {
   readonly configurationId: string;
   readonly backendId: BackendRef;
   readonly harnessAuth: HarnessAuthBinding | null;
+  readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
@@ -642,6 +680,7 @@ export interface ConfigurationReadError {
     | "repositoryBindings"
     | "repositoryAccess"
     | "harnessAuth"
+    | "credentialSources"
     | "secretBindings"
     | "repositoryCredentials"
     | "configuration";
@@ -649,7 +688,12 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
-  "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess" | "harnessAuth"
+  | "plugins"
+  | "pluginApprovers"
+  | "repositoryBindings"
+  | "repositoryAccess"
+  | "harnessAuth"
+  | "credentialSources"
 >;
 
 export type AgentRead =
@@ -706,6 +750,7 @@ export interface AgentRevision extends Scope {
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryCredentials?: RepositoryRevisionState;
   readonly harnessAuth: HarnessAuthSnapshot;
+  readonly credentialSources?: readonly CredentialSourceSnapshot[];
   readonly servicePrincipalId: string;
   readonly createdAt: string;
 }
@@ -736,6 +781,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     harness: Object.freeze({ ...revision.harness }),
     compute: Object.freeze({ ...revision.compute }),
     harnessAuth: immutableCopy(revision.harnessAuth),
+    ...(revision.credentialSources === undefined
+      ? {}
+      : { credentialSources: immutableCopy(revision.credentialSources) }),
   });
 }
 
@@ -1073,6 +1121,19 @@ export interface IAMDriver extends Driver {
     namespaceId: string,
     bindingId: string,
   ): Promise<boolean>;
+  listNamespaceServicePrincipals?(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<readonly Readonly<ServicePrincipal>[]>;
+  getNamespaceServicePrincipal?(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+    servicePrincipalId: string,
+  ): Promise<Readonly<ServicePrincipal> | undefined>;
+  createNamespaceServicePrincipal?(
+    context: IAMPolicyManagementContext,
+    input: IAMManagedServicePrincipalInput,
+  ): Promise<Readonly<ServicePrincipal>>;
 }
 
 export interface IAMPolicyReadRepository {
@@ -1093,6 +1154,12 @@ export interface IAMPolicyReadRepository {
     resourceKind: ResourceKind,
     resourceIds: readonly string[],
   ): Promise<readonly Readonly<Restriction>[]>;
+  /** Non-Agent ServicePrincipals of the exact Namespace; Agent identities are excluded. */
+  listServicePrincipals(namespaceId: string): Promise<readonly Readonly<ServicePrincipal>[]>;
+  getServicePrincipal(
+    namespaceId: string,
+    servicePrincipalId: string,
+  ): Promise<Readonly<ServicePrincipal> | undefined>;
 }
 
 export interface IAMPolicyRepository extends IAMPolicyReadRepository {
@@ -1100,6 +1167,7 @@ export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
+  createServicePrincipal(servicePrincipal: ServicePrincipal): Promise<Readonly<ServicePrincipal>>;
 }
 
 export interface IAMPolicyReadContext {
@@ -1135,6 +1203,12 @@ export interface IAMManagedAccessBindingInput {
   readonly roleId: string;
   readonly resourceKind: ManagedIAMResourceKind;
   readonly resourceId: string;
+}
+
+/** A non-Agent automation identity fixed to one Namespace; it carries no grant. */
+export interface IAMManagedServicePrincipalInput {
+  readonly id: string;
+  readonly namespaceId: string;
 }
 
 export interface ServiceAccountDriver extends Driver {
@@ -1354,6 +1428,13 @@ export interface NamespaceEnsureResult extends Scope {
   readonly namespaceId: string;
   readonly namespaceReady: boolean;
   readonly failure?: NamespaceLifecycleFailure;
+  /**
+   * Optional bounded, non-secret operator explanation of `failure`, at most 256 printable
+   * characters. It names only this Namespace's own placement, never another tenant's
+   * identifiers or marker values. The worker logs it; status and audit keep only `failure`.
+   * The log keeps only letters, digits, spaces and `. _ : / @ -`; other text is dropped.
+   */
+  readonly reason?: string;
 }
 
 export interface NamespaceDeleteResult extends Scope {
@@ -1803,7 +1884,12 @@ export * from "./api/common.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
-export { normalizeHarnessAuthBinding, harnessAuthBindingFromSnapshot } from "./harness-auth.ts";
+export {
+  normalizeHarnessAuthBinding,
+  harnessAuthBindingFromSnapshot,
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
+} from "./harness-auth.ts";
 
 export type { Preset, PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
 export { normalizePresetTemplate } from "./presets.ts";

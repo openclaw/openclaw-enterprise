@@ -33,7 +33,7 @@
 {{- fail "logging.collector.exporter requires either cidr or paired selectors, not both" -}}
 {{- end -}}
 {{- if empty $exporter.namespaceLabels -}}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" $exporter.cidr) -}}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) $exporter.cidr) -}}
 {{- fail "logging.collector.exporter.cidr must identify exactly one approved IPv4 exporter or proxy host with /32" -}}
 {{- end -}}
 {{- end -}}

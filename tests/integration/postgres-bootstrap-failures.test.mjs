@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -674,7 +674,7 @@ test(
 );
 
 test(
-  "production bootstrap refuses an Installation name outside the Name rule before creating anything",
+  "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
   requiresFailurePostgres,
   async (context) => {
     await resetFailureDatabase();
@@ -684,31 +684,47 @@ test(
       await rm(directory, { recursive: true, force: true });
     });
 
-    // PostgreSQL's name check accepts a trailing NBSP; the API's Name rule refuses it.
-    const environment = productionEnvironment({
-      directory,
-      email: `bootstrap-installation-name-${randomUUID()}@example.test`,
-      name: "Installation\u00a0",
-    });
-    const result = await runProductionBootstrap(environment);
-    assert.equal(result.ok, false);
-    const failure = jsonLines(result.stderr).find(
-      (line) => line.event === "installation.bootstrap-failed",
-    );
-    assert.equal(failure?.code, "INSTALLATION_NAME_INVALID", result.stderr);
-    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), false);
-    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), false);
-    assert.deepEqual(await rowCounts(), {
-      installations: 0,
-      bootstrap_audits: 0,
-      principals: 0,
-      service_principals: 0,
-      bindings: 0,
-      service_keys: 0,
-      users: 0,
-      namespaces: 0,
-      namespace_work: 0,
-    });
+    // PostgreSQL's name check accepts a trailing NBSP and a line separator; the API's Name
+    // rule refuses both. Development bootstrap reads its name from OPENCLAW_DEV_INSTALLATION_NAME.
+    for (const environment of [
+      productionEnvironment({
+        directory,
+        email: `bootstrap-installation-name-${randomUUID()}@example.test`,
+        name: "Installation\u00a0",
+      }),
+      developmentEnvironment({
+        directory,
+        email: `bootstrap-installation-name-${randomUUID()}@example.test`,
+        name: "Installation\u2028name",
+      }),
+    ]) {
+      const label = environment.NODE_ENV;
+      const result = await runBootstrapInstallation(environment);
+      assert.equal(result.ok, false, label);
+      const failure = jsonLines(result.stderr).find(
+        (line) => line.event === "installation.bootstrap-failed",
+      );
+      assert.equal(failure?.code, "INSTALLATION_NAME_INVALID", `${label}: ${result.stderr}`);
+      if (environment.OCC_BOOTSTRAP_PASSWORD_FILE !== undefined) {
+        assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), false, label);
+      }
+      assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), false, label);
+      assert.deepEqual(
+        await rowCounts(),
+        {
+          installations: 0,
+          bootstrap_audits: 0,
+          principals: 0,
+          service_principals: 0,
+          bindings: 0,
+          service_keys: 0,
+          users: 0,
+          namespaces: 0,
+          namespace_work: 0,
+        },
+        label,
+      );
+    }
   },
 );
 
@@ -772,6 +788,27 @@ test(
       await worker.stop().catch(() => {});
       await pool.end().catch(() => {});
     }
+
+    // The production worker entrypoint builds its configured Drivers without contacting them,
+    // so it reaches the stored Installation and names the code.
+    const configPath = join(configurationRoot, "installation.yaml");
+    await writeFile(configPath, JSON.stringify(createInstallationDriverConfiguration()), "utf8");
+    const workerProcess = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: configPath,
+        OCC_DATABASE_URL: failureDatabaseUrl,
+      },
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(workerProcess.status, 1, `${workerProcess.error ?? ""}\n${workerProcess.stderr}`);
+    const workerFailure = jsonLines(workerProcess.stderr).find(
+      (line) => line.event === "worker.startup-error",
+    );
+    assert.equal(workerFailure?.code, "INSTALLATION_NAME_INVALID", workerProcess.stderr);
   },
 );
 

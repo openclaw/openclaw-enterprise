@@ -23,17 +23,21 @@ export async function availablePort({ host = "127.0.0.1" } = {}) {
 // real listener is up. Where the platform has no SO_REUSEPORT for Node (macOS), `reusePort`
 // is false and the port is released at once, as availablePort() does. While both sockets
 // listen the kernel may hand a connection to either, so release right after the bind.
-export async function reservePort({ host = "127.0.0.1" } = {}) {
+// Reserve on exactly the host the listener binds: a more specific address (127.0.0.1 next
+// to a 0.0.0.0 listener) takes every connection. Pass `port` to hold a port that a listener bound with `reusePort` still holds, so it stays
+// held across that listener's restart: reserve, close the listener, bind the new one, release.
+export async function reservePort({ host = "127.0.0.1", port: wanted = 0 } = {}) {
   // A connection that still reaches the reservation is reset rather than left hanging.
   const server = createServer((socket) => socket.destroy());
   try {
-    server.listen({ port: 0, host, reusePort: true });
+    server.listen({ port: wanted, host, reusePort: true });
     await once(server, "listening");
   } catch (error) {
     if (error.code !== "ENOTSUP") {
       throw error;
     }
-    return { port: await availablePort({ host }), reusePort: false, release: async () => {} };
+    const port = wanted === 0 ? await availablePort({ host }) : wanted;
+    return { port, reusePort: false, release: async () => {} };
   }
   const { port } = server.address();
   let released;
@@ -47,4 +51,17 @@ export async function reservePort({ host = "127.0.0.1" } = {}) {
       return released;
     },
   };
+}
+
+// Node arguments that let a child process bind a reservation's port: pass them before the
+// child's entrypoint. The child preloads reuse-port-preload.mjs, which adds `reusePort` to
+// its own listen() on that port only. Without SO_REUSEPORT the reservation holds nothing,
+// so there are no arguments and the child runs unchanged.
+export function reservedPortArgs(reservation) {
+  if (!reservation.reusePort) {
+    return [];
+  }
+  const preload = new URL("./reuse-port-preload.mjs", import.meta.url);
+  preload.searchParams.set("port", String(reservation.port));
+  return ["--import", preload.href];
 }

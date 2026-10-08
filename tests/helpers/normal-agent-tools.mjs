@@ -1,3 +1,5 @@
+import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+
 // A trace may record an interim tool error before that same call completes.
 // Only its latest result, or an exact process-session poll, can prove success.
 export function completedToolResult(trace, call) {
@@ -36,6 +38,60 @@ export function completedToolResult(trace, call) {
     }
   }
   return undefined;
+}
+
+// Nested code-mode calls are runtime records, not commands inferred from model code.
+// Keep the actual parent linkage and place their call before their result.
+export function expandTranscriptMessage(message, seq, parentCalls) {
+  if (message.role === "assistant" && Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (block?.type === "toolCall" && typeof block.id === "string") {
+        parentCalls.add(block.id);
+      }
+    }
+  }
+  const details = message.details;
+  if (message.role !== "custom" || message.customType !== "openclaw.nested-tool.v1") {
+    return [{ seq: seq * 2, message }];
+  }
+  if (
+    !details ||
+    !parentCalls.has(details.parentToolCallId) ||
+    typeof details.toolCallId !== "string" ||
+    typeof details.toolName !== "string" ||
+    !details.input ||
+    typeof details.input !== "object" ||
+    !details.result ||
+    typeof details.result !== "object"
+  ) {
+    return [];
+  }
+  return [
+    {
+      seq: seq * 2,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: details.toolCallId,
+            name: details.toolName,
+            arguments: details.input,
+          },
+        ],
+      },
+    },
+    {
+      seq: seq * 2 + 1,
+      message: {
+        ...details.result,
+        role: "toolResult",
+        toolCallId: details.toolCallId,
+        toolName: details.toolName,
+        isError: details.isError === true || details.result.isError === true,
+      },
+    },
+  ];
 }
 
 const repositoryCommandEvidence = String.raw`
@@ -90,6 +146,7 @@ export const sessionEvidenceScript = String.raw`
   // exporting their raw arguments, output, or credential-bearing environment.
   const summary = process.argv[5] ? JSON.parse(process.argv[5]) : undefined;
   ${repositoryCommandEvidence}
+  ${expandTranscriptMessage.toString()}
   function operationsFor(block) {
     if (!["exec", "bash"].includes(block.name)) return [];
     const args = standaloneArguments(block.arguments?.command);
@@ -129,10 +186,14 @@ export const sessionEvidenceScript = String.raw`
       process.exit(0);
     }
     const entry = JSON.parse(session.entry_json);
+    // Current runtimes store large entry fields separately; older runtimes inline them.
+    const hasSnapshots = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_entry_snapshots'").get();
+    const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key = ? AND field = 'systemPromptReport'").get(sessionKey) : undefined;
+    const promptReport = snapshot ? JSON.parse(snapshot.value_json) : entry?.systemPromptReport;
     const promptTools =
-      entry?.systemPromptReport?.source === "run" &&
-      Array.isArray(entry.systemPromptReport.tools?.entries)
-        ? entry.systemPromptReport.tools.entries
+      promptReport?.source === "run" &&
+      Array.isArray(promptReport.tools?.entries)
+        ? promptReport.tools.entries
             .map((tool) => tool?.name)
             .filter((name) => typeof name === "string")
         : undefined;
@@ -175,6 +236,7 @@ export const sessionEvidenceScript = String.raw`
       const index = withoutSuffix.lastIndexOf(marker);
       return index === -1 ? undefined : withoutSuffix.slice(0, index);
     }
+    const parentCalls = new Set();
     for (const row of rows) {
       const eventText = row.event_json ?? zstdDecompressSync(row.event_zstd).toString("utf8");
       if (Buffer.byteLength(eventText) !== (row.event_utf8_bytes ?? Buffer.byteLength(eventText))) {
@@ -183,7 +245,7 @@ export const sessionEvidenceScript = String.raw`
       const event = JSON.parse(eventText);
       eventTypeCounts[event.type ?? "unknown"] = (eventTypeCounts[event.type ?? "unknown"] ?? 0) + 1;
       if (event.type !== "message") continue;
-      const message = event.message;
+      for (const { message, seq } of expandTranscriptMessage(event.message, row.seq, parentCalls)) {
       const hasMarker = contains(message, marker);
       const mirrorIdentity = message?.__openclaw?.mirrorIdentity;
       roleCounts[message.role ?? "unknown"] = (roleCounts[message.role ?? "unknown"] ?? 0) + 1;
@@ -196,7 +258,7 @@ export const sessionEvidenceScript = String.raw`
         turn(assistantPrefix).terminalAssistantSeen = true;
       }
       messages.push({
-        seq: row.seq,
+        seq,
         role: message.role,
         hasMarker,
         stopReason: message.stopReason,
@@ -211,7 +273,7 @@ export const sessionEvidenceScript = String.raw`
           if (block?.type === "toolCall" && selectedTools.includes(block.name)) {
             const toolPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":call");
             if (toolPrefix !== undefined) turn(toolPrefix).toolCallMirrorSeen = true;
-            calls.push({ seq: row.seq, id: block.id, name: block.name, mirrorIdentity,
+            calls.push({ seq, id: block.id, name: block.name, mirrorIdentity,
               ...(summary ? { processSessionId: block.name === "process" && typeof block.arguments?.sessionId === "string" ? block.arguments.sessionId : undefined, processAction: block.name === "process" ? block.arguments?.action : undefined, operations: operationsFor(block) } : {}),
             });
           }
@@ -229,7 +291,7 @@ export const sessionEvidenceScript = String.raw`
         if (resultPrefix !== undefined) turn(resultPrefix).toolResultMirrorSeen = true;
         const resultText = textOf(message.content) + (typeof message.details?.aggregated === "string" ? "\n" + message.details.aggregated : "");
         results.push({
-          seq: row.seq,
+          seq,
           toolCallId: message.toolCallId,
           toolName: message.toolName,
           isError: message.isError === true,
@@ -247,13 +309,14 @@ export const sessionEvidenceScript = String.raw`
       if (message.role === "toolResult" && typeof message.toolName === "string") {
         resultToolNames.add(message.toolName);
       }
+      }
     }
     process.stdout.write(JSON.stringify({
       databasePath,
       sessionKey,
       sessionId: session.current_session_id,
       exists: true,
-      promptReportSource: entry?.systemPromptReport?.source,
+      promptReportSource: promptReport?.source,
       promptToolNames: promptTools,
       messageCount: messages.length,
       userMarkerSeen: messages.some((message) => message.role === "user" && message.hasMarker),
@@ -286,69 +349,84 @@ export const codexRepositoryEvidenceScript = String.raw`
   const marker = process.argv[1];
   const expected = JSON.parse(process.argv[2]);
   ${repositoryCommandEvidence}
-  const socket = new WebSocket(process.env.APP_SERVER_URL, {
-    headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
-  });
-  const pending = new Map();
-  let nextId = 0;
-  const deadline = setTimeout(() => {
-    process.stderr.write("Codex repository evidence timed out\n");
-    socket.close();
-    process.exitCode = 1;
-  }, 20000);
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = ++nextId;
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
-  });
-  socket.addEventListener("message", ({ data }) => {
-    const message = JSON.parse(String(data));
-    const operation = pending.get(message.id);
-    if (!operation) return;
-    pending.delete(message.id);
-    message.error ? operation.reject(new Error("Codex evidence request failed")) : operation.resolve(message.result);
-  });
-  socket.addEventListener("error", () => { process.exitCode = 1; });
-  socket.addEventListener("open", async () => {
-    try {
-      await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
-      socket.send(JSON.stringify({ method: "initialized" }));
-      // Client source labels vary across supported bridges; the exact task marker below selects the turn.
-      const listed = await request("thread/list", { limit: 20, modelProviders: [] });
-      assert.equal(listed.nextCursor, null, "fresh Agent must have a bounded thread inventory");
-      const matches = [];
-      for (const candidate of listed.data) {
-        const { thread } = await request("thread/read", { threadId: candidate.id, includeTurns: true });
-        for (const turn of thread.turns) {
-          if (!turn.items.some(item => item.type === "userMessage" && item.content.some(block => block.type === "text" && block.text.includes(marker)))) continue;
-          const commands = turn.items.filter(item => item.type === "commandExecution").map(item => {
-            // Codex reports the actual shell argv as a quoted command. Accept
-            // only its single non-login shell wrapper around one literal command.
-            let args = standaloneArguments(item.command);
-            if (args?.length === 3 && ["/bin/bash", "/bin/sh", "/usr/bin/bash"].includes(args[0]) && args[1] === "-c") args = standaloneArguments(args[2]);
-            const lines = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.split(/\r?\n/).map(line => line.trim()) : [];
-            return {
-              id: item.id,
-              operations: expected.filter(command => item.cwd === command.workdir && args?.length === command.argv.length && args.every((arg, index) => arg === command.argv[index])).map(command => command.operation),
-              status: item.status,
-              exitCode: item.exitCode,
-              http400: /returned error: 400\b/i.test(item.aggregatedOutput ?? ""),
-              sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(item.aggregatedOutput ?? ""),
-              commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
-              pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),
-            };
-          });
-          matches.push({ threadId: thread.id, turnId: turn.id, status: turn.status, commands });
-        }
-      }
-      assert.equal(matches.length, 1, "the repository task must identify one native Codex turn");
-      process.stdout.write(JSON.stringify(matches[0]));
-    } catch {
-      process.stderr.write("Codex repository evidence unavailable\n");
-      process.exitCode = 1;
-    } finally {
-      clearTimeout(deadline);
-      socket.close();
+  ${PLUGIN_RUNTIME_HELPERS}
+  (async () => {
+    // Plugin-enabled peers rotate their transport token for each startup.
+    // Resolve it through the same verified status contract as gateway startup;
+    // ordinary Codex peers continue to use the admitted base token.
+    const runtime = readGatewayPluginRuntime();
+    if (runtime?.manifest?.kind === "codex" && hasEnabledPluginSelections(runtime)) {
+      const status = await readPeerPluginRuntimeStatus();
+      process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(status.startupId);
     }
+    // The gateway observes a remote peer, not the runtime helper's local client.
+    const socket = new WebSocket(process.env.APP_SERVER_URL, {
+      headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+    });
+    const pending = new Map();
+    let nextId = 0;
+    const deadline = setTimeout(() => {
+      process.stderr.write("Codex repository evidence timed out\n");
+      socket.close();
+      process.exitCode = 1;
+    }, 20000);
+    const request = (method, params) => new Promise((resolve, reject) => {
+      const id = ++nextId;
+      pending.set(id, { resolve, reject });
+      socket.send(JSON.stringify({ id, method, params }));
+    });
+    socket.addEventListener("message", ({ data }) => {
+      const message = JSON.parse(String(data));
+      const operation = pending.get(message.id);
+      if (!operation) return;
+      pending.delete(message.id);
+      message.error ? operation.reject(new Error("Codex evidence request failed")) : operation.resolve(message.result);
+    });
+    socket.addEventListener("error", () => { process.exitCode = 1; });
+    socket.addEventListener("open", async () => {
+      try {
+        await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
+        socket.send(JSON.stringify({ method: "initialized" }));
+        // Client source labels vary across supported bridges; the exact task marker below selects the turn.
+        const listed = await request("thread/list", { limit: 20, modelProviders: [] });
+        assert.equal(listed.nextCursor, null, "fresh Agent must have a bounded thread inventory");
+        const matches = [];
+        for (const candidate of listed.data) {
+          const { thread } = await request("thread/read", { threadId: candidate.id, includeTurns: true });
+          for (const turn of thread.turns) {
+            if (!turn.items.some(item => item.type === "userMessage" && item.content.some(block => block.type === "text" && block.text.includes(marker)))) continue;
+            const commands = turn.items.filter(item => item.type === "commandExecution").map(item => {
+              // Codex reports the actual shell argv as a quoted command. Accept
+              // only its single non-login shell wrapper around one literal command.
+              let args = standaloneArguments(item.command);
+              if (args?.length === 3 && ["/bin/bash", "/bin/sh", "/usr/bin/bash"].includes(args[0]) && args[1] === "-c") args = standaloneArguments(args[2]);
+              const lines = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.split(/\r?\n/).map(line => line.trim()) : [];
+              return {
+                id: item.id,
+                operations: expected.filter(command => item.cwd === command.workdir && args?.length === command.argv.length && args.every((arg, index) => arg === command.argv[index])).map(command => command.operation),
+                status: item.status,
+                exitCode: item.exitCode,
+                http400: /returned error: 400\b/i.test(item.aggregatedOutput ?? ""),
+                sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(item.aggregatedOutput ?? ""),
+                commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
+                pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),
+              };
+            });
+            matches.push({ threadId: thread.id, turnId: turn.id, status: turn.status, commands });
+          }
+        }
+        assert.equal(matches.length, 1, "the repository task must identify one native Codex turn");
+        process.stdout.write(JSON.stringify(matches[0]));
+      } catch {
+        process.stderr.write("Codex repository evidence unavailable\n");
+        process.exitCode = 1;
+      } finally {
+        clearTimeout(deadline);
+        socket.close();
+      }
+    });
+  })().catch(() => {
+    process.stderr.write("Codex repository authentication unavailable\n");
+    process.exitCode = 1;
   });
 `;

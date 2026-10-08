@@ -2,10 +2,10 @@ package occdev
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +42,7 @@ func TestDevelopmentStatusProxySourceNeverAdmitsTheDefaultRoute(t *testing.T) {
 	r := &runner{engine: "podman", env: map[string]string{}}
 
 	source, err := r.developmentStatusProxySource(context.Background(), &developmentState{Cluster: "occ-dev-test"})
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected a bridge route timeout, got %q, %v", source, err)
 	}
 }
@@ -140,5 +140,23 @@ func TestDevelopmentInstallationSizesAgentsFromMeasuredUse(t *testing.T) {
 	}
 	if got := resources.Agent.Requests["memory"]; got != "768Mi" {
 		t.Fatalf("Harness memory request = %q, want 768Mi", got)
+	}
+}
+
+func TestDevelopmentStatusProxyWaitCancelsBlockedRouteQuery(t *testing.T) {
+	fakeEngine(t, "kubectl", statusProxyNode)
+	fakeEngine(t, "podman", `"exec k3d-occ-dev-test-server-0 ip route get 10.42.0.2") exec sleep 2 ;;
+`)
+	previous := developmentStatusProxyWait
+	developmentStatusProxyWait = 100 * time.Millisecond
+	t.Cleanup(func() { developmentStatusProxyWait = previous })
+	r := &runner{engine: "podman", env: map[string]string{}}
+	started := time.Now()
+	source, err := r.developmentStatusProxySource(context.Background(), &developmentState{Cluster: "occ-dev-test"})
+	if source != "" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected route query deadline, got %q, %v", source, err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("route query outlived the bridge wait deadline")
 	}
 }

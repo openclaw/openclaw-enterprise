@@ -672,6 +672,19 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   );
   createError = undefined;
 
+  // The real client decodes with `oneofs: true`, which adds a virtual `_field` marker for each
+  // set proto3 optional field. A gateway that reports one must still be adopted.
+  const decoded = sandboxes.get(name);
+  sandboxes.set(name, {
+    ...decoded,
+    spec: {
+      ...decoded.spec,
+      template: { ...decoded.spec.template, _user_namespaces: "user_namespaces" },
+    },
+  });
+  assert.deepEqual(await provision(), first);
+  sandboxes.set(name, decoded);
+
   // Another revision's Sandbox, or one without its Harness service, is never adopted.
   sandboxes.set(name, {
     ...sandboxes.get(name),

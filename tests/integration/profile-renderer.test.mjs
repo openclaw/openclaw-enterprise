@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -258,6 +258,41 @@ const harnessResources = {
   requests: { cpu: "100m", memory: "768Mi" },
   limits: { cpu: "4", memory: "6Gi" },
 };
+
+test("preflight rejects noncanonical SHA-256 image digests", (t) => {
+  for (const profile of ["openclaw", "codex"]) {
+    const input = profile === "codex" ? codexInput() : baseInput();
+    input.repository = repositoryConfiguration();
+    const directory = mkdtempSync(join(tmpdir(), "oce-profile-digest-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    for (const [section, key] of [
+      ["controlPlane", "controllerImage"],
+      ["runtime", "image"],
+      ["repository", "image"],
+    ]) {
+      const image = input[section][key];
+      for (const invalid of [
+        image.replace(/(?<=:)[a-f0-9]{64}$/, (digest) => digest.toUpperCase()),
+        image.replace("@sha256:", "@SHA256:"),
+      ]) {
+        // A failed rerender must revoke the previously successful artifacts.
+        assert.equal(render(profile, input, directory).preflight.ok, true);
+        const changed = structuredClone(input);
+        changed[section][key] = invalid;
+        const error = renderError(() => render(profile, changed, directory));
+        assert.match(
+          error.profileRendererOutput,
+          /immutable image reference with a SHA-256 digest/,
+        );
+        const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+        assert.equal(preflight.ok, false);
+        assert.match(preflight.errors.join("\n"), new RegExp(`${section}\\.${key}`));
+        assert.equal(existsSync(join(directory, "values.yaml")), false);
+        assert.equal(existsSync(join(directory, "installation.yaml")), false);
+      }
+    }
+  }
+});
 
 test("profiles give tenant runtimes four-core CPU limits over unchanged 100m requests", () => {
   const example = loadYaml(
@@ -643,6 +678,162 @@ test("preflight rejects metrics and native admin inputs that Helm would reject",
     }),
     /controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain/,
   );
+
+  assertPreflightFailure(
+    "codex",
+    codexInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        authBaseUrl: "https://console.example.internal",
+      },
+    }),
+    /controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain/,
+  );
+
+  // The API refuses a public-suffix cookie domain at startup (tldts, private registries
+  // included); preflight uses the same list. Helm has none, so the chart renders these.
+  const nativeAdminUnder = (sharedCookieDomain) =>
+    codexInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        authBaseUrl: `https://console.${sharedCookieDomain}`,
+        agentNativeAdminDomain: `agents.${sharedCookieDomain}`,
+        sharedCookieDomain,
+      },
+    });
+  for (const sharedCookieDomain of ["co.uk", "github.io", "CO.UK", "192.0.2.1"]) {
+    assertPreflightFailure(
+      "codex",
+      nativeAdminUnder(sharedCookieDomain),
+      /controlPlane.sharedCookieDomain must not be a public suffix/,
+    );
+  }
+  for (const sharedCookieDomain of ["example.co.uk", "oce.github.io"]) {
+    assert.equal(render("codex", nativeAdminUnder(sharedCookieDomain)).summary.ok, true);
+  }
+
+  assertPreflightFailure(
+    "codex",
+    codexInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        authBaseUrl: "http://console.oce.example.internal",
+      },
+    }),
+    /controlPlane.authBaseUrl must use HTTPS with native admin/,
+  );
+
+  // The API and the bootstrap Job accept only an absolute HTTP(S) origin.
+  for (const authBaseUrl of [
+    "https://console.oce.example.internal/occ",
+    "https://console.oce.example.internal?next=1",
+    "https://console.oce.example.internal#console",
+    // An empty query or fragment, which the API's URL serialization keeps (https://host/?).
+    "https://console.oce.example.internal?",
+    "https://console.oce.example.internal/?",
+    "https://console.oce.example.internal#",
+    "https://console.oce.example.internal/#",
+    " https://console.oce.example.internal? ",
+    "https://admin@console.oce.example.internal",
+    "ftp://console.oce.example.internal",
+    "console.oce.example.internal",
+    // Stricter than the API, like the chart: URL parsing repairs these into an origin.
+    "https:console.oce.example.internal",
+    "https://console.oce.example.internal/.",
+    "https://console.oce.example.internal/%2e",
+    // Like the chart: Unicode spaces and invisible characters at either end, which URL
+    // parsing keeps (it strips only C0 controls and spaces). URL parsing already refuses most
+    // of these, and a trailing unassigned code point (U+0378); a trailing U+FEFF or U+200B,
+    // which the host parser drops, is refused by the edge rule alone.
+    ...["\u00a0", "\u2003", "\u3000", "\ufeff", "\u200b"].flatMap((space) => [
+      `${space}https://console.oce.example.internal`,
+      `https://console.oce.example.internal${space}`,
+      ` ${space}https://console.oce.example.internal${space} `,
+    ]),
+    "https://console.oce.example.internal\u0378",
+    // Like the chart: spaces, < and > and invisible characters inside the host. The host parser
+    // refuses spaces, < and >, and drops tabs and most invisible characters.
+    ...[
+      " ",
+      "<",
+      ">",
+      "\u00a0",
+      "\u2003",
+      "\u3000",
+      "\u2028",
+      "\t",
+      "\ufeff",
+      "\u200b",
+      "\u00ad",
+    ].map((space) => `https://console${space}.oce.example.internal`),
+  ]) {
+    assertPreflightFailure(
+      "codex",
+      codexInput({ controlPlane: { ...baseInput().controlPlane, authBaseUrl } }),
+      /controlPlane.authBaseUrl must be an absolute HTTP\(S\) origin URL without a path, query, fragment, or user info/,
+    );
+  }
+  // The API accepts these, and so does the renderer: ASCII spaces and tabs at the ends, which
+  // URL parsing strips, and hosts with non-ASCII letters, including the joiners U+200C and
+  // U+200D that some IDN labels need.
+  for (const authBaseUrl of [
+    " \thttps://console.oce.example.internal\t ",
+    "https://bücher.oce.example.internal",
+    "https://\u0646\u0627\u0645\u0647\u200c\u0627\u06cc.oce.example.internal",
+    "https://\u0915\u094d\u200d\u0937.oce.example.internal",
+  ]) {
+    const output = render(
+      "codex",
+      codexInput({ controlPlane: { ...baseInput().controlPlane, authBaseUrl } }),
+    );
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+  }
+  // An unparsable value is reported once, not again by the native admin checks.
+  const error = renderError(() =>
+    render(
+      "codex",
+      codexInput({
+        controlPlane: { ...baseInput().controlPlane, authBaseUrl: "console.oce.example.internal" },
+      }),
+    ),
+  );
+  const preflight = JSON.parse(
+    readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
+  );
+  assert.deepEqual(
+    preflight.errors.filter((message) => message.includes("authBaseUrl")),
+    [
+      "controlPlane.authBaseUrl must be an absolute HTTP(S) origin URL without a path, query, fragment, or user info.",
+    ],
+  );
+});
+
+// The API lowercases both domains at startup, and the chart accepts only lowercase.
+test("native admin domains render lowercase for the chart", () => {
+  const output = render(
+    "codex",
+    codexInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        authBaseUrl: "https://Console.Example.co.uk",
+        agentNativeAdminDomain: "Agents.Example.co.uk",
+        sharedCookieDomain: "Example.co.uk",
+      },
+    }),
+  );
+  assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+  assert.match(
+    output.values,
+    /agentNativeAdmin:\n {2}enabled: true\n {2}domain: agents\.example\.co\.uk\n {2}sharedCookieDomain: example\.co\.uk\n/,
+  );
+  if (!helmSkip) {
+    const manifests = helmTemplate(output);
+    assert.match(
+      manifests,
+      /name: OCC_AGENT_NATIVE_ADMIN_DOMAIN\n\s+value: "agents\.example\.co\.uk"/,
+    );
+    assert.match(manifests, /name: OCC_AUTH_COOKIE_DOMAIN\n\s+value: "example\.co\.uk"/);
+  }
 });
 
 test("profiles pass an optional observability URL to Installation startup YAML", async () => {
@@ -715,6 +906,16 @@ test(
     assert.match(manifests, /name: OCC_AUTH_GITHUB_RECOVERY_USER_ID\n\s+value: "recovery-admin_1"/);
     assert.match(manifests, /name: OCC_AUTH_TRUSTED_PROXY_CIDRS\n\s+value: "10\.42\.0\.0\/16"/);
     assert.doesNotMatch(manifests, /OCC_AUTH_GITHUB_ALLOWED_/);
+    // The API reads the scheme as URL parsing does, so an uppercase HTTPS origin is valid.
+    const uppercase = render(
+      "openclaw",
+      externalSignInInput({ trustedProxy, authBaseUrl: "HTTPS://Console.OCE.example.internal" }),
+    );
+    assert.equal(uppercase.summary.ok, true, uppercase.preflight.errors.join("\n"));
+    assert.match(
+      helmTemplate(uppercase),
+      /name: OCC_AUTH_BASE_URL\n\s+value: "HTTPS:\/\/Console\.OCE\.example\.internal"/,
+    );
     const allowlisted = render(
       "openclaw",
       externalSignInInput({
@@ -796,6 +997,25 @@ test(
     assert.match(oidcManifests, /name: OCC_AUTH_OIDC_TOKEN_AUTH\n\s+value: "client_secret_basic"/);
     assert.match(oidcManifests, /name: OCC_AUTH_OIDC_DISPLAY_NAME\n\s+value: "Acme SSO"/);
     assert.match(oidcManifests, /name: openclaw-enterprise-api-oidc-login-egress/);
+    // The API trims each OIDC URL with JavaScript's trim before its checks, and so do the chart
+    // and the renderer, which keep the value as written.
+    const padded = render(
+      "openclaw",
+      externalSignInInput({
+        github: undefined,
+        oidc: {
+          issuer: " https://sso.example.com/realms/acme ",
+          authorizationUrl: "\thttps://sso.example.com/realms/acme/protocol/openid-connect/auth",
+          tokenUrl: "\u00a0https://sso.example.com/realms/acme/protocol/openid-connect/token\ufeff",
+          jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs\u3000",
+        },
+      }),
+    );
+    assert.equal(padded.summary.ok, true, padded.preflight.errors.join("\n"));
+    assert.match(
+      helmTemplate(padded),
+      /name: OCC_AUTH_OIDC_ISSUER\n\s+value: " https:\/\/sso\.example\.com\/realms\/acme "/,
+    );
 
     // Password-only installs behind ingress-nginx keep native admin and still trust the proxy.
     const nativeAdmin = render(
@@ -883,6 +1103,30 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
       /controlPlane.oidc.issuer must be an https URL/,
     ],
     [{ issuer: "https://203.0.113.10/" }, /controlPlane.oidc.issuer must be an https URL/],
+    // Like the chart and the API: an explicit port on the issuer, and a value padded with
+    // U+0085, which JavaScript's trim keeps.
+    [
+      { issuer: "https://tenant.idp.example.test:443/" },
+      /controlPlane.oidc.issuer must be an https URL/,
+    ],
+    [
+      { issuer: "\u0085https://tenant.idp.example.test/" },
+      /controlPlane.oidc.issuer must be an https URL/,
+    ],
+    // Like the chart, though URL parsing repairs these into the issuer's host: a tab or a
+    // percent-escape in the host, backslashes, and a host that is not spelled in ASCII.
+    ...[
+      "https://tenant.idp.exam\tple.test/",
+      "https://tenant.idp.example.%74est/",
+      "https:\\\\tenant.idp.example.test\\",
+      "https://tenant.idp.examplé.test/",
+      // A host longer than 253 characters.
+      `https://${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(60)}.test/`,
+    ].map((issuer) => [{ issuer }, /controlPlane.oidc.issuer must be an https URL/]),
+    [
+      { tokenUrl: "https://tenant.idp.exam\tple.test/oauth/token" },
+      /controlPlane.oidc.tokenUrl must be an https URL on port 443 on the issuer's host/,
+    ],
     [
       { tokenUrl: "https://other.example.test/token" },
       /controlPlane.oidc.tokenUrl must be an https URL on port 443 on the issuer's host/,

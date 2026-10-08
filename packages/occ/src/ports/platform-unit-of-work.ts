@@ -47,6 +47,7 @@ export function bindPlatformUnitOfWork(
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
+      "listReferences",
       "lockSecret",
       "createSecret",
       "deleteSecret",
@@ -114,6 +115,9 @@ export function bindPlatformUnitOfWork(
       "listRestrictionsTargeting",
       "createAccessBinding",
       "deleteAccessBinding",
+      "listServicePrincipals",
+      "getServicePrincipal",
+      "createServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",

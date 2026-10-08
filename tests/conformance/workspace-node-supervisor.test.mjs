@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -126,6 +126,8 @@ test(
   },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-"));
+    const existingCa = join(directory, "existing-ca.pem");
+    await writeFile(existingCa, "existing-public-ca");
     const setupEnvelopePath = join(directory, "node-setup.json");
     await writeFile(
       setupEnvelopePath,
@@ -144,6 +146,7 @@ test(
         'args: JSON.parse(args ?? "[]"),',
         "hasSetup: process.env.OPENCLAW_NODE_SETUP_CODE !== undefined ||",
         "  process.env.OPENCLAW_NODE_SETUP_ENVELOPE !== undefined,",
+        "caPath: process.env.NODE_EXTRA_CA_CERTS,",
         "hasModelKey: process.env.OPENAI_API_KEY !== undefined,",
         'autoUpdateDisabled: process.env.OPENCLAW_NO_AUTO_UPDATE === "1",',
         'hasTransportToken: process.env.APP_SERVER_TOKEN !== undefined }) + "\\n");',
@@ -153,6 +156,8 @@ test(
       stubs: pendingIdentityProbe,
       env: {
         OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
+        OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
+        NODE_EXTRA_CA_CERTS: existingCa,
         OPENAI_API_KEY: "synthetic-model-key",
         APP_SERVER_TOKEN: "synthetic-transport-token",
       },
@@ -171,6 +176,9 @@ test(
     assert.equal(codex.hasSetup, false);
     assert.equal(codex.hasModelKey, true);
     assert.equal(codex.hasTransportToken, true);
+    assert.equal((await stat(join(directory, ".oce-native-hooks"))).mode & 0o777, 0o700);
+    assert.equal(await readFile(codex.caPath, "utf8"), "existing-public-ca\ngateway-public-ca");
+    assert.equal(await readFile(node.caPath, "utf8"), "gateway-public-ca");
 
     process.kill(codex.pid, "SIGKILL");
     const afterCodex = await waitFor(

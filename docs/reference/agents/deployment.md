@@ -34,7 +34,7 @@ authentication through the controller API remain deferred.
 
 An Agent may also reference one same-Namespace, OCC-owned
 [service account](../service-accounts.md) through
-`harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`; setting
+`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`; setting
 `harnessAuth` to `null` clears it. This credential binding does not
 replace its ServicePrincipal or Kubernetes ServiceAccount.
 

@@ -409,8 +409,9 @@ test("Installation ownership is server-selected, detached, and immutable", () =>
   }, TypeError);
 });
 
-// Names the API's Name schema refuses but a length-and-blankness check accepts: a C1 control,
-// line and paragraph separators, edge Unicode whitespace and a lone surrogate.
+// Names the API's Name schema refuses. All but the last two pass a length-and-blankness check:
+// a C1 control, line and paragraph separators, edge Unicode whitespace, a lone surrogate, and
+// C0 and DEL controls. The empty string and 201 code points cover the length bounds.
 const namesOutsideTheNameRule = [
   "name\u0085x",
   "name\u2028x",
@@ -418,6 +419,10 @@ const namesOutsideTheNameRule = [
   "name\u00a0",
   "\u3000name",
   "name\ud800x",
+  "name\u0007x",
+  "name\u007fx",
+  "",
+  "😀".repeat(201),
 ];
 
 test("a stored Installation or configured default Preset name follows the API Name rule", () => {
@@ -427,6 +432,12 @@ test("a stored Installation or configured default Preset name follows the API Na
     new OpenClawController({ ...installation, name: longest }).installation.name,
     longest,
   );
+  // The refusal states the whole rule.
+  assert.throws(() => new OpenClawController({ ...installation, name: "name\u0007x" }), {
+    message:
+      "The stored Installation name breaks the Name rule: 1 to 200 characters, with no leading" +
+      " or trailing whitespace and no control characters or line or paragraph separators.",
+  });
   for (const name of namesOutsideTheNameRule) {
     assert.throws(
       () => new OpenClawController({ ...installation, name }),
@@ -449,7 +460,26 @@ test("a stored Installation or configured default Preset name follows the API Na
 });
 
 test("direct controller creates and renames apply the API Name rule", async () => {
-  const { controller } = createController();
+  // Provisioning authorizes its Namespace-level grants, Installation administration included,
+  // before it reads the plan, so the administrator needs that grant to reach the Name rule.
+  const { controller } = createController(
+    createIAMDriver({
+      roles: [
+        {
+          id: "role-installation-admin",
+          permissions: [{ action: "administer", resourceKind: "installation" }],
+        },
+      ],
+      bindings: [
+        {
+          id: "binding-installation-admin",
+          subjectKind: "identity",
+          subjectId: "principal-admin",
+          roleId: "role-installation-admin",
+        },
+      ],
+    }),
+  );
   const namespaceId = "ns_00000000-0000-4000-8000-000000000999";
   for (const name of namesOutsideTheNameRule) {
     const label = JSON.stringify(name);

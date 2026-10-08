@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-09-28"
-last_updated_session: "01a0e6ca-95a4-7e80-aab8-38c5e92a53da"
+updated: "2026-10-05"
+last_updated_session: "authoring-run/0b8bd46b-85c0-4664-8dbd-2ee77cd7b602"
 ---
 
 # Production image upgrade flow
@@ -74,10 +74,15 @@ Namespace stops preparation. Stopped and deleting Agents are excluded.
 For repository-enabled releases, the helper requires explicit immutable
 controller and broker images. It inventories every node matching the control
 plane selector, including unready and cordoned nodes, and requires a single
-native architecture. `scripts/upgrade-repository-image-probe.mjs` runs both
-selected images with synthetic inputs and a private receipt listener. It checks
-recovery and refused reservation through the actual Driver and broker, and
-records the selected digest, platform manifest, configuration, requests, and responses.
+native architecture. `scripts/upgrade-image-identity.py:read_platform` first
+reads Docker's native OCI export and resolves the selected manifest's
+configuration. It retains JSON objects within the 2 MiB per-blob and 32 MiB
+total metadata limits, checks their hashes, and verifies the configuration's
+platform. Compressed filesystem layers are outside that metadata budget.
+Then `scripts/upgrade-repository-image-probe.mjs` runs both selected images
+with synthetic inputs and a private receipt listener. It checks recovery and
+refused reservation through the actual Driver and broker, and records the
+selected digest, platform manifest, configuration, requests, and responses.
 The check proves wire compatibility, not Kubernetes image availability, receipt
 durability, or disposal. The
 helper also preserves the live broker hostname; broker restart recovery remains
@@ -93,6 +98,18 @@ without the database. With the bundled Kubernetes Compute Driver it then runs
 `KubernetesComputeDriver.preflight` with the Pod's Kubernetes credentials (its
 service account in `inCluster` mode), as API and worker startup do; that check refuses, for example, single-cluster
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+Each Pod then checks the stored Installation name from the helper's
+`occ installation get` with the image's `isName`, the check the controller
+applies after it reads the name from the database (`INSTALLATION_NAME_INVALID`);
+an image without the rule skips it.
+On the experimental two-cluster profile, each Pod also runs
+`KubernetesComputeDriver.verifyExecutionTenantGrants` for its component, which
+startup does not run. In each execution tenant Namespace where its identity holds
+the release-era tenant grant, SelfSubjectAccessReviews ask for the newer
+`openclaw-execution` rules (API: Pod and `pods/proxy` reads, plus `pods/log` and
+Event reads with runtime logs; worker: Pod `patch`). A missing rule refuses the
+candidate and points to
+[upgrading the execution chart](../testing/two-cluster-local.md#upgrade-the-execution-chart).
 Because the chart's default-deny NetworkPolicy also selects these Pods, the
 helper first creates a temporary NetworkPolicy carrying the rendered
 `openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.
@@ -162,6 +179,10 @@ broker-enabled worker it also accepts a restartable init container, provided
 no worker exists in the ordinary container list. It rejects a non-restartable
 init worker or ambiguous placement. It retries authenticated OCC access and verifies the same Installation ID. A
 controller-only release then ends without requesting Agent deployments.
+Existing revisions keep the Pod specification of the controller that deployed
+them, so controller fixes to Gateway and Agent Pods, such as
+[diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent only at
+its next deployment.
 
 For a repository-enabled release, it also verifies the ready API and worker
 Pods, their owning ReplicaSets, node architecture, and runtime controller and
@@ -230,6 +251,12 @@ access, and required restore behavior.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 21:20: Refuse a two-cluster upgrade before quiescence when the execution chart lacks this release's tenant grants. (fix-758)
+
+- 2026-10-07 12:00: Say that a controller-only release leaves existing revisions on their old Pod specification until the next deployment. (dogfood-r43)
+
+- 2026-10-05 15:01: Keep filesystem layers outside the image identity metadata budget. (authoring-run/0b8bd46b-85c0-4664-8dbd-2ee77cd7b602 - 08248f8dbf227dfb7b73162056b6afd1c33cee0d)
 
 - 2026-10-05 06:00: Save and report every preflight Pod's result before cleanup, not only the first failure.
 

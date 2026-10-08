@@ -327,7 +327,7 @@ case "$*" in
   *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate"}' ;;
-  *) printf '%s\\n' '{"id":"ins_upgrade_test"}' ;;
+  *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,
   );

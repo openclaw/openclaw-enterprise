@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}-initialization
+  name: {{ printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "initialization") | nindent 4 }}
   annotations:

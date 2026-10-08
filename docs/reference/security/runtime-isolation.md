@@ -46,13 +46,15 @@ There are two supported model-credential paths:
 
 - **Driver-issued access token:** After exact OCC and independent ChatGPT
   authorization, API-side Kubernetes Compute creates one account-owned Secret
-  in the tenant storage namespace. Its `token` and `workspace-id` keys are
-  delivered into each selected revision's data-plane Secret and exposed as
-  `CODEX_ACCESS_TOKEN` and `CODEX_CHATGPT_WORKSPACE_ID`. Kubernetes resolves
-  these runtime Secret references. Codex logs
-  in with `--with-access-token` under its forced ChatGPT workspace and stores
+  in the tenant storage namespace. Its `token` key is delivered into each
+  selected revision's data-plane Secret and exposed as `CODEX_ACCESS_TOKEN`.
+  Kubernetes resolves that runtime Secret reference. As with a directly supplied
+  `codex_pat`, Compute selects `CODEX_LOGIN_MODE=codex_pat`; Codex logs in with
+  `--with-access-token`, derives account identity from the token, and stores
   login state only in its bounded ephemeral workload volume. Embedded access
-  tokens are rejected before deployment.
+  tokens are rejected before deployment. Control-plane checks still enforce
+  the managed account's Backend and workspace ownership; no workspace override
+  reaches the runtime.
 
 A dedicated gateway never receives either model credential. Public OCC Agent
 and AgentRevision responses can include the configured provider ID, which is

@@ -12,6 +12,7 @@ import {
   type IAMDriver,
   type IAMManagedAccessBindingInput,
   type IAMManagedRoleInput,
+  type IAMManagedServicePrincipalInput,
   type IAMPolicyManagementContext,
   type IAMPolicyReadContext,
   type IAMPolicyReadRepository,
@@ -1162,6 +1163,52 @@ export class NativeIAMDriver implements IAMDriver {
     this.assertNamespace(namespaceId);
     this.assertIdentifier(bindingId, "AccessBinding");
     return repository.deleteAccessBinding(namespaceId, bindingId);
+  }
+
+  async listNamespaceServicePrincipals(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<readonly Readonly<ServicePrincipal>[]> {
+    const repository = this.policyRepository(context, ["listServicePrincipals"]);
+    this.assertNamespace(namespaceId);
+    return Object.freeze(
+      (await repository.listServicePrincipals(namespaceId)).map((principal) =>
+        Object.freeze({ ...principal }),
+      ),
+    );
+  }
+
+  async getNamespaceServicePrincipal(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+    servicePrincipalId: string,
+  ): Promise<Readonly<ServicePrincipal> | undefined> {
+    const repository = this.policyRepository(context, ["getServicePrincipal"]);
+    this.assertNamespace(namespaceId);
+    this.assertIdentifier(servicePrincipalId, "ServicePrincipal");
+    const principal = await repository.getServicePrincipal(namespaceId, servicePrincipalId);
+    return principal === undefined ? undefined : Object.freeze({ ...principal });
+  }
+
+  /** Creates an automation identity with no grant; bindings and keys are separate steps. */
+  async createNamespaceServicePrincipal(
+    context: IAMPolicyManagementContext,
+    input: IAMManagedServicePrincipalInput,
+  ): Promise<Readonly<ServicePrincipal>> {
+    const repository = this.policyRepository(context, ["createServicePrincipal"]);
+    assertCondition(
+      typeof input === "object" && input !== null && exactKeys(input, ["id", "namespaceId"]),
+      "managed ServicePrincipal input contains unsupported fields",
+    );
+    this.assertIdentifier(input.id, "ServicePrincipal");
+    this.assertNamespace(input.namespaceId);
+    return Object.freeze({
+      ...(await repository.createServicePrincipal({
+        kind: "service_principal",
+        id: input.id,
+        namespaceId: input.namespaceId,
+      })),
+    });
   }
 
   private policyRepository<Repository extends IAMPolicyReadRepository>(

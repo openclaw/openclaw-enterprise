@@ -545,13 +545,9 @@ test(
       account.data.id,
     );
     assert.ok(Object.hasOwn(accountSecret.data, secretRef.key));
-    assert.ok(Object.hasOwn(accountSecret.data, "workspace-id"));
+    assert.deepEqual(Object.keys(accountSecret.data), [secretRef.key]);
     const accessToken = Buffer.from(accountSecret.data[secretRef.key], "base64").toString("utf8");
     assert.ok(accessToken.length > 0);
-    assert.equal(
-      Buffer.from(accountSecret.data["workspace-id"], "base64").toString("utf8"),
-      workspaceId,
-    );
     assert.equal(JSON.stringify(issued.data).includes(accessToken), false);
     assert.equal(JSON.stringify(issued.data).includes(adminKey), false);
     assert.equal(JSON.stringify(issued.data).includes(secretRef.name), false);
@@ -566,13 +562,24 @@ test(
       configurationId: configuration.data.id,
       backendId: "openai",
       executionMode: "dedicated",
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.data.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: account.data.namespaceId,
+          id: account.data.id,
+        },
+      },
     });
     assertControllerStatus(agent, 201);
     assert.equal(agent.data.backendId, "openai");
     assert.deepEqual(agent.data.harnessAuth, {
-      method: "chatgpt_service_account",
-      serviceAccountId: account.data.id,
+      method: "codex_pat",
+      source: {
+        kind: "service_account",
+        namespaceId: account.data.namespaceId,
+        id: account.data.id,
+      },
     });
 
     // Gateway transport remains operator-owned and separate from the account's model credential.
@@ -658,7 +665,7 @@ test(
     const gatewayEnvironment = gatewayPod.spec.containers[0].env;
     assert.equal(
       codexEnvironment.find(({ name }) => name === "CODEX_LOGIN_MODE")?.value,
-      "chatgpt_service_account",
+      "codex_pat",
     );
     assert.deepEqual(
       codexEnvironment.find(({ name }) => name === "CODEX_ACCESS_TOKEN")?.valueFrom.secretKeyRef,
@@ -668,13 +675,9 @@ test(
       },
       "Codex receives only its revision-owned runtime projection",
     );
-    assert.deepEqual(
-      codexEnvironment.find(({ name }) => name === "CODEX_CHATGPT_WORKSPACE_ID")?.valueFrom
-        .secretKeyRef,
-      {
-        name: `harness-secrets-${hash(agent.data.id)}-${hash(revision.data.id)}`,
-        key: "CODEX_CHATGPT_WORKSPACE_ID",
-      },
+    assert.equal(
+      codexEnvironment.some(({ name }) => name === "CODEX_CHATGPT_WORKSPACE_ID"),
+      false,
     );
     for (const name of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT_WORKSPACE_ID"]) {
       assert.equal(

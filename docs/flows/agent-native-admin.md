@@ -1,19 +1,14 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-01"
-last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
+updated: "2026-10-08"
+last_updated_session: "authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c"
 ---
 
 # Agent Native Admin UI Flow
 
 ## Overview
 
-This flow traces Agent native admin UI access. A console user opens an Agent
-detail tab, OCC checks the user's exact Agent administrator grant, selects
-the active gateway revision, returns a stable per-Agent URL, and the Agent host
-reuses the same OCE session cookie as the console. OCC resolves the requested
-host to the exact Agent, rechecks authorization, and proxies native HTTP and
-WebSocket traffic through the API process. Live runtime proof remains separate.
+The console checks exact-Agent `administer` access and returns a stable native admin URL for the active gateway revision. The Agent host uses the OCE session cookie; OCC rechecks access before proxying HTTP and WebSocket traffic.
 
 ## Entry Points
 
@@ -46,12 +41,15 @@ graph TD
   M -->|no| N["Return unsupported with derived origin"]
   M -->|yes| O["Return available Agent URL"]
   O --> P["Browser opens derived Agent host with shared OCE session cookie"]
-  P --> Q["OCC resolves host to exact Agent using platform state"]
+  P -->|HTTP| Q["OCC resolves host to exact Agent using platform state"]
+  P -->|WebSocket| V["OCC guards client socket during admission"]
+  V --> Q
   Q --> R{"Shared session and exact Agent administer still valid?"}
-  R -->|no| S["Return protected-route error"]
+  R -->|no| S["Reject request; audit exact-Agent authorization denial"]
   R -->|yes| T["Resolve current active revision and supported native config"]
   T --> U["OCC strips browser credentials and proxies HTTP to private gateway"]
-  T -->|WebSocket with exact Origin| V["OCC proxies 101 upgrade with revision lease"]
+  T -->|WebSocket client reset| VB["Stop before gateway connection"]
+  T -->|WebSocket client connected with exact Origin| VC["Proxy 101 upgrade with revision lease"]
   U -->|HTML preview with sandbox routing enabled| W["Browser loads public shell from separate preview origin"]
   W --> Z["Envoy sandbox listener routes to Agent sandbox port"]
   Z --> AA["Native UI delivers HTML into runtime-isolated iframe"]
@@ -63,7 +61,7 @@ graph TD
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-The Agent detail page inserts the native admin panel on its tabs, including Configuration and Workspace files. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped, unavailable, or unsupported states, and shows the **Open native admin UI** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh. When deployment polling or **Refresh deployment** sees a new `activeRevisionId` or `desiredRuntimeState`, `updateCurrentAgent` calls the panel's `refresh()` once under the same guards; a refresh during a read rereads once after it.
+The Agent detail tabs request `${path}/native-admin` with the panel hidden. Disabled and denied states hide it; stopped, unavailable, and unsupported states report their status. Only `available` exposes **Open native admin UI**, which opens the returned URL in a new tab with `noopener noreferrer`. An audited `403` stores the denied path in tab `sessionStorage` for the session owner, avoiding repeated reads until logout, a new sign-in, or a new tab. Deployment polling or **Refresh deployment** rereads after `activeRevisionId` or `desiredRuntimeState` changes; a refresh during a read triggers one follow-up read.
 
 The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
 
@@ -73,7 +71,7 @@ The warning text tells operators that native admin access can change gateway sta
 
 `createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. It reads the current controller through a getter so an app created before bootstrap uses the initialized controller on later requests. Shared route admission remains in `apps/controller/src/index.ts`.
 
-The route is `GET /namespaces/:namespaceId/agents/:agentId/native-admin`. Its operation metadata requires Agent `administer`, targets the exact Agent, and runs through the same `admit` and `resolveIdentity` middleware as other protected OCC routes. A caller with only `read` or `operate` does not reach the handler as an administrator. The disabled feature state is still behind OCC exact-Agent `administer` authorization and existence checks; `disabled` is not an unauthenticated discovery result and does not add a separate Agent `read` permission path.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires exact-Agent `administer` through `admit` and `resolveIdentity`. `read` and `operate` do not grant access. Even `disabled` is returned only after authorization and existence checks.
 
 ### 3. Shared availability resolver checks feature and active revision state
 
@@ -138,7 +136,7 @@ The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatchi
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts, reuses the shared-session admission path, captures the current active revision at connection admission, and builds the same private proxy transport context. Active sockets are tracked so `preClose` destroys them during API shutdown.
+The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. An exact-Agent authorization denial still records its attributable audit after a reset. An allowed admission checks whether the client socket was destroyed before and after resolving the private transport context, so a disconnected client does not open a gateway connection. A connected client proceeds with the selected active revision.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
@@ -169,19 +167,19 @@ The init container cannot write through the gateway's later mount path.
 
 ## Debugging and Verification
 
-- `AGENT_NATIVE_ADMIN_INVALID` at startup points to invalid native admin enablement, missing public origin, invalid Agent domain, invalid shared cookie parent domain, invalid Better Auth cookie scope, or insufficient auth secret material.
+- `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
 - `disabled` means the Installation has not enabled the feature.
 - `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
-- `unavailable` means active revision selection raised `NoActiveAgentRevisionError` (a desired-running Agent without an active revision) before OCC could derive the Agent target, or a newer revision exists whose Compute Driver `requiresStoppedPredecessors` (Kubernetes dedicated). That worker stops the active revision's workload before the newer one starts, so nothing serves until the newer revision activates; if it fails, the old revision stays recorded as active with no workload.
+- `unavailable` means a desired-running Agent has no active revision, or a newer revision on a Compute Driver with `requiresStoppedPredecessors` has stopped the active workload. If replacement fails, the old revision remains recorded as active without a workload.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests should not contain native-admin exchange, bootstrap, callback, launch-code, state, verifier, or Agent-specific session-cookie traffic.
 - The native gateway should never observe the OCE session cookie; inspect sanitized proxy inputs when testing this boundary.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
+- A client TCP reset during pending WebSocket admission should leave the API process running. If exact-Agent authorization then denies the request, its attributable denial audit should still appear; an allowed request should not open an upstream connection after the client disconnects.
 - `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
 - Browser tests cover panel visibility, warning copy, available status, and opening the returned URL. Integration proof should cover shared-cookie admission, denied service API keys, unknown host denial, proxied asset loads, WebSocket reconnect, authorization lease renewal (the PostgreSQL suite shortens the 25-second interval), revision-change closure and reconnect, and a reversible native admin edit on a disposable Agent.
-- The flow is source-backed only here. Live runtime proof remains separate.
 
 ## Related docs
 
@@ -196,6 +194,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 03:40: Documented client reset handling during native-admin WebSocket admission and the denial-audit and upstream-connection ordering at inspected revision `002d0f796`. (authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c - 002d0f79639a9c814eb1fa2799530516a6c90cde)
 
 - 2026-10-04 07:30: Only a missing active revision reports `unavailable`; IAM and other dependency outages return `503`, and close or refuse proxied requests as `dependency_failure`. (bh11-native-status)
 

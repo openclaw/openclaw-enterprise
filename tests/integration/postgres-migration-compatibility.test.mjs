@@ -1181,6 +1181,8 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
+      // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
+      ["occ.sync_agent_credential_sources()", false],
       ["occ.validate_access_binding_scope()", false],
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
@@ -1550,6 +1552,7 @@ async function canonicalData(db) {
               "repository_access",
               "harness_auth_credential_source_id",
               "plugin_approvers",
+              "credential_sources",
             ]
           : table === "controller_work"
             ? ["work_kind"]
@@ -1625,6 +1628,8 @@ test(
       [45, "preModelProbeFailureCause"],
       [46, "preProvisioningConfigurationRelease"],
       [47, "preAdministratorCredentialSourceGrants"],
+      [48, "preCodexPatSources"],
+      [49, "preAgentCredentialSources"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1723,7 +1728,7 @@ test(
 );
 
 test(
-  "Canonical migration upgrades the exact Provider receipt lineage without rewriting fingerprints",
+  "Provider migration preserves fingerprints and rejects retired managed PAT bindings",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
@@ -1736,11 +1741,10 @@ test(
       ok: true,
       history: "providerCompleted",
     });
-    assert.deepEqual(await runHistoryMigration(db), {
-      ok: true,
-      history: "providerCompleted",
-    });
-    await assertCompletedHistory(db, receipts);
+    // Preserve the historical terminology migration proof through its supported auth shape.
+    // The canonical PAT-source migration must then refuse the retired binding atomically.
+    await installCanonicalPrefix(db, 48);
+    assert.deepEqual((await historyReceipts(db.migrator)).slice(0, receipts.length), receipts);
     assert.deepEqual(
       (
         await db.app.query(
@@ -1849,12 +1853,14 @@ test(
     );
     assert.deepEqual(await runHistoryMigration(db, "production", true), {
       ok: true,
-      history: "completed",
+      history: "preCodexPatSources",
     });
+    const beforeRefusal = await historySnapshot(db);
     assert.deepEqual(await runHistoryMigration(db, "production"), {
-      ok: true,
-      history: "completed",
+      ok: false,
+      code: "MIGRATION_FAILED",
     });
+    assert.deepEqual(await historySnapshot(db), beforeRefusal);
   },
 );
 
@@ -1880,6 +1886,8 @@ test(
       [45, "preModelProbeFailureCause"],
       [46, "preProvisioningConfigurationRelease"],
       [47, "preAdministratorCredentialSourceGrants"],
+      [48, "preCodexPatSources"],
+      [49, "preAgentCredentialSources"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1956,6 +1964,8 @@ test(
       [45, "preModelProbeFailureCause"],
       [46, "preProvisioningConfigurationRelease"],
       // Prefix 47 is omitted: 0048 only updates rows, so it has no DDL for the trigger to abort.
+      [48, "preCodexPatSources"],
+      [49, "preAgentCredentialSources"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

@@ -141,11 +141,16 @@ complete-deletion lifecycle.
   restricted Pod Security labels, tenant-local RoleBindings, NetworkPolicies,
   and Installation `administer` authorization. After provisioning, verify exact
   `openclaw.dev/namespace` identity and the `namespace-id` annotation.
-- A refused selection reports only `status: "failed"`; the worker's
+- A refused selection reports only `status: "failed"` in the API. The worker's
   `worker.completed` line for `namespace.ensure` carries
-  `code: NAMESPACE_INCOMPLETE` and no reason. Recheck the items above, including
-  old tenant markers left by an earlier OCC Namespace on the same Kubernetes
-  namespace.
+  `code: NAMESPACE_INCOMPLETE` and a `reason` naming the failed check, for
+  example the tenant marker key (`openclaw.dev/namespace` label,
+  `openclaw.dev/namespace-id` annotation or `openclaw.dev/gateway-namespace`
+  label) that names a different Namespace. It never logs that marker's value, the
+  other Kubernetes namespace that already claims the tenant, or the name of a
+  NetworkPolicy the Namespace does not own; list those with `kubectl`. Old
+  tenant markers are usually left by an earlier OCC Namespace on the same
+  Kubernetes namespace.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
@@ -168,6 +173,7 @@ complete-deletion lifecycle.
 
 ## Changelog
 
+- 2026-10-06 18:55: A refused selection logs its reason in `worker.completed`, naming foreign markers by key only. (fix-d521)
 - 2026-10-06 18:40: Name all three tenant markers that block readoption, the stuck deletion of a failed selection over foreign markers, and the reasonless `failed` status. (dogfood-r38)
 - 2026-10-01 16:45: Trace additive DNS port updates during Agent preparation in already-ready Namespaces. (authoring-run/0cfc470c-ba88-4a95-86e0-35123f0de703 - d419e4e49513233c39f8975328902141a52d0a96)
 - 2026-10-01 15:40: Documented the accompanying allow-dns change to permit UDP and TCP port 5353 alongside port 53. (authoring-run/a4c4fa72-fa88-4660-a8ef-25b347c15dcc - 4cab4887b863904bb7190599fc27cd93ecdef246)

@@ -126,7 +126,9 @@ The worker emits fixed operational event classes through the same logger:
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
   write. A provisioning plan that the Compute Driver refuses for a reason the caller
-  cannot fix adds that `reason`. These fields stay in the local log; the Collector
+  cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
+  `reason` when it gives one: bounded printable text that never carries another
+  tenant's values. These fields stay in the local log; the Collector
   exports only the result code. Each deployment pass adds worker wall-clock milliseconds:
   `durationMs` for the pass, `deployPasses` and summed Compute `prepareMs` so
   far, `readinessWaitMs` from the first unready observation to the first ready
@@ -186,6 +188,25 @@ worker does not expose an HTTP health endpoint.
   answer from the Kubernetes API server in the event's `host` and `port`.
   Confirm the API and worker egress policy still allows that address (Helm
   `cluster.cidrs`) and that the server is running.
+- **`AUTH_SECRET_INVALID` or `AUTH_BASE_URL_INVALID` at startup:** The API
+  and the initialization Job refuse a missing `OCC_AUTH_SECRET` or one under 32
+  characters (`AUTH_SECRET_INVALID`), and an `OCC_AUTH_BASE_URL` that is not an
+  absolute HTTP(S) origin (`AUTH_BASE_URL_INVALID`). In production the Job also
+  requires HTTPS unless the host is loopback; in development the base URL host
+  must be loopback. With native admin enabled, the API also reports
+  `AUTH_BASE_URL_INVALID` for an `OCC_AUTH_COOKIE_DOMAIN` that is malformed, a
+  public suffix, does not contain the base URL host, or is used without HTTPS
+  session cookies.
+- **`GATEWAY_API_KEY_UNAVAILABLE` at startup:** The API refuses an
+  `OCC_GATEWAY_API_KEY_PATH` that is blank or not absolute, and a key file that
+  is missing, not a regular file, over 4 KiB, or not printable ASCII without
+  spaces (a trailing newline counts). Native admin without the path reports
+  this code too. Helm mounts the file from `gatewayRouting.apiKeySecretName`;
+  see [gateway routing](gateway-routing.md#service-key-and-native-identity).
+- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
+  and OIDC sign-in support host-only cookies only, so the API refuses any of
+  them with native admin enabled, before it connects to the database. Turn off
+  native admin; the chart refuses it with these providers.
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;

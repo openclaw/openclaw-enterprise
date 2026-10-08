@@ -36,16 +36,11 @@ Keep other authors' PRs, branches, and worktrees read-only unless explicitly
 assigned. Repository permissions and dependencies do not expand scope.
 Subagents inherit these limits.
 
-For new PRs, default to pushing a topic branch to the requesting user's fork
-and opening it against `openclaw/openclaw-enterprise`, including when the user
-has write access to the upstream repository. Use upstream topic branches when
-the user's instructions or an authorized maintainer workflow selects that path.
 Maintainers retain their review, merge, and approved bypass permissions.
 When assigned to update an existing PR, preserve its head repository and branch.
-Follow the [fork workflow](CONTRIBUTING.md#prepare-a-pull-request);
-verify repository URLs and ownership rather than assuming `origin` is the fork.
-Preserve existing remotes. Keep fork PRs editable by maintainers
-as described in the contribution policy.
+Follow the [PR workflow](CONTRIBUTING.md#prepare-a-pull-request);
+verify repository URLs and ownership rather than inferring them from remote names.
+Preserve existing remotes.
 
 "Refresh against main" does not authorize force pushes. Preserve published
 history by default. Rewrite history only with explicit authorization for the
@@ -126,6 +121,10 @@ Use [local-dev](.agents/skills/local-dev/SKILL.md) for repository development
 changes. It requires creating or updating a source-backed flow doc for non-trivial
 runtime changes and defines when trivial maintenance needs no new flow doc.
 Update the existing behavior owner under `docs/flows/` whenever possible.
+Complete its [PR readiness checklist](.agents/skills/local-dev/references/pr-readiness.md)
+before handoff. Default image-version changes must pass its
+[image verification workflow](.agents/skills/local-dev/references/image-version-verification.md)
+before merging; track the authorized publication from main separately.
 
 Use [spec](.agents/skills/spec/SKILL.md) to draft or update RFCs and implementation
 plans. Its `rfc` and `plan` commands follow the
@@ -299,7 +298,8 @@ an independent plan can build on the existing architecture without a new RFC.
 Keep verification in the owning document or its supporting pages, not a separate
 reports area. Keep completed and superseded records in place.
 
-RFC entry points require `status` in YAML frontmatter. Companion notes link to
+RFC entry points require `status` and the original PR author's GitHub login in
+`author` YAML frontmatter. Companion notes link to
 their parent through `rfc` frontmatter instead of duplicating its decision
 status. Follow the specification process for historical status uncertainty.
 
@@ -310,7 +310,8 @@ retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
 Use stable feature names in `docs/reference/` and preserve grandfathered
-specification names and IDs when grouping companions under `index.md`.
+plan names when grouping companions under `index.md`. RFCs require unique numeric
+IDs of at least four digits; keep the old-to-new lookup current when renumbering.
 This first organization phase preserves `specs/.archive/` content and placement;
 only the removed console-image links change to a preserved Git revision. Do not
 add new records to it. A behavior-changing implementation PR

@@ -218,7 +218,7 @@ driver stored the new value; it does not restart a gateway, edit an existing
 AgentRevision, or prove that a running process has consumed the value.
 
 For a Harness model API key, update the OCC Secret, explicitly deploy every
-consuming Agent through OCE, wait for each new revision to become active, and
+[consuming Agent](#find-a-secrets-consumers) through OCE, wait for each new revision to become active, and
 verify a model request before revoking the old key upstream. Revision preparation
 reads the current CP source and delivers the admitted fields into the DP runtime
 Secret before starting the Harness. An unchanged Configuration or Secret reference
@@ -241,6 +241,26 @@ the credential at the upstream provider; then update the OCC Secret with a
 replacement value and redeploy the intended consumers. Delete the Secret only
 after its reference dependencies are cleared; see [Delete](#delete).
 
+### Find a Secret's consumers
+
+The exact Secret read, `GET /namespaces/:namespaceId/secrets/:secretId` or
+`occ secret get "$SECRET_ID"`, returns `consumers`: the IDs of the Agents,
+Configurations, credential sources, and pending Agent provisioning requests
+that currently reference the Secret. An Agent is listed when its draft, active
+revision, or a pending deployment references the Secret. These are the same
+references that block deletion.
+
+```bash
+./bin/occ secret get "$SECRET_ID" -o json | jq -r '.consumers.agents[]'
+```
+
+Only resources you may read are named; `unreadable` counts the others without
+naming them, so someone with wider read access must find those. A provisioning
+request is named only for the actor that started it. OCC examines at most 50
+references, ordered by kind and ID; `truncated: true` means more exist. An Agent
+that uses a listed Configuration but has not deployed it is not listed; its next
+deployment reads the current value.
+
 ## Delete
 
 Delete only unreferenced Secrets. This example uses an authenticated human
@@ -258,6 +278,10 @@ curl --fail-with-body -sS \
 
 Successful deletion returns HTTP `204`. OCC denies deletion while the Secret is
 referenced by any current Configuration, credential source, Agent draft, active revision, pending deployment, or queued or running Agent provisioning request.
+The `409` names the references you may read, as many as fit the message, for
+example `The Secret is still referenced by Agent agt_…; 1 resource you cannot
+read. Remove those references first.` [Find its consumers](#find-a-secrets-consumers)
+for the full list.
 Inactive historical revisions alone do not prevent deletion.
 Namespace removal is also blocked while owned Secrets remain. Agent removal does
 not own or garbage-collect Namespace Secret storage.
@@ -273,6 +297,9 @@ metadata cleanup after OCC verifies the stored backend identity.
   this name already exists in this Namespace", choose another name or update the
   existing Secret. For `NAMESPACE_NOT_READY`, wait until the platform Namespace is
   `ready` and its backing Kubernetes namespace is bound to the exact Namespace ID.
+- **Secret delete returns `409` `RESOURCE_CONFLICT`:** Remove each named
+  reference, then retry. For references you cannot read, ask someone with read
+  access to the Namespace's Agents and Configurations to clear them.
 - **Secret operation returns `403`:** Verify OCC permission for the exact Secret
   or parent Namespace. For binding or Agent assignment, also verify caller
   `operate` on each exact Secret. For deployment, verify both the deploying actor

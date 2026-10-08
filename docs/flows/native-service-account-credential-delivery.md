@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-03
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-07
+last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
 # Harness Authentication Binding Flow
@@ -94,8 +94,8 @@ does not prove a model call will succeed.
 `authorizeHarnessAuthSource`
 
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
-API-key, `codex_pat`, and OAuth sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
-needs exact Secret `operate`; a ChatGPT binding needs exact account `read`.
+API-key, imported `codex_pat`, and OAuth sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
+needs exact Secret `operate`; a managed `codex_pat` source needs exact account `read`.
 Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
@@ -115,9 +115,11 @@ reference and Driver identity. For a ChatGPT account, it verifies the issued
 access-token reference and private Backend, member Driver, and workspace
 ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
-with `runtime`; Kubernetes requires managed authentication and admits OAuth only
-for Compute-owned dedicated Codex without a Sandbox Driver, so an unsupported
-binding fails before predecessors stop.
+with `runtime`. Kubernetes `validateHarnessAuth` requires dedicated Codex for
+both imported and managed `codex_pat` sources. OAuth additionally requires
+Compute-owned storage without a Sandbox Driver. Deployment and guided
+provisioning reject unsupported combinations before admitting work or stopping
+predecessors.
 
 Host credential changes can affect a runtime revision after restart without
 redeployment; see the
@@ -146,7 +148,7 @@ backend ownership from OCC state and passes an ephemeral `ComputeRevisionContext
 without reading credential bytes or rewriting the revision. Compute then reads
 the canonical CP source, verifies the admitted Secret UID or managed-account
 ownership, and delivers only selected fields into the DP revision Secret.
-Missing or replaced sources fail preparation. ChatGPT retains the exact account token/workspace source.
+Missing or replaced sources fail preparation. Managed PATs retain the exact account-owned token source.
 Inactive revision history keeps references without retaining their sources
 indefinitely; drafts, active revisions, and pending deployments block source deletion.
 
@@ -160,8 +162,8 @@ Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
 from the immutable native model Configuration; admission requires all selected
 models and fallbacks to use the same supported provider. Dedicated Codex receives
-the key or account token/workspace through a revision-owned DP projection. A
-directly supplied service account token delivers only `CODEX_ACCESS_TOKEN` as the
+the key or account token through a revision-owned DP projection. Both
+imported and managed PATs deliver only `CODEX_ACCESS_TOKEN` as the
 model credential; its separate Gateway receives none.
 Neither gateway-only Configuration secret bindings nor initial runtime
 provisioning, which creates only transport/channel groups, can supply model auth.
@@ -178,7 +180,9 @@ and Kubernetes workload identity credentials stay separate.
 `GATEWAY_RUNTIME_ENTRYPOINT`
 
 Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
-stdin; managed account login forces the admitted workspace; direct service account token login uses `--with-access-token` without a caller-supplied workspace, and native whoami validates and hydrates identity. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
+stdin; both managed and imported PAT sources use `CODEX_LOGIN_MODE=codex_pat`
+and `--with-access-token`. Native whoami validates and hydrates identity;
+control-plane checks retain managed account and workspace ownership. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
 inputs, failed login, or a failed bounded native turn against the primary model
 (under the restricted [probe policy](../reference/harness-execution.md#harness-authentication))
 prevent app-server startup and readiness. API-key and service-account login
@@ -290,6 +294,9 @@ Secret updates from resetting custody.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 13:44: Reject imported and managed PAT bindings outside dedicated Codex during admission. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 09be9c241)
+- 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
 - 2026-10-03 15:38: Merge current credential flow while preserving shared-namespace source placement. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 94364ae9)
 

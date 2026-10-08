@@ -2697,3 +2697,56 @@ test("The console requires a readable installed default for quick-start and stil
   await page.getByRole("button", { name: "Use Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Custom Agent");
 });
+
+test("Preset with a managed PAT account creates a draft without a Secret grant", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Managed account Preset", { ready: true });
+  // Account issuance is outside this browser test. Association before issuance is
+  // supported; this proves Preset rendering and draft creation, not deployment.
+  const account = await fixture.controller.transact((state) =>
+    state.serviceAccounts.createServiceAccount({
+      id: `sa_${crypto.randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Preset research account",
+    }),
+  );
+  const harnessAuth = {
+    method: "codex_pat",
+    source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+  };
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  delete artifact.template.variables.modelSecret;
+  artifact.template.agent.harnessAuth = harnessAuth;
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Managed PAT Preset Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const created = (await response.json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  assert.deepEqual(created.harnessAuth, harnessAuth);
+  assert.equal(
+    requests.some(
+      (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
+    ),
+    false,
+  );
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+});

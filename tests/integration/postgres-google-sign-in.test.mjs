@@ -103,7 +103,7 @@ test(
     const denials = (reason) => loginDenialCount(state, reason);
     const attach = (userId, provider, subject) =>
       assertProviderAttached(app, adminHeaders, userId, provider, subject);
-    const assertGoogleRefused = (authorization, message, reason) =>
+    const assertGoogleRefused = (authorization, message, reason, consoleReason) =>
       assertExternalSignInRefused(
         {
           pool,
@@ -113,6 +113,7 @@ test(
         },
         message,
         reason,
+        consoleReason,
       );
     async function assertGoogleSignIn(subject, userId, claims) {
       const signIn = await googleSignIn(
@@ -448,7 +449,12 @@ test(
       });
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
-      await assertGoogleRefused({ subject: disabledSubject }, "disabled account");
+      await assertGoogleRefused(
+        { subject: disabledSubject },
+        "disabled account",
+        "ACCOUNT_DISABLED",
+        "account-disabled",
+      );
     });
 
     await t.test("GitHub and Google together both sign in with distinct provider ids", async () => {
@@ -472,7 +478,12 @@ test(
         password: true,
         sessionBinding: true,
       });
-      await assertGoogleRefused({ subject: disabledSubject }, "disabled after restart");
+      await assertGoogleRefused(
+        { subject: disabledSubject },
+        "disabled after restart",
+        "ACCOUNT_DISABLED",
+        "account-disabled",
+      );
       await attach(both.id, "google", bothSubject);
       await attach(both.id, "github", bothGithubSubject);
       await assertGoogleSignIn(bothSubject, both.id);

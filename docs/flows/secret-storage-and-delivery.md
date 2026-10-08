@@ -248,7 +248,10 @@ blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
 [deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
 Agent harness-binding draft, active revision, and pending-work dependencies under the same serialization
-boundary. Once unreferenced, it deletes only the exact Namespace-owned backend and metadata.
+boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
+`secretConsumers` checks `read` on each referencing resource, names the readable ones in
+the `409`, and counts the rest. `readSecret` returns the same result as `consumers`.
+Once unreferenced, it deletes only the exact Namespace-owned backend and metadata.
 A partial delete can be retried; missing or foreign objects never become an
 adoption or recreation path. Gateway replacement does not garbage-collect
 Secrets, so immediate revocation requires stopping workloads or revoking the

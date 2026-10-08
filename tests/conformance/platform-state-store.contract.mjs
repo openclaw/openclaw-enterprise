@@ -140,6 +140,14 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     await transaction.operations.append(operation);
   });
 
+  // The draft binding and the pending deployment both reference the key: one Agent entry.
+  await store.read(async (state) => {
+    assert.deepEqual(await state.secrets.listReferences(namespace.id, harnessSecret.id, 50), {
+      references: [{ kind: "agent", id: agent.id }],
+      truncated: false,
+    });
+  });
+
   // Agent-scoped work exists only to tear an Agent down. Reconciliation still
   // belongs to revisions, so Agent work without the deleted target is refused
   // rather than queued as generic Agent reconciliation.
@@ -681,6 +689,15 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     await assert.rejects(transaction.agents.createAgent(blockedAgent), {
       name: "ScopeViolationError",
     });
+    // A Namespace being deleted admits no new ServicePrincipal either.
+    await assert.rejects(
+      transaction.iamPolicy.createServicePrincipal({
+        kind: "service_principal",
+        id: identifier("spn"),
+        namespaceId: lifecycleNamespace.id,
+      }),
+      { name: "ScopeViolationError" },
+    );
     const tombstone = await transaction.namespaces.markNamespaceDeleted(
       lifecycleNamespace.id,
       deletedAt,
@@ -802,7 +819,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     backendId: null,
     executionMode: "dedicated",
     servicePrincipalId: identifier("service-agent"),
-    harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+    harnessAuth: {
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+    },
     desiredRuntimeState: "stopped",
     status: "active",
     createdAt: new Date().toISOString(),
@@ -823,8 +843,8 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     servicePrincipalId: accountAgent.servicePrincipalId,
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: {
-      method: "chatgpt_service_account",
-      serviceAccountId: account.id,
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
       credential,
       backendBinding: {
         backendId: "chatgpt-contract",
@@ -972,7 +992,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         id: identifier("agt"),
         name: "Cross Namespace " + randomUUID(),
         servicePrincipalId: identifier("service-agent"),
-        harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+        },
       }),
     ),
     {
@@ -984,8 +1007,8 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   await assert.rejects(
     store.transact((transaction) =>
       transaction.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
-        method: "chatgpt_service_account",
-        serviceAccountId: account.id,
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
       }),
     ),
     {
@@ -1026,8 +1049,12 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       accountRevision.harnessAuth,
     );
     const alternateBinding = {
-      method: "chatgpt_service_account",
-      serviceAccountId: alternateAccount.id,
+      method: "codex_pat",
+      source: {
+        kind: "service_account",
+        namespaceId: alternateAccount.namespaceId,
+        id: alternateAccount.id,
+      },
     };
     for (const [requested, expected] of [
       [alternateBinding, alternateBinding],
@@ -1101,8 +1128,12 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   );
   await store.transact(async (transaction) => {
     const replacementBinding = {
-      method: "chatgpt_service_account",
-      serviceAccountId: alternateAccount.id,
+      method: "codex_pat",
+      source: {
+        kind: "service_account",
+        namespaceId: alternateAccount.namespaceId,
+        id: alternateAccount.id,
+      },
     };
     await transaction.agents.updateConfiguration(
       accountNamespace.id,
@@ -1113,7 +1144,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     );
     const replacement = await transaction.revisions.createRevision({
       ...accountRevision,
-      harnessAuth: { ...accountRevision.harnessAuth, serviceAccountId: alternateAccount.id },
+      harnessAuth: { ...accountRevision.harnessAuth, source: replacementBinding.source },
       id: identifier("rev"),
       revision: 2,
     });
@@ -1582,8 +1613,15 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
     status: "active",
     createdAt,
   };
-  const configuration = configurationFor();
   const secret = secretFor("Bound secret");
+  const configuration = {
+    ...configurationFor(),
+    secretBindings: {
+      SLACK_BOT_TOKEN: { source: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
+    },
+  };
+  const secondConfiguration = { ...configuration, ...configurationFor() };
+  const configurationIds = [configuration.id, secondConfiguration.id].sort();
   const preset = {
     id: identifier("pre"),
     namespaceId: namespace.id,
@@ -1630,9 +1668,10 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
   await store.transact(async (transaction) => {
     await transaction.namespaces.createNamespace(namespace);
     await transaction.configurations.createConfiguration(agentConfiguration);
-    await transaction.configurations.createConfiguration(configuration);
     await transaction.secrets.createSecret(agentSecret);
     await transaction.secrets.createSecret(secret);
+    await transaction.configurations.createConfiguration(configuration);
+    await transaction.configurations.createConfiguration(secondConfiguration);
     await transaction.agents.createAgent(agent);
     await transaction.revisions.createRevision({
       ...revision,
@@ -1659,17 +1698,41 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
     }
   });
 
-  // The credential source references the Secret, so it goes first.
+  // Each reference comes back once, ordered by kind then ID; a full page says more exist.
+  const references = [
+    ...configurationIds.map((id) => ({ kind: "configuration", id })),
+    { kind: "credential_source", id: source.id },
+  ];
+  await store.read(async (state) => {
+    assert.deepEqual(await state.secrets.listReferences(namespace.id, secret.id, 50), {
+      references,
+      truncated: false,
+    });
+    // A page that holds exactly every reference is not truncated.
+    assert.deepEqual(await state.secrets.listReferences(namespace.id, secret.id, 3), {
+      references,
+      truncated: false,
+    });
+    assert.deepEqual(await state.secrets.listReferences(namespace.id, secret.id, 1), {
+      references: [references[0]],
+      truncated: true,
+    });
+    assert.deepEqual(await state.secrets.listReferences(namespace.id, agentSecret.id, 50), {
+      references: [{ kind: "agent", id: agent.id }],
+      truncated: false,
+    });
+  });
+
+  // The credential source and the Configuration reference the Secret, so they go first.
   await store.transact(async (transaction) => {
     assert.equal(
       await transaction.credentialSources.deleteCredentialSource(namespace.id, source.id),
       true,
     );
+    for (const id of configurationIds) {
+      assert.equal(await transaction.configurations.deleteConfiguration(namespace.id, id), true);
+    }
     assert.equal(await transaction.secrets.deleteSecret(namespace.id, secret.id), true);
-    assert.equal(
-      await transaction.configurations.deleteConfiguration(namespace.id, configuration.id),
-      true,
-    );
     assert.equal(await transaction.presets.deletePreset(namespace.id, preset.id), true);
     assert.equal(
       await transaction.serviceAccounts.deleteServiceAccount(namespace.id, account.id),
@@ -1688,6 +1751,28 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
   await store.transact(async (transaction) => {
     assert.equal(await transaction.iamPolicy.deleteAccessBinding(namespace.id, surviving.id), true);
     assert.equal(await transaction.iamPolicy.deleteRole(namespace.id, role.id), true);
+  });
+
+  // A Namespace ServicePrincipal is listed and read only in its own Namespace. The Agent's
+  // own ServicePrincipal is not a Namespace ServicePrincipal, so it is never listed or read.
+  const principal = { kind: "service_principal", id: identifier("spn"), namespaceId: namespace.id };
+  await store.transact((transaction) => transaction.iamPolicy.createServicePrincipal(principal));
+  const otherNamespaceId = identifier("ns");
+  await store.read(async (state) => {
+    assert.deepEqual(await state.iamPolicy.listServicePrincipals(namespace.id), [principal]);
+    assert.deepEqual(
+      await state.iamPolicy.getServicePrincipal(namespace.id, principal.id),
+      principal,
+    );
+    assert.equal(
+      await state.iamPolicy.getServicePrincipal(namespace.id, agent.servicePrincipalId),
+      undefined,
+    );
+    assert.deepEqual(await state.iamPolicy.listServicePrincipals(otherNamespaceId), []);
+    assert.equal(
+      await state.iamPolicy.getServicePrincipal(otherNamespaceId, principal.id),
+      undefined,
+    );
   });
 }
 
@@ -1742,6 +1827,8 @@ async function verifyCredentialSourceContract(
     configurationId: sourceConfiguration.id,
     backendId: null,
     harnessAuth: sourceBinding,
+    // The list holds every bound source; harnessAuth names the listed Harness source.
+    credentialSources: [{ sourceId: source.id }],
     executionMode: "embedded",
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
@@ -1762,6 +1849,9 @@ async function verifyCredentialSourceContract(
       sourceType: source.type,
       loginMode: "api_key",
     },
+    credentialSources: [
+      { sourceId: source.id, credentialGatewayId: "openshell-contract", sourceType: source.type },
+    ],
   };
   const sourceReferences = (transaction) =>
     transaction.credentialSources.hasReferences(sourceNamespace.id, source.id);
@@ -1920,6 +2010,12 @@ async function verifyCredentialSourceContract(
       sourceConfiguration.id,
       undefined,
       null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
     );
     // An inactive historical snapshot does not retain the source.
     assert.equal(await sourceReferences(transaction), false);
@@ -2108,6 +2204,93 @@ async function verifyCredentialSourceContract(
       api_key: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
     }),
   );
+
+  // A non-model source binds through the Agent's credentialSources list. The draft and the
+  // active revision each retain it, and a revision freezes exactly the draft's list.
+  const tokenSource = {
+    ...source,
+    id: identifier("cs"),
+    name: "Registry token " + randomUUID(),
+    type: "bearer-token",
+    config: { host: "registry.example.com", env_var: "REGISTRY_TOKEN" },
+    secrets: { token: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id } },
+  };
+  const toolAgent = {
+    ...sourceAgent,
+    id: identifier("agt"),
+    name: "Credential source tool agent " + randomUUID(),
+    harnessAuth: { method: "runtime" },
+    credentialSources: [{ sourceId: tokenSource.id }],
+    servicePrincipalId: identifier("service-agent"),
+  };
+  const toolRevision = {
+    ...sourceRevision,
+    id: identifier("rev"),
+    agentId: toolAgent.id,
+    servicePrincipalId: toolAgent.servicePrincipalId,
+    harnessAuth: { method: "runtime" },
+    credentialSources: [
+      {
+        sourceId: tokenSource.id,
+        credentialGatewayId: "openshell-contract",
+        sourceType: tokenSource.type,
+      },
+    ],
+  };
+  const tokenReferences = (transaction) =>
+    transaction.credentialSources.hasReferences(sourceNamespace.id, tokenSource.id);
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.createCredentialSource(tokenSource);
+    await transaction.agents.createAgent(toolAgent);
+    assert.deepEqual(
+      (await transaction.agents.findAgent(sourceNamespace.id, toolAgent.id)).credentialSources,
+      [{ sourceId: tokenSource.id }],
+    );
+    assert.equal(await tokenReferences(transaction), true);
+  });
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.revisions.createRevision({ ...toolRevision, credentialSources: undefined }),
+    ),
+    "A revision must freeze the Agent's non-model sources.",
+  );
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.credentialSources.deleteCredentialSource(sourceNamespace.id, tokenSource.id),
+    ),
+    "An Agent draft's non-model source cannot be deleted.",
+  );
+  await store.transact(async (transaction) => {
+    assert.deepEqual(await transaction.revisions.createRevision(toolRevision), toolRevision);
+    await transaction.agents.compareAndSetActiveRevision(
+      sourceNamespace.id,
+      toolAgent.id,
+      undefined,
+      toolRevision.id,
+    );
+    // An empty list removes the draft binding; the active revision still retains the source.
+    const cleared = await transaction.agents.updateConfiguration(
+      sourceNamespace.id,
+      toolAgent.id,
+      sourceConfiguration.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+    );
+    assert.equal(cleared.credentialSources, undefined);
+    assert.equal(await tokenReferences(transaction), true);
+    await transaction.agents.compareAndClearActiveRevision(
+      sourceNamespace.id,
+      toolAgent.id,
+      toolRevision.id,
+    );
+    assert.equal(await tokenReferences(transaction), false);
+  });
 
   // Deletion is two-phase: a deleting source stays recorded and blocks Namespace
   // teardown, but new bindings refuse it.

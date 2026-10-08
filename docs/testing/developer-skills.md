@@ -15,6 +15,12 @@ Use the skills below for the relevant development task:
 | Clean the current diff              | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                                                                                                                                                           |
 | Run requested independent review    | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                                                                                                                                                                  |
 
+For PR handoff, use local-dev's
+[readiness checklist](../../.agents/skills/local-dev/references/pr-readiness.md).
+Default image-version changes require its
+[native image verification workflow](../../.agents/skills/local-dev/references/image-version-verification.md)
+before merge, followed by authorized publication from main.
+
 These skills are checked into `.agents/skills`, except autoreview, whose entrypoint
 uses one [shared installation](autoreview.md).
 Testing setup and real-runtime requirements remain owned by the

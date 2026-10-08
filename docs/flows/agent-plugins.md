@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-01
-last_updated_session: codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a
+updated: 2026-10-07
+last_updated_session: authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02
 ---
 
 # Agent Plugin Deployment Flow
@@ -190,6 +190,11 @@ Workspace-aware readback rejects policy conflicts before readiness. Disabled app
 retain inherited fields. Categories resolve app → global → native `true`; equivalent
 values/nulls pass. Tool enablement cannot bypass categories.
 
+`runtime-entrypoints.ts:startAuthenticatedCodex` passes the admitted Harness model,
+without its provider prefix, to the app-server after the authentication probe
+succeeds. Native configuration readback therefore exposes the model used for
+startup policy validation.
+
 `runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks explicit app/link
 reviewers and `configRequirements/read`, rejecting forbidden reviewers, incompatible
 automatic-review settings, or conflicting model requirements. Startup checks do not
@@ -300,6 +305,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
 
 - 2026-10-04 05:00: Recheck Create Agent discovery grants after the Secret read. (bughunt-11)
 

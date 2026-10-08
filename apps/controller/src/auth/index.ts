@@ -37,7 +37,7 @@ import {
   githubProviderId,
   googleProviderId,
   type GitHubLoginConfiguration,
-  MEMBERSHIP_DENIALS,
+  CALLBACK_DENIALS,
   PASSWORD_DENIAL_AUDIT_UNAVAILABLE,
 } from "./github.ts";
 import type { ExternalProviderName } from "./github.ts";
@@ -539,15 +539,16 @@ class DenialAuditUnavailable extends Error {
   }
 }
 
-// The Console reason for each GitHub allowlist refusal (RFC-0061). No other value reaches
-// the redirect.
-const membershipReasons: Readonly<Record<(typeof MEMBERSHIP_DENIALS)[number], string>> = {
+// The Console reason for each GitHub allowlist refusal (RFC-0061) and for an attached identity
+// whose account is disabled. No other value reaches the redirect.
+const callbackReasons: Readonly<Record<(typeof CALLBACK_DENIALS)[number], string>> = {
   MEMBERSHIP_REQUIRED: "membership",
   MEMBERSHIP_UNAVAILABLE: "membership-unavailable",
+  ACCOUNT_DISABLED: "account-disabled",
 };
 
-/** An audited allowlist refusal whose Console reason the callback redirect carries. */
-class MembershipRefusal extends AdmissionFailure {
+/** An audited callback refusal whose Console reason the callback redirect carries. */
+class CallbackRefusal extends AdmissionFailure {
   readonly consoleReason: string;
   constructor(consoleReason: string) {
     super(401, "UNAUTHENTICATED", "Authentication was not accepted.");
@@ -555,11 +556,11 @@ class MembershipRefusal extends AdmissionFailure {
   }
 }
 
-async function membershipRefusal(response: Response): Promise<MembershipRefusal | undefined> {
+async function callbackRefusal(response: Response): Promise<CallbackRefusal | undefined> {
   try {
     const body = (await response.json()) as { readonly code?: unknown } | null;
-    const code = MEMBERSHIP_DENIALS.find((denial) => denial === body?.code);
-    return code === undefined ? undefined : new MembershipRefusal(membershipReasons[code]);
+    const code = CALLBACK_DENIALS.find((denial) => denial === body?.code);
+    return code === undefined ? undefined : new CallbackRefusal(callbackReasons[code]);
   } catch {
     return undefined;
   }
@@ -865,6 +866,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
         },
         decisionId: `adm_${randomUUID()}`,
         method: "api_key",
+        serviceKeyId: key.id,
       };
     }
 
@@ -1292,7 +1294,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         }
         throw failure;
       }
-      const refusal = path.endsWith("/callback") ? await membershipRefusal(response) : undefined;
+      const refusal = path.endsWith("/callback") ? await callbackRefusal(response) : undefined;
       throw (
         refusal ?? new AdmissionFailure(401, "UNAUTHENTICATED", "Authentication was not accepted.")
       );
@@ -1339,7 +1341,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           reply.redirect("/console/");
         } catch (error) {
           reply.redirect(
-            error instanceof MembershipRefusal
+            error instanceof CallbackRefusal
               ? `/console/?authError=${name}&authReason=${error.consoleReason}`
               : `/console/?authError=${name}`,
           );

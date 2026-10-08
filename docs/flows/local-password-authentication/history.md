@@ -8,6 +8,22 @@ This record preserves the dated changes to the bootstrap and human authenticatio
 
 ## Changelog
 
+- 2026-09-30 20:57: Receive landed PR751 while preserving bounded device proofs and both documentation histories. (authoring-run/b38fdf7a-4e45-40ac-a7d7-7da3aa8e0070 - 0e59bf4479aabfa0d00c6940c55be760fa19a200)
+
+- 2026-09-30 20:28: Receive bounded device proofs and clarify audit-failure accounting and cookie delivery. (authoring-run/b84d8248-fb41-44b3-8ed5-30d7fd777926 - 2702a01c6c2136cf9fb5b6808d3972379158f2ff)
+
+- 2026-09-30 20:12: Qualify audit-failure session cleanup and tracked-budget accounting. (authoring-run/d58e793e-df0f-40de-8f08-5d0ee989927a - d7b2e4c0697ace45cf2d4b3ab630ce3976334a16)
+
+- 2026-09-30 17:01: Bound fresh device proofs without reopening spent allowances. (authoring-run/bc25e670-bfac-4568-9e6d-d0104391ed45 - 6b43652ca0792ca1a4be0f8bc628f62c1f72fe17)
+
+- 2026-09-30 12:00: Trace the password-only refusal of account and recovery routes. (fix/dogfood-2)
+
+- 2026-09-30 01:03: Receive the PostgreSQL binding and independent schema views. (authoring-run/f1ccd2eb-7d83-40d8-9fe1-c79672f9f98f - f2c9f98b0b89762cc9edda189c102ed8c593c678)
+
+- 2026-09-28 04:00: Trace the GitHub attempt receipt, result exchange, and `x-occ-session-key` narrowing in the accompanying source change. (feat/github-session-binding-20260928)
+
+- 2026-09-26 21:09: Trace origin checks for cookie-authenticated mutations and sign-out. (authoring-run/6d7cf57f-03f3-4ea7-8694-38edd9f3c9c2 - 849b2b24111fe237b12da5be1d4b411d3146cefb)
+
 - 2026-09-25 17:27: Trace noncredential session identity for Console lifetime invalidation in accompanying changes. (01a0d992-db83-7843-b40c-355c0f2c2b9a - 64ab72aed5c4926e4a2080ade91d785e531801a2)
 
 - 2026-09-23 18:50: Trace shared GitHub App login without OAuth scopes and discarded App credential data in the accompanying source change. (public-pr/305 - e9a16a23f1c3a5bc9a26e1ca13022b769bae5e7a)

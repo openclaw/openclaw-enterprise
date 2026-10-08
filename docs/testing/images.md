@@ -175,6 +175,18 @@ Both startup suites accept `OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER`, an integer from
 
 ## Repository image-pair qualification
 
+Run the identity and node qualification fixtures without model credentials:
+
+```sh
+node --test tests/integration/production-image-qualification.test.mjs
+```
+
+The image identity case runs the production CLI against a synthetic OCI archive
+with 34 small compressed filesystem layers. It verifies that the layers do not
+consume the metadata allowance and that corrupt or excessive metadata is still
+rejected. Docker inspection and export are fixture I/O; this does not establish
+native Docker behavior or a live upgrade.
+
 The qualification test invokes the actual staged controller and broker images
 with synthetic App and TLS material and a disposable receipt listener. On a
 Linux host running as UID 1000, stage immutable images for its native Docker

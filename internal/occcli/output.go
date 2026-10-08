@@ -48,6 +48,57 @@ func (app *application) printSecret(value any, collection bool) error {
 	})
 }
 
+// printSecretDetail adds a CONSUMERS column to the single-Secret table: the
+// referencing resource IDs the caller may read, the count of those it may not,
+// and whether OCC stopped examining references. Structured output keeps the
+// full consumers object.
+func (app *application) printSecretDetail(value any) error {
+	if app.output == "table" {
+		if resource, ok := value.(map[string]any); ok {
+			row := maps.Clone(resource)
+			row["consumers"] = secretConsumersText(resource["consumers"])
+			value = row
+		}
+	}
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "id"},
+		{title: "NAME", key: "name"},
+		{title: "CONSUMERS", key: "consumers"},
+	})
+}
+
+// secretConsumersText renders consumers as "kind:id" pairs, then "N unreadable"
+// and "more" when present, or nil (shown as "-") when nothing references the
+// Secret.
+func secretConsumersText(value any) any {
+	consumers, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	parts := []string{}
+	for _, kind := range []struct{ key, label string }{
+		{"agents", "agent"},
+		{"configurations", "configuration"},
+		{"credentialSources", "credential-source"},
+		{"provisioningRequests", "provisioning"},
+	} {
+		ids, _ := consumers[kind.key].([]any)
+		for _, id := range ids {
+			parts = append(parts, kind.label+":"+displayValue(id))
+		}
+	}
+	if unreadable, ok := consumers["unreadable"].(float64); ok && unreadable > 0 {
+		parts = append(parts, strconv.FormatFloat(unreadable, 'f', -1, 64)+" unreadable")
+	}
+	if truncated, _ := consumers["truncated"].(bool); truncated {
+		parts = append(parts, "more")
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return strings.Join(parts, ", ")
+}
+
 // printPreset shows Preset identity in tables; structured output includes the template.
 func (app *application) printPreset(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
@@ -109,6 +160,23 @@ func (app *application) printIAMAccessBinding(value any, collection bool) error 
 		{title: "ROLE", key: "roleId"},
 		{title: "RESOURCE KIND", key: "resourceKind"},
 		{title: "RESOURCE", key: "resourceId"},
+	})
+}
+
+func (app *application) printIAMServicePrincipal(value any, collection bool) error {
+	return app.printItems(value, collection, []column{
+		{title: "ID", key: "id"},
+		{title: "NAMESPACE", key: "namespaceId"},
+	})
+}
+
+func (app *application) printServiceKey(value any) error {
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "id"},
+		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
+		{title: "NAMESPACE", key: "namespaceId"},
+		{title: "NAME", key: "name"},
+		{title: "EXPIRES", key: "expiresAt"},
 	})
 }
 

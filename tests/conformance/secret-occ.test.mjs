@@ -195,7 +195,17 @@ test("Secret storage requires a ready Namespace and no Agent owner before any ga
   assert.deepEqual(Object.keys(secret).sort(), ["id", "name", "namespaceId", "ref"]);
   assert.deepEqual(secret.ref, { kind: "secret", namespaceId: namespace.id, id: secret.id });
   assert.equal(secretDriver.valueFor(secret), "sk-test-original");
-  assert.deepEqual(await controller.readSecret(administrator, namespace.id, secret.id), secret);
+  assert.deepEqual(await controller.readSecret(administrator, namespace.id, secret.id), {
+    ...secret,
+    consumers: {
+      agents: [],
+      configurations: [],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 0,
+      truncated: false,
+    },
+  });
   assert.equal(JSON.stringify(secret).includes("sk-test-original"), false);
 });
 
@@ -386,7 +396,17 @@ test("Secret material, metadata, and binding permissions stay separate", async (
     controller.deleteSecret(secretConsumer, namespace.id, secret.id),
     AuthorizationDeniedError,
   );
-  assert.deepEqual(await controller.readSecret(metadataReader, namespace.id, secret.id), secret);
+  assert.deepEqual(await controller.readSecret(metadataReader, namespace.id, secret.id), {
+    ...secret,
+    consumers: {
+      agents: [],
+      configurations: [],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 0,
+      truncated: false,
+    },
+  });
 
   const secretBindings = { GATEWAY_TOOL_TOKEN: { source: secret.ref } };
   await assert.rejects(

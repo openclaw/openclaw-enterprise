@@ -701,6 +701,7 @@ test(
       namespaceId: foreign.id,
       namespaceReady: false,
       failure: "permanent",
+      reason: `Refusing unowned Kubernetes Namespace ${foreignName}.`,
     });
     const foreignLabels = (await resource("namespace", foreignName)).metadata.labels ?? {};
     assert.equal(

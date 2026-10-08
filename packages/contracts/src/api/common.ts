@@ -11,6 +11,7 @@ export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
+export const IAMServicePrincipalId = Type.String({ minLength: 1, maxLength: 200 });
 export const ConfigurationKindSchema = Type.Literal("agent");
 export const HarnessExecutionModeSchema = Type.Union([
   Type.Literal("embedded"),
@@ -183,6 +184,11 @@ export const IAMAccessBindingParams = Type.Object(
   { additionalProperties: false },
 );
 
+export const IAMServicePrincipalParams = Type.Object(
+  { namespaceId: NamespaceId, servicePrincipalId: IAMServicePrincipalId },
+  { additionalProperties: false },
+);
+
 export const RevisionParams = Type.Object(
   { namespaceId: NamespaceId, agentId: AgentId, revisionId: RevisionId },
   { additionalProperties: false },
@@ -289,7 +295,16 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("codex_pat"), source: SecretReference },
+    {
+      method: Type.Literal("codex_pat"),
+      source: Type.Union([
+        SecretReference,
+        Type.Object(
+          { kind: Type.Literal("service_account"), namespaceId: NamespaceId, id: ServiceAccountId },
+          { additionalProperties: false },
+        ),
+      ]),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -297,14 +312,20 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("chatgpt_service_account"), serviceAccountId: ServiceAccountId },
-    { additionalProperties: false },
-  ),
-  Type.Object(
     { method: Type.Literal("credential_source"), sourceId: CredentialSourceId },
     { additionalProperties: false },
   ),
 ]);
+
+export const AgentCredentialSourcesSchema = Type.Array(
+  Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
+  {
+    maxItems: 8,
+    uniqueItems: true,
+    description:
+      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+  },
+);
 
 export const CredentialSourceReference = Type.Object(
   { kind: Type.Literal("credential_source"), namespaceId: NamespaceId, id: CredentialSourceId },
@@ -552,6 +573,8 @@ export const CreateIAMRoleBody = Type.Object(
   { additionalProperties: false },
 );
 
+export const CreateIAMServicePrincipalBody = Type.Object({}, { additionalProperties: false });
+
 export const CreateIAMAccessBindingBody = Type.Object(
   {
     subjectKind: Type.Literal("identity"),
@@ -673,6 +696,7 @@ export const CreateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -719,6 +743,7 @@ export const UpdateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
@@ -937,6 +962,7 @@ export type ServiceAccountId = Type.Static<typeof ServiceAccountId>;
 export type SecretId = Type.Static<typeof SecretId>;
 export type IAMRoleId = Type.Static<typeof IAMRoleId>;
 export type IAMAccessBindingId = Type.Static<typeof IAMAccessBindingId>;
+export type IAMServicePrincipalId = Type.Static<typeof IAMServicePrincipalId>;
 export type ConfigurationGeneration = Type.Static<typeof ConfigurationGeneration>;
 export type AgentId = Type.Static<typeof AgentId>;
 export type RevisionId = Type.Static<typeof RevisionId>;
@@ -954,6 +980,7 @@ export type ServiceAccountParams = Type.Static<typeof ServiceAccountParams>;
 export type SecretParams = Type.Static<typeof SecretParams>;
 export type IAMRoleParams = Type.Static<typeof IAMRoleParams>;
 export type IAMAccessBindingParams = Type.Static<typeof IAMAccessBindingParams>;
+export type IAMServicePrincipalParams = Type.Static<typeof IAMServicePrincipalParams>;
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
@@ -963,6 +990,7 @@ export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredent
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;
 export type CreateIAMRoleBody = Type.Static<typeof CreateIAMRoleBody>;
 export type CreateIAMAccessBindingBody = Type.Static<typeof CreateIAMAccessBindingBody>;
+export type CreateIAMServicePrincipalBody = Type.Static<typeof CreateIAMServicePrincipalBody>;
 export type ConfigurationValues = Type.Static<typeof ConfigurationValues>;
 export type CreateSecretBody = Type.Static<typeof CreateSecretBody>;
 export type UpdateSecretBody = Type.Static<typeof UpdateSecretBody>;

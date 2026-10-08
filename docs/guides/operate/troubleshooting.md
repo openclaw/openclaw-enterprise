@@ -133,17 +133,24 @@ helm status "$HELM_RELEASE" --namespace openclaw-system \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   get jobs,pods,pvc
+INITIALIZATION_JOB=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  get jobs --selector "app.kubernetes.io/instance=$HELM_RELEASE,app.kubernetes.io/component=initialization" \
+  -o name)
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  describe job "$HELM_RELEASE-initialization"
+  describe "$INITIALIZATION_JOB"
 ```
+
+The lookup uses release labels because long release names have a shortened Job
+name. If it finds no Job, inspect the Helm error before running `describe` or
+`logs`; the hook may not have been created.
 
 If the Job started, inspect the failing container:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  logs "job/$HELM_RELEASE-initialization" -c migration
+  logs "$INITIALIZATION_JOB" -c migration
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  logs "job/$HELM_RELEASE-initialization" -c bootstrap
+  logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
 Migration runs before bootstrap; an unstarted bootstrap container has no logs.

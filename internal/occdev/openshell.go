@@ -245,7 +245,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
 		return "", err
 	}
-	if err := r.run(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", state.Cluster); err != nil {
+	if err := r.importArchiveDirect(ctx, archive, state.Cluster); err != nil {
 		return "", err
 	}
 

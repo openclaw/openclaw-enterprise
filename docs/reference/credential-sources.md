@@ -3,13 +3,15 @@
 A credential source registers a Namespace Secret with the Installation's
 selected [Credential Gateway](drivers/credential-gateway.md). The gateway keeps
 its own copy of the value and applies it outside the Agent workload, so the
-Harness never receives the real credential. An Agent uses a source through
-[`harnessAuth`](agents.md#harness-authentication).
+Harness never receives the real credential. An Agent uses a model source through
+[`harnessAuth`](agents.md#harness-authentication) and other sources through its
+`credentialSources` list.
 
 Credential sources require a selected Credential Gateway. The only
-implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md),
-which supports one source type, `openai`, for dedicated Codex model
-authentication. OpenShell is not a supported production Agent path; see its
+implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
+Its `openai` type authenticates dedicated Codex models, and its `bearer-token`
+type carries a static token to one API endpoint. OpenShell is not a supported
+production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 
 ## Register a source
@@ -77,10 +79,20 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set the Agent's binding to
-`{ "method": "credential_source", "sourceId": "cs_…" }`. The caller needs
-`credential_source:operate` on the exact source. Deployment also requires the
-Agent's service principal to have `operate` on it; grant it with a
+List every source the Agent uses in its `credentialSources`, up to eight
+entries of `{ "sourceId": "cs_…" }`, on create or update. An update replaces the
+list, `[]` removes it, and a source cannot appear twice. Any catalog type can be
+listed.
+
+To have the Harness authenticate its model with a source, also set
+`harnessAuth` to `{ "method": "credential_source", "sourceId": "cs_…" }`. It
+names one listed entry whose catalog type has `harnessAuth`; it does not bind
+the source separately. A request that names an unlisted source, or removes the
+named source from the list, fails with `404`.
+
+The caller needs `credential_source:operate` on each exact
+source, including any the update removes. Deployment also requires the Agent's
+service principal to have `operate` on each source; grant it with a
 [Namespace IAM](authorization.md#manage-namespace-policy) Role and an exact
 `credential_source` AccessBinding. The principal needs no permission on the
 underlying Secret. The worker rechecks both grants before it
@@ -88,7 +100,7 @@ provisions the revision. See [Harness execution](harness-execution.md#harness-au
 for the supported topology.
 
 While a Credential Gateway is selected, deployment rejects `api_key`,
-`codex_pat`, and `chatgpt_service_account` bindings with `409`. Guided Agent
+and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`. Guided Agent
 provisioning rejects credential sources with `400`; create the Agent, then
 deploy it.
 
@@ -132,8 +144,9 @@ gateway gives updated values only to new processes. To rotate a key:
 Withdrawal revokes a source from an Agent's active revision while the revision
 keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
-The caller needs `agent:operate`, and the active revision must authenticate with
-that source. The request returns `202` with the withdrawal in state `pending`.
+The caller needs `agent:operate`, and the active revision must have been
+admitted with that source, as its Harness authentication or in
+`credentialSources`. The request returns `202` with the withdrawal in state `pending`.
 A replay returns the same withdrawal. It queues another attempt only if no
 attempt is already queued or running.
 
@@ -156,14 +169,20 @@ The worker retries an unconfirmed withdrawal a few times with backoff
 unless the revision has maintenance (see below). Send the withdraw request
 again to queue another attempt.
 
-A withdrawn source never re-attaches to that revision; if its Sandbox is
-recreated, provisioning fails with `CREDENTIAL_WITHDRAWN`. Maintenance of the
-revision stops preparing it. Only revisions with maintenance, those with
-repository credentials or on a Compute Driver that declares a maintenance
-interval, run it: while the withdrawal is `pending`, each maintenance pass
-queues another attempt if none is outstanding. Once it is `revoked`,
-maintenance stops, so Compute no longer repairs the revision until a redeploy
-replaces it.
+A withdrawn source never re-attaches to that revision. If its Sandbox is
+recreated, a withdrawn source is left out and the revision keeps running
+without it, unless `harnessAuth` names it. A withdrawn Harness source instead fails provisioning with
+`CREDENTIAL_WITHDRAWN`, and maintenance of the revision stops preparing it. While any
+withdrawal is `pending`, each maintenance pass queues another attempt if none is
+outstanding. After model-source withdrawal, maintenance never prepares the revision
+again. It continues recovering pending tool withdrawals even when the model
+source is already `revoked`, and stops only when every withdrawal is `revoked`.
+Redeploy to resume Compute repair.
+
+Withdrawals of different sources on one revision share one worker attempt, but
+each is authorized by its own `requestedBy`. A requester who lost
+`agent:operate` leaves only their withdrawal `pending` with
+`AUTHORIZATION_DENIED`; the others are still revoked.
 
 The revision still references the source, so the source cannot be deleted until
 a redeploy replaces the revision. Redeploy the Agent with a replacement source

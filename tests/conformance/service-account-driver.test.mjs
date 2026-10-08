@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:https";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
@@ -13,6 +21,9 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
+const { Agent, buildConnector, getGlobalDispatcher, setGlobalDispatcher } = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+)("undici");
 const installation = Object.freeze({
   id: "installation-service-account-driver",
   name: "ServiceAccount Driver OCC conformance",
@@ -241,4 +252,121 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
   assert.equal(sent, `x${"\u{1F600}".repeat(79)}-${id}`);
   assert.ok(sent.length <= 200);
   assert.doesNotMatch(sent, /\p{Cs}/u);
+});
+
+test("ChatGPT Backend releases rejected HTTPS responses for subsequent account calls", async (t) => {
+  assert.doesNotThrow(
+    () => execFileSync("openssl", ["version"], { stdio: "ignore" }),
+    "This native HTTPS regression requires openssl on PATH.",
+  );
+  const directory = await mkdtemp(join(tmpdir(), "chatgpt-backend-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      join(directory, "key.pem"),
+      "-out",
+      join(directory, "cert.pem"),
+      "-subj",
+      "/CN=api.chatgpt.com",
+      "-addext",
+      "subjectAltName=DNS:api.chatgpt.com",
+    ],
+    { stdio: "ignore" },
+  );
+  const key = await readFile(join(directory, "key.pem"));
+  const cert = await readFile(join(directory, "cert.pem"));
+  const workspaceId = backend.configuration.workspaceId;
+  for (const fault of [
+    { name: "HTTP 429", status: 429, reason: /failed with HTTP 429/ },
+    { name: "HTTP 503", status: 503, reason: /failed with HTTP 503/ },
+    {
+      name: "oversized declared response",
+      status: 200,
+      length: 4 * 1024 * 1024 + 1,
+      reason: /invalid response/,
+    },
+  ]) {
+    await t.test(fault.name, async () => {
+      const requests = [];
+      const server = createServer({ key, cert }, (request, response) => {
+        requests.push({ method: request.method, path: request.url });
+        request.resume();
+        if (requests.length === 1) {
+          if (fault.length !== undefined) {
+            response.setHeader("content-length", fault.length);
+          }
+          response.writeHead(fault.status);
+          // The native response stays open after the Backend rejects its headers.
+          response.write("unfinished synthetic response");
+        } else {
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({ id: "recovered-account", workspace_id: workspaceId, enabled: true }),
+          );
+        }
+      });
+      const originalDispatcher = getGlobalDispatcher();
+      const connector = buildConnector({ ca: cert, allowH2: false });
+      const agent = new Agent({
+        connections: 1,
+        pipelining: 1,
+        // Route native fetch to our TLS listener without replacing fetch or body disposal.
+        connect: (options, callback) =>
+          connector(
+            {
+              ...options,
+              hostname: "127.0.0.1",
+              port: server.address().port,
+              servername: "api.chatgpt.com",
+            },
+            callback,
+          ),
+      });
+      let retry;
+      let timer;
+      try {
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+        setGlobalDispatcher(agent);
+        const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
+        await assert.rejects(client.createServiceAccount({ name: "first" }), fault.reason);
+        retry = client.createServiceAccount({ name: "retry" });
+        const account = await Promise.race([
+          retry,
+          new Promise((_, reject) => {
+            // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
+            timer = setTimeout(
+              () =>
+                reject(new Error("The next account call stalled behind the rejected response.")),
+              5000,
+            );
+          }),
+        ]);
+        assert.deepEqual(account, { id: "recovered-account" });
+        assert.deepEqual(
+          requests,
+          Array(2).fill({
+            method: "POST",
+            path: `/v1/manage/workspaces/${workspaceId}/service-accounts`,
+          }),
+        );
+      } finally {
+        clearTimeout(timer);
+        setGlobalDispatcher(originalDispatcher);
+        await agent.destroy();
+        await retry?.catch(() => {});
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  }
 });

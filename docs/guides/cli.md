@@ -59,6 +59,10 @@ occ installation get
 occ namespace list
 ```
 
+`occ` has no human sign-in: a service key authenticates a non-Agent
+ServicePrincipal, not a person. Without a key, use the
+[console](../reference/console.md).
+
 Replace both example values with your own. These commands require an
 Installation-scoped key; reading the Installation also requires Installation
 `read`. If your key is Namespace-scoped, use
@@ -74,6 +78,31 @@ commands:
 ```bash
 export OCC_NAMESPACE='<namespace-id>'
 ```
+
+## Give a member or automation CLI access
+
+People sign in to the console; the CLI authenticates only with a service key.
+An Installation administrator gives someone CLI access to one Namespace by
+issuing a key for a Namespace service principal that holds only the grants
+you bind. With an administrator key file and `OCC_NAMESPACE` set:
+
+```bash
+occ iam service-principal create -o json    # note its id: <service-principal-id>
+occ iam access-binding create --file binding.json
+occ service-key create --service-principal '<service-principal-id>' \
+  --name nora-laptop --expires-in-days 30 --out nora-key.json
+```
+
+`binding.json` names the service principal as `subjectId` and an existing
+Namespace Role; see [Namespace IAM](../reference/authorization.md#manage-namespace-policy).
+Each binding grants one target, so bind the same targets a person would need, as in
+[Let a person run an existing Agent](topics/iam.md#let-a-person-run-an-existing-agent).
+Issuing the key requires that you already hold every grant of the service
+principal. The key never reaches another Namespace, IAM policy, or key issuance. Hand over the `0600` key file privately; the member
+sets `OCC_SERVICE_KEY_FILE` to it and `OCC_NAMESPACE` to the Namespace. When the
+key is no longer needed, run `occ service-key revoke <key-id>` (the ID printed
+at creation) or delete its AccessBindings. Disabling the member's console
+account does not end the key, so revoke it when they leave.
 
 ## Choose your next task
 

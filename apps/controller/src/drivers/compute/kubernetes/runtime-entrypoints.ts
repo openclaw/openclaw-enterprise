@@ -375,6 +375,21 @@ function gatewayRefusedAuthentication(gatewayRuntime, error) {
   );
 }
 
+// The Gateway resolves its loaded channel plugins plus manifest plugins for the channels the
+// Configuration sets up, so channels.status for a channel the Agent does not use is refused
+// as INVALID_REQUEST "unknown channel: <id>" (src/gateway/server-methods/channels.ts in the
+// pinned OpenClaw). A configured channel whose plugin failed to load still resolves and takes
+// the status path.
+function gatewayRefusedUnknownChannel(gatewayRuntime, error, channel) {
+  return (
+    typeof channel === "string" &&
+    typeof gatewayRuntime?.isGatewayClientRequestError === "function" &&
+    gatewayRuntime.isGatewayClientRequestError(error) === true &&
+    error.gatewayCode === "INVALID_REQUEST" &&
+    error.message === "unknown channel: " + channel
+  );
+}
+
 // Query the running Gateway through OpenClaw's public SDK. Starting a CLI here
 // also starts its launcher/respawn lifecycle; killing that launcher cannot bound
 // a probe whose descendant still owns stdout.
@@ -406,6 +421,8 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
       gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
       const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
         progress: false,
+        // Status probes must not initialize shared state alongside Gateway startup.
+        sharedStateMode: "read-only",
         signal: controller.signal,
       });
       if (settled) return;
@@ -422,12 +439,23 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
       finish({
         ok: false,
         code: "PROBE_FAILED",
+        ...(gatewayRefusedUnknownChannel(gatewayRuntime, error, params?.channel) ? { unknownChannel: true } : {}),
         ...(gatewayRefusedAuthentication(gatewayRuntime, error)
           ? { authenticationRefused: true, authenticationRefusalReason: gatewayAuthRefusalReason(error) }
           : {}),
       });
     });
   });
+}
+
+// No Slack channel: the expected answer for an Agent that does not use Slack, so nothing
+// past configuration was checked.
+function notConfiguredSlackChecks(checkedAt) {
+  return [
+    runtimeDiagnosticCheck("configuration", "failed", checkedAt, "NOT_CONFIGURED"),
+    runtimeDiagnosticCheck("authentication", "unknown", checkedAt),
+    runtimeDiagnosticCheck("connectivity", "unknown", checkedAt),
+  ];
 }
 
 function unknownSlackChecks(checkedAt, code) {
@@ -514,13 +542,7 @@ function slackChecksFromStatusPayload(payload, checkedAt) {
       : typeof account.configured === "boolean"
         ? account.configured
         : undefined;
-  if (configured === false) {
-    return [
-      runtimeDiagnosticCheck("configuration", "failed", checkedAt, "NOT_CONFIGURED"),
-      runtimeDiagnosticCheck("authentication", "unknown", checkedAt),
-      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt),
-    ];
-  }
+  if (configured === false) return notConfiguredSlackChecks(checkedAt);
   const probe = isPlainObject(account.probe) ? account.probe : undefined;
   const connected =
     typeof channelSummary.connected === "boolean"
@@ -543,7 +565,11 @@ async function slackChannelDiagnosticChecks(checkedAt, abortSignal) {
     6000,
     abortSignal,
   );
-  if (!result.ok) return unknownSlackChecks(checkedAt, result.code);
+  if (!result.ok) {
+    return result.unknownChannel === true
+      ? notConfiguredSlackChecks(checkedAt)
+      : unknownSlackChecks(checkedAt, result.code);
+  }
   return slackChecksFromStatusPayload(result.value, checkedAt);
 }
 
@@ -3023,22 +3049,17 @@ startPluginRuntimeStatusServer();
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
-const workspaceId = process.env.CODEX_CHATGPT_WORKSPACE_ID;
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 if (loginMode === "api_key") {
-  if (!nonempty(apiKey) || accessToken !== undefined || workspaceId !== undefined) {
+  if (!nonempty(apiKey) || accessToken !== undefined) {
     throw new Error("Codex API-key authentication configuration is invalid.");
   }
 } else if (loginMode === "codex_pat") {
-  if (!nonempty(accessToken) || !accessToken.startsWith("at-") || workspaceId !== undefined || apiKey !== undefined) {
+  if (!nonempty(accessToken) || apiKey !== undefined) {
     throw new Error("Codex service account token authentication configuration is invalid.");
   }
-} else if (loginMode === "chatgpt_service_account") {
-  if (!nonempty(accessToken) || !nonempty(workspaceId) || apiKey !== undefined) {
-    throw new Error("Codex service-account authentication configuration is invalid.");
-  }
 } else if (loginMode === "oauth") {
-  if (apiKey !== undefined || accessToken !== undefined || workspaceId !== undefined) {
+  if (apiKey !== undefined || accessToken !== undefined) {
     throw new Error("Codex OAuth authentication configuration is invalid.");
   }
 } else {
@@ -3065,9 +3086,6 @@ const loginArguments = loginMode === "api_key"
   : [
       "-c",
       "cli_auth_credentials_store=file",
-      ...(loginMode === "chatgpt_service_account" ? [
-        "-c", "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
-      ] : []),
       "login",
       "--with-access-token",
     ];
@@ -3124,7 +3142,6 @@ if (login.status !== 0 || login.error) {
 } else {
 delete process.env.CODEX_ACCESS_TOKEN;
 delete process.env.OPENAI_API_KEY;
-delete process.env.CODEX_CHATGPT_WORKSPACE_ID;
 
 // Codex reports an in-turn stream retry as a top-level error before retrying the
 // same sampling request. Only that exact transient shape, within Codex's small
@@ -3172,9 +3189,6 @@ function probeCodexAuthentication(timeout) {
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
       "-c", "check_for_update_on_startup=false",
-      ...(loginMode === "chatgpt_service_account" ? [
-        "-c", "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
-      ] : []),
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
@@ -3315,6 +3329,9 @@ if (digest === undefined) {
 const child = spawn(
   "codex",
   [
+    // The successful probe validated this model; native policy readback must see it too.
+    "-c",
+    "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
     "-c",
     "otel.exporter=\"none\"",
     "-c",
@@ -3392,7 +3409,7 @@ startAuthenticatedCodex();
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 export const AGENT_WITH_NODE_ENTRYPOINT = String.raw`
-const { mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
 ${WORKSPACE_ASSET_HELPERS}
@@ -3453,6 +3470,19 @@ logStartupPhase("workspace-baseline", baselineStartedAt, baseline.error || basel
 if (baseline.error) throw baseline.error;
 if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
 const codexEnv = { ...process.env, PATH: harnessPath };
+// Per-run hook capabilities are delivered by the authenticated app-server connection.
+// Keep them outside the model workspace and the file-transfer plugin's roots.
+const hookDirectory = join(process.env.HOME, ".oce-native-hooks");
+mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
+chmodSync(hookDirectory, 0o700);
+if (process.env.OPENCLAW_NODE_CA_PEM) {
+  const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
+    ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
+    : "";
+  const caPath = join(hookDirectory, "gateway-ca.pem");
+  writeFileSync(caPath, [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"), { mode: 0o600 });
+  codexEnv.NODE_EXTRA_CA_CERTS = caPath;
+}
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
 delete codexEnv.OPENCLAW_NODE_SETUP_ENVELOPE;
