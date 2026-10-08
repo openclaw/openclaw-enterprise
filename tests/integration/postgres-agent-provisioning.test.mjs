@@ -2011,6 +2011,181 @@ test(
 );
 
 test(
+  "a permanent refusal after an unfinished Configuration write settles the write and rejects the work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-unsettled-refusal",
+    });
+    const createExact = configurationDriver.createExact;
+    const created = [];
+    configurationDriver.createExact = async (configuration) => {
+      const stored = await createExact(configuration);
+      created.push(configuration.id);
+      if (created.length === 1) {
+        // The write lands but its receipt is lost, and before the next attempt the
+        // Installation's Compute Driver starts refusing the stored plan (no gateway routing).
+        const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
+          repositoryCredentials: true,
+        });
+        computeDriver.validateAgentProvisioning = (input) =>
+          unrouted.validateAgentProvisioning(input);
+        throw new Error("synthetic Configuration receipt loss");
+      }
+      return stored;
+    };
+    const completed = [];
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The next attempt inspects the unfinished write before its fence, records the receipt,
+    // and then fails the work on the refusal instead of retrying an unknown outcome.
+    await fixture.startWorker();
+    const failed = await waitFor("the provisioning work to fail", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.status === "failed" ? row : undefined;
+    });
+    await fixture.stopWorker();
+    const workId = admitted.data.provisioning.workId;
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [
+        { attempt: 1, outcome: "retry", code: "PROVISIONING_OUTCOME_UNKNOWN" },
+        { attempt: 2, outcome: "permanent", code: "PROVISIONING_REJECTED" },
+      ],
+    );
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "The Compute Driver cannot provision this execution mode or gateway configuration.",
+    });
+    const { pendingEffect, effectReceipt } = failed.progress;
+    assert.equal(pendingEffect?.kind, "configuration");
+    assert.deepEqual(
+      { kind: effectReceipt?.kind, owner: effectReceipt?.owner, targetId: effectReceipt?.targetId },
+      { kind: "configuration", owner: pendingEffect.owner, targetId: pendingEffect.targetId },
+    );
+    assert.deepEqual(
+      created,
+      [pendingEffect.targetId],
+      "recovery never writes the Configuration again",
+    );
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
+    ]);
+  },
+);
+
+test(
+  "a lost authority after an unfinished transport write settles the write and rejects the work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    let fixture;
+    const computeDriver = createRuntimeComputeDriver();
+    const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
+    let provisioned = 0;
+    computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
+      const status = await provisionRuntimeCredentials(...args);
+      provisioned += 1;
+      if (provisioned === 1) {
+        // The credentials land but their receipt is lost, and the initiating administrator
+        // loses the provisioning grants before the next attempt.
+        await fixture.revokeCurrentPrincipal();
+        throw new Error("synthetic transport receipt loss");
+      }
+      return status;
+    };
+    const completed = [];
+    fixture = await createFixture(context, {
+      computeDriver,
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    await fixture.startWorker();
+    const failed = await waitFor("the provisioning work to fail", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.status === "failed" ? row : undefined;
+    });
+    await fixture.stopWorker();
+    fixture.cancelProvisioningAtTeardown(namespace.id, failed.agent_id);
+    const workId = admitted.data.provisioning.workId;
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [
+        { attempt: 1, outcome: "retry", code: "PROVISIONING_OUTCOME_UNKNOWN" },
+        { attempt: 2, outcome: "permanent", code: "PROVISIONING_REJECTED" },
+      ],
+    );
+    assert.equal(failed.progress.error?.code, "PROVISIONING_REJECTED");
+    const { pendingEffect, effectReceipt } = failed.progress;
+    assert.deepEqual(
+      { kind: effectReceipt?.kind, owner: effectReceipt?.owner, targetId: effectReceipt?.targetId },
+      { kind: "transport", owner: pendingEffect?.owner, targetId: failed.agent_id },
+    );
+    assert.equal(provisioned, 1, "recovery never provisions the credentials again");
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
+    ]);
+    // One failure audit per attempt: the unknown outcome, then the authorization denial.
+    const audit = await fixture.pool.query(
+      `SELECT kind, outcome FROM occ.audit_events
+       WHERE namespace_id = $1
+         AND action = 'openclaw.agents.provision.failure'
+         AND details->>'workId' = $2
+       ORDER BY kind`,
+      [namespace.id, workId],
+    );
+    assert.deepEqual(audit.rows, [
+      { kind: "authorization_denial", outcome: "denied" },
+      { kind: "mutation", outcome: "failure" },
+    ]);
+    const revisions = await fixture.pool.query(
+      "SELECT id FROM occ.agent_revisions WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.equal(revisions.rowCount, 0);
+  },
+);
+
+test(
   "a Compute gateway change before the worker runs rejects the provisioning work without retrying",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {

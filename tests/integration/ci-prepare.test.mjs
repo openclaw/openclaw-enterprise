@@ -33,6 +33,18 @@ async function writeState(path, state) {
   await chmod(path, 0o600);
 }
 
+// Lane preparation stderr opens with timing and host metrics, and assert.match's default
+// message keeps only its start (finding 818). Show the end, where the cause is.
+function assertStderrMatch(stderr, pattern, label) {
+  const prefix = label ? `${label}: ` : "";
+  const tail = stderr.slice(-1_500);
+  assert.match(
+    stderr,
+    pattern,
+    `${prefix}stderr did not match ${pattern}; it ended with:\n${tail}`,
+  );
+}
+
 function runPrepare(args, env = {}) {
   return spawnSync(process.execPath, [preparePath, ...args], {
     cwd: repositoryRoot,
@@ -658,8 +670,7 @@ for (const { scenario, error } of [
 
     if (error) {
       assert.equal(result.status, 1, "preparation must reject an unusable imported fixture");
-      // The default message keeps only the start of stderr, before the cause.
-      assert.match(result.stderr, error, `stderr ended with:\n${result.stderr.slice(-1_500)}`);
+      assertStderrMatch(result.stderr, error);
       assert.equal(state.env, undefined);
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     } else {
@@ -710,7 +721,7 @@ for (const { scenario, error } of [
       assert.equal(criLookups("server-0"), 1);
     }
     if (scenario === "lagging-worker-cri" || scenario === "absent-worker-cri") {
-      assert.match(
+      assertStderrMatch(
         result.stderr,
         /CRI on k3d-\S+-agent-0 does not list the imported \S+ reference yet \(attempt 1\); retrying\./,
       );
@@ -828,7 +839,7 @@ test("fixture preparation rejects an unknown proxy source before publishing its 
   const commands = await fixtureImageCommands(t, "missing-proxy-source");
   const result = commands.prepare();
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Unable to determine the cross-node plugin status proxy source/);
+  assertStderrMatch(result.stderr, /Unable to determine the cross-node plugin status proxy source/);
   const state = JSON.parse(await readFile(commands.statePath, "utf8"));
   assert.equal(state.env, undefined);
   await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
@@ -958,11 +969,11 @@ for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
     const commands = await fixtureImageCommands(t, scenario);
     const result = commands.prepare();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /CI fixture storage controller is not ready/);
-    assert.match(result.stderr, /CrashLoopBackOff/);
-    assert.match(result.stderr, /fixture configuration rejected/);
-    assert.match(result.stderr, /Unschedulable/);
-    assert.match(result.stderr, /KubeletHasDiskPressure/);
+    assertStderrMatch(result.stderr, /CI fixture storage controller is not ready/);
+    assertStderrMatch(result.stderr, /CrashLoopBackOff/);
+    assertStderrMatch(result.stderr, /fixture configuration rejected/);
+    assertStderrMatch(result.stderr, /Unschedulable/);
+    assertStderrMatch(result.stderr, /KubeletHasDiskPressure/);
     assert.doesNotMatch(result.stderr, /do-not-publish-pod-spec/);
     await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
@@ -1012,13 +1023,13 @@ test("k3d preparation reuses only matching local immutable images and verifies f
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     const imported = state.resources.filter(({ kind }) => kind === "k3d-image");
     if (scenario === "pull-mismatch") {
-      assert.match(result.stderr, /pull did not materialize the requested registry digest/);
+      assertStderrMatch(result.stderr, /pull did not materialize the requested registry digest/);
       assert.equal(imported.length, 0);
     } else if (scenario === "inspect-failed") {
-      assert.match(result.stderr, /Cannot connect to the Docker daemon/);
+      assertStderrMatch(result.stderr, /Cannot connect to the Docker daemon/);
       assert.equal(imported.length, 0);
     } else {
-      assert.match(result.stderr, /limited to reviewed Codex versions/);
+      assertStderrMatch(result.stderr, /limited to reviewed Codex versions/);
       assert.equal(imported.length, 1);
       assert.equal(imported[0].status, "ready");
       assert.equal(imported[0].sourceImage, immutableImage);
@@ -1059,7 +1070,7 @@ test("k3d preparation times out a hung host image command and never pulls for it
     });
     const result = commands.prepare();
     assert.equal(result.status, 1, scenario);
-    assert.match(
+    assertStderrMatch(
       result.stderr,
       new RegExp(String.raw`The container engine did not answer within 3000 ms \(${shown}\)\.`),
       scenario,
@@ -1095,7 +1106,7 @@ test("fixture preparation times out a hung inspect of its own fixture image", as
   });
   const result = commands.prepare();
   assert.equal(result.status, 1);
-  assert.match(
+  assertStderrMatch(
     result.stderr,
     /The container engine did not answer within 3000 ms \(image inspect localhost\/\S+\/fixture:local\)\./,
   );
@@ -1117,7 +1128,7 @@ test("ordinary k3d preparation forwards an immutable K3s override and retains th
     if (scenario === "success") {
       assert.equal(cluster.kubernetesVersion, "v1.35.8+k3s1");
     } else {
-      assert.match(result.stderr, /must resolve to Kubernetes 1\.35\.x/);
+      assertStderrMatch(result.stderr, /must resolve to Kubernetes 1\.35\.x/);
       // The fixture build overlaps cluster creation; nothing reaches the cluster.
       assert.equal(
         (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),

@@ -37,6 +37,7 @@ import type {
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
   CredentialSourceStatus,
+  CredentialWithdrawal,
   CredentialWithdrawalStatus,
   CredentialSourceType,
   AuditEvent,
@@ -788,6 +789,18 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   credential_source: "credentialSources",
   provisioning_request: "provisioningRequests",
 });
+
+/** The revision was admitted with the source, as its Harness authentication or in its list. */
+function revisionHoldsCredentialSource(
+  revision: Readonly<AgentRevision>,
+  credentialSourceId: string,
+): boolean {
+  return (
+    (revision.harnessAuth.method === "credential_source" &&
+      revision.harnessAuth.sourceId === credentialSourceId) ||
+    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
+  );
+}
 
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
 function credentialSourceFieldsMatch(
@@ -2468,6 +2481,10 @@ export class OpenClawController {
       return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_FAILED" });
     }
     try {
+      // Inspect an external write that an earlier attempt left unsettled before this attempt's
+      // first fence, so a permanent refusal fails the work instead of retrying it as an unknown
+      // outcome (finding 815). reconcileProvisioningEffect says why that order is safe.
+      record = await this.reconcileProvisioningEffect(record, runEffect);
       record = await this.checkpointAgentProvisioning(claim, {
         completedPhase: record.completedPhase,
         status: "running",
@@ -6270,9 +6287,11 @@ export class OpenClawController {
 
   /**
    * Records a withdrawal of `credentialSourceId` from the Agent's active revision and queues
-   * worker work to revoke it. A replay of a pending withdrawal queues another attempt only when
-   * no earlier attempt is still queued or running, and that attempt runs on the replaying
-   * operator's authority; a revoked withdrawal is returned unchanged.
+   * worker work to revoke it. Every admitted successor revision that holds the source gets its
+   * own withdrawal too, so a deployment still in flight cannot attach it again. A replay of a
+   * pending withdrawal queues another attempt only when no earlier attempt is still queued or
+   * running, and that attempt runs on the replaying operator's authority; a revoked withdrawal
+   * is returned unchanged. The response describes the active revision's withdrawal.
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6296,56 +6315,91 @@ export class OpenClawController {
         );
       }
       const revision = await this.activeCredentialSourceRevision(state, agent, input);
-      let withdrawal = await state.credentialSources.requestCredentialWithdrawal(
-        Object.freeze({
-          namespaceId: agent.namespaceId,
-          agentId: agent.id,
-          revisionId: revision.id,
-          credentialSourceId: input.credentialSourceId,
-          state: "pending",
-          requestedBy: principalId,
-          requestedAt: this.timestamp(),
-        }),
+      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+        state,
+        principalId,
+        revision,
+        input.credentialSourceId,
       );
-      if (
-        withdrawal.state === "pending" &&
-        !(await state.operations.hasOutstandingCredentialWithdrawalWork(
-          agent.namespaceId,
-          revision.id,
-        ))
-      ) {
-        // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
-        // may have lost it since, so the attempt this replay queues runs on the authority just
-        // checked above; otherwise nobody could ever complete the withdrawal.
-        if (withdrawal.requestedBy !== principalId) {
-          const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
-            withdrawal.namespaceId,
-            withdrawal.revisionId,
-            withdrawal.credentialSourceId,
-            principalId,
-          );
-          if (reassigned === undefined) {
-            throw new ResourceStateConflictError(
-              "The credential withdrawal changed during the request.",
-            );
-          }
-          withdrawal = reassigned;
-        }
-        await this.record(state, {
-          kind: "agent_revision",
-          action: "reconcile",
-          target: "credentials_withdrawn",
-          namespaceId: agent.namespaceId,
-          resourceId: revision.id,
-          actorId: principalId,
-          operationId: crypto.randomUUID(),
-        });
+      // A deployment admitted before this request may activate after it. Its revision was
+      // admitted with the source, and the worker reads withdrawals by each revision's own id.
+      const successors = (await state.revisions.listRevisions(agent.namespaceId, agent.id)).filter(
+        (candidate) =>
+          candidate.revision > revision.revision &&
+          revisionHoldsCredentialSource(candidate, input.credentialSourceId),
+      );
+      for (const successor of successors) {
+        await this.requestRevisionCredentialWithdrawal(
+          state,
+          principalId,
+          successor,
+          input.credentialSourceId,
+        );
       }
       // A pending withdrawal now has an attempt queued or running, either earlier or just now.
       // Like the read, this reflects the queue at commit: a claim that expired on its last
       // attempt counts until recoverStale fails it.
       return Object.freeze({ ...withdrawal, withdrawalInProgress: withdrawal.state === "pending" });
     });
+  }
+
+  /**
+   * Inserts or returns the revision's withdrawal of the source. A pending one without
+   * outstanding work makes the caller its requester and queues an attempt.
+   */
+  private async requestRevisionCredentialWithdrawal(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    revision: Readonly<AgentRevision>,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialWithdrawal>> {
+    let withdrawal = await state.credentialSources.requestCredentialWithdrawal(
+      Object.freeze({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        credentialSourceId,
+        state: "pending",
+        requestedBy: principalId,
+        requestedAt: this.timestamp(),
+      }),
+    );
+    if (
+      withdrawal.state !== "pending" ||
+      (await state.operations.hasOutstandingCredentialWithdrawalWork(
+        revision.namespaceId,
+        revision.id,
+      ))
+    ) {
+      return withdrawal;
+    }
+    // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
+    // may have lost it since, so the attempt this replay queues runs on the authority just
+    // checked by the caller; otherwise nobody could ever complete the withdrawal.
+    if (withdrawal.requestedBy !== principalId) {
+      const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
+        withdrawal.namespaceId,
+        withdrawal.revisionId,
+        withdrawal.credentialSourceId,
+        principalId,
+      );
+      if (reassigned === undefined) {
+        throw new ResourceStateConflictError(
+          "The credential withdrawal changed during the request.",
+        );
+      }
+      withdrawal = reassigned;
+    }
+    await this.record(state, {
+      kind: "agent_revision",
+      action: "reconcile",
+      target: "credentials_withdrawn",
+      namespaceId: revision.namespaceId,
+      resourceId: revision.id,
+      actorId: principalId,
+      operationId: crypto.randomUUID(),
+    });
+    return withdrawal;
   }
 
   /**
@@ -6405,13 +6459,10 @@ export class OpenClawController {
       agent.id,
       agent.activeRevisionId,
     );
-    const harnessSource =
-      revision?.harnessAuth.method === "credential_source" &&
-      revision.harnessAuth.sourceId === input.credentialSourceId;
-    const nonModelSource = (revision?.credentialSources ?? []).some(
-      ({ sourceId }) => sourceId === input.credentialSourceId,
-    );
-    if (revision === undefined || (!harnessSource && !nonModelSource)) {
+    if (
+      revision === undefined ||
+      !revisionHoldsCredentialSource(revision, input.credentialSourceId)
+    ) {
       throw new ScopeViolationError(
         "The Agent's active revision does not use this credential source.",
       );
@@ -8030,6 +8081,96 @@ export class OpenClawController {
     });
   }
 
+  /** The Configuration that provisioning writes through the Configuration Driver. */
+  private provisioningConfiguration(
+    record: Readonly<AgentProvisioningRecord>,
+    configurationId: string,
+  ): Configuration {
+    const plan = this.provisioningPlan(record);
+    return {
+      id: configurationId,
+      namespaceId: record.namespaceId,
+      kind: "agent",
+      generation: 1,
+      values: plan.configuration.values,
+      ...(plan.configuration.secretBindings === undefined
+        ? {}
+        : { secretBindings: plan.configuration.secretBindings }),
+      createdAt: record.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Settles the external write that an earlier attempt dispatched but did not record, by
+   * inspecting its exact target, before this attempt's first fence. A fence that then refuses
+   * the work for good (plugin policy, native worker support, Secret Driver ownership, a
+   * lifecycle or authority change) fails it as rejected with its own message, instead of
+   * retrying it as PROVISIONING_OUTCOME_UNKNOWN until attempts run out. A settled effect also
+   * stops holding the Namespace, which waits for unsettled ones before it can be deleted.
+   *
+   * Inspecting before the fence is safe: the earlier attempt dispatched the write only after its
+   * own fence passed; this reads only the target it recorded, through the Driver the accepted
+   * plan names (another selected Driver is left to the fence, which then retries the work); and
+   * settling records what it observed for that exact pending kind, owner and target (a pending
+   * effect replaced meanwhile settles nothing), as Agent deletion does for cancelled work.
+   * Nothing is written outside OCC before the fence, and a write it cannot observe stays pending
+   * and retries, as before. Other work, and work whose effect is already settled, is unchanged.
+   */
+  private async reconcileProvisioningEffect(
+    record: Readonly<AgentProvisioningRecord>,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<Readonly<AgentProvisioningRecord>> {
+    const pending = provisioningPendingEffect(record);
+    if (
+      pending === undefined ||
+      !this.provisioningPendingEffectMatches(record, pending) ||
+      this.provisioningEffectReceipt(record, pending) !== undefined
+    ) {
+      return record;
+    }
+    const drivers = asRecord(record.plan.drivers);
+    if (pending.kind === "configuration") {
+      const driver = this.configurationDriver();
+      if (drivers?.configuration !== driver.id) {
+        return record;
+      }
+      return this.inspectProvisioningConfigurationEffect(
+        record.workId,
+        record,
+        { kind: "configuration", targetId: pending.targetId },
+        this.provisioningConfiguration(record, pending.targetId),
+        driver,
+        runEffect,
+      );
+    }
+    const driver = this.runtimeCredentialComputeDriver("provision");
+    if (drivers?.compute !== driver.id) {
+      return record;
+    }
+    const { namespace, agent } = await this.read(async (state) => {
+      const namespace = await state.namespaces.findNamespace(record.namespaceId);
+      return {
+        namespace,
+        agent:
+          namespace === undefined
+            ? undefined
+            : await state.agents.findAgent(namespace.id, pending.targetId),
+      };
+    });
+    if (namespace === undefined || agent === undefined) {
+      return record;
+    }
+    return this.inspectProvisioningTransportEffect(
+      record.workId,
+      record,
+      { kind: "transport", targetId: pending.targetId },
+      namespace,
+      agent,
+      driver,
+      runEffect,
+    );
+  }
+
   private async processAgentProvisioningConfiguration(
     claim: ClaimedWork,
     record: Readonly<AgentProvisioningRecord>,
@@ -8043,17 +8184,7 @@ export class OpenClawController {
       (receipt?.kind === "configuration" ? receipt.targetId : undefined) ??
       (pending?.kind === "configuration" ? pending.targetId : undefined) ??
       this.nextIdentifier("configuration");
-    const configuration: Configuration = {
-      id: configurationId,
-      namespaceId: record.namespaceId,
-      kind: "agent",
-      generation: 1,
-      values: plan.configuration.values,
-      ...(plan.configuration.secretBindings === undefined
-        ? {}
-        : { secretBindings: plan.configuration.secretBindings }),
-      createdAt: record.createdAt.toISOString(),
-    };
+    const configuration = this.provisioningConfiguration(record, configurationId);
     const driver = this.configurationDriver();
     if (driver.createExact === undefined || driver.inspectExact === undefined) {
       throw new DependencyUnavailableError(

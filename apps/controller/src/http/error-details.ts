@@ -85,22 +85,115 @@ function expectedBound(keyword: string, parameters: Record<string, unknown>): st
     : `${relation} ${limit} ${unit}${limit === 1 ? "" : "s"}`;
 }
 
-// Ajv reports a failed union's members with schema paths under the union's own path and
-// instance paths at or below its value.
+// The branches of a union that are bare references, by branch index. Ajv reports the failures
+// of a referenced schema that it inlines (one with no `$ref` of its own, such as
+// PluginApprovers) under the reference ("PluginApprovers/uniqueItems"), not under the union's
+// branch, so their schema paths name no branch. A referenced schema that Ajv calls instead
+// reports from its own root ("#/..."); those failures stay outside the union, as before. A
+// reference that another branch also spells out somewhere inside it could belong to either
+// branch, so it attributes nothing; one reached only through a further reference is not seen.
+// Ajv (verbose) attaches the union's branches to its failure.
+const referencedBranchesOf = new WeakMap<ValidationEntry, ReadonlyMap<string, string>>();
+function referencedBranches(union: ValidationEntry): ReadonlyMap<string, string> {
+  const known = referencedBranchesOf.get(union);
+  if (known !== undefined) {
+    return known;
+  }
+  const branches = (union as { schema?: unknown }).schema;
+  const references = new Map<string, string>();
+  referencedBranchesOf.set(union, references);
+  if (!Array.isArray(branches)) {
+    return references;
+  }
+  branches.forEach((branch: unknown, index) => {
+    const reference: unknown =
+      branch !== null && typeof branch === "object"
+        ? (branch as { $ref?: unknown }).$ref
+        : undefined;
+    if (
+      typeof reference === "string" &&
+      reference.length > 0 &&
+      !branches.some(
+        (other: unknown, otherIndex) =>
+          otherIndex !== index &&
+          JSON.stringify(other ?? null).includes(`"$ref":${JSON.stringify(reference)}`),
+      )
+    ) {
+      references.set(String(index), reference);
+    }
+  });
+  return references;
+}
+
+// The schema path prefix under which a member failure sits in a union, with its branch index
+// when the prefix is a branch's reference, or undefined for a failure outside the union. Ajv
+// reports a failed union's members with instance paths at or below its value and schema paths
+// under the union's own path, or under a branch's reference.
+function unionMemberPrefix(
+  union: ValidationEntry,
+  member: ValidationEntry,
+): { readonly prefix: string; readonly branch?: string } | undefined {
+  if (
+    member === union ||
+    (member.instancePath !== union.instancePath &&
+      !member.instancePath.startsWith(`${union.instancePath}/`))
+  ) {
+    return undefined;
+  }
+  if (member.schemaPath.startsWith(`${union.schemaPath}/`)) {
+    return { prefix: union.schemaPath };
+  }
+  for (const [branch, reference] of referencedBranches(union)) {
+    if (member.schemaPath.startsWith(`${reference}/`)) {
+      return { prefix: reference, branch };
+    }
+  }
+  return undefined;
+}
+
+// Where a member failure sits in a union: its branch index followed by its schema path inside
+// that branch.
+function unionBranchPath(union: ValidationEntry, member: ValidationEntry): readonly string[] {
+  const position = unionMemberPrefix(union, member);
+  if (position === undefined) {
+    return [];
+  }
+  const inside = member.schemaPath.slice(position.prefix.length + 1).split("/");
+  return position.branch === undefined ? inside : [position.branch, ...inside];
+}
+
 function unionMembersOf(
   union: ValidationEntry,
   entries: readonly ValidationEntry[],
 ): readonly ValidationEntry[] {
-  return entries.filter(
-    (entry) =>
-      entry.schemaPath.startsWith(`${union.schemaPath}/`) &&
-      (entry.instancePath === union.instancePath ||
-        entry.instancePath.startsWith(`${union.instancePath}/`)),
-  );
+  return entries.filter((entry) => unionMemberPrefix(union, entry) !== undefined);
 }
 
 function unionBranch(union: ValidationEntry, member: ValidationEntry): string {
-  return member.schemaPath.slice(union.schemaPath.length + 1).split("/")[0] ?? "";
+  return unionBranchPath(union, member)[0] ?? "";
+}
+
+// Inner unions first: a union that is another union's member comes before it. A union inside
+// a referenced schema can have a shorter schema path than the union that refers to it, so
+// path length only breaks ties. Each union's members are found once, so a deeply recursive
+// union costs one pass over the failures per level.
+function innerUnionsFirst(
+  unions: readonly ValidationEntry[],
+  entries: readonly ValidationEntry[],
+): readonly ValidationEntry[] {
+  const depth = new Map(unions.map((union) => [union, 0]));
+  for (const outer of unions) {
+    for (const member of unionMembersOf(outer, entries)) {
+      const known = depth.get(member);
+      if (known !== undefined) {
+        depth.set(member, known + 1);
+      }
+    }
+  }
+  return [...unions].sort(
+    (left, right) =>
+      depth.get(right)! - depth.get(left)! || right.schemaPath.length - left.schemaPath.length,
+  );
 }
 
 // A member failure that says the value has another shape than this branch: the wrong type or
@@ -115,7 +208,7 @@ function rejectsBranchShape(union: ValidationEntry, member: ValidationEntry): bo
       member.keyword,
     );
   }
-  const [, keyword, field] = member.schemaPath.slice(union.schemaPath.length + 1).split("/");
+  const [, keyword, field] = unionBranchPath(union, member);
   return (
     keyword === "properties" &&
     member.instancePath === `${union.instancePath}/${field}` &&
@@ -187,9 +280,10 @@ function mismatchedUnionShapes(entries: readonly ValidationEntry[]): {
   const selected = new Set<ValidationEntry>();
   // Inner unions first: a nested union that found its shape no longer counts against the
   // outer union's branch that contains it.
-  const unions = entries
-    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
-    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  const unions = innerUnionsFirst(
+    entries.filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string"),
+    entries,
+  );
   for (const union of unions) {
     // A recursive union reports every level with one schema path, so its members cannot be
     // told apart by level.
@@ -261,9 +355,10 @@ export function collapseScalarUnions(
     { readonly values: readonly (string | undefined)[]; readonly literals: boolean }
   >();
   // Inner unions first, so an outer union sees which of its members collapsed.
-  const unions = entries
-    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
-    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  const unions = innerUnionsFirst(
+    entries.filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string"),
+    entries,
+  );
   for (const union of unions) {
     const allMembers = unionMembersOf(union, entries);
     // A collapsed inner union stands for its own members. Every member, collapsed or not, must

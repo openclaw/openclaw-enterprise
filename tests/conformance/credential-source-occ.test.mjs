@@ -1143,6 +1143,117 @@ test("withdrawal is recorded for the active revision and queued for the worker o
   );
 });
 
+test("withdrawal also covers each admitted successor revision that holds the source", async () => {
+  const {
+    controller,
+    dedicatedAgent,
+    grantAgentSourceOperate,
+    makeReady,
+    modelSecret,
+    namespace,
+    state,
+  } = await fixture();
+  await makeReady();
+  const model = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: (await modelSecret()).ref },
+  });
+  const registry = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "registry",
+    type: "registry",
+    config: { host: "registry.example.com" },
+  });
+  const agent = await dedicatedAgent();
+  const bind = (credentialSources) =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      harnessAuth: { method: "credential_source", sourceId: model.id },
+      credentialSources,
+    });
+  await bind([{ sourceId: model.id }, { sourceId: registry.id }]);
+  grantAgentSourceOperate(agent, model);
+  grantAgentSourceOperate(agent, registry, "registry");
+  const deploy = () =>
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  const activate = (from, to) =>
+    controller.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, from, to),
+    );
+  const rows = (revision) =>
+    controller.transact((unit) =>
+      unit.credentialSources.listCredentialWithdrawals(namespace.id, revision.id),
+    );
+  const workFor = (revision) =>
+    state
+      .pendingOperations()
+      .filter(
+        (operation) =>
+          operation.kind === "agent_revision" &&
+          operation.target === "credentials_withdrawn" &&
+          operation.resourceId === revision.id,
+      );
+  const first = await deploy();
+  await activate(undefined, first.id);
+  // Two deployments are admitted but not active yet; only the first still holds the registry.
+  const second = await deploy();
+  await bind([{ sourceId: model.id }]);
+  const third = await deploy();
+  const request = { namespaceId: namespace.id, agentId: agent.id, credentialSourceId: registry.id };
+
+  const withdrawal = await controller.withdrawAgentCredentialSource(administrator, request);
+  assert.equal(withdrawal.revisionId, first.id);
+  assert.equal(withdrawal.state, "pending");
+  // The successor gets its own pending row and work, so its deployment cannot attach the source.
+  const [successorRow] = await rows(second);
+  assert.equal(successorRow.state, "pending");
+  assert.equal(successorRow.credentialSourceId, registry.id);
+  assert.equal(successorRow.requestedBy, administrator);
+  assert.equal(workFor(first).length, 1);
+  assert.equal(workFor(second).length, 1);
+  assert.deepEqual(await rows(third), []);
+  assert.equal(workFor(third).length, 0);
+  // A replay keeps both rows and queues nothing while their attempts are outstanding.
+  assert.deepEqual(
+    await controller.withdrawAgentCredentialSource(administrator, request),
+    withdrawal,
+  );
+  assert.equal(workFor(first).length + workFor(second).length, 2);
+
+  // Once the successor activates, the read reports its withdrawal instead of a 404.
+  await activate(first.id, second.id);
+  const read = await controller.readAgentCredentialWithdrawal(administrator, request);
+  assert.equal(read.revisionId, second.id);
+  assert.equal(read.state, "pending");
+
+  // A revoked withdrawal on the active revision still reaches a later successor.
+  await controller.transact((unit) =>
+    unit.credentialSources.markCredentialWithdrawalRevoked(
+      namespace.id,
+      second.id,
+      registry.id,
+      new Date().toISOString(),
+    ),
+  );
+  await bind([{ sourceId: model.id }, { sourceId: registry.id }]);
+  const fourth = await deploy();
+  const replay = await controller.withdrawAgentCredentialSource(administrator, request);
+  assert.equal(replay.revisionId, second.id);
+  assert.equal(replay.state, "revoked");
+  const [laterRow] = await rows(fourth);
+  assert.equal(laterRow.state, "pending");
+  assert.equal(workFor(fourth).length, 1);
+  assert.deepEqual(await rows(third), []);
+});
+
 test("deploy admission freezes the source and requires the Agent principal to operate it", async () => {
   const {
     controller,

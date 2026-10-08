@@ -3222,27 +3222,31 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     { channel: "slack", id: "team:T123:user:U456" },
   ]);
   assertPolicyOnlyPlugin(replacedPlugins.data.plugins[diffsPluginId]);
-  // The nullable approver list still names the uniqueItems rule for a repeated approver. Its
-  // null branch also reports a wrong type today: the list is a $ref'd schema, whose problems
-  // the union does not attribute to its branch.
-  const repeatedApprovers = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/agents/${created.data.id}`,
-    {
-      body: {
-        configurationId: replacementConfiguration.id,
-        pluginApprovers: [
-          { channel: "slack", id: "team:T123:user:U456" },
-          { channel: "slack", id: "team:T123:user:U456" },
-        ],
-      },
-    },
-  );
-  assert.equal(repeatedApprovers.status, 400, JSON.stringify(repeatedApprovers.body));
-  assert.match(
-    repeatedApprovers.body.error.message,
-    /^The request does not match the operation contract: body \/pluginApprovers has an unsupported value \(expected no duplicate items\)[;.]/,
-  );
+  // The nullable approver list is a referenced schema ($id PluginApprovers). Its problems belong
+  // to the list's branch, so the null branch adds no wrong-type clause (finding 808).
+  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const approver = { channel: "slack", id: "team:T123:user:U456" };
+  for (const [pluginApprovers, problem] of [
+    [
+      [approver, approver],
+      "body /pluginApprovers has an unsupported value (expected no duplicate items)",
+    ],
+    [
+      Array.from({ length: 65 }, (_, index) => ({ channel: "slack", id: `user:${index}` })),
+      "body /pluginApprovers has an unsupported value (expected at most 64 items)",
+    ],
+    [[{ ...approver, role: "admin" }], "body /pluginApprovers/0/role is not an accepted field"],
+    ["slack", "body /pluginApprovers has the wrong type (expected one of array, null)"],
+  ]) {
+    const rejected = await controller.request("PATCH", agentPath, {
+      body: { configurationId: replacementConfiguration.id, pluginApprovers },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(
+      rejected.body.error.message,
+      `The request does not match the operation contract: ${problem}.`,
+    );
+  }
 
   const clearedPlugins = await controller.request(
     "PATCH",

@@ -162,7 +162,11 @@ keeps running. Send
 The caller needs `agent:operate`, and the active revision must have been
 admitted with that source, as its Harness authentication or in
 `credentialSources`. The request returns `202` with the withdrawal in state `pending`.
-A replay returns the same withdrawal. It queues another attempt only if no
+A deployment admitted with the source but not yet active gets its own
+withdrawal, so it never attaches the source. A withdrawn Harness source fails
+that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it activates without the
+source, and the read below then returns its withdrawal. A replay returns the
+same withdrawal. It queues another attempt only if no
 attempt is already queued or running, and the caller then becomes the
 withdrawal's `requestedBy`.
 

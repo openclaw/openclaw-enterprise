@@ -228,10 +228,12 @@ value only to processes started after the update.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
 
 The API authorizes `agent:operate` and requires the active revision to have been
-admitted with the source in `credential_sources`. It inserts a `pending` `credential_withdrawals`
-row keyed by revision and source, or returns the existing one. Unless
-withdrawal work for the revision is already queued or claimed, it makes the
-caller `requested_by` and queues revision-scoped work with target `credentials_withdrawn`
+admitted with the source in `credential_sources`. For that revision and each
+later one admitted with the source, so an in-flight deployment never attaches
+it, the API inserts a `pending` `credential_withdrawals` row keyed by revision
+and source, or returns the existing one. For each pending row with no withdrawal
+work queued or claimed, it makes the caller `requested_by` and queues
+revision-scoped work with target `credentials_withdrawn`
 (`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`). That
 work has its own idempotency key, never deploys the revision, and owns no
 repository cleanup.
@@ -252,8 +254,8 @@ also marks the row `revoked` and appends
 backoff until attempts run out; the row then stays `pending`. The API derives
 `withdrawalInProgress` from outstanding withdrawal work
 (`packages/occ/src/index.ts:readAgentCredentialWithdrawal`), so an exhausted
-withdrawal reads `false` even if its claim expired. Only a replay, or maintenance
-where it exists, queues another attempt.
+withdrawal reads `false` even if its claim expired. Only a replay or maintenance
+queues another attempt.
 
 Maintenance of the active revision (scheduled only when Compute or repository
 credentials declare an interval) checks for a withdrawal before it resolves the
@@ -282,12 +284,9 @@ attach again, so removing their grants cannot end maintenance.
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
-  and worker against PostgreSQL with a Compute double: revocation after a
-  pending retry, exhaustion followed by a replay, maintenance of a withdrawn
-  revision, a retry that omits two non-model sources revoked in one pass,
-  per-requester authorization of a shared claim, another operator's replay,
-  maintenance recovery of exhausted or ungranted withdrawals, and dispatch refusal
-  after the Agent loses a source grant.
+  and worker against PostgreSQL with a Compute double: retries, exhaustion,
+  replays, maintenance, retries that omit withdrawn sources, per-requester
+  authorization, an admitted successor revision, and a lost source grant.
 - The real OpenShell test updates the source through the API, withdraws it from
   the running Agent, and checks that the next model turn in that Codex process
   fails. First, a `bearer-token` placeholder sent to an in-cluster echo service
@@ -321,6 +320,7 @@ attach again, so removing their grants cannot end maintenance.
 
 ## Changelog
 
+- 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
 - 2026-10-08 11:45: DELETE checks gateway ownership before `deleting`. (fix-811-812 - e461e1621)
 - 2026-10-08 10:00: Replays take over stranded withdrawals; withdrawn sources skip the grant recheck. (fix-787-788)
 - 2026-10-08 09:30: Agent PATCH needs only `operate` on already-bound sources. (fix-782)

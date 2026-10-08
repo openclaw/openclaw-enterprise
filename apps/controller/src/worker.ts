@@ -1614,7 +1614,7 @@ export class ControllerWorker {
       await this.processRepositoryCleanup(claim);
       return;
     }
-    // A withdrawal names an active revision but never deploys it.
+    // A withdrawal names the active revision or an admitted successor, but never deploys it.
     if (isCredentialWithdrawalWork(claim)) {
       await this.processCredentialWithdrawal(claim);
       return;
