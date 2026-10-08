@@ -122,12 +122,28 @@ test("Deployment activity follows pending work until it records a result", async
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, {
+    originHost: "console.oce.example.test",
+    publicOrigin: true,
+    authCookieDomain: "oce.example.test",
+    development: { enabled: false },
+    https: true,
+    authSecureCookies: true,
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    nativeAdmin: {
+      enabled: true,
+      domain: "agents.oce.example.test",
+      sharedCookieDomain: "oce.example.test",
+    },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Activity restore", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Restore Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, {
+    args: [...fixture.browserArgs, "--host-resolver-rules=MAP console.oce.example.test 127.0.0.1"],
+    context: { ignoreHTTPSErrors: true },
+  });
   let status = "running";
   let statusReads = 0;
   await page.route(

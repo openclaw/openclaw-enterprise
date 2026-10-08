@@ -2026,6 +2026,9 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
       response.request().method() === "POST",
   );
+  const refreshedNativeStatus = page.waitForResponse(
+    (response) => response.url() === `${fixture.origin}${nativeStatusPath}`,
+  );
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   const response = await stopResponse;
   assert.equal(response.status(), 202);
@@ -2052,12 +2055,10 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(stopped.data.activeRevisionId, active.revision.id);
   assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
   assert.equal(stopped.data.configurationId, agent.configurationId);
-  // Stop refreshes the Agent while previously denied OpenClaw access stays cached.
-  assert.equal(
-    requests.some((request) => request.path === nativeStatusPath),
-    false,
-    "stop admission must not repeat an audited OpenClaw access denial",
-  );
+  // Changed runtime state refreshes availability; the disabled feature remains hidden.
+  const refreshedNative = await refreshedNativeStatus;
+  assert.equal(refreshedNative.status(), 200);
+  assert.equal((await refreshedNative.json()).data.status, "disabled");
   const revisions = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,

@@ -535,12 +535,28 @@ async function expectRetainedPreview(page, visibleText) {
 }
 
 test("console keeps loaded route families visible while return reads refresh", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, {
+    originHost: "console.oce.example.test",
+    publicOrigin: true,
+    authCookieDomain: "oce.example.test",
+    development: { enabled: false },
+    https: true,
+    authSecureCookies: true,
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    nativeAdmin: {
+      enabled: true,
+      domain: "agents.oce.example.test",
+      sharedCookieDomain: "oce.example.test",
+    },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Retained routes", { ready: true });
   await fixture.createNamespace("A second Namespace", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Retained route Agent");
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, {
+    args: [...fixture.browserArgs, "--host-resolver-rules=MAP console.oce.example.test 127.0.0.1"],
+    context: { ignoreHTTPSErrors: true },
+  });
   await trackSettledFetches(page);
 
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
@@ -643,7 +659,10 @@ test("console keeps loaded route families visible while return reads refresh", a
     "Workspace files require a deployed Agent with a current version and a reachable gateway.";
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
   assert.equal((await deniedNativeStatus).status(), 403);
-  await page.locator(".native-admin-access").waitFor({ state: "hidden" });
+  await page
+    .locator(".native-admin-access")
+    .getByText(/assign your Principal ID/)
+    .waitFor();
   await waitForSettledView(page);
   const originalNativePanel = await page.locator(".native-admin-access").elementHandle();
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
@@ -661,9 +680,12 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   await page.locator(".native-admin-access").waitFor({ state: "attached" });
   assert.equal(
-    await page.locator(".native-admin-access").isHidden(),
+    await page
+      .locator(".native-admin-access")
+      .getByText(/assign your Principal ID/)
+      .isVisible(),
     true,
-    "Denied OpenClaw access remains hidden after route admission",
+    "Administrator assignment guidance survives route admission",
   );
   assert.equal(
     await originalNativePanel.evaluate((node) => node.isConnected),
