@@ -235,7 +235,14 @@ spec:
           {{- end }}
           image: {{ $.Values.images.controller | quote }}
           args:
+            {{- if $oidcCa }}
+            - --import
+            - {{ printf "data:text/javascript;base64,%s" (required "chart is missing files/check-api-database-ca.mjs" ($.Files.Get "files/check-api-database-ca.mjs") | b64enc) | quote }}
+            {{- end }}
             - apps/controller/src/{{ ternary "server" "worker" (eq $component "api") }}.mjs
+            {{- if $oidcCa }}
+            - {{ printf "%s/%s" (trimSuffix "/" $.Values.database.caMountPath) $.Values.database.caKey | quote }}
+            {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:

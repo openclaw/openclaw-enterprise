@@ -128,7 +128,8 @@
       "expectedTests": [
         "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
         "OIDC CA chart refuses partial, malformed and disabled configuration",
-        "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust"
+        "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust",
+        "rendered API guard isolates real PostgreSQL TLS from IdP trust before startup"
       ]
     }
   ]

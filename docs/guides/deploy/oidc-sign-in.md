@@ -154,7 +154,14 @@ kubectl -n openclaw-system create secret generic occ-oidc-ca-v1 \
   --from-file=ca.pem=/secure/occ/idp-ca-bundle.pem
 ```
 
-Add these values alongside the enabled OIDC configuration, then upgrade the chart:
+First select the database's existing approved CA roots through
+`database.caSecretName`. The application database URL must use
+`sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem` (adjust the path
+to `database.caMountPath` and `database.caKey`). A mounted CA without this URL
+selection is refused before the API starts. See the
+[database trust prerequisite](../../reference/settings/oidc.md) for accepted configuration.
+
+Add these values alongside the enabled OIDC configuration:
 
 ```yaml
 auth:
@@ -162,6 +169,13 @@ auth:
     caSecretName: occ-oidc-ca-v1
     caSecretKey: ca.pem
 ```
+
+Before upgrading, follow the existing
+[stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in):
+close ingress, stop independent identity, bootstrap and policy/provisioning writers,
+pause automatic restarts, and drain admitted requests. Retain one serving controller.
+After the upgrade, verify recovery sign-in, IdP sign-in and Gateway access through
+restricted access before reopening ingress; keep ingress closed on failure.
 
 Set both values or neither. Clear both when disabling OIDC. The API's
 `assemble-api-ca` init container validates this bundle and any selected Gateway
@@ -182,7 +196,9 @@ external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replac
 `NODE_EXTRA_CA_CERTS` separately. URL, port, hostname, certificate and token checks
 still apply. See the [trust contract](../../reference/settings/oidc.md).
 
-For rotation, create a new versioned Secret and change `caSecretName`; the changed
+For rotation, use the same
+[stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in)
+before changing trust or replacing the Pod. Create a new versioned Secret and change `caSecretName`; the changed
 Pod template replaces the API Pod. If you update the contents of the IdP Secret
 or a combined Gateway CA Secret, explicitly replace the API Pod:
 
@@ -191,7 +207,8 @@ kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
 kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api
 ```
 
-Then verify sign-in and Gateway access. Replacing the single API replica interrupts service until it is ready. A Secret update alone does not refresh the assembled bundle or
+Through restricted access, verify recovery sign-in, IdP sign-in and Gateway access
+before reopening ingress, retaining one serving controller. Replacing the single API replica interrupts service until it is ready. A Secret update alone does not refresh the assembled bundle or
 Node's startup trust; restarting only the API container keeps the init container's
 previous snapshot. Include old and new CA certificates together during an overlap,
 then remove the old CA and replace the Pod again. Ordinary leaf renewal under the

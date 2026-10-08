@@ -3,9 +3,11 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
+import { createServer as createTlsServer } from "node:tls";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
 import {
   callbackState,
@@ -28,7 +30,12 @@ const oidcValues = {
   "auth.oidc.tokenUrl": "https://sso.example.test/token",
   "auth.oidc.jwksUrl": "https://sso.example.test/jwks",
 };
-const caValues = { "auth.oidc.caSecretName": "idp-ca", "auth.oidc.caSecretKey": "roots.pem" };
+const databaseCaValues = { "database.caSecretName": "database-ca" };
+const caValues = {
+  ...databaseCaValues,
+  "auth.oidc.caSecretName": "idp-ca",
+  "auth.oidc.caSecretKey": "roots.pem",
+};
 const gatewayValues = {
   "gatewayRouting.enabled": "true",
   "gatewayRouting.gatewayClassName": "private-envoy-gateway",
@@ -52,7 +59,7 @@ test(
   tooling,
   async () => {
     for (const gateway of [{}, gatewayValues, externalGateway, externalGatewayCa]) {
-      const original = await render({ ...oidcValues, ...gateway });
+      const original = await render({ ...oidcValues, ...gateway, ...databaseCaValues });
       const configured = await render({ ...oidcValues, ...gateway, ...caValues });
       const api = pod(configured, "api");
       const init = api.initContainers.find(({ name }) => name === "assemble-api-ca");
@@ -101,6 +108,8 @@ test("OIDC CA chart refuses partial, malformed and disabled configuration", tool
   for (const values of [
     { ...caValues, "auth.oidc.enabled": "false", "auth.recoveryUserId": "" },
     { ...caValues, "auth.oidc.caSecretName": "occ-oidc-login" },
+    { ...caValues, "database.caSecretName": "" },
+    { ...caValues, "database.caSecretName": "idp-ca" },
     { "auth.oidc.caSecretName": "idp-ca" },
     { "auth.oidc.caSecretKey": "roots.pem" },
     ...["true", "42", "Bad_Name", "../ca", "bad..name", "a".repeat(254)].map((value) => ({
@@ -231,6 +240,7 @@ async function mountedPod(directory, api, secrets) {
   const args = init.args.map((arg) => (arg.startsWith("/") ? resolve(init, arg) : arg));
   const extraCa = api.containers[0].env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS").value;
   return {
+    resolve: (path) => resolve(api.containers[0], path),
     assemble: () => execute(process.execPath, args, { env: {}, timeout: 10000 }),
     output: resolve(api.containers[0], extraCa),
     oidcInput: resolve(init, "/etc/openclaw/oidc-ca/ca.crt"),
@@ -365,5 +375,141 @@ test(
     await writeFile(wiring.gatewayInput, "broken gateway root");
     await assert.rejects(wiring.assemble(), (error) => error.code === 1);
     await assert.rejects(readFile(wiring.output), { code: "ENOENT" });
+  },
+);
+
+test(
+  "rendered API guard isolates real PostgreSQL TLS from IdP trust before startup",
+  tooling,
+  async (t) => {
+    const directory = await temporaryDirectory(t);
+    const database = await certificates(directory, "database", "localhost");
+    const idp = await certificates(directory, "idp", "localhost");
+    const api = pod(await render({ ...oidcValues, ...caValues, ...externalGatewayCa }), "api");
+    const wiring = await mountedPod(directory, api, {
+      "idp-ca/roots.pem": idp["ca.pem"],
+      "gateway-ca/gateway.pem": idp["ca.pem"],
+      "database-ca/ca.pem": database["ca.pem"],
+    });
+    await wiring.assemble();
+    // Keep the rendered preloader and selected CA argument. Replace only the server
+    // entrypoint so its real exported pool can stop at TLS without a database.
+    const container = api.containers[0];
+    const args = container.args.map((arg) => {
+      if (arg === "apps/controller/src/server.mjs") {
+        return "tests/fixtures/oidc-ca-postgres-consumer.mjs";
+      }
+      return arg.startsWith("/") ? wiring.resolve(arg) : arg;
+    });
+    const reference = container.env.find(({ name }) => name === "OCC_DATABASE_URL").valueFrom
+      .secretKeyRef;
+    assert.deepEqual(reference, { name: "occ-database", key: "application-url" });
+    assert.equal(api.initContainers[0].env, undefined);
+    const caPath = wiring.resolve("/etc/openclaw/database-ca/ca.pem");
+    let accepted = 0;
+    const sockets = new Set();
+    const server = createTlsServer(
+      { key: database["leaf.key"], cert: database["leaf.pem"] },
+      (socket) => {
+        accepted++;
+        socket.once("data", () => socket.destroy());
+      },
+    );
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+    server.on("tlsClientError", () => {});
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise((resolve) => server.close(resolve));
+    });
+    const connection = (search, password = "synthetic-secret") =>
+      syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "synthetic-user",
+        password,
+        host: "127.0.0.1",
+        port: server.address().port,
+        pathname: "/synthetic",
+        search: `?sslnegotiation=direct&${search}`,
+      });
+    const selected = `sslmode=verify-full&sslrootcert=${encodeURIComponent(caPath)}`;
+    const consume = (url, authMode = "password") =>
+      execute(process.execPath, args, {
+        env: {
+          NODE_EXTRA_CA_CERTS: wiring.output,
+          [container.env.find(({ name }) => name === "OCC_DATABASE_URL").name]: url,
+          OCC_DATABASE_AUTH: authMode,
+          // Construction only; the server never requests authentication or a token.
+          AZURE_CLIENT_ID: "synthetic-client",
+          AZURE_TENANT_ID: "synthetic-tenant",
+          AZURE_FEDERATED_TOKEN_FILE: join(directory, "unused-token"),
+        },
+        timeout: 10000,
+      });
+    for (const authMode of ["password", "azure-workload-identity"]) {
+      const password = authMode === "password" ? "synthetic-secret" : "";
+      server.setSecureContext({ key: database["leaf.key"], cert: database["leaf.pem"] });
+      const before = accepted;
+      const trusted = await consume(connection(selected, password), authMode);
+      assert.match(trusted.stdout, /^entrypoint\n/);
+      assert.equal(trusted.stderr, "");
+      assert.equal(accepted, before + 1, "the selected database CA must authenticate TLS");
+      // Same hostname, but signed only by the CA in NODE_EXTRA_CA_CERTS.
+      server.setSecureContext({ key: idp["leaf.key"], cert: idp["leaf.pem"] });
+      const rejected = await consume(connection(selected, password), authMode);
+      assert.match(
+        rejected.stdout,
+        /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|SELF_SIGNED_CERT_IN_CHAIN/,
+      );
+      assert.equal(accepted, before + 1, "IdP-only trust must not authenticate database TLS");
+    }
+    const refused = async (url) => {
+      await assert.rejects(consume(url), (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, "", "the API entrypoint must not execute");
+        assert.match(error.stderr, /^OIDC CA trust requires OCC_DATABASE_URL/);
+        for (const secret of [url, "synthetic-secret", "synthetic-user"]) {
+          assert.equal(
+            error.stderr.includes(secret),
+            false,
+            "configuration errors must not expose credentials",
+          );
+        }
+        return true;
+      });
+    };
+    for (const query of [
+      "sslmode=verify-full",
+      selected.replace("verify-full", "disable"),
+      selected.replace("verify-full", "no-verify"),
+      selected.replace("verify-full", "require") + "&uselibpqcompat=true",
+      `${selected}&sslmode=no-verify`,
+      `${selected}&sslrootcert=`,
+      `${selected}&connectionString=${encodeURIComponent(connection("sslmode=verify-full"))}`,
+      `sslmode=verify-full&sslrootcert=${encodeURIComponent(wiring.output)}`,
+    ]) {
+      await refused(connection(query));
+    }
+    await refused("malformed synthetic-user synthetic-secret %");
+    for (const material of [
+      "",
+      "not a certificate",
+      database["leaf.pem"],
+      database["ca.pem"] + database["ca.key"],
+    ]) {
+      await writeFile(caPath, material);
+      await refused(connection(selected));
+    }
+    await rm(caPath);
+    await refused(connection(selected));
+    const output = await readFile(wiring.output, "utf8");
+    assert.equal(output.includes("PRIVATE KEY"), false);
+    assert.equal(output.includes("synthetic-secret"), false);
+    assert.equal(output.includes(database["ca.pem"].trim()), false);
   },
 );

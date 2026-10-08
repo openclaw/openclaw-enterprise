@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-10-08"
-last_updated_session: "authoring-run/c63bb502-5d8d-4ab7-807a-9ca22d609986"
+last_updated_session: "authoring-run/8c751025-b9a7-44f2-8342-d1eeb0832186"
 ---
 
 # Production Startup Flow
@@ -51,7 +51,9 @@ graph TD
         G --> CA{"OIDC CA configured?"}
         CA -->|No| H["Start private API Deployment"]
         CA -->|Yes| CB["Validate and combine IdP and Gateway CA bundles"]
-        CB -->|Valid| H
+        CB -->|Valid| DB{"Explicit database CA and verified TLS?"}
+        DB -->|Yes| H
+        DB -->|No| CF
         CB -->|Invalid or missing| CF["Block API startup"]
         G --> I["Start independent worker Deployment"]
         I --> R{"Repository credentials enabled?"}
@@ -162,20 +164,19 @@ Job; Helm failure does not imply the database hook was rolled back.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-After initialization, Kubernetes starts separate API and worker Deployments.
 With [OIDC CA settings](../reference/settings/oidc.md), `deploy/helm/openclaw-enterprise/templates/deployments.yaml:1`
-runs `deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs:1` first. This nonroot
-init combines validated IdP and Gateway certificates; invalid or missing input
-blocks the API. Node loads the read-only result through `NODE_EXTRA_CA_CERTS`,
-retaining public roots for `apps/controller/src/auth/provider-transport.ts:providerJSON`
-and other API HTTPS clients. Pod replacement reloads trust; workers receive no
-IdP roots.
+runs `deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs:1` first, combining
+validated IdP/Gateway certificates. Invalid input blocks startup. Node loads the
+read-only result through `NODE_EXTRA_CA_CERTS` for default-trust API clients.
+`deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs:1` preloads before
+the server, requiring the actual PostgreSQL parser to select the mounted database
+CA with verified TLS. Failure exits without logging credentials. Pod replacement
+reloads IdP trust; workers receive no IdP roots.
 
 Before readiness, the API validates listener settings, Better Auth, database,
 Installation YAML, Drivers, Backend membership and Kubernetes Compute preflight.
 It serves private routes, `/healthz` and database-backed `/readyz`. The startup
-probe allows two minutes to listen (120 failures at one-second intervals);
-readiness can begin within a second of listening.
+probe allows two minutes (120 one-second failures).
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -303,10 +304,9 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - `tests/integration/oidc-ca-trust.test.mjs` executes rendered assembly and real
-  loopback TLS through the OIDC callback; see [local proof limits](../testing/local.md#authentication-and-authorization-coverage).
+  loopback TLS through OIDC and PostgreSQL; see [local proof limits](../testing/local.md#authentication-and-authorization-coverage).
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
-  chart; it does not prove a live install, key retrieval, tenant runtime, or
-  model turn.
+  chart; it does not prove deployment or model execution.
 
 ## Related docs
 
@@ -325,6 +325,8 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 23:16: Enforce independent database trust before API startup. (authoring-run/8c751025-b9a7-44f2-8342-d1eeb0832186 - b69b6ffc63398fac12d1a028198c3452878aa013)
 
 - 2026-10-08 22:12: Trace private IdP CA assembly and startup refusal. (authoring-run/c63bb502-5d8d-4ab7-807a-9ca22d609986 - 52a54734de41cc62fd57b2fb3081a979057a0059)
 

@@ -30,13 +30,27 @@ gate API startup. Each input must contain only parseable PEM CA certificates, at
 most 1 MiB, without private keys or leaf certificates. This also applies to a
 selected Gateway CA bundle when OIDC CA trust is configured.
 
-The init container combines that bundle with the Gateway CA, when selected, in a
+This opt-in also requires a separately selected `database.caSecretName`, distinct
+from the IdP CA Secret. The application URL must use `sslmode=verify-full` and
+`sslrootcert=<database.caMountPath>/<database.caKey>`; mounting the Secret alone
+is insufficient. Preserve the database's approved roots in that certificate-only
+PEM bundle (at most 1 MiB), including public roots if needed. Do not add IdP roots
+unless they were independently approved for the database.
+
+Before loading the server, the API checks its actual `OCC_DATABASE_URL` with the
+installed PostgreSQL client parser and refuses absent, unreadable, empty or invalid
+CA material, ineffective TLS settings, duplicate URL parameters and nested
+connection strings. Errors omit the URL and credentials. Password and workload-identity
+pools retain this explicit CA; database TLS uses neither the added IdP roots nor
+Node's default roots. This checks local configuration at each API process start, not database reachability.
+Change database CA material only during stopped maintenance, then replace the Pod.
+
+The init container combines the IdP bundle with the Gateway CA, when selected, in a
 bounded memory volume. The API reads it through `NODE_EXTRA_CA_CERTS`, extending
 Node's public roots process-wide for API clients using default trust, including
 token/JWKS requests. Clients with an explicit CA store keep that store. IdP roots
-are not added to workers, Jobs or Agents; database CA configuration remains
-separate. An external Gateway issuer without a custom CA contributes no extra
-roots. With no OIDC CA values, existing chart trust
+are not added to workers, Jobs or Agents. An external Gateway issuer without a
+custom CA contributes no extra roots. With no OIDC CA values, existing chart trust
 wiring is unchanged. TLS verification and OIDC URL restrictions are unchanged.
 
 Secret name/key changes replace the API Pod. Secret content changes require explicit
