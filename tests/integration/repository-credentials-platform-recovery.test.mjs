@@ -44,7 +44,7 @@ test(
         kube.waitFor(
           "confirmed terminal response at the Unix control transport",
           () => observed,
-          30_000,
+          500,
         ),
       );
       assert.equal(observed.sessionId, sessionId);
