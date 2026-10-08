@@ -112,7 +112,10 @@ The job log and results keep 600 characters of a failure message. In every lane,
 the runner adds each failed file's whole messages and stacks (16 KiB each, 20
 cases) and its last 400 stdout, stderr and diagnostic lines to the same report
 under `failures`, for the first 8 failed files. They get the failure-message
-redaction, and lines naming a credential are dropped whole.
+redaction, and lines naming a credential are dropped whole. Test output reaches an
+artifact only here; a runtime-minted value without a known shape is not redacted,
+so tests must not print secrets. A file killed at the runner timeout, or one that
+fails preparation, gets no record.
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 

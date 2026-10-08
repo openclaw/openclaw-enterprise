@@ -10,6 +10,7 @@ import {
   failureSecrets,
   redactFailure,
   redactFailureDetail,
+  redactLogLine,
   redactOutputLine,
 } from "./failure-redaction.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
@@ -625,7 +626,7 @@ function failureDetails(events, absolutePath, secrets, root) {
   }
   return {
     tests: failed.slice(0, maxFailureDetailTests).map(({ data }) => ({
-      name: data.name === absolutePath ? "(file)" : data.name,
+      name: data.name === absolutePath ? "(file)" : redactLogLine(String(data.name), secrets, 200),
       line: data.error.location?.line ?? data.line,
       ...redactFailureDetail(data.error, secrets, root),
     })),
@@ -647,9 +648,10 @@ async function recordFailureDetails(statePath, lane, file, details) {
   }
   const failures = report.failures ?? [];
   if (failures.length >= maxFailureDetailFiles) {
-    return;
+    report.omittedFailureFiles = (report.omittedFailureFiles ?? 0) + 1;
+  } else {
+    report.failures = [...failures, { file, capturedAt: new Date().toISOString(), ...details }];
   }
-  report.failures = [...failures, { file, capturedAt: new Date().toISOString(), ...details }];
   await writeFile(diagnosticsPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
   failureDetailFiles.add(diagnosticsPath);
 }

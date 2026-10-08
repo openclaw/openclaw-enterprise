@@ -219,14 +219,14 @@ const providerEvents = new Set([
 // pressure show whether the wrapper got the CPU its probe cap assumes.
 async function containerCpu(containerName) {
   try {
+    // Kernels without pressure accounting have no cpu.pressure; read what exists.
     const { stdout } = await runDocker(
       [
         "exec",
         containerName,
-        "cat",
-        "/sys/fs/cgroup/cpu.max",
-        "/sys/fs/cgroup/cpu.stat",
-        "/sys/fs/cgroup/cpu.pressure",
+        "sh",
+        "-c",
+        "cd /sys/fs/cgroup && for f in cpu.max cpu.stat cpu.pressure; do [ -r $f ] && printf '%s: ' $f && cat $f; done; true",
       ],
       { timeout: 10_000 * imageSmokeTimeoutMultiplier },
     );
@@ -293,13 +293,14 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
 
 // The scenario's failure: evidence first, then the raw wrapper output and
 // provider events. The structured diagnostic survives the job log's cut too.
-async function startupProbeFailure(headline, reason, scenario, snapshot, loop) {
-  const evidence = await startupProbeEvidence(scenario, snapshot, loop);
+function startupProbeFailure(headline, reason, evidence, snapshot) {
   const error = new assert.AssertionError({
     message:
       `${headline}\nevidence: ${JSON.stringify(evidence)}\n${snapshot.output}\n` +
       JSON.stringify(snapshot.events),
   });
+  // Locate the failure at the caller's throw, not inside this helper.
+  Error.captureStackTrace(error, startupProbeFailure);
   error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, undefined, reason);
   return error;
 }
@@ -460,21 +461,21 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
       return { ...scenario, snapshot: await collect() };
     }
     if (!snapshot.running) {
-      throw await startupProbeFailure(
+      const evidence = await startupProbeEvidence(scenario, snapshot, loop);
+      throw startupProbeFailure(
         `The ${kind} wrapper exited early (${snapshot.exitCode}).`,
         "wrapper-exited",
-        scenario,
+        evidence,
         snapshot,
-        loop,
       );
     }
     if (Date.now() > deadline) {
-      throw await startupProbeFailure(
+      const evidence = await startupProbeEvidence(scenario, snapshot, loop);
+      throw startupProbeFailure(
         `The ${kind} startup probe scenario did not settle.`,
         "outer-timeout",
-        scenario,
+        evidence,
         snapshot,
-        loop,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 250));

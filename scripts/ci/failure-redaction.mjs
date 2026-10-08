@@ -28,7 +28,7 @@ const publicEnvNames = new Set([
 ]);
 const secretShapes = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu,
-  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gu,
+  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+\S{8,}/gu,
   /\b(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*)/gu,
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/gu,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/gu,
@@ -60,6 +60,15 @@ export function failureSecrets(environments) {
       }
       if (value.length >= minimumRedactedEnvLength) {
         values.set(value, name);
+      }
+      // Output is redacted line by line, so each line of a multi-line value
+      // (a PEM key) is a value of its own.
+      if (value.includes("\n")) {
+        for (const line of value.split("\n")) {
+          if (line.trim().length >= minimumRedactedEnvLength) {
+            values.set(line.trim(), name);
+          }
+        }
       }
       // A database or proxy URL can surface its password on its own.
       try {
@@ -145,6 +154,10 @@ export function redactFailureDetail(error, secrets, root) {
 
 // One line of a failed file's output for the diagnostics report.
 export function redactOutputLine(line, secrets, root, limit) {
+  // Test the raw line first, as for container logs: redaction can consume the keyword.
+  if (credentialLine.test(line)) {
+    return "[redacted credential-bearing line]";
+  }
   const redacted = redactText(line, limit, secrets, root) ?? "";
   return credentialLine.test(redacted) ? "[redacted credential-bearing line]" : redacted;
 }

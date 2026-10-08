@@ -557,6 +557,7 @@ const outputTailLines = 400;
 function outputTail() {
   const lines = [];
   const partial = { stdout: "", stderr: "" };
+  const dropping = { stdout: false, stderr: false };
   let omitted = 0;
   // Trim in batches so a chatty passing file costs amortized constant time per line.
   const trim = (limit) => {
@@ -571,11 +572,22 @@ function outputTail() {
   };
   return {
     add(stream, text) {
-      const parts = (partial[stream] + text).split("\n");
+      let rest = text;
+      if (dropping[stream]) {
+        // The rest of a line cut at the limit could start inside a secret.
+        const end = rest.indexOf("\n");
+        if (end === -1) {
+          return;
+        }
+        dropping[stream] = false;
+        rest = rest.slice(end + 1);
+      }
+      const parts = (partial[stream] + rest).split("\n");
       partial[stream] = parts.pop();
       if (partial[stream].length >= failureInputLimit) {
         parts.push(partial[stream]);
         partial[stream] = "";
+        dropping[stream] = true;
       }
       for (const line of parts) {
         push(`${stream}: ${line}`);

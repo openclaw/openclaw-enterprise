@@ -1430,6 +1430,31 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
     redactOutputLine(`stdout: ${"y".repeat(2_000)}`, secrets, "/repo", 1_000),
     `stdout: ${"y".repeat(992)}... [truncated]`,
   );
+  // A token the shape cannot match whole still drops its line.
+  assert.equal(
+    redactOutputLine("stdout: Bearer abcdefghij%rest-of-the-value", secrets, "/repo", 1_000),
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactFailureDetail({ message: "header Token abcdefgh%ijklmnop" }, secrets, "/repo").message,
+    "header [redacted]",
+  );
+  // Each line of a multi-line env value (a PEM body) is redacted on its own.
+  const pem = failureSecrets([{ TLS_KEY: "line one opaque value\nline two opaque value\n" }]);
+  assert.equal(
+    redactOutputLine("stdout: line two opaque value", pem, "/repo", 1_000),
+    "stdout: [env:TLS_KEY]",
+  );
+  // The rest of a line cut at the input limit is dropped, not started as a new line.
+  const cut = await render([
+    { type: "test:stdout", data: { file: "a.mjs", message: "z".repeat(16_400) } },
+    { type: "test:stdout", data: { file: "a.mjs", message: "1234567890 tail\nnext line\n" } },
+    { type: "test:fail", data: { name: "case" } },
+  ]);
+  const cutLines = cut.at(-1).data.lines;
+  assert.equal(cutLines.length, 2);
+  assert.equal(cutLines[0].length, 16_384);
+  assert.equal(cutLines[1], "stdout: next line");
 });
 
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
