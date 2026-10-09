@@ -862,7 +862,7 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
     ) {
       throw new Error("Image caching requires the hosted image lane and its cache credentials.");
     }
-    const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
+    const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1${role === "runtime" ? "-split-demo" : ""}`;
     return [
       "buildx",
       "build",
