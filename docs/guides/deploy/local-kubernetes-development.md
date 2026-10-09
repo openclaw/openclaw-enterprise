@@ -78,28 +78,25 @@ before running the launcher.
 
 ### Sign in through Keycloak
 
-Add `OCC_DEVELOPMENT_SIGN_IN=keycloak` to the profile above to sign in through a
-development Keycloak rather than the generated password. Host `127.0.0.1:443`
-must be free and bindable by the selected engine, with loopback publication
-reachable from the host. Other published ports cannot use 443. k3d publishes
-that port at creation, so add or remove the variable
-only with `dev-down` and a fresh `dev-up`.
+Set `OCC_DEVELOPMENT_SIGN_IN=keycloak` for development Keycloak sign-in. The engine
+must bind free host port `127.0.0.1:443` and make it reachable from the host;
+other published ports must differ. Changing this setting requires `dev-down`
+and fresh `dev-up` because k3d publishes ports at creation.
 
 The persistent realm attaches `alice` to the existing administrator through
-[OIDC sign-in](oidc-sign-in.md), keeps passwords recovery-only, and disables
+[OIDC](oidc-sign-in.md), makes passwords recovery-only, and disables
 [Agent native administration](../../reference/agent-native-admin.md). OpenShell
-is unsupported; password-only development remains the default.
+is unsupported; password-only remains the default.
 
-Import the printed CAs (`browser-ca.crt` and `gateway-ca.crt`) into your browser
-and add the printed `/etc/hosts` entry. Open the Console, choose **Continue with
-Keycloak**, and use `alice` with `keycloak-alice-password`. Keep the generated
-administrator password for recovery.
+Import `browser-ca.crt` and `gateway-ca.crt` into your browser; add the printed
+`/etc/hosts` entry. In Console, choose **Continue with Keycloak**; use `alice`
+with `keycloak-alice-password`. Keep the administrator password for recovery.
 
 `dev-down` destroys the realm volume and cluster. If cleanup retains state,
 repair the reported access problem and retry with the same profile and directory.
 Remove host entries and imported CAs separately. The
 [Keycloak lifecycle](../../flows/docker-compose-development/keycloak.md) covers
-both Helm passes, recovery, installation-only drift checks and certificate copying.
+Helm, recovery, installation-only drift checks and certificate copying.
 
 ### Run OCC in Compose with Kubernetes compute
 

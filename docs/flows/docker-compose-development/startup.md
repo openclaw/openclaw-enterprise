@@ -139,12 +139,11 @@ operator-owned directory; otherwise the helper creates a private temporary
 directory. It never overwrites an existing file, prints `data.key`, or reruns
 bootstrap to replace a missing key.
 
-`dev-up` then reads the Installation with `./bin/occ installation get` and the
-copied key. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
-maps the `x-api-key` to the Installation-scoped service administrator. Startup requires the returned resource ID to match the copied key response's `meta.installationId`. The
-[service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
-owns admission and `401` rejection without cookie fallback; current IAM policy
-still authorizes each resource operation.
+`./bin/occ installation get` uses the copied key; its ID must match
+`meta.installationId`. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
+resolves the Installation-scoped service administrator; IAM authorizes each
+operation. The [service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
+owns admission and `401` rejection without cookie fallback.
 
 When `OCC_CONFIG_PATH` is absent, PostgreSQL-backed development selects the
 filesystem Configuration Driver from `OCC_DEVELOPMENT_CONFIGURATION_ROOT`.
@@ -283,12 +282,12 @@ cluster's internal load-balancer hostname with TLS verification. It and the
 container configuration are readable by non-root containers behind the private
 host directory and mounted read-only into the API and Kubernetes worker. Neither receives the engine socket.
 
-The lifecycle imports runtime and OpenShell images under engine-recorded names,
-including Podman `localhost/` tags and Docker Hub familiar names. `internal/occdev/kubernetes.go:engineImageReference` treats an omitted tag as
-`:latest` and rejects missing or ambiguous matches. `importDevelopmentImage` owns
-the subsequent import and in-cluster digest resolution. Before `writeInstallation`, `internal/occdev/up.go:Up` and
-`internal/occdev/openshell_k3d.go:upK3d` call
-`internal/occdev/status_proxy_k3d.go:developmentStatusProxySource`. Node inventory keeps caller context outside polling.
+`internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names
+(including Podman `localhost/` and Docker Hub), defaults omitted tags to `:latest`,
+and rejects missing or ambiguous matches. `importDevelopmentImage` imports and
+resolves cluster digests. Before `writeInstallation`, both startup paths call
+`internal/occdev/status_proxy_k3d.go:developmentStatusProxySource`; node inventory
+retains caller context outside polling.
 
 `internal/occdev/up.go:poll` bounds route queries to two minutes via `internal/occdev/command.go:command`
 (`exec.CommandContext`), so deadline or cancellation stops blocked queries; default
@@ -316,13 +315,12 @@ owns OpenShell Gateway placement and per-Namespace workspace resources.
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`,
 `internal/occdev/state.go:readState`.
 
-After API and worker readiness, both bootstrap readers read private temporary
-key copies and bind the `occclient` Installation request to startup cancellation
-before exporting the key exclusively. Its ID
-must match bootstrap output. Cancellation fails verification and starts owned
-cleanup. OpenShell also waits for its bootstrap Namespace and operator-mode Workspace.
-Namespace readiness and repository discovery apply their polling deadline
-through `occclient.Client.WithContext`, preserving the original client.
+After API/worker readiness, both bootstrap readers use private temporary keys
+and cancellation-bound `occclient` requests. Installation IDs must match bootstrap
+before exclusive key export; cancellation triggers owned cleanup. OpenShell also
+waits for its bootstrap Namespace and operator-mode Workspace. Namespace readiness
+and repository discovery use `occclient.Client.WithContext` for polling deadlines,
+preserving the original client.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
@@ -344,11 +342,10 @@ newly written external key if a later OpenShell readiness step fails.
 `internal/occdev/keycloak_k3d.go:signInDevelopmentKeycloak`,
 `internal/occdev/down.go:cleanup`.
 
-With `OCC_DEVELOPMENT_SIGN_IN=keycloak`, the Kubernetes-only sandbox `none`
-profile provisions Keycloak before authenticated readiness, then enables OIDC
-and attaches Alice to the administrator. The
-[Keycloak lifecycle](keycloak.md) traces port validation, DNS, certificate copying,
-both Helm passes, recovery and destructive realm teardown.
+With `OCC_DEVELOPMENT_SIGN_IN=keycloak`, Kubernetes-only sandbox `none` provisions
+Keycloak before authenticated readiness, then enables OIDC and attaches Alice to
+the administrator. See the [Keycloak lifecycle](keycloak.md) for validation,
+DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 

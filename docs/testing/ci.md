@@ -180,8 +180,7 @@ The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests, pushes 
 [Full Integration](../../.github/workflows/full-integration.yml) runs only by
 manual dispatch, using the requested lane or `all`, not on pushes or merges. The
 `k3d-model` and `openshell` retain the protected branch exceptions below.
-The explicit credential-free `dev-up-k3d` lane also accepts reviewed branches; see
-[local installation qualification](README.md#run-the-hosted-local-installation-lane).
+Credential-free [`dev-up-k3d`](README.md#run-the-hosted-local-installation-lane) also accepts reviewed branches.
 `provider-account` remains manual because its configured admin credential cannot
 authenticate from the hosted runner.
 
