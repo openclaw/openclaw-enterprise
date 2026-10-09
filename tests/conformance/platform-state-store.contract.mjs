@@ -2696,6 +2696,7 @@ async function verifyCredentialSourceContract(
     servicePrincipalId: identifier("service-agent"),
     executionMode: "dedicated",
     harnessAuth: { method: "credential_source", sourceId: externalSource.id },
+    credentialSources: [{ sourceId: externalSource.id }],
   };
   const externalRevision = {
     ...sourceRevision,
@@ -2704,6 +2705,13 @@ async function verifyCredentialSourceContract(
     servicePrincipalId: externalAgent.servicePrincipalId,
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: "sandbox-contract",
+    credentialSources: [
+      {
+        sourceId: externalSource.id,
+        credentialGatewayId: externalSource.driverId,
+        sourceType: externalSource.type,
+      },
+    ],
     harnessAuth: {
       ...externalAgent.harnessAuth,
       credentialGatewayId: externalSource.driverId,
