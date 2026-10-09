@@ -8,7 +8,7 @@ author: freeqaz
 
 # Proposal: Support Keycloak OIDC sign-in in production, local development and CI
 
-**RFC-0019** · Created 2026-10-03 · Updated 2026-10-08 · [RFC PR #1117](https://github.com/openclaw/openclaw-enterprise/pull/1117)
+**RFC-0019** · Created 2026-10-03 · Updated 2026-10-09 · [RFC PR #1117](https://github.com/openclaw/openclaw-enterprise/pull/1117)
 
 <a id="problem-and-decision"></a>
 <a id="summary"></a>
@@ -19,9 +19,9 @@ author: freeqaz
 
 ## 1. Decision and scope
 
-Propose production human sign-in with operator-managed Keycloak through [OCE's existing OIDC integration](0001-oidc-sign-in.md). The operator owns Keycloak, its realm and users, durable database, DNS, TLS, administration, backups, upgrades and availability. The selected initial route uses an existing publicly trusted HTTPS certificate; the OCE chart connects to it, but does not install Keycloak. Private-CA support is required before OCE 1.0. A dedicated main-based chart implementation is under review; it is not merged or production-qualified.
+Propose production human sign-in with operator-managed Keycloak through [OCE's existing OIDC integration](0001-oidc-sign-in.md). The operator owns Keycloak, its realm and users, durable database, DNS, TLS, administration, backups, upgrades and availability. The selected initial route uses an existing publicly trusted HTTPS certificate; the OCE chart connects to it, but does not install Keycloak. Private-CA support is required before OCE 1.0 and proceeds separately in [#1774](https://github.com/openclaw/openclaw-enterprise/pull/1774); it does not block initial Keycloak delivery. A dedicated main-based chart implementation is under review; it is not merged or production-qualified.
 
-An opt-in Local Setup profile and real-provider CI use a shared disposable development fixture, not the production realm. This adds no managed IdP, just-in-time accounts, claim mapping, Agent OAuth or token refresh. Service keys and Agent credentials remain separate. Design acceptance and production qualification are pending.
+An opt-in Local Setup profile and real-provider CI use a shared disposable development fixture, not the production realm. This adds no managed IdP, just-in-time accounts, claim mapping, Agent OAuth or token refresh. Service keys and Agent credentials remain separate. Free has accepted this bounded scope, including the documented recovery and native-administration restrictions. Production qualification and human RFC merge remain pending.
 
 <a id="design"></a>
 <a id="proposal"></a>
@@ -78,4 +78,4 @@ The stack is [#1133](https://github.com/openclaw/openclaw-enterprise/pull/1133) 
 | Version and CI       | Maintainers (version/topology); freeqaz (required-CI promotion): consider a 26.x digest policy with selector checks on bumps and separate full-mode CI; consider required CI after two weeks green on main without infrastructure failures. Permanent chart-topology CI is a separate choice, proposed “not now” because Local Setup supplies development topology on demand; it cannot replace production qualification.                       |
 | Local human check    | freeqaz: name a person to follow the CA and hosts steps on a supported developer host before accepting the local profile.                                                                                                                                                                                                                                                                                                                       |
 
-The remaining rows are recommendations for discussion. Human acceptance and a human merge are required; source acceptance and release readiness are separate gates. The [immutable prior RFC](https://github.com/openclaw/openclaw-enterprise/blob/e9100d111467b6a691ca5c78cfc6d32707c3f3b9/specs/rfcs/0019-keycloak-oidc-verification.md) retains historical detail.
+The version and CI policies and the dogfood tradeoff remain recommendations for discussion. The manual local human check and independent production qualification remain required. Human RFC merge, source acceptance and release readiness are separate gates. The [immutable prior RFC](https://github.com/openclaw/openclaw-enterprise/blob/e9100d111467b6a691ca5c78cfc6d32707c3f3b9/specs/rfcs/0019-keycloak-oidc-verification.md) retains historical detail.
