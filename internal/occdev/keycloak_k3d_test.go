@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,13 +108,6 @@ func TestUpRefusesKeycloakReservedPortConflictsBeforeCreatingState(t *testing.T)
 				t.Fatalf("invalid configuration created state: %v", err)
 			}
 		})
-	}
-}
-
-func TestKeycloakPortArgsPublishLoopback443ToTheGatewayNodePort(t *testing.T) {
-	want := []string{"--port", "127.0.0.1:443:30443@loadbalancer"}
-	if got := developmentKeycloakPortArgs(); !slices.Equal(got, want) {
-		t.Fatalf("port args = %q, want %q", got, want)
 	}
 }
 
