@@ -7,12 +7,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,8 +26,8 @@ import (
 
 // OCC_DEVELOPMENT_SIGN_IN=keycloak runs a persistent Keycloak beside the
 // routing-enabled Kubernetes-only profile (RFC-0019). This file owns the
-// Keycloak workload, its name, TLS and host publication; OCE sign-in is not
-// wired to it yet.
+// Keycloak workload, its name, TLS and host publication, and the second Helm
+// pass that signs the development administrator in through it.
 const (
 	developmentSignInKeycloak = "keycloak"
 
@@ -434,27 +437,28 @@ func developmentKeycloakRedirectURI(cluster string, browserPort int) string {
 }
 
 // installDevelopmentKeycloak runs after the chart, whose routing CA Issuer
-// signs the listener certificate.
-func (r *runner) installDevelopmentKeycloak(ctx context.Context, state *developmentState, timeout time.Duration) error {
+// signs the listener certificate. It returns the generated secrets and the
+// realm, which the sign-in pass needs.
+func (r *runner) installDevelopmentKeycloak(ctx context.Context, state *developmentState, timeout time.Duration) (secrets developmentKeycloakSecrets, realm []byte, err error) {
 	if err := r.requireDevelopmentKeycloakPublication(ctx, state); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	image, realm, err := readDevelopmentKeycloakFixtures(state.Repository)
 	if err != nil {
-		return err
+		return secrets, nil, err
 	}
-	secrets, err := newDevelopmentKeycloakSecrets()
+	secrets, err = newDevelopmentKeycloakSecrets()
 	if err != nil {
-		return err
+		return secrets, nil, err
 	}
 	redirectURI := developmentKeycloakRedirectURI(state.Cluster, state.BrowserPort)
 	environment, err := secrets.realmEnvironment(realm, redirectURI)
 	if err != nil {
-		return err
+		return secrets, nil, err
 	}
 	environment["KC_BOOTSTRAP_ADMIN_PASSWORD"] = secrets.AdminPassword
 	if err := secrets.write(state.directory); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	if previous, err := r.output(ctx, "kubectl", "-n", developmentKeycloakNamespace, "get", "configmap", "keycloak-realm", "-o", "jsonpath={.metadata.annotations.openclaw\\.dev/realm-sha256}"); err == nil {
 		fmt.Fprint(r.opts.Err, developmentRealmHashWarning(string(previous), developmentRealmHash(realm)))
@@ -464,50 +468,50 @@ func (r *runner) installDevelopmentKeycloak(ctx context.Context, state *developm
 		Cluster: state.Cluster, PlatformNamespace: state.PlatformNamespace, Image: image, Realm: realm, RedirectURI: redirectURI, Environment: environment,
 	})}
 	if err := r.writeAndApply(ctx, state, "keycloak", manifests); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	// CoreDNS reads the imported file at start; restart it so Pods resolve
 	// the Keycloak host now rather than on the next reload.
 	if err := r.run(ctx, "kubectl", "-n", "kube-system", "rollout", "restart", "deployment/coredns"); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	if err := r.run(ctx, "kubectl", "-n", state.PlatformNamespace, "wait", "--for=condition=Ready", "certificate/"+developmentKeycloakTLSSecret, "--timeout", timeout.String()); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	source, err := r.output(ctx, "kubectl", "-n", state.PlatformNamespace, "get", "secret", developmentKeycloakTLSSecret, "-o", "json")
 	if err != nil {
-		return err
+		return secrets, nil, err
 	}
 	mirror, ca, err := developmentKeycloakTLSMirror(source)
 	if err != nil {
-		return err
+		return secrets, nil, err
 	}
 	if err := r.writeAndApply(ctx, state, "keycloak-tls", mirror); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	caPath := filepath.Join(state.directory, "gateway-ca.crt")
 	if err := exclusiveWrite(caPath, ca, 0600); err != nil {
-		return err
+		return secrets, nil, err
 	}
 	for _, args := range [][]string{
 		{"-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout", timeout.String()},
 		{"-n", developmentKeycloakNamespace, "rollout", "status", "deployment/keycloak", "--timeout", timeout.String()},
 	} {
 		if err := r.run(ctx, "kubectl", args...); err != nil {
-			return err
+			return secrets, nil, err
 		}
 	}
 	client, err := developmentKeycloakHostClient(state.Cluster, ca)
 	if err != nil {
-		return err
+		return secrets, nil, err
 	}
 	// Discovery through the host publication proves the whole chain: k3d port,
 	// NodePort, Envoy listener and certificate, route and Keycloak.
 	fmt.Fprintln(r.opts.Out, "Waiting for Keycloak discovery through 127.0.0.1:443...")
 	if err := waitDevelopmentKeycloakDiscovery(ctx, client, state.Cluster, timeout); err != nil {
-		return err
+		return secrets, nil, err
 	}
-	return verifyDevelopmentKeycloakClient(ctx, client, state.Cluster, secrets, redirectURI)
+	return secrets, realm, verifyDevelopmentKeycloakClient(ctx, client, state.Cluster, secrets, redirectURI)
 }
 
 // developmentKeycloakHostClient reaches the Keycloak host through the host
@@ -636,4 +640,374 @@ func (r *runner) removeDevelopmentKeycloak(ctx context.Context, state *developme
 	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(r.opts.Err, "Warning: could not delete Namespace %s before removing the cluster: %v\n", developmentKeycloakNamespace, err)
 	}
+}
+
+const (
+	developmentAdministratorEmail = "admin@development.openclaw.invalid"
+	// The realm user whose subject the launcher attaches to the administrator.
+	developmentKeycloakSignInUser = "alice"
+	developmentKeycloakOIDCSecret = "occ-oidc-login"
+	developmentKeycloakSignInName = "Keycloak"
+)
+
+// The chart's auth.recoveryUserId rule, checked here for a clear error.
+var developmentRecoveryUserID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+// developmentKeycloakSubject returns the fixed Keycloak user ID, the ID token's
+// sub, of one realm user.
+func developmentKeycloakSubject(realm []byte, username string) (string, error) {
+	var parsed struct {
+		Users []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(realm, &parsed); err != nil {
+		return "", fmt.Errorf("invalid %s", developmentKeycloakRealmFile)
+	}
+	for _, user := range parsed.Users {
+		if user.Username == username && user.ID != "" {
+			return user.ID, nil
+		}
+	}
+	return "", fmt.Errorf("%s has no user %s with a fixed ID", developmentKeycloakRealmFile, username)
+}
+
+// developmentKeycloakEgressCIDRs accepts only the dedicated Gateway's Service.
+// These pre-DNAT hosts complement the selector-scoped post-DNAT 10443 policy.
+func developmentKeycloakEgressCIDRs(data []byte) ([]string, error) {
+	var service struct {
+		Metadata struct {
+			Name      string            `json:"name"`
+			Namespace string            `json:"namespace"`
+			Labels    map[string]string `json:"labels"`
+		} `json:"metadata"`
+		Spec struct {
+			Type       string            `json:"type"`
+			ClusterIP  string            `json:"clusterIP"`
+			ClusterIPs []string          `json:"clusterIPs"`
+			Selector   map[string]string `json:"selector"`
+			Ports      []struct {
+				Protocol   string `json:"protocol"`
+				Port       int    `json:"port"`
+				TargetPort int    `json:"targetPort"`
+				NodePort   int    `json:"nodePort"`
+			} `json:"ports"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(data, &service); err != nil {
+		return nil, fmt.Errorf("read Keycloak Envoy Service: %w", err)
+	}
+	if service.Metadata.Name != developmentKeycloakEnvoyService || service.Metadata.Namespace != "envoy-gateway-system" || service.Spec.Type != "NodePort" {
+		return nil, fmt.Errorf("Keycloak Envoy Service identity does not match the owned publication")
+	}
+	for key, want := range map[string]string{
+		"gateway.envoyproxy.io/owning-gateway-name":      developmentKeycloakGateway,
+		"gateway.envoyproxy.io/owning-gateway-namespace": developmentKeycloakNamespace,
+	} {
+		if service.Metadata.Labels[key] != want || service.Spec.Selector[key] != want {
+			return nil, fmt.Errorf("Keycloak Envoy Service is not owned by the dedicated Gateway")
+		}
+	}
+	if len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Protocol != "TCP" || service.Spec.Ports[0].Port != 443 || service.Spec.Ports[0].TargetPort != developmentKeycloakEnvoyTargetPort || service.Spec.Ports[0].NodePort != developmentKeycloakNodePort {
+		return nil, fmt.Errorf("Keycloak Envoy Service does not expose the expected TLS listener")
+	}
+	if len(service.Spec.ClusterIPs) == 0 || service.Spec.ClusterIP != service.Spec.ClusterIPs[0] {
+		return nil, fmt.Errorf("Keycloak Envoy Service has no consistent ClusterIP addresses")
+	}
+	cidrs := make([]string, 0, len(service.Spec.ClusterIPs))
+	for _, value := range service.Spec.ClusterIPs {
+		address, err := netip.ParseAddr(value)
+		if err != nil || !address.IsGlobalUnicast() || !address.Is4() || address.Zone() != "" {
+			return nil, fmt.Errorf("Keycloak Envoy Service requires a unicast IPv4 ClusterIP supported by auth.oidc.egressCidrs")
+		}
+		cidrs = append(cidrs, netip.PrefixFrom(address, address.BitLen()).String())
+	}
+	return cidrs, nil
+}
+
+// developmentKeycloakSignInValues derives the second Helm pass from the first:
+// OIDC sign-in against the development Keycloak, the bootstrap administrator as
+// the recovery account, and passwords for that account only. OIDC supports
+// host-only cookies only, so the chart requires native Agent administration,
+// and its shared cookie domain, to be off. Every key is an existing chart value.
+func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID string, service []byte) ([]byte, error) {
+	if !developmentRecoveryUserID.MatchString(recoveryUserID) {
+		return nil, fmt.Errorf("the development administrator's user ID is not a valid auth.recoveryUserId")
+	}
+	var values map[string]any
+	if err := json.Unmarshal(first, &values); err != nil {
+		return nil, fmt.Errorf("invalid first-pass Helm values: %w", err)
+	}
+	auth, _ := values["auth"].(map[string]any)
+	if baseURL, _ := auth["baseUrl"].(string); !strings.HasPrefix(baseURL, "https://") {
+		return nil, fmt.Errorf("Keycloak sign-in needs the first Helm pass's HTTPS auth.baseUrl")
+	}
+	cidrs, err := developmentKeycloakEgressCIDRs(service)
+	if err != nil {
+		return nil, err
+	}
+	issuer := developmentKeycloakIssuer(cluster)
+	endpoints := issuer + "/protocol/openid-connect/"
+	auth["recoveryUserId"] = recoveryUserID
+	auth["passwordSignIn"] = "recovery-only"
+	auth["oidc"] = map[string]any{
+		"enabled":          true,
+		"issuer":           issuer,
+		"authorizationUrl": endpoints + "auth",
+		"tokenUrl":         endpoints + "token",
+		"jwksUrl":          endpoints + "certs",
+		"secretName":       developmentKeycloakOIDCSecret,
+		"clientIdKey":      "client-id",
+		"clientSecretKey":  "client-secret",
+		"displayName":      developmentKeycloakSignInName,
+		"egressCidrs":      cidrs,
+	}
+	values["agentNativeAdmin"] = map[string]any{"enabled": false}
+	return json.Marshal(values)
+}
+
+// developmentKeycloakOIDCSecretManifest is the dedicated Secret auth.oidc reads.
+func developmentKeycloakOIDCSecretManifest(namespace, clientSecret string) map[string]any {
+	return map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata":   kubernetesMetadata(developmentKeycloakOIDCSecret, namespace, map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"}),
+		"stringData": map[string]string{"client-id": developmentKeycloakClientID, "client-secret": clientSecret},
+	}
+}
+
+// signInDevelopmentKeycloak runs the second Helm pass and attaches alice's
+// Keycloak subject to the bootstrap administrator. It runs only once the API
+// serves the first pass: the attach route answers 409 while OIDC is off.
+func (r *runner) signInDevelopmentKeycloak(ctx context.Context, state *developmentState, secrets developmentKeycloakSecrets, realm []byte, timeout time.Duration) error {
+	subject, err := developmentKeycloakSubject(realm, developmentKeycloakSignInUser)
+	if err != nil {
+		return err
+	}
+	password, err := os.ReadFile(filepath.Join(state.directory, "initial-admin-password"))
+	if err != nil {
+		return err
+	}
+	ca, err := os.ReadFile(filepath.Join(state.directory, "browser-ca.crt"))
+	if err != nil {
+		return err
+	}
+	consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
+	origin := fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)
+	address := fmt.Sprintf("127.0.0.1:%d", state.BrowserPort)
+
+	// The password-only first pass: read the administrator's user ID.
+	console, err := newDevelopmentConsole(origin, address, ca)
+	if err != nil {
+		return err
+	}
+	if err := console.signIn(ctx, developmentAdministratorEmail, string(password)); err != nil {
+		return fmt.Errorf("administrator password sign-in: %w", err)
+	}
+	userID, err := console.sessionUserID(ctx)
+	if err != nil {
+		return err
+	}
+	// helm-values.json stays the one complete record of what the chart runs.
+	valuesPath := filepath.Join(state.directory, "helm-values.json")
+	first, err := os.ReadFile(valuesPath)
+	if err != nil {
+		return err
+	}
+	service, err := r.output(ctx, "kubectl", "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--context", "k3d-"+state.Cluster, "-n", "envoy-gateway-system", "get", "service", developmentKeycloakEnvoyService, "-o", "json")
+	if err != nil {
+		return fmt.Errorf("read owned Keycloak Envoy Service: %w", err)
+	}
+	values, err := developmentKeycloakSignInValues(first, state.Cluster, userID, service)
+	if err != nil {
+		return err
+	}
+	if err := replaceDevelopmentFile(valuesPath, values); err != nil {
+		return err
+	}
+	if err := r.writeAndApply(ctx, state, "oidc-login", developmentKeycloakOIDCSecretManifest(state.PlatformNamespace, secrets.ClientSecret)); err != nil {
+		return err
+	}
+	fmt.Fprintln(r.opts.Out, "Enabling Keycloak sign-in (second Helm pass)...")
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout); err != nil {
+		return err
+	}
+
+	// Recovery-only now: only the administrator's password still signs in.
+	console, err = newDevelopmentConsole(origin, address, ca)
+	if err != nil {
+		return err
+	}
+	if err := console.waitOIDC(ctx, timeout); err != nil {
+		return err
+	}
+	if err := console.signIn(ctx, developmentAdministratorEmail, string(password)); err != nil {
+		return fmt.Errorf("recovery administrator password sign-in: %w", err)
+	}
+	version, err := console.accountVersion(ctx, userID)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(r.opts.Out, "Attaching Keycloak user %s to %s...\n", developmentKeycloakSignInUser, developmentAdministratorEmail)
+	return console.attachOIDC(ctx, userID, subject, version)
+}
+
+// developmentConsole calls the API as a browser would: through the Console's
+// HTTPS host publication, with its exact Origin and a cookie session.
+type developmentConsole struct {
+	origin string
+	client *http.Client
+}
+
+// newDevelopmentConsole dials address for the origin's host and port, trusting
+// only ca. It needs no name resolution, so *.localhost names work everywhere.
+func newDevelopmentConsole(origin, address string, ca []byte) (*developmentConsole, error) {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme != "https" || parsed.Port() == "" {
+		return nil, fmt.Errorf("invalid Console origin %q", origin)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		return nil, fmt.Errorf("invalid browser CA certificate")
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: parsed.Hostname(), MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, target string) (net.Conn, error) {
+			if target != parsed.Host {
+				return nil, fmt.Errorf("unexpected Console address %s", target)
+			}
+			return dialer.DialContext(ctx, network, address)
+		},
+	}
+	client := &http.Client{Transport: transport, Jar: jar, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &developmentConsole{origin: origin, client: client}, nil
+}
+
+// call sends one JSON request and decodes the response envelope's data. It
+// never echoes a response body: sign-in responses can carry credentials.
+func (c *developmentConsole) call(ctx context.Context, method, path string, body, data any) error {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, c.origin+path, reader)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Origin", c.origin)
+	request.Header.Set("Accept", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		var failure struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(payload, &failure)
+		return fmt.Errorf("%s %s returned HTTP %d %s", method, path, response.StatusCode, failure.Error.Code)
+	}
+	if data == nil {
+		return nil
+	}
+	var envelope struct {
+		Data jsontext.Value `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil || len(envelope.Data) == 0 {
+		return fmt.Errorf("%s %s returned an invalid response", method, path)
+	}
+	return json.Unmarshal(envelope.Data, data)
+}
+
+func (c *developmentConsole) signIn(ctx context.Context, email, password string) error {
+	return c.call(ctx, http.MethodPost, "/api/auth/sign-in/email", map[string]string{"email": email, "password": password}, nil)
+}
+
+func (c *developmentConsole) sessionUserID(ctx context.Context) (string, error) {
+	var session struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/api/auth/session", nil, &session); err != nil {
+		return "", err
+	}
+	if session.User.ID == "" {
+		return "", fmt.Errorf("the administrator sign-in returned no session")
+	}
+	return session.User.ID, nil
+}
+
+// waitOIDC waits for an API that serves the second pass: OIDC on and password
+// sign-in for the recovery account only.
+func (c *developmentConsole) waitOIDC(ctx context.Context, timeout time.Duration) error {
+	return poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		var providers struct {
+			OIDC     bool `json:"oidc"`
+			Password bool `json:"password"`
+		}
+		if err := c.call(ctx, http.MethodGet, "/api/auth/providers", nil, &providers); err != nil {
+			return false, nil
+		}
+		return providers.OIDC && !providers.Password, nil
+	})
+}
+
+func (c *developmentConsole) accountVersion(ctx context.Context, userID string) (int, error) {
+	var account struct {
+		Version int `json:"version"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/api/auth/accounts/"+url.PathEscape(userID), nil, &account); err != nil {
+		return 0, err
+	}
+	if account.Version < 1 {
+		return 0, fmt.Errorf("the administrator account has no version")
+	}
+	return account.Version, nil
+}
+
+func (c *developmentConsole) attachOIDC(ctx context.Context, userID, subject string, version int) error {
+	body := map[string]any{"subject": subject, "expectedVersion": version}
+	if err := c.call(ctx, http.MethodPost, "/api/auth/accounts/"+url.PathEscape(userID)+"/providers/oidc", body, nil); err != nil {
+		return fmt.Errorf("attach the Keycloak identity: %w", err)
+	}
+	return nil
+}
+
+// developmentKeycloakInstructions tells the developer how to sign in as alice:
+// the two CAs a browser must trust and the host name it must resolve.
+func developmentKeycloakInstructions(state *developmentState) string {
+	consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
+	return fmt.Sprintf(`Keycloak sign-in: open https://%s:%d/console/ and choose Continue with %s.
+  Keycloak user: %s
+  Keycloak password file: %s
+  Trust in the browser: %s (Console) and %s (Keycloak)
+  Add to /etc/hosts: 127.0.0.1 %s
+  Keycloak issuer: %s
+  Keycloak administrator password file: %s
+  Password sign-in is for the recovery account (the administrator) only.
+`, consoleHost, state.BrowserPort, developmentKeycloakSignInName, developmentKeycloakSignInUser,
+		filepath.Join(state.directory, "keycloak-alice-password"),
+		filepath.Join(state.directory, "browser-ca.crt"), filepath.Join(state.directory, "gateway-ca.crt"),
+		developmentKeycloakHost(state.Cluster), developmentKeycloakIssuer(state.Cluster),
+		filepath.Join(state.directory, "keycloak-admin-password"))
 }

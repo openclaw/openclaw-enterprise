@@ -339,8 +339,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 			return err
 		}
 	}
+	var keycloakSecrets developmentKeycloakSecrets
+	var keycloakRealm []byte
 	if signIn == developmentSignInKeycloak {
-		if err := r.installDevelopmentKeycloak(ctx, state, timeout); err != nil {
+		keycloakSecrets, keycloakRealm, err = r.installDevelopmentKeycloak(ctx, state, timeout)
+		if err != nil {
 			return err
 		}
 	}
@@ -376,6 +379,12 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 			return err
 		}
 	}
+	if signIn == developmentSignInKeycloak {
+		// Last, so the namespace and routing checks above ran on the first pass.
+		if err := r.signInDevelopmentKeycloak(ctx, state, keycloakSecrets, keycloakRealm, timeout); err != nil {
+			return err
+		}
+	}
 	if state.BrowserPort != 0 {
 		consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
 		fmt.Fprintf(r.opts.Out, "Browser console: https://%s:%d/console/\nBrowser CA certificate: %s\n", consoleHost, state.BrowserPort, filepath.Join(directory, "browser-ca.crt"))
@@ -384,7 +393,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		fmt.Fprintf(r.opts.Out, "Console: %s/console/\n", apiURL)
 	}
 	if signIn == developmentSignInKeycloak {
-		fmt.Fprintf(r.opts.Out, "Keycloak issuer: %s (sign-in is not wired to it yet)\nKeycloak CA certificate: %s\nKeycloak administrator password file: %s\nFor a browser, add to /etc/hosts: 127.0.0.1 %s\n", developmentKeycloakIssuer(state.Cluster), filepath.Join(directory, "gateway-ca.crt"), filepath.Join(directory, "keycloak-admin-password"), developmentKeycloakHost(state.Cluster))
+		fmt.Fprint(r.opts.Out, developmentKeycloakInstructions(state))
 	}
 	if routingPodCIDR == "" {
 		fmt.Fprintln(r.opts.Out, "Note: this profile installs no private gateway routing, so dedicated Agent deployments fail with DEPENDENCY_UNAVAILABLE. See docs/guides/deploy/openshell-credential-sources.md.")
@@ -657,7 +666,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"images":       map[string]string{"controller": controllerImage},
 		"installation": map[string]string{"name": "Kubernetes development"},
 		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": "admin@development.openclaw.invalid", "password": map[string]string{"claimName": "bootstrap-password"}},
+		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
 		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
 		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
 		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
@@ -706,10 +715,15 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
 	}
-	if err := r.run(ctx, "helm", "upgrade", "--install", "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-"+state.Cluster, "-f", valuesPath, "--wait", "--timeout", timeout.String()); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout); err != nil {
 		return err
 	}
 	return r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout)
+}
+
+// helmUpgrade installs or upgrades the chart from one complete values file.
+func (r *runner) helmUpgrade(ctx context.Context, state *developmentState, valuesPath string, timeout time.Duration) error {
+	return r.run(ctx, "helm", "upgrade", "--install", "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", state.PlatformNamespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-"+state.Cluster, "-f", valuesPath, "--wait", "--timeout", timeout.String())
 }
 
 // applyDevelopmentRestartEgress keeps the control plane connected after

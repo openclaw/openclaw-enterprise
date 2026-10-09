@@ -53,18 +53,44 @@ case and skip counts. Existing suite discovery and CI selection remain available
 
 ### Run the local installation lane
 
-The `dev-up-k3d` lane selects all four real local installation cases and fails
+The `dev-up-k3d` lane selects all six real local installation cases and fails
 on skips. Install Node.js 24 or newer, the repository-pinned pnpm, the Go
 version from `go.mod`, Docker, k3d, kubectl, and Helm. Then build the CLI as
-described in [Local Kubernetes installation](kubernetes.md#local-kubernetes-installation).
-The lane creates its own disposable clusters. Run it with a fresh results
-directory:
+described in [Local Kubernetes installation](kubernetes.md#local-kubernetes-installation),
+and prepare Playwright Chromium for the Keycloak cases. Those cases also require
+exclusive, bindable loopback port 443 and a host that supports the Chromium sandbox.
+The lane creates its own disposable clusters. An explicit credential-free
+[hosted dispatch](#run-the-hosted-local-installation-lane) can qualify a reviewed
+branch. For local execution, use a fresh results directory:
 
 ```sh
 run_dir=$(mktemp -d)
 node scripts/ci/run-tests.mjs run dev-up-k3d \
   --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
+
+### Run the hosted local installation lane
+
+For hosted qualification, publish the reviewed branch and explicitly select
+`dev-up-k3d` in Full Integration:
+
+```sh
+gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
+```
+
+The job checks out the immutable dispatch SHA on a disposable Ubuntu 22.04 VM,
+prepares pinned tools, workspace dependencies, Go, the same-source CLI and
+sandboxed Chromium, then runs all six cases. It uses generated fixture credentials,
+no protected environment or provider credentials, and enforcing NetworkPolicies.
+The file deadline is 150 minutes; the job allows 180 minutes including preparation
+and cleanup. `all` and ordinary PR gates do not select this lane. Existing
+credentialed lanes retain their branch and environment checks.
+
+Check the run's `headSha` against the reviewed commit, then inspect the
+`full-results-dev-up-k3d` artifact and Full Integration Aggregate: every expected
+case must pass without skips at that source. A dispatched or green setup job is
+not runtime proof. Failure retains bounded result evidence; abrupt runner loss
+can prevent cleanup and loses private recovery state when the VM is discarded.
 
 ## Integration tests
 

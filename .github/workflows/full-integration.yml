@@ -18,6 +18,7 @@ on:
           - provider-account
           - openshell
           - helper-timeout
+          - dev-up-k3d
           - logging-collector
           - k3d-otel
           - all
@@ -28,7 +29,7 @@ permissions:
   deployments: read
 
 concurrency:
-  group: full-integration
+  group: ${{ inputs.lane == 'dev-up-k3d' && format('full-integration-dev-up-k3d-{0}', github.ref) || 'full-integration' }}
   cancel-in-progress: false
 
 env:
@@ -445,6 +446,24 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
 
+  dev-up-k3d:
+    name: Local Kubernetes Installation
+    runs-on: ubuntu-22.04
+    needs: preflight
+    if: inputs.lane == 'dev-up-k3d'
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: dev-up-k3d
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+
   full-aggregate:
     name: Full Integration Aggregate
     runs-on: ubuntu-24.04
@@ -463,6 +482,7 @@ jobs:
       - helper-timeout
       - logging-collector
       - qa-matrix
+      - dev-up-k3d
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -495,6 +515,8 @@ jobs:
             }
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
+          } else if (lane === "dev-up-k3d") {
+            out["dev-up-k3d"] = needs["dev-up-k3d"] ?? { result: "missing" };
           } else if (lane === "qa-matrix") {
             // TODO: move qa-matrix into the `all` list once integration-qa exists.
             out["qa-matrix"] = needs["qa-matrix"] ?? { result: "missing" };

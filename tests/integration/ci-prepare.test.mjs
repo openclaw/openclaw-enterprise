@@ -1997,6 +1997,138 @@ test("prepareFile applies the images packaging Node base default without hiding 
   assert.match(invalid.stderr, /NODE_BASE_IMAGE must be an immutable/);
 });
 
+// This command fixture tests preparation ordering only. The real launcher case
+// still reads genuine engine metadata and requires the revision-mismatch error.
+async function launcherImageEngine(t, scenario = "cold") {
+  const root = await fixture(t);
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  await writeFile(join(root, "commands.jsonl"), "");
+  const image =
+    "rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
+  const source = `#!${process.execPath}
+import assert from "node:assert/strict";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+assert.equal(args.at(-1), ${JSON.stringify(image)});
+appendFileSync(${JSON.stringify(join(root, "commands.jsonl"))}, JSON.stringify([process.argv[1], ...args]) + "\\n");
+assert.equal(existsSync(${JSON.stringify(join(root, "prepared.env"))}), false);
+if (args[0] === "pull") {
+  if (${JSON.stringify(scenario)} === "denied") {
+    console.error("pull access denied"); process.exit(1);
+  }
+  writeFileSync(${JSON.stringify(join(root, "pulled"))}, "ready");
+} else if (!existsSync(${JSON.stringify(join(root, "pulled"))})) {
+  console.error("No such image"); process.exit(1);
+} else if (args[3] === "{{json .RepoDigests}}") {
+  console.log(JSON.stringify([${JSON.stringify(scenario === "wrong-digest" ? "rancher/k3s@sha256:" + "a".repeat(64) : image)}]));
+} else if (args[3] === "{{.Id}}") {
+  console.log("sha256:" + "b".repeat(64));
+} else {
+  throw new Error("Unexpected engine command");
+}
+`;
+  for (const engine of ["docker", "podman"]) {
+    await writeFile(join(bin, engine), source, { mode: 0o700 });
+  }
+  return {
+    root,
+    image,
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      // The launcher engine selection must win over the general CI engine override.
+      OCC_DOCKER_BIN: join(root, "must-not-run"),
+    },
+    commands: async () =>
+      (await readFile(join(root, "commands.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map(JSON.parse),
+  };
+}
+
+test("local launcher preparation verifies the rejection image before publishing browser and engine inputs", async (t) => {
+  for (const [name, inputs, expected] of [
+    [
+      "selected",
+      {
+        OCC_TEST_BROWSER_EXECUTABLE: "/prepared/chromium",
+        OCC_TEST_DEV_UP_CONTAINER_ENGINE: "podman",
+      },
+      {
+        OCC_TEST_BROWSER_EXECUTABLE: "/prepared/chromium",
+        OCC_TEST_DEV_UP_CONTAINER_ENGINE: "podman",
+      },
+    ],
+    [
+      "default",
+      { OCC_TEST_BROWSER_EXECUTABLE: "", OCC_TEST_DEV_UP_CONTAINER_ENGINE: "" },
+      { OCC_TEST_BROWSER_EXECUTABLE: "", OCC_TEST_DEV_UP_CONTAINER_ENGINE: "docker" },
+    ],
+  ]) {
+    // The runner removes inherited OCC_TEST_* selectors. Preparation must
+    // restore these explicit choices before the real launcher/browser starts.
+    const engine = await launcherImageEngine(t);
+    const root = engine.root;
+    const envPath = join(root, "prepared.env");
+    const result = runPrepare(
+      [
+        "--lane",
+        "dev-up-k3d",
+        "--file",
+        "tests/integration/dev-up-k3d-real.test.mjs",
+        "--state",
+        join(root, `${name}.json`),
+        "--github-env",
+        envPath,
+      ],
+      { ...engine.env, ...inputs },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      await engine.commands(),
+      [
+        ["image", "inspect", "--format", "{{json .RepoDigests}}", engine.image],
+        ["pull", engine.image],
+        ["image", "inspect", "--format", "{{json .RepoDigests}}", engine.image],
+        ["image", "inspect", "--format", "{{.Id}}", engine.image],
+      ].map((args) => [join(root, "bin", expected.OCC_TEST_DEV_UP_CONTAINER_ENGINE), ...args]),
+    );
+    const prepared = await readFile(envPath, "utf8");
+    for (const [key, value] of Object.entries(expected)) {
+      assert.ok(prepared.split("\n").includes(`${key}=${value}`), `${name}: ${key}`);
+    }
+  }
+});
+
+test("local launcher preparation refuses failed pulls and unverified digests before publishing inputs", async (t) => {
+  for (const [scenario, expected] of [
+    ["denied", /pull access denied/],
+    ["wrong-digest", /pull did not materialize the requested registry digest/],
+  ]) {
+    const engine = await launcherImageEngine(t, scenario);
+    const envPath = join(engine.root, "prepared.env");
+    const result = runPrepare(
+      [
+        "--lane",
+        "dev-up-k3d",
+        "--file",
+        "tests/integration/dev-up-k3d-real.test.mjs",
+        "--state",
+        join(engine.root, "state.json"),
+        "--github-env",
+        envPath,
+      ],
+      { ...engine.env, OCC_TEST_DEV_UP_CONTAINER_ENGINE: "podman" },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, expected);
+    await assert.rejects(stat(envPath), { code: "ENOENT" });
+    assert.equal((await engine.commands()).filter(([, command]) => command === "pull").length, 1);
+  }
+});
+
 test("provider-account preparation accepts absent image inputs before prepared state exists", async (t) => {
   const root = await fixture(t);
   const adminKeyPath = join(root, "chatgpt-admin.key");

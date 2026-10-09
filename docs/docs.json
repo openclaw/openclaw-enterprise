@@ -911,6 +911,7 @@
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
+              "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
               "flows/audit-ledger",

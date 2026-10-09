@@ -5,22 +5,37 @@ Kubernetes HTTP fixtures or real-runtime gateway, Codex, model, and Secret tests
 
 ## Local Kubernetes installation
 
-Build the CLI and run the selected real test to create and clean up a separate
-k3d cluster:
+Build the CLI; prepare sandboxed Chromium using the
+[browser setup](local.md#console-browser-checks). Run six k3d cases on an owned,
+disposable Docker engine. Keycloak requires exclusive, bindable loopback port 443.
 
 ```sh
+pnpm exec playwright install chromium
 pnpm cli:build
 OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
 ```
 
-The Kubernetes-only case checks authenticated readiness, presets, plugin discovery,
-and a dedicated Codex Agent’s sandbox using a synthetic credential. The Compose
-case checks the launcher’s generated image and seccomp profile in a real Pod. Both
-verify workspace writes succeed and outside writes fail; neither proves model
-execution, and the Compose case does not prove Agent routing. Failed cleanup
-preserves state for `occ dev down`.
+Preparation verifies the pinned rejection image outside that case’s 60-second
+assertion budget. `OCC_TEST_DEV_UP_CONTAINER_ENGINE` defaults to `docker`;
+unowned images remain cached.
 
-See [two-cluster validation](two-cluster-local.md).
+The Kubernetes-only case checks authenticated readiness, presets, plugin discovery,
+and a dedicated Codex Agent’s sandbox. It selects same-checkout controller/runtime
+digests, adds a private CA to runtime trust, and routes cluster-local `api.openai.com`
+DNS over an internal Docker network to the existing Responses HTTP/WebSocket fixture.
+Activation requires a completed native startup turn and safe fixture receipt.
+This proves deterministic provider responses, not live provider authentication or
+model inference. TLS verification, host DNS/trust, and NetworkPolicies remain unchanged.
+
+The Compose case checks the generated image and seccomp profile in a real Pod,
+without Agent routing or model execution. Both verify workspace writes succeed
+and outside writes fail. Cluster cleanup failure preserves state for `occ dev down`;
+provider cleanup failure retains `provider/resources.json` beside that state for
+ownership-verified recovery.
+
+See [Keycloak launcher coverage](keycloak.md#local-launcher-coverage),
+[two-cluster validation](two-cluster-local.md), and
+[hosted branch qualification](README.md#run-the-hosted-local-installation-lane).
 
 ## Kubernetes HTTP fixture
 

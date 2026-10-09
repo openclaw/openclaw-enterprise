@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { once } from "node:events";
@@ -8,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { composeConfiguration } from "../helpers/compose.mjs";
+import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
 import {
   composeInvocations,
   composeOptions,
@@ -1317,3 +1319,135 @@ test("Kubernetes development uses a canonical default state directory through a 
   await assert.rejects(stat(directory), { code: "ENOENT" });
   assert.ok((await stat(temporary)).isDirectory());
 });
+
+for (const scenario of ["cancelled-creation", "cluster-create-failed", "node-dns-refused"]) {
+  test(
+    `launcher case recovery follows real Go rollback after ${scenario}`,
+    { timeout: 30_000 },
+    async (t) => {
+      const fixture = await createFixture(t);
+      await prepareLifecycleCommands(fixture, scenario);
+      const environment = {
+        ...fixture.env,
+        OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+        OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
+        OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
+        OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "30",
+        DEV_UP_EXISTING_CONTROLLER_IMAGE: "1",
+        DEV_UP_EXISTING_RUNTIME_IMAGE: "1",
+      };
+      const started = join(fixture.directory, "creation-started");
+      if (scenario === "cancelled-creation") {
+        // Hold only the external command before an observable result. The real
+        // Go launcher owns cancellation, rollback, and journal retention.
+        const k3d = join(fixture.directory, "bin", "k3d");
+        const original = await readFile(k3d, "utf8");
+        const marker = "const statePath = process.env.DEV_UP_RESOURCE_STATE;";
+        assert.ok(original.includes(marker));
+        await writeFile(
+          k3d,
+          original.replace(
+            marker,
+            `if (args[0] === 'cluster' && args[1] === 'create') {
+          fs.writeFileSync(${JSON.stringify(started)}, 'dispatched');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+        ${marker}`,
+          ),
+        );
+      }
+      const controller = new AbortController();
+      let cleanup;
+      const commands = [];
+      // Adapt only the teardown script path to the existing fixture repository.
+      // Join actual process closure; no engine storage or late daemon effect is simulated.
+      const run = (program, args, options = {}) =>
+        new Promise((resolve, reject) => {
+          if (program.endsWith("/scripts/dev-down")) {
+            program = join(fixture.fixtureRepository, "scripts", "dev-down");
+          }
+          commands.push(program);
+          const child = spawn(program, args, {
+            cwd: fixture.fixtureRepository,
+            env: options.env,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (chunk) => {
+            stdout += chunk;
+          });
+          child.stderr.on("data", (chunk) => {
+            stderr += chunk;
+          });
+          const abort = () => child.kill("SIGTERM");
+          options.signal?.addEventListener("abort", abort, { once: true });
+          const deadline = setTimeout(() => child.kill("SIGKILL"), 12_000);
+          child.once("close", (code, signal) => {
+            clearTimeout(deadline);
+            options.signal?.removeEventListener("abort", abort);
+            if (code === 0 && !options.signal?.aborted) {
+              resolve({ stdout, stderr });
+            } else {
+              reject(
+                Object.assign(new Error("launcher command failed"), {
+                  stdout,
+                  stderr,
+                  code,
+                  forcedTermination: signal === "SIGKILL",
+                }),
+              );
+            }
+          });
+          child.once("error", reject);
+        });
+      const work = runDevUpModelProviderCase(
+        {
+          signal: controller.signal,
+          after: (operation) => {
+            cleanup = operation;
+          },
+        },
+        { root: fixture.directory, cluster: "occ-dev-owned", environment, run },
+        async ({ execute }) => {
+          await execute(fixture.cli, ["dev", "up"]);
+        },
+      ).catch((error) => error);
+      t.after(async () => {
+        controller.abort();
+        await work;
+      });
+      if (scenario === "cancelled-creation") {
+        const deadline = Date.now() + 15_000;
+        while (!existsSync(started)) {
+          assert.ok(Date.now() < deadline, "creation did not start");
+          await delay(20);
+        }
+        controller.abort();
+      }
+      const failure = await work;
+      assert.ok(failure instanceof Error);
+      assert.equal(failure.forcedTermination, false);
+      const journal = join(environment.OCC_DEVELOPMENT_STATE_DIRECTORY, "state.json");
+      if (scenario === "node-dns-refused") {
+        // A synchronous failure after acknowledged creation completes rollback;
+        // the real launcher removes its state, so ordinary case cleanup is safe.
+        assert.match(failure.stderr, /cannot resolve registry-1\.docker\.io/);
+        assert.equal(existsSync(journal), false);
+        await cleanup();
+        assert.equal(existsSync(fixture.directory), false);
+      } else {
+        assert.match(failure.stderr, /cluster creation failed; verify and retry recorded cleanup/);
+        const recorded = await readFile(journal, "utf8");
+        // An absent cluster in the command fixture does not discharge the real
+        // launcher's explicit uncertainty. Repeated cleanup must preserve evidence.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await assert.rejects(cleanup(), /outcome remains uncertain; recovery state preserved/);
+          assert.equal(await readFile(journal, "utf8"), recorded);
+          assert.equal(existsSync(fixture.directory), true);
+        }
+      }
+      assert.deepEqual(commands, [fixture.cli], "no automatic dev-down or creation replay");
+    },
+  );
+}

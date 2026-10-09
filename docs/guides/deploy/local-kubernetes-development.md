@@ -60,23 +60,42 @@ This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
 OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
-Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.163.0-alpha.1`. If the node's `RuntimeDefault`
-blocks it, the launcher derives the
-[reviewed compatibility profile](codex-sandbox.md) from that node's actual
-policy, installs it only on the owned k3d node, and verifies workspace and
-outside-write boundaries and missing-profile failure. Only dedicated Codex
-containers select the profile; `codex-seccomp-provenance.json` in the private
-state directory records its hashes and node provenance. If the policy, runtime,
-or verification is unsupported, startup fails and rolls back the owned cluster.
-On Ubuntu 24.04, follow
-[local Codex sandbox troubleshooting](../operate/troubleshooting.md#local-codex-sandbox-check-fails).
-The check covers that node and image at startup; after a runtime, kernel, or
-image change, recreate the local installation to repeat it.
+Before bootstrapping, startup checks the Codex `0.163.0-alpha.1` sandbox with
+its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
+launcher derives a [reviewed profile](codex-sandbox.md) from the node's actual
+policy and installs it only on the owned k3d node. Only dedicated Codex
+containers select it. Startup verifies workspace-write and outside-write
+boundaries and missing-profile failure. Private `codex-seccomp-provenance.json`
+records hashes and node provenance. Unsupported policy, runtime, or verification
+fails startup and rolls back the owned cluster. Ubuntu 24.04: see
+[troubleshooting](../operate/troubleshooting.md#local-codex-sandbox-check-fails).
+Recreate the installation after runtime, kernel, or image changes.
 
 To enable GitHub repository credentials during a fresh start, prepare the
 [approved local repository inputs](local-repository-credentials.md#prepare-the-approved-inputs)
 before running the launcher.
+
+### Sign in through Keycloak
+
+Set `OCC_DEVELOPMENT_SIGN_IN=keycloak` for development Keycloak sign-in. The engine
+must bind free host port `127.0.0.1:443` and make it reachable from the host;
+other published ports must differ. k3d publishes ports at creation; changes
+require `dev-down` and fresh `dev-up`.
+
+The persistent realm attaches `alice` to the existing administrator through
+[OIDC](oidc-sign-in.md), makes passwords recovery-only, and disables
+[Agent native administration](../../reference/agent-native-admin.md). OpenShell
+is unsupported; password-only remains the default.
+
+Import `browser-ca.crt` and `gateway-ca.crt` into your browser; add the printed
+`/etc/hosts` entry. In Console, choose **Continue with Keycloak**; use `alice`
+with `keycloak-alice-password`. Keep the administrator password for recovery.
+
+`dev-down` destroys the realm volume and cluster. If cleanup retains state,
+repair the reported access problem and retry with the same profile and directory.
+Remove host entries and imported CAs separately. The
+[Keycloak lifecycle](../../flows/docker-compose-development/keycloak.md) covers
+Helm, recovery, installation-only drift checks and certificate copying.
 
 ### Run OCC in Compose with Kubernetes compute
 
@@ -113,24 +132,13 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The checkout-local CLI creates one k3d cluster, then:
-
-1. installs the pinned Agent Sandbox controller and OpenShell
-   `v0.1.3-pre.2` assets, then the pinned cert-manager and Envoy Gateway
-   controllers for private Agent Gateway routing;
-2. imports digest-resolved OpenShell, OCE controller, Agent runtime, and
-   PostgreSQL images;
-3. creates `oce-system` and installs PostgreSQL, one central OpenShell Gateway
-   for the cluster, and the OCE Helm release there;
-4. exposes a labeled development proxy through a loopback-only k3d port map;
-5. waits for the bootstrap Namespace and its OpenShell Workspace to become
-   ready; and
-6. writes kubeconfig and the administrator service key to private state.
-
-OpenShell's Agent Sandbox controller remains in its upstream
-`agent-sandbox-system` Namespace. OCC runs in the cluster and creates tenant
-Workspaces, Sandbox resources, and Agent Pods in separate OCC-owned `oce-*`
-Namespaces.
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.3-pre.2`, Agent
+Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
+PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
+Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
+Sandboxes, and Agent Pods use separate OCC-owned `oce-*` Namespaces. Startup
+exposes a loopback-only proxy, waits for bootstrap Namespace/Workspace readiness,
+and writes kubeconfig and the administrator service key to private state.
 
 To keep PostgreSQL, the OCC API, and the Kubernetes worker in Compose, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` with the same OpenShell selection. This
@@ -153,19 +161,15 @@ export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman
 ./scripts/dev-up
 ```
 
-Use `docker` instead for Docker Engine. The Kubernetes-only profile does not
-require Docker Compose or `podman-compose` and rejects Compose arguments. Keep
-the profile exports for startup and cleanup. Without profile selections,
-startup uses the Compose control-plane preview with Docker Compute.
+Use `docker` for Docker Engine. Kubernetes-only startup needs no Compose and
+rejects Compose arguments. Keep profile exports for cleanup; without them,
+startup defaults to Compose with Docker Compute.
 
-State, the kubeconfig, and credentials, including the initial administrator
-service key, are written to a private
-[state directory](../../reference/settings/development.md#required-development-controller-environment)
-that startup prints. By default it is `openclaw-development` in the temporary
-directory, which on macOS is a per-user `/private/var/folders/<id>/T` path.
-Set the absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` before both startup and
-cleanup to use another location. Its parent must not contain symlinks; on macOS,
-use `/private/tmp/...` instead of `/tmp/...`.
+Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
+containing kubeconfig and credentials. Its default is `openclaw-development`
+under the temporary directory (macOS: `/private/var/folders/<id>/T`). To override,
+set absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup; parent
+paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).
 `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds k3d
 readiness and each later startup wait. A cluster timeout triggers owned-resource
 rollback; follow the printed cleanup instruction if state is retained. A failed
@@ -260,13 +264,11 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints the API URL, kubeconfig, Kubernetes context, and service-key file.
-With Sandbox Driver `none`, it also prints an HTTPS browser console URL and a
-public browser CA to import as described in
-[Local Setup](../quickstart.md#open-the-platform-console). The session cookie's
-per-installation parent domain and matching subdomains form the
+Startup prints API and Kubernetes access paths. Sandbox Driver `none` also prints
+the HTTPS Console URL and browser CA; follow
+[Local Setup](../quickstart.md#open-the-platform-console) and its
 [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
-The OpenShell profile does not configure that browser endpoint.
+OpenShell does not configure that browser endpoint.
 
 Use the printed paths with other tools:
 

@@ -92,7 +92,8 @@
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/conformance/repository-material-expiry-probe.test.mjs",
-    "tests/integration/container-promote.test.mjs"
+    "tests/integration/container-promote.test.mjs",
+    "tests/integration/dev-up-model-provider.test.mjs"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -440,6 +441,9 @@
     },
     {
       "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-up-model-provider.test.mjs"
     }
   ]
 }
