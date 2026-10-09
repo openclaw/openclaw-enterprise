@@ -25,7 +25,7 @@ import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
-import { keycloakResourceKind, prepareKeycloak } from "./keycloak.mjs";
+import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -2724,6 +2724,19 @@ async function prepareLane({ lane, statePath }) {
             ),
         }),
       );
+      // The OAuth2 refresh proof's Keycloak: pulled here with pullImage's retry and
+      // imported, so the cluster never pulls it from the registry.
+      env.OCC_TEST_KEYCLOAK_IMAGE = (
+        await timedPreparation(name, "keycloak-image-import", async () =>
+          registerImageInK3d(
+            resolvedStatePath,
+            state,
+            cluster,
+            effectiveLaneEnv(name, env).OCC_TEST_KEYCLOAK_IMAGE || (await readKeycloakImage()),
+            "OCC_TEST_KEYCLOAK_IMAGE",
+          ),
+        )
+      ).reference;
       break;
     }
     case "logging-collector": {

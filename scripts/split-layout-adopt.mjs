@@ -674,6 +674,19 @@ export async function applyAdoption(
     }
     return [];
   }
+  // After the controller upgrade, stopping its writers would leave OCC down: the old API
+  // restart below only starts the images recorded at apply.
+  for (const component of WRITERS) {
+    if (
+      anyJournal !== undefined &&
+      JSON.stringify(images(writers[component])) !== JSON.stringify(recorded[component].images)
+    ) {
+      throw new AdoptError(
+        `openclaw-enterprise-${component} runs other images than apply recorded; roll the ` +
+          "controller back to the images recorded at apply before adopting more tenants",
+      );
+    }
+  }
   // Journals are written before any change, so revert can always restore what was there.
   const journals = [...resumed];
   for (const plan of plans) {

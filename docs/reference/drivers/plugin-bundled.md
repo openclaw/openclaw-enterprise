@@ -89,13 +89,13 @@ gate deployment on them. Configure access before deployment:
 
 Unavailable entries show the reported cause and a recovery link:
 
-| Cause                                                    | Next step                                                                                           |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Disabled by administrator                                | Ask a workspace administrator to review access for the token's identity.                            |
-| Plan not eligible                                        | Ask the administrator to review workspace plan availability.                                        |
-| Required app unavailable                                 | Review app access and setup; credentials alone may not resolve this.                                |
-| No recognized reason                                     | Review workspace plugin access without assuming a specific cause.                                   |
-| Unsupported native components or no concrete hosted apps | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
+| Cause                                              | Next step                                                                                           |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Disabled by administrator                          | Ask a workspace administrator to review access for the token's identity.                            |
+| Plan not eligible                                  | Ask the administrator to review workspace plan availability.                                        |
+| Required app unavailable                           | Review app access and setup; credentials alone may not resolve this.                                |
+| No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
+| Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
 
 Catalog membership grants no access; catalog visibility and credentials do not
 establish native execution or policy enforcement. Startup independently resolves
@@ -109,8 +109,10 @@ external PluginDriver packages are rejected.
 | `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
-`plugin/read`'s `detail.apps`. Template metadata alone grants no app access;
-template lifecycle is deferred.
+`plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills
+alongside apps and skill-only plugins. Skill-only details have a known empty tool
+inventory; tool approval settings govern hosted app calls, not skill instructions.
+Template metadata alone grants no app access. Template lifecycle is deferred.
 
 No PluginDriver is selected by default. Plugin-free deployments remain permitted.
 Nonempty selections require valid supported policy and the same compatible Driver
@@ -166,20 +168,13 @@ as do two selected IDs targeting the same native tool.
 Catalog classifications are not required, and app defaults are not expanded into
 per-tool rules. The optional controller catalog reader still returns `tools:null`.
 
-Codex plugins must expose concrete hosted apps and may include skills. Native
-Codex installs the selected bundle and loads its skill instructions; OCE does not
-repackage or translate them. Skills grant no additional app tool permissions.
-Hooks, native MCP servers, and scheduled tasks remain unsupported, as do skill-only
-and template-only plugins without concrete apps.
+Supported plugins have concrete apps, skills, or both. Reported hooks, plugin MCP
+servers, scheduled tasks, and template-only plugins are unsupported. Startup checks
+catalog metadata, not bundle contents: selecting a plugin activates its entire
+native bundle, including unreported components. There is no component sandbox.
+Native Codex installs the selected bundle and loads its skill instructions; OCE
+does not repackage or translate them. Skills grant no additional app tool permissions.
 
-OCE selection constrains hosted app tools through Agent-local native app policy
-and the OpenClaw bridge, but does not manage account-wide installation state.
-Native remote installation can enable a plugin on the credential's account; its
-hosted app tools stay blocked unless an enabled selection allows them. Skills
-from other plugins already enabled on that account are not restricted; limiting
-those plugins requires separate native plugin default enablement support and OCE
-startup integration. Disabling a selection neither uninstalls it nor guarantees
-its skills are unloaded.
 The selected-only OpenClaw bridge is required for the dedicated Agent path.
 Effective nested policy requires the bridge changes in
 [OpenClaw #151260](https://github.com/openclaw/openclaw/pull/151260) and
@@ -216,14 +211,28 @@ required. Later workspace/session/model changes, strict review, and real Agent
 enforcement also remain acceptance gates. See
 [runtime proof notes](../../testing/plugins.md#current-proof-notes).
 
-Dedicated Codex starts without user plugins/apps, including when no PluginDriver
-is selected. Compute writes the safe baseline into the Agent's isolated
-`CODEX_HOME`, with native and remote plugin loading disabled. When a supported
-curated Codex app is selected, startup reads native catalog detail, writes the
-selected app entry with `enabled:true`, and applies the selected-only OpenClaw
-bridge configuration during native preparation. The required OpenClaw Codex
-transport plugin is separate infrastructure. Operator plugin directories and
-configuration are never imported.
+Dedicated Codex replaces its isolated `CODEX_HOME` config before each startup,
+setting `apps._default.enabled=false` and `plugins._default.enabled=false`.
+Empty selections disable Apps/Plugins and skip plugin RPCs. Startup validates
+native metadata, then grants exactly the selected `name@marketplace` plugin IDs
+before installation so native authentication setup can run. Startup writes app/tool
+grants after installation and a metadata recheck succeed. It replaces both policy
+tables with the final plugin and concrete app IDs, then verifies them before readiness.
+Disabled/failed selections get disabled entries. With active
+selections, unselected apps must be disabled and explicitly enabled unselected
+plugins block readiness. Plugin entries without `enabled` inherit default-off;
+approval-only or MCP-policy-only entries do not activate them. Source/account
+restrictions still veto plugin activation.
+
+This requires a verified Codex build supporting plugin defaults; older binaries
+may echo the setting without enforcing it. These ordinary layered settings are
+not enterprise requirements; later overrides and direct host `mcpServer/tool/call`
+are outside the guarantee. The selected-only OpenClaw bridge and its separate
+Codex transport plugin remain required. Operator plugin directories and
+configuration are never imported. API-key logins cannot install remote plugins;
+when best-effort preparation allows authentication warnings, startup disables
+their selections and app/plugin features rather than retrying an unsupported
+login mode.
 
 The Driver rejects, rather than overwrites, raw Configuration that conflicts
 with its managed fields: for OpenClaw, a selected plugin entry in
@@ -299,3 +308,8 @@ Source and contract tests, direct MCP calls, package listings, and rendered
 bridge configuration do not prove native Agent behavior or compatibility with
 every runtime image. Native proof requires the opt-in real-runtime lane; the
 testing guide also covers contributor fixture setup and proof notes.
+
+Disabling a selection does not uninstall it. Native remote installation can enable
+the plugin on the credential's account. Agent-local plugin/app policy and the
+OpenClaw bridge enforce the startup restrictions above; selections do not manage
+account-wide installation state.

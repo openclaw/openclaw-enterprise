@@ -174,8 +174,8 @@ and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
 [code](drivers/compute.md#startup-failure-evidence); after a timeout, redeploy.
 
 Gateway and Harness startup wrappers also emit one `runtime.startup_phase` log
-per phase (login, model probe, peer plugin status, plugin install, workspace
-setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
+per phase (login, model probe, peer plugin status, plugin install, state
+migration, workspace setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
 duration, and time since wrapper start. A gateway also logs
 `peer-status-changed` when its Harness is replaced, then `gateway-respawn` once
 the OpenClaw process it restarts in place serves again. These

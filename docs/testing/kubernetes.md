@@ -286,7 +286,7 @@ Embedded cases run the production API and worker in the Node test process.
 Dedicated and routing cases run both as Kubernetes Deployments with separate
 identities; the coordinator stays in Node. These suites do not install OCC with
 Helm. Missing prerequisites fail selected suites; unselected suites skip.
-The default Codex version is `0.160.0`; see
+The default Codex version is `0.163.0-alpha.1`; see
 [runtime settings](#kubernetes-real-runtime-test-environment) for alternate images.
 
 ### Candidate Skill source lifecycle

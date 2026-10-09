@@ -92,6 +92,12 @@ volume root is never their runtime temp root.
 
 OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
+State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
+wrapper runs `openclaw doctor --fix --non-interactive` once, with the
+configuration read-only, when an agent database uses an older schema than the
+pinned OpenClaw; Doctor keeps a `.pre-startup-migration-<id>.bak` copy beside
+it. A database still older afterwards holds the Gateway unready with check
+`state-migration` (`RUNTIME_STARTUP_FAILED`).
 
 ## Harness storage
 
@@ -310,7 +316,7 @@ Missing or incorrectly scoped credentials fail deployment.
 Use the optional `runtime.codexSeccompProfile` only for a reviewed Codex
 compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
-states when Codex `0.160.0` needs it and which components own those boundaries.
+states when Codex `0.163.0-alpha.1` needs it and which components own those boundaries.
 
 See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
 for provider-issued credentials and supported execution modes.

@@ -25,6 +25,7 @@ import {
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
+  type OpenShellRefreshStrategy,
 } from "../sandbox/openshell-gateway-client.ts";
 
 export interface OpenShellCredentialGatewayOptions {
@@ -51,8 +52,17 @@ const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
 const NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
 const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 
+/** How the paired Credential Refresh Driver configures one `refresh` type. */
+export interface OpenShellRefreshSourceType {
+  readonly strategy: OpenShellRefreshStrategy;
+  /** Non-secret config fields sent as refresh material under the same names. */
+  readonly configMaterial: readonly string[];
+}
+
 interface OpenShellSourceType {
   readonly catalog: CredentialSourceType;
+  /** Present for `refresh` types: the gateway stores no static value for them. */
+  readonly refresh?: OpenShellRefreshSourceType;
   /** Rejects invalid non-secret configuration before any gateway effect. */
   validate(config: Readonly<Record<string, string>>): void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
@@ -73,6 +83,152 @@ const ENDPOINT_PATH = /^\/[A-Za-z0-9/._~*-]{0,255}$/;
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const RESERVED_ENVIRONMENT = new Set(["HOME", "LANG", "OPENAI_API_KEY", "PATH", "SHELL", "USER"]);
 const RESERVED_ENVIRONMENT_PREFIXES = ["CODEX_", "OCE_", "OPENCLAW_", "OPENSHELL_"];
+
+/** An absolute HTTPS URL without credentials, query, or fragment; OpenShell requires HTTPS. */
+const TOKEN_URL = /^https:\/\/[^\s/?#@]+(?:\/[^\s?#]*)?$/;
+/** RFC 6749 scope tokens separated by single spaces. */
+const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*$/;
+const CLIENT_ID = /^[\x21-\x7e]{1,256}$/;
+
+const ENDPOINT_CONFIG = Object.freeze([
+  Object.freeze({
+    name: "host",
+    required: true,
+    description: "Exact DNS name of the protected API.",
+  }),
+  Object.freeze({ name: "port", required: false, description: "Port; defaults to 443." }),
+  Object.freeze({
+    name: "path",
+    required: false,
+    description: "Path pattern the token may reach; defaults to /**.",
+  }),
+  Object.freeze({
+    name: "env_var",
+    required: true,
+    description: "Environment variable that holds the token placeholder in the Sandbox.",
+  }),
+]);
+
+const OAUTH2_CONFIG = Object.freeze([
+  ...ENDPOINT_CONFIG,
+  Object.freeze({
+    name: "token_url",
+    required: true,
+    description: "HTTPS token endpoint of the OAuth2 issuer.",
+  }),
+  Object.freeze({ name: "client_id", required: true, description: "OAuth2 client ID." }),
+  Object.freeze({
+    name: "scope",
+    required: false,
+    description: "Space-separated scopes to request; defaults to the issuer's.",
+  }),
+]);
+
+/** Checks the protected endpoint and placeholder variable shared by every non-model type. */
+function validateEndpointConfig(type: string, config: Readonly<Record<string, string>>): void {
+  const { host, port, path } = bearerTokenEndpoint(config);
+  const name = config.env_var ?? "";
+  if (!HOST.test(host) || /^[0-9.]+$/.test(host)) {
+    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
+  }
+  if ((config.port !== undefined && !/^[1-9][0-9]{0,4}$/.test(config.port)) || port > 65_535) {
+    throw new ScopeViolationError(`The ${type} port must be 1 to 65535.`);
+  }
+  if (!ENDPOINT_PATH.test(path)) {
+    throw new ScopeViolationError(`The ${type} path must be an absolute path pattern.`);
+  }
+  if (
+    !ENVIRONMENT_NAME.test(name) ||
+    RESERVED_ENVIRONMENT.has(name) ||
+    RESERVED_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix))
+  ) {
+    throw new ScopeViolationError(
+      `The ${type} env_var must be an unreserved upper-case environment variable name.`,
+    );
+  }
+}
+
+function validateOAuth2Config(type: string, config: Readonly<Record<string, string>>): void {
+  validateEndpointConfig(type, config);
+  if (!TOKEN_URL.test(config.token_url ?? "") || !URL.canParse(config.token_url ?? "")) {
+    throw new ScopeViolationError(
+      `The ${type} token_url must be an HTTPS URL without credentials, query, or fragment.`,
+    );
+  }
+  if (!CLIENT_ID.test(config.client_id ?? "")) {
+    throw new ScopeViolationError(`The ${type} client_id must be 1 to 256 visible characters.`);
+  }
+  if (config.scope !== undefined && (config.scope.length > 1024 || !SCOPE.test(config.scope))) {
+    throw new ScopeViolationError(`The ${type} scope must be space-separated OAuth2 scopes.`);
+  }
+}
+
+/** A per-source profile that injects one bearer token at the protected endpoint. */
+function bearerProfile(
+  sourceId: string,
+  config: Readonly<Record<string, string>>,
+  options: OpenShellCredentialGatewayOptions,
+  displayName: string,
+  credential: Pick<OpenShellProviderProfile["credentials"][number], "name" | "refresh">,
+): Omit<OpenShellProviderProfile, "annotations"> {
+  return {
+    id: openShellProviderName(sourceId),
+    displayName,
+    category: "PROVIDER_PROFILE_CATEGORY_OTHER" as const,
+    credentials: [
+      {
+        ...credential,
+        envVars: [config.env_var ?? ""],
+        required: true,
+        authStyle: "bearer",
+        headerName: "authorization",
+      },
+    ],
+    endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
+    binaries: requiredToolBinaries(options),
+    inferenceCapable: false,
+  };
+}
+
+function oauth2SourceType(
+  type: "oauth2-client-credentials" | "oauth2-refresh-token",
+  strategy: OpenShellRefreshStrategy,
+  secrets: CredentialSourceType["secrets"],
+  material: readonly {
+    readonly name: string;
+    readonly required: boolean;
+    readonly secret: boolean;
+  }[],
+): OpenShellSourceType {
+  return {
+    catalog: Object.freeze({
+      type,
+      config: OAUTH2_CONFIG,
+      secrets,
+      rotation: "refresh",
+    }),
+    refresh: Object.freeze({ strategy, configMaterial: Object.freeze(["client_id", "scope"]) }),
+    validate: (config) => validateOAuth2Config(type, config),
+    credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
+    profileScope: "source",
+    profileId: (sourceId) => openShellProviderName(sourceId),
+    // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
+    profile: (sourceId, config, options) =>
+      bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
+        name: "access_token",
+        refresh: {
+          strategy,
+          tokenUrl: config.token_url ?? "",
+          scopes: [],
+          material: [
+            { name: "client_id", required: true, secret: false },
+            { name: "scope", required: false, secret: false },
+            ...material,
+          ],
+        },
+      }),
+  };
+}
 
 function bearerTokenEndpoint(config: Readonly<Record<string, string>>): {
   readonly host: string;
@@ -120,76 +276,55 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
   },
   {
-    // TODO(credential-gateway gateway refresh): add oauth2-client-credentials and
-    // oauth2-refresh-token, which OpenShell mints and rotates without a restart.
     catalog: Object.freeze({
       type: "bearer-token",
-      config: Object.freeze([
-        Object.freeze({
-          name: "host",
-          required: true,
-          description: "Exact DNS name of the protected API.",
-        }),
-        Object.freeze({ name: "port", required: false, description: "Port; defaults to 443." }),
-        Object.freeze({
-          name: "path",
-          required: false,
-          description: "Path pattern the token may reach; defaults to /**.",
-        }),
-        Object.freeze({
-          name: "env_var",
-          required: true,
-          description: "Environment variable that holds the token placeholder in the Sandbox.",
-        }),
-      ]),
+      config: ENDPOINT_CONFIG,
       secrets: Object.freeze([
         Object.freeze({ name: "token", required: true, description: "Static bearer token." }),
       ]),
       rotation: "none",
     }),
-    validate: (config) => {
-      const { host, port, path } = bearerTokenEndpoint(config);
-      const name = config.env_var ?? "";
-      if (!HOST.test(host) || /^[0-9.]+$/.test(host)) {
-        throw new ScopeViolationError("The bearer-token host must be an exact DNS name.");
-      }
-      if ((config.port !== undefined && !/^[1-9][0-9]{0,4}$/.test(config.port)) || port > 65_535) {
-        throw new ScopeViolationError("The bearer-token port must be 1 to 65535.");
-      }
-      if (!ENDPOINT_PATH.test(path)) {
-        throw new ScopeViolationError("The bearer-token path must be an absolute path pattern.");
-      }
-      if (
-        !ENVIRONMENT_NAME.test(name) ||
-        RESERVED_ENVIRONMENT.has(name) ||
-        RESERVED_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix))
-      ) {
-        throw new ScopeViolationError(
-          "The bearer-token env_var must be an unreserved upper-case environment variable name.",
-        );
-      }
-    },
+    validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
     profileScope: "source",
     profileId: (sourceId) => openShellProviderName(sourceId),
-    profile: (sourceId, config, options) => ({
-      id: openShellProviderName(sourceId),
-      displayName: "Bearer token (OpenClaw Enterprise)",
-      category: "PROVIDER_PROFILE_CATEGORY_OTHER" as const,
-      credentials: [
-        {
-          name: "token",
-          envVars: [config.env_var ?? ""],
-          required: true,
-          authStyle: "bearer",
-          headerName: "authorization",
-        },
-      ],
-      endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
-      binaries: requiredToolBinaries(options),
-      inferenceCapable: false,
-    }),
+    profile: (sourceId, config, options) =>
+      bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
+        name: "token",
+      }),
   },
+  oauth2SourceType(
+    "oauth2-client-credentials",
+    "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS",
+    Object.freeze([
+      Object.freeze({
+        name: "client_secret",
+        required: true,
+        description: "OAuth2 client secret.",
+      }),
+    ]),
+    [{ name: "client_secret", required: true, secret: true }],
+  ),
+  oauth2SourceType(
+    "oauth2-refresh-token",
+    "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+    Object.freeze([
+      Object.freeze({
+        name: "refresh_token",
+        required: true,
+        description: "OAuth2 refresh token from a completed sign-in.",
+      }),
+      Object.freeze({
+        name: "client_secret",
+        required: false,
+        description: "OAuth2 client secret, for a confidential client.",
+      }),
+    ]),
+    [
+      { name: "refresh_token", required: true, secret: true },
+      { name: "client_secret", required: false, secret: true },
+    ],
+  ),
 ]);
 
 /**
@@ -240,21 +375,34 @@ function validateOptions(options: OpenShellCredentialGatewayOptions): void {
   }
 }
 
-function catalogTypes(options: OpenShellCredentialGatewayOptions): readonly OpenShellSourceType[] {
+/**
+ * Non-model types need tool binaries to reach their endpoints; `refresh` types also need the
+ * Backend's Credential Refresh Driver to mint their tokens.
+ */
+function catalogTypes(
+  options: OpenShellCredentialGatewayOptions,
+  refresh: boolean,
+): readonly OpenShellSourceType[] {
   return SOURCE_TYPES.filter(
-    (entry) => entry.catalog.harnessAuth !== undefined || options.toolBinaries !== undefined,
+    (entry) =>
+      entry.catalog.harnessAuth !== undefined ||
+      (options.toolBinaries !== undefined && (entry.refresh === undefined || refresh)),
   );
 }
 
 /** A type the current configuration offers: registration, update and attach need one. */
-function sourceType(type: string, options: OpenShellCredentialGatewayOptions): OpenShellSourceType {
-  return findSourceType(catalogTypes(options), type);
+function sourceType(
+  type: string,
+  options: OpenShellCredentialGatewayOptions,
+  refresh: boolean,
+): OpenShellSourceType {
+  return findSourceType(catalogTypes(options, refresh), type);
 }
 
 /**
  * Any type this driver ever registered. Status and removal of an existing source must not
- * depend on the current configuration: a source registered before `toolBinaries` was removed
- * still has to be deletable.
+ * depend on the current configuration: a source registered before `toolBinaries` was removed,
+ * or before the refresh role was deselected, still has to be deletable.
  */
 function knownSourceType(type: string): OpenShellSourceType {
   return findSourceType(SOURCE_TYPES, type);
@@ -266,6 +414,23 @@ function findSourceType(types: readonly OpenShellSourceType[], type: string): Op
     throw new ScopeViolationError("The OpenShell Credential Gateway does not support this type.");
   }
   return found;
+}
+
+/** The refresh configuration of a `refresh` type, for the paired Credential Refresh Driver. */
+export function openShellRefreshSourceType(type: string):
+  | (OpenShellRefreshSourceType & {
+      readonly credentialKey: (config: Readonly<Record<string, string>>) => string;
+    })
+  | undefined {
+  const found = SOURCE_TYPES.find((entry) => entry.catalog.type === type);
+  if (found?.refresh === undefined) {
+    return undefined;
+  }
+  return Object.freeze({
+    ...found.refresh,
+    credentialKey: (config: Readonly<Record<string, string>>) =>
+      Object.values(found.credentials(config))[0] ?? "",
+  });
 }
 
 function ownedBy(
@@ -301,6 +466,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   readonly implementation: string;
   private readonly options: OpenShellCredentialGatewayOptions;
   private readonly backend: Backend<OpenShellGateway>;
+  /** Whether the Backend declares a Credential Refresh Driver for `refresh` types. */
+  private readonly refresh: boolean;
 
   constructor(
     options: OpenShellCredentialGatewayOptions,
@@ -326,19 +493,20 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         : { toolBinaries: Object.freeze([...options.toolBinaries]) }),
     });
     this.backend = selection.backend;
+    this.refresh = selection.backend.drivers.credential_refresh !== undefined;
   }
 
   async listSourceTypes(
     _context: CredentialGatewayContext,
   ): Promise<readonly CredentialSourceType[]> {
-    return catalogTypes(this.options).map((entry) => entry.catalog);
+    return catalogTypes(this.options, this.refresh).map((entry) => entry.catalog);
   }
 
   async registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
-    const type = sourceType(input.type, this.options);
+    const type = sourceType(input.type, this.options, this.refresh);
     type.validate(input.config);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
@@ -391,7 +559,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
-    const type = sourceType(input.type, this.options);
+    const type = sourceType(input.type, this.options, this.refresh);
+    if (type.refresh !== undefined) {
+      throw new ScopeViolationError(
+        "A refresh-type source has no static value; reconfigure its refresh material instead.",
+      );
+    }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const name = openShellProviderName(context.source.id);
@@ -421,11 +594,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.signal,
     );
     return { state: "ready" };
-  }
-
-  async rotateSource(_context: CredentialSourceContext): Promise<CredentialSourceStatus> {
-    // TODO(credential-gateway next slice): rotate gateway-refresh sources.
-    throw new ScopeViolationError("OpenShell credential source rotation is not supported yet.");
   }
 
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
@@ -481,7 +649,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       if (source.driverId !== this.id || source.namespaceId !== context.namespace.id) {
         throw new ScopeViolationError("The credential source is not owned by this gateway.");
       }
-      const type = sourceType(source.type, this.options);
+      const type = sourceType(source.type, this.options, this.refresh);
       // Two sources cannot place their placeholders in the same Sandbox variable.
       for (const name of Object.values(type.credentials(source.config))) {
         if (environment.has(name)) {
@@ -628,6 +796,10 @@ function providerCredentials(
   type: OpenShellSourceType,
   input: CredentialSourceInput,
 ): Record<string, string> {
+  // OpenShell mints a refresh type's token; its secrets are refresh material, not credentials.
+  if (type.refresh !== undefined) {
+    return {};
+  }
   return Object.fromEntries(
     Object.entries(type.credentials(input.config)).map(([field, key]) => {
       const value = input.secrets[field];

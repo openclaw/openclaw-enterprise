@@ -1584,7 +1584,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
         cluster,
         image: immutableImage,
         // The current runtime must still reject unrelated setup failures before node writes.
-        codexVersion: "0.160.0",
+        codexVersion: "0.163.0-alpha.1",
         execFile: execFileForRuntimeDefaultFailure((command, args) => {
           const commandText = `${command} ${args.join(" ")}`;
           assert.match(commandText, /--namespace/);
@@ -1776,7 +1776,7 @@ test("codex seccomp preparation publishes a reviewed Docker profile for native s
   assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
   assert.equal(
     seccomp.dockerProfilePath,
-    join(clusterDirectory, "docker-seccomp", `codex-0.160.0-${seccomp.profileSha256}.json`),
+    join(clusterDirectory, "docker-seccomp", `codex-0.163.0-alpha.1-${seccomp.profileSha256}.json`),
   );
   const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
   assert.deepEqual(JSON.parse(profileData), installedProfile);
@@ -2279,6 +2279,21 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
         OCC_TEST_OPENSHELL_HELM: "helm",
         OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
         OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
+      },
+    },
+    {
+      lane: "openshell",
+      envName: "OCC_TEST_KEYCLOAK_IMAGE",
+      env: {
+        ...baseModelEnv,
+        ...k3dImages,
+        OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
+        OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,
+        OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
+        OCC_TEST_OPENSHELL_HELM: "helm",
+        OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
+        OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
+        OCC_TEST_KEYCLOAK_IMAGE: mutableImage,
       },
     },
   ];

@@ -117,6 +117,22 @@ export interface OpenShellProviderProfileEndpoint {
   readonly path: string;
 }
 
+export type OpenShellRefreshStrategy =
+  | "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS"
+  | "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN";
+
+/** Gateway-owned refresh for one profile credential; the token endpoint lives only here. */
+export interface OpenShellProfileCredentialRefresh {
+  readonly strategy: OpenShellRefreshStrategy;
+  readonly tokenUrl: string;
+  readonly scopes: readonly string[];
+  readonly material: readonly {
+    readonly name: string;
+    readonly required: boolean;
+    readonly secret: boolean;
+  }[];
+}
+
 /** The subset of an upstream ProviderProfile that OpenClaw Enterprise defines. */
 export interface OpenShellProviderProfile {
   readonly id: string;
@@ -128,6 +144,7 @@ export interface OpenShellProviderProfile {
     readonly required: boolean;
     readonly authStyle: string;
     readonly headerName: string;
+    readonly refresh?: OpenShellProfileCredentialRefresh;
   }[];
   readonly files?: readonly {
     readonly path: string;
@@ -164,6 +181,26 @@ export interface OpenShellProviderResponse {
   readonly labels: Readonly<Record<string, string>>;
   readonly config: Readonly<Record<string, string>>;
   readonly resourceVersion: string;
+}
+
+export interface OpenShellRefreshConfigureRequest {
+  readonly workspace: string;
+  readonly provider: string;
+  readonly credentialKey: string;
+  readonly strategy: OpenShellRefreshStrategy;
+  /** Write-only material; never logged or returned by this client. */
+  readonly material: Readonly<Record<string, string>>;
+  readonly requestId: string;
+}
+
+/** Gateway refresh state without token values or refresh material. */
+export interface OpenShellRefreshStatus {
+  readonly status: string;
+  readonly expirationTime?: string;
+  readonly nextRefreshTime?: string;
+  readonly lastRefreshTime?: string;
+  readonly recoveryAction?: string;
+  readonly failureCode?: string;
 }
 
 export interface OpenShellSandboxProviderStatus {
@@ -325,6 +362,31 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     signal: AbortSignal,
     receiptId?: string,
   ): Promise<OpenShellSandboxProviderStatus>;
+  configureProviderRefresh(
+    request: OpenShellRefreshConfigureRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellRefreshStatus>;
+  rotateProviderCredential(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellRefreshStatus>;
+  /** Undefined when the provider or its refresh state does not exist. */
+  getProviderRefreshStatus(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellRefreshStatus | undefined>;
+  /** Idempotent; an absent provider or refresh state counts as removed. */
+  deleteProviderRefresh(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<void>;
   close(): void;
 }
 
@@ -348,7 +410,11 @@ type OpenShellMethod =
   | "GetProviderProfile"
   | "ImportProviderProfiles"
   | "UpdateProviderProfiles"
-  | "DeleteProviderProfile";
+  | "DeleteProviderProfile"
+  | "GetProviderRefreshStatus"
+  | "ConfigureProviderRefresh"
+  | "RotateProviderCredential"
+  | "DeleteProviderRefresh";
 
 type OpenShellUnaryMethod = (
   request: RecordValue,
@@ -493,6 +559,20 @@ function profileMessage(profile: OpenShellProviderProfile): RecordValue {
       required: credential.required,
       auth_style: credential.authStyle,
       header_name: credential.headerName,
+      ...(credential.refresh === undefined
+        ? {}
+        : {
+            refresh: {
+              strategy: credential.refresh.strategy,
+              token_url: credential.refresh.tokenUrl,
+              scopes: [...credential.refresh.scopes],
+              material: credential.refresh.material.map((item) => ({
+                name: item.name,
+                required: item.required,
+                secret: item.secret,
+              })),
+            },
+          }),
     })),
     files: (profile.files ?? []).map((file) => ({
       path: file.path,
@@ -562,6 +642,27 @@ function timestampText(value: unknown): string | null {
     return null;
   }
   return `${date.toISOString().slice(0, 19)}.${String(nanos).padStart(9, "0")}Z`;
+}
+
+function refreshStatus(value: unknown, operation: string): OpenShellRefreshStatus {
+  const status = asRecord(value);
+  if (typeof status?.status !== "string" || status.status.length === 0) {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned no refresh status.`);
+  }
+  const time = (field: unknown) => timestampText(field) ?? undefined;
+  const expirationTime = time(status.expiration_time);
+  const nextRefreshTime = time(status.next_refresh_time);
+  const lastRefreshTime = time(status.last_refresh_time);
+  return Object.freeze({
+    status: status.status,
+    ...(expirationTime === undefined ? {} : { expirationTime }),
+    ...(nextRefreshTime === undefined ? {} : { nextRefreshTime }),
+    ...(lastRefreshTime === undefined ? {} : { lastRefreshTime }),
+    ...(typeof status.recovery_action === "string"
+      ? { recoveryAction: status.recovery_action }
+      : {}),
+    ...(isNonEmptyString(status.failure_code) ? { failureCode: status.failure_code } : {}),
+  });
 }
 
 function sandboxLogLine(value: unknown): OpenShellSandboxLogLine {
@@ -1521,6 +1622,108 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       state: status.state,
       ...(typeof status.reason === "string" ? { reason: status.reason } : {}),
     });
+  }
+
+  async configureProviderRefresh(
+    request: OpenShellRefreshConfigureRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellRefreshStatus> {
+    const response = await this.unary(
+      "ConfigureProviderRefresh",
+      {
+        provider: nonempty(request.provider, "OpenShell provider name"),
+        credential_key: nonempty(request.credentialKey, "OpenShell credential key"),
+        strategy: request.strategy,
+        material: { ...request.material },
+        workspace_scope: { workspace: request.workspace },
+        request_id: nonempty(request.requestId, "OpenShell request ID"),
+      },
+      signal,
+    );
+    return refreshStatus(response.status, "ConfigureProviderRefresh");
+  }
+
+  async rotateProviderCredential(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellRefreshStatus> {
+    const response = await this.unary(
+      "RotateProviderCredential",
+      {
+        provider: nonempty(provider, "OpenShell provider name"),
+        credential_key: nonempty(credentialKey, "OpenShell credential key"),
+        workspace_scope: { workspace },
+        request_id: nonempty(requestId, "OpenShell request ID"),
+      },
+      signal,
+    );
+    return refreshStatus(response.status, "RotateProviderCredential");
+  }
+
+  async getProviderRefreshStatus(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellRefreshStatus | undefined> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "GetProviderRefreshStatus",
+        {
+          provider: nonempty(provider, "OpenShell provider name"),
+          credential_key: nonempty(credentialKey, "OpenShell credential key"),
+          workspace_scope: { workspace },
+        },
+        signal,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return undefined;
+      }
+      throw error;
+    }
+    const credentials = Array.isArray(response.credentials) ? response.credentials : [];
+    const match = credentials.find(
+      (candidate) => asRecord(candidate)?.credential_key === credentialKey,
+    );
+    return match === undefined ? undefined : refreshStatus(match, "GetProviderRefreshStatus");
+  }
+
+  async deleteProviderRefresh(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "DeleteProviderRefresh",
+        {
+          provider: nonempty(provider, "OpenShell provider name"),
+          credential_key: nonempty(credentialKey, "OpenShell credential key"),
+          workspace_scope: { workspace },
+          allow_missing: true,
+          request_id: randomUUID(),
+        },
+        signal,
+      );
+    } catch (error) {
+      // allow_missing covers absent refresh state; an absent provider is also already clean.
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return;
+      }
+      throw error;
+    }
+    if (!deletionConfirmed(response)) {
+      throw new OpenShellGatewayFailure(
+        "OpenShell DeleteProviderRefresh did not confirm deletion.",
+      );
+    }
   }
 
   close(): void {

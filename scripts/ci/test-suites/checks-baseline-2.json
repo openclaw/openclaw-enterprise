@@ -78,6 +78,7 @@
     "tests/conformance/repository-credentials-sessions.test.mjs",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.mjs",
+    "tests/conformance/runtime-gateway-state-migration.test.mjs",
     "tests/conformance/repository-material-store.test.mjs",
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
@@ -199,6 +200,9 @@
     },
     {
       "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"

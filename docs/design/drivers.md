@@ -112,6 +112,7 @@ without acquiring platform-resource ownership or permission to select itself.
 | `SandboxDriver`           | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                             |
 | `SecretDriver`            | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                       |
 | `CredentialGatewayDriver` | Hold registered credential sources outside Agent workloads and issue per-revision attachments that only its paired `SandboxDriver` can apply. The OpenShell implementation shares one Backend with the OpenShell Sandbox. |
+| `CredentialRefreshDriver` | Mint and re-mint the tokens of refresh-type credential sources from their issuers before expiry, holding the refresh material with the paired `CredentialGatewayDriver` on one Backend.                                   |
 | `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                                   |
 
 One implementation may satisfy multiple Driver contracts, but OCC selects each
