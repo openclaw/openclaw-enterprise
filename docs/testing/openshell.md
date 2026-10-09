@@ -265,30 +265,21 @@ OpenShell tools.
 
 ### External ChatGPT authentication boundary
 
-`tests/integration/device-authorization-api.test.mjs` exercises real Fastify,
-OCC, IAM and credential-source storage through login, Agent creation/revision
-admission and plugin discovery. The external Gateway contract and provider HTTP
-are simulated. It verifies session fencing, source grants, warm discovery after
-session closure/expiry, and rejection of credential leakage. The Console OAuth
-browser case exercises those routes through the actual controls; Storybook is
-separate simulated UI evidence. Neither proves external token refresh or injection.
+`device-authorization-api.test.mjs` covers login, Agent admission, fencing,
+grants, warm discovery after session closure/expiry, and leakage through Fastify,
+OCC, IAM and storage. Gateway/provider responses are simulated. Console browser
+tests use real routes; Storybook is simulated.
 
-`tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
-preparation path with Driver transport fixtures. It checks source matching,
-Harness-only placeholder/metadata delivery, and refusal before provisioning on
-invalid attachments. `tests/integration/codex-model-probe.test.mjs` runs the
-emitted launcher in Docker with a substituted Codex executable, checking the
-generated auth file at both the probe and app-server boundaries. Select its
-immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.
+`kubernetes-compute.test.mjs` covers source matching, Harness-only projection and
+invalid-attachment rejection. Docker-based `codex-model-probe.test.mjs` checks
+authentication at probe/app-server startup with a substituted Codex executable;
+set its immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.
 
-The [external ChatGPT receiving contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication)
-does not establish OAuth injection or refresh through OpenShell. The bundled
-real-runtime suite uses an API-key source. Qualifying an OAuth source requires
-the external Token Service and paired gateway: verify native Codex startup,
-inference and hosted app/MCP requests, access-token rotation without a Harness
-restart, restart, and refusal after source withdrawal. Receiver fixtures alone
-cannot prove those provider and gateway behaviors or native account checks
-that require real access-token claims.
+[Real OAuth qualification](../reference/drivers/credential-gateway.md#external-chatgpt-authentication)
+requires native startup, inference, hosted app/MCP requests, rotation without
+restart, restart, and refusal after withdrawal. These fixtures do not prove
+refresh, injection or native token claims; the bundled real-runtime suite uses
+API keys.
 
 ### Development profile
 
