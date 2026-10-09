@@ -113,40 +113,39 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The checkout-local CLI creates one k3d cluster, then:
+The CLI creates one k3d cluster, then:
 
-1. installs the pinned Agent Sandbox controller and OpenShell
-   `v0.1.3-pre.2` assets, then the pinned cert-manager and Envoy Gateway
-   controllers for private Agent Gateway routing;
-2. imports digest-resolved OpenShell, OCE controller, Agent runtime, and
+1. installs pinned Agent Sandbox, OpenShell `v0.1.3-pre.2`, cert-manager and
+   Envoy Gateway assets for private Agent Gateway routing;
+2. imports digest-resolved OpenShell, OCE controller, Agent runtime and
    PostgreSQL images;
-3. creates `oce-system` and installs PostgreSQL, one central OpenShell Gateway
-   for the cluster, and the OCE Helm release there;
-4. exposes a labeled development proxy through a loopback-only k3d port map;
-5. waits for the bootstrap Namespace and its OpenShell Workspace to become
-   ready; and
+3. installs PostgreSQL, one central OpenShell Gateway and OCE in `oce-system`;
+4. exposes a labeled proxy through a loopback-only k3d port map;
+5. waits for the bootstrap Namespace and OpenShell Workspace to become ready; and
 6. writes kubeconfig and the administrator service key to private state.
 
-OpenShell's Agent Sandbox controller remains in its upstream
-`agent-sandbox-system` Namespace. OCC runs in the cluster and creates tenant
-Workspaces, Sandbox resources, and Agent Pods in separate OCC-owned `oce-*`
-Namespaces.
+Agent Sandbox runs in `agent-sandbox-system`; OCC creates tenant Workspaces,
+Sandbox resources and Agent Pods in separate OCC-owned `oce-*` Namespaces.
 
-To keep PostgreSQL, the OCC API, and the Kubernetes worker in Compose, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` with the same OpenShell selection. This
-profile also installs the pinned private Envoy route in k3d. It mounts the
-route's service key and public CA only into the Compose controller and
-`worker-kubernetes`, then records the k3d node hostname and Envoy NodePort in
-the Installation. Do not run the separate manual hybrid-routing procedure for
-this OpenShell profile.
+If Agent Sandbox rollout fails, startup attempts to write bounded operational metadata
+on error output before rollback: controller-owned status, image identities and
+Warning reasons. Failures are marked; messages, environment values and logs are
+excluded. The original error and cleanup remain unchanged. This neither
+diagnoses nor repairs the failure.
 
-The first start requires network access. To use reviewed local assets instead,
+Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL, OCC and its
+Kubernetes worker in Compose. This OpenShell profile installs the pinned private
+Envoy route in k3d, mounts its service key and public CA only into the Compose
+controller and `worker-kubernetes`, and records the node hostname and Envoy
+NodePort in the Installation. Do not also run manual hybrid routing.
+
+First startup requires network access. To use reviewed local assets instead,
 set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
-To choose the host engine explicitly:
+To choose the host engine:
 
 ```bash
 export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman
