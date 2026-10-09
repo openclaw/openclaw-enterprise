@@ -35,6 +35,7 @@ import {
   kubernetesNamespaceName,
   kubernetesGatewayNamespaceName,
   PLUGIN_RUNTIME_STATUS_PORT,
+  resolveKubernetesControlNamespace,
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
@@ -2573,6 +2574,160 @@ test("namespace resolver selects exact, secure external ownership using a transp
     mutate(invalid);
     await assert.rejects(discover([invalid]), expected);
   }
+});
+
+// A released split-layout Installation adopts each `oce-gateways-<hash>` storage namespace as
+// its tenant namespace in place (scripts/split-layout-adopt.mjs): the storage namespace gains
+// the tenant label and the old Harness namespace loses it. Canonical Secrets, Configurations
+// and Gateway state keep their namespace and UIDs, so both resolvers must accept the adopted
+// name, but only while it still carries its own storage label.
+function adoptedSplitLayoutNamespaces() {
+  const adopted = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: kubernetesGatewayNamespaceName(tenant.id),
+      uid: "adopted-storage-namespace-uid",
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/gateway-namespace": tenant.id,
+        "openclaw.dev/namespace": tenant.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": tenant.id },
+    },
+    status: { phase: "Active" },
+  };
+  const released = structuredClone(adopted);
+  released.metadata.name = kubernetesNamespaceName(tenant.id);
+  released.metadata.uid = "released-harness-namespace-uid";
+  delete released.metadata.labels["openclaw.dev/gateway-namespace"];
+  // The adopt steps remove the tenant label from the released Harness namespace last.
+  const relabelled = structuredClone(released);
+  delete relabelled.metadata.labels["openclaw.dev/namespace"];
+  return { adopted, released, relabelled };
+}
+
+function namespaceListClient(items) {
+  return {
+    async listNamespace({ labelSelector }) {
+      const [key, value] = labelSelector.split("=");
+      return {
+        apiVersion: "v1",
+        kind: "NamespaceList",
+        items: items
+          .filter(({ metadata }) => metadata.labels?.[key] === value)
+          .map((item) => structuredClone(item)),
+      };
+    },
+  };
+}
+
+test("an adopted split-layout storage namespace resolves as both tenant and storage target", async () => {
+  const { adopted, released, relabelled } = adoptedSplitLayoutNamespaces();
+  const client = namespaceListClient([adopted, relabelled]);
+  assert.deepEqual(await resolveKubernetesNamespace(client, tenant.id), {
+    name: adopted.metadata.name,
+    external: false,
+  });
+  // The Secret and Configuration Drivers keep the canonical rows they pinned to this namespace.
+  assert.deepEqual(await resolveKubernetesControlNamespace(client, tenant.id), {
+    name: adopted.metadata.name,
+  });
+
+  // Halfway through the relabel both namespaces claim the tenant; nothing may pick one.
+  await assert.rejects(
+    resolveKubernetesNamespace(namespaceListClient([adopted, released]), tenant.id),
+    /Multiple Kubernetes namespaces claim tenant/,
+  );
+  // The storage name alone is not ownership: without its storage label the namespace is refused.
+  const unlabelled = structuredClone(adopted);
+  delete unlabelled.metadata.labels["openclaw.dev/gateway-namespace"];
+  await assert.rejects(
+    resolveKubernetesNamespace(namespaceListClient([unlabelled]), tenant.id),
+    /without external ownership/,
+  );
+  // Another tenant's storage label does not admit this tenant's storage name.
+  const foreign = structuredClone(adopted);
+  foreign.metadata.labels["openclaw.dev/gateway-namespace"] = "ns_other";
+  await assert.rejects(
+    resolveKubernetesNamespace(namespaceListClient([foreign]), tenant.id),
+    /without external ownership/,
+  );
+});
+
+test("an adopted split-layout storage namespace passes preflight and is deleted with its Namespace", async () => {
+  const { adopted, relabelled } = adoptedSplitLayoutNamespaces();
+  let present = true;
+  const deleted = [];
+  const driver = new KubernetesComputeDriver(options());
+  driver.apiClients = Promise.resolve({
+    version: {
+      async getCode() {
+        return { gitVersion: "v1.35.0" };
+      },
+    },
+    core: {
+      async listNamespace(request) {
+        if (request.labelSelector === "openclaw.dev/gateway-namespace") {
+          return { items: present ? [structuredClone(adopted)] : [] };
+        }
+        return namespaceListClient(present ? [adopted, relabelled] : [relabelled]).listNamespace(
+          request,
+        );
+      },
+      async readNamespace({ name }) {
+        if (present && name === adopted.metadata.name) {
+          return structuredClone(adopted);
+        }
+        throw Object.assign(new Error("Not found"), { statusCode: 404 });
+      },
+      async deleteNamespace(request) {
+        deleted.push(request);
+        present = false;
+      },
+    },
+    objects: {},
+  });
+  // The startup preflight refuses only storage namespaces without the tenant label.
+  assert.deepEqual(await driver.preflight(), { warnings: [] });
+  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+    namespaceId: tenant.id,
+    namespaceDeleted: true,
+  });
+  // Deleting the adopted namespace removes the Gateway state and Secrets it holds; the old
+  // Harness namespace no longer belongs to the tenant and is left to the adopt finalize step.
+  assert.deepEqual(deleted, [
+    { name: adopted.metadata.name, body: { preconditions: { uid: adopted.metadata.uid } } },
+  ]);
+});
+
+test("the two-cluster profile still refuses a tenant-labelled control namespace", async () => {
+  const { adopted } = adoptedSplitLayoutNamespaces();
+  const driver = new KubernetesComputeDriver(twoClusterOptions());
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        return { items: [] };
+      },
+      async readNamespace({ name }) {
+        if (name === adopted.metadata.name) {
+          return structuredClone(adopted);
+        }
+        throw Object.assign(new Error("Not found"), { statusCode: 404 });
+      },
+      async deleteNamespace() {
+        assert.fail("a mislabelled control namespace must not be deleted");
+      },
+    },
+  });
+  driver.executionApiClients = driver.apiClients;
+  // Adoption applies to single-cluster tenants only; the separate control target keeps its
+  // storage-only labels, so a tenant label there is foreign ownership.
+  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+    namespaceId: tenant.id,
+    namespaceDeleted: false,
+    failure: "permanent",
+  });
 });
 
 test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async () => {
@@ -12963,6 +13118,7 @@ function workspaceSetupFixture(
   network = undefined,
   computeOptions = {},
   driverDependencies = {},
+  { adopted = false } = {},
 ) {
   const state = { ready: false, secretFailure: false, failedInitializer: false };
   const driver = new KubernetesComputeDriver(
@@ -13010,7 +13166,10 @@ function workspaceSetupFixture(
       ? { id: "openclaw", version: "1.0.0", mode: "embedded" }
       : { id: "codex", version: "1.0.0", mode: "dedicated" },
   });
-  const namespace = kubernetesNamespaceName(tenant.id);
+  // An adopted Installation keeps its released storage namespace as the tenant namespace.
+  const namespace = adopted
+    ? kubernetesGatewayNamespaceName(tenant.id)
+    : kubernetesNamespaceName(tenant.id);
   const control =
     computeOptions.executionCluster === undefined
       ? namespace
@@ -13040,14 +13199,19 @@ function workspaceSetupFixture(
     objects.set(key(body.kind, body.metadata.name, body.metadata.namespace), object);
     return object;
   };
-  save({
-    ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
-    status: { phase: "Active" },
+  const tenantNamespace = driver.manifest("v1", "Namespace", namespace, {
+    namespaceId: tenant.id,
   });
-  save({
-    ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
-    status: { phase: "Active" },
-  });
+  if (adopted) {
+    tenantNamespace.metadata.labels["openclaw.dev/gateway-namespace"] = tenant.id;
+  }
+  save({ ...tenantNamespace, status: { phase: "Active" } });
+  if (!adopted) {
+    save({
+      ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
+      status: { phase: "Active" },
+    });
+  }
   save({
     ...driver.manifest(
       "v1",
@@ -13128,7 +13292,8 @@ function workspaceSetupFixture(
     };
   const core = {
     async listNamespace() {
-      return { items: [] };
+      // Without a labelled namespace the resolver falls back to the canonical tenant name.
+      return { items: adopted ? [structuredClone(objects.get(key("Namespace", namespace)))] : [] };
     },
     readNamespace: read("Namespace"),
     async listNamespacedPod({ namespace: target, labelSelector }) {
@@ -13556,6 +13721,38 @@ for (const embedded of [true, false]) {
       agent: { id: revision.agentId, namespaceId: tenant.id, executionMode: revision.harness.mode },
     });
     assert.equal(objects.has(`Secret:${secret.metadata.namespace}:${secret.metadata.name}`), false);
+  });
+}
+
+for (const embedded of [true, false]) {
+  test(`an adopted split-layout namespace hosts the ${embedded ? "embedded" : "dedicated"} Gateway and Harness`, async () => {
+    const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(
+      embedded,
+      true,
+      undefined,
+      {},
+      {},
+      { adopted: true },
+    );
+    assert.equal(namespace, kubernetesGatewayNamespaceName(tenant.id));
+    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+    const placed = (kind, prefix) =>
+      [...objects.values()]
+        .filter((object) => object.kind === kind && object.metadata.name.startsWith(prefix))
+        .map((object) => object.metadata.namespace);
+    // Every runtime object lands beside the adopted Gateway state and canonical Secrets.
+    assert.deepEqual(placed("Deployment", "gateway-"), [namespace]);
+    assert.deepEqual(placed("Deployment", "agent-"), embedded ? [] : [namespace]);
+    assert.deepEqual(placed("PersistentVolumeClaim", "gateway-state-"), [namespace]);
+    assert.equal(
+      [...objects.values()].some(
+        ({ kind, metadata }) =>
+          kind !== "Namespace" && metadata.namespace === kubernetesNamespaceName(tenant.id),
+      ),
+      false,
+    );
+    state.ready = true;
+    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
   });
 }
 

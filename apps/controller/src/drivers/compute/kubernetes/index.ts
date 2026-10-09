@@ -1705,10 +1705,18 @@ function previousKubernetesNamespaceName(namespaceId: string): string {
   return `oce-${slug}-${sha256Hex(id, 12)}`;
 }
 
-function isManagedKubernetesNamespaceName(name: string, namespaceId: string): boolean {
+function isManagedKubernetesNamespaceName(
+  name: string,
+  namespaceId: string,
+  labels: Record<string, string>,
+): boolean {
   return (
     name === kubernetesNamespaceName(namespaceId) ||
-    name === previousKubernetesNamespaceName(namespaceId)
+    name === previousKubernetesNamespaceName(namespaceId) ||
+    // A released split-layout storage namespace adopted as the tenant namespace in place
+    // (docs/guides/deploy/breaking-changes.md, 2026-10-05). It keeps its storage label.
+    (name === kubernetesGatewayNamespaceName(namespaceId) &&
+      labels["openclaw.dev/gateway-namespace"] === namespaceId)
   );
 }
 
@@ -1771,7 +1779,7 @@ function verifiedKubernetesNamespace(
   const external = annotations["openclaw.dev/namespace-lifecycle"] === "external";
   if (!external) {
     if (
-      !isManagedKubernetesNamespaceName(name, namespaceId) ||
+      !isManagedKubernetesNamespaceName(name, namespaceId, labels) ||
       labels["app.kubernetes.io/managed-by"] !== MANAGER
     ) {
       throw new OwnershipFailure(
@@ -2837,8 +2845,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ) {
               throw new ConfigurationFailure(
                 "Existing split-layout Gateway storage prevents this single-cluster upgrade. " +
-                  "Keep the previous controller version and preserve both namespaces, their " +
-                  "Secrets and PVCs. See the Kubernetes Compute upgrade requirements.",
+                  "Keep the previous controller version and adopt each storage namespace as " +
+                  "its tenant namespace first (scripts/split-layout-adopt.mjs). See the " +
+                  "Kubernetes Compute upgrade requirements.",
               );
             }
           }

@@ -221,7 +221,7 @@ access, and required restore behavior.
 
 ### Read-only export after a split-layout refusal
 
-The [split-layout recovery procedure](../guides/deploy/breaking-changes.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
+The [split-layout export fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
 begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
 Its `createOccApi.expect` requires a data envelope for each successful resource
 response before `exportTenants` assembles the bundle. Malformed JSON, an empty
@@ -266,6 +266,7 @@ checks the exported inventory before following the recovery procedure. Empty
 
 - 2026-10-10 02:10: Require complete successful API responses before publishing the split-layout export bundle. (authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff - 0886f47d05fdeb2fa4359f4840fb77378d643bac)
 
+- 2026-10-09 20:10: Point the split-layout export at the split-layout upgrade page, where in-place adoption comes first. (fix-533-adopt)
 - 2026-10-07 21:20: Refuse a two-cluster upgrade before quiescence when the execution chart lacks this release's tenant grants. (fix-758)
 
 - 2026-10-07 12:00: Say that a controller-only release leaves existing revisions on their old Pod specification until the next deployment. (dogfood-r43)
