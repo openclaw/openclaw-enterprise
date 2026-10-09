@@ -3,7 +3,7 @@
   "prepare": {
     "requiresPreparedStateForFile": true
   },
-  "fileConcurrency": 2,
+  "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/runtime-image-startup-probe.test.mjs",
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs",

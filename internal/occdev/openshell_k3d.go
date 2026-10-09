@@ -224,6 +224,19 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	timeout := time.Duration(timeoutSeconds) * time.Second
 
+	var runtimeImage string
+	var codexSeccompProfile string
+	if sandboxDriver == "none" {
+		runtimeImage, err = r.importRuntime(ctx, state)
+		if err != nil {
+			return err
+		}
+		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
+		if err != nil {
+			return err
+		}
+	}
+
 	var assets *openShellDevelopmentAssets
 	if sandboxDriver == "openshell" {
 		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
@@ -239,9 +252,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if err != nil {
 		return err
 	}
-	runtimeImage, err := r.importRuntime(ctx, state)
-	if err != nil {
-		return err
+	if sandboxDriver == "openshell" {
+		runtimeImage, err = r.importRuntime(ctx, state)
+		if err != nil {
+			return err
+		}
 	}
 	controllerImage, err := r.importDevelopmentController(ctx, state)
 	if err != nil {
@@ -261,13 +276,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if routingPodCIDR != "" {
 		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
 		if err := r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout); err != nil {
-			return err
-		}
-	}
-	var codexSeccompProfile string
-	if sandboxDriver == "none" {
-		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
-		if err != nil {
 			return err
 		}
 	}
@@ -344,6 +352,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if state.BrowserPort != 0 {
 		consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
 		fmt.Fprintf(r.opts.Out, "Browser console: https://%s:%d/console/\nBrowser CA certificate: %s\n", consoleHost, state.BrowserPort, filepath.Join(directory, "browser-ca.crt"))
+		fmt.Fprintln(r.opts.Out, "Browser CA trust: required before sign-in. See docs/guides/operate/troubleshooting.md#the-local-console-reports-a-certificate-error.")
 	} else {
 		fmt.Fprintf(r.opts.Out, "Console: %s/console/\n", apiURL)
 	}

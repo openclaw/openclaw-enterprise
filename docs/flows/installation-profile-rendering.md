@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: authoring-run/4108453c-660a-45ca-87c8-ff328a767f38
 ---
 
 # Installation Profile Rendering Flow
@@ -87,8 +87,9 @@ same-Namespace Secret or through the Console. Managed ServiceAccount
 provisioning for `codex_pat` is optional and renders only when `codex.managedServiceAccounts` is
 supplied.
 
-The shared `digestImage` check in `buildRendered` requires the literal
-`sha256` algorithm and 64 lowercase hexadecimal characters for
+Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
+syntax and 53-character maximum. The shared `digestImage` check in `buildRendered`
+requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.
@@ -102,6 +103,10 @@ values therefore fail before `values.yaml` or `installation.yaml` is written.
 
 `scripts/render-installation-profile.mjs:buildRendered`
 
+An optional `controlPlane.databaseCa.key` must be a simple basename. The chart
+refuses `.`, `..`, and any other key that is not letters, digits, `.`, `_`, or
+`-`. Omit the key to use `ca.pem`.
+
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
 selectors, DNS peer, metrics, native admin, private gateway routing, optional
@@ -109,7 +114,11 @@ ChatGPT Backend mounting, optional logging collector, and optional repository
 credential sidecar. Gateway routing is always enabled. Native admin is enabled
 unless `controlPlane.github`, `controlPlane.google` or `controlPlane.oidc` renders external sign-in
 with `auth.recoveryUserId`, which Helm requires with native admin off. An
-optional `controlPlane.trustedProxy` renders `api.trustedProxy`.
+optional `controlPlane.trustedProxy` renders `api.trustedProxy`. Its CIDRs were
+already checked in step 3 with the API's `parseCidr` rules
+(`apps/controller/src/auth/client-address.ts`): a prefix of 1 through 32 for an
+IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
+preflight also refuses a zone ID, which the API accepts.
 
 When `channels.managedSlackProxy` is true, the values also enable the
 chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
@@ -174,6 +183,8 @@ activation, and repository registry creation need separate evidence.
 
 - Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
   CLI and inspect generated profile output.
+- `tests/integration/profile-preflight-chart-parity.test.mjs` runs each trusted
+  proxy CIDR case through the renderer, `helm template` and the API parser.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
   missing or unsupported input was supplied; `values.yaml` and
   `installation.yaml` are intentionally absent.
@@ -200,9 +211,15 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
+
+- 2026-10-08: Refuse database CA keys the chart refuses.
+
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
 - 2026-10-07: Refuse a public-suffix shared cookie domain in preflight.
+
+- 2026-10-06 15:26: Reject invalid Helm release names before emitting deployment files. (authoring-run/2ae5d308-21b1-4e0c-b693-55c25dd9f879 - 4a314f5b5ac48937acf976fc3e69c385d1883c35)
 
 - 2026-10-06 13:20: Reject noncanonical SHA-256 image digests before emitting deployment files. (authoring-run/feaed473-dcbe-4c10-93fc-39e937f1e798 - f2fb8cbe952d7c27b2690f86134c89e6912cb883)
 

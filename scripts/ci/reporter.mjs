@@ -537,15 +537,102 @@ function failureText(cause) {
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
     message && stack.includes(message) ? stack.indexOf(message) + message.length : 0;
-  const frame = stack
+  const frames = stack
     .slice(messageEnd)
     .split("\n")
-    .find((line) => /^\s+at\s/u.test(line))
-    ?.trim();
+    .filter((line) => /^\s+at\s/u.test(line))
+    .map((line) => line.trim());
   return {
     message: message ? message.slice(0, failureInputLimit) : undefined,
-    frame: frame ? frame.slice(0, failureInputLimit) : undefined,
+    frame: frames[0]?.slice(0, failureInputLimit),
+    // The whole stack goes only to the failure details in the diagnostics report.
+    stack: frames.length > 0 ? frames.join("\n").slice(0, failureInputLimit) : undefined,
   };
+}
+
+// A failed file's last output lines (test stdout, stderr and diagnostics), raw
+// like failure text: run-tests redacts them into the diagnostics report.
+const outputTailLines = 400;
+
+function outputTail() {
+  const lines = [];
+  const partial = { stdout: "", stderr: "" };
+  const dropping = { stdout: false, stderr: false };
+  let omitted = 0;
+  // Trim in batches so a chatty passing file costs amortized constant time per line.
+  const trim = (limit) => {
+    if (lines.length > limit) {
+      omitted += lines.length - outputTailLines;
+      lines.splice(0, lines.length - outputTailLines);
+    }
+  };
+  const push = (line) => {
+    lines.push(line.slice(0, failureInputLimit));
+    trim(2 * outputTailLines);
+  };
+  return {
+    add(stream, text) {
+      let rest = text;
+      if (dropping[stream]) {
+        // The rest of a line cut at the limit could start inside a secret.
+        const end = rest.indexOf("\n");
+        if (end === -1) {
+          return;
+        }
+        dropping[stream] = false;
+        rest = rest.slice(end + 1);
+      }
+      const parts = (partial[stream] + rest).split("\n");
+      partial[stream] = parts.pop();
+      if (partial[stream].length >= failureInputLimit) {
+        parts.push(partial[stream]);
+        partial[stream] = "";
+        dropping[stream] = true;
+      }
+      for (const line of parts) {
+        push(`${stream}: ${line}`);
+      }
+    },
+    diagnostic(text) {
+      push(`diagnostic: ${text}`);
+    },
+    finish() {
+      for (const stream of ["stdout", "stderr"]) {
+        if (partial[stream] !== "") {
+          push(`${stream}: ${partial[stream]}`);
+        }
+      }
+      trim(outputTailLines);
+      return { lines, omitted };
+    },
+  };
+}
+
+const interruptedTestLimit = 20;
+// About this much JSON per batch (the line strings, without the envelope).
+const interruptedOutputBatchChars = 32 * 1024;
+
+// Node exits soon after an interruption and can cut what is still queued, so the
+// tail goes out in small batches, newest first: a cut loses the oldest lines and
+// at most one partial JSON line, which run-tests skips.
+function* interruptedOutput({ lines, omitted }) {
+  // Measured as JSON, since escaping can grow a line several times.
+  const sizes = lines.map((line) => JSON.stringify(line).length);
+  let end = lines.length;
+  while (end > 0) {
+    let start = end - 1;
+    let chars = sizes[start];
+    while (start > 0 && chars + sizes[start - 1] <= interruptedOutputBatchChars) {
+      start -= 1;
+      chars += sizes[start];
+    }
+    yield `${JSON.stringify({
+      type: "test:output",
+      // Every line before this batch, so run-tests can count the ones a cut lost.
+      data: { lines: lines.slice(start, end), omitted: omitted + start },
+    })}\n`;
+    end = start;
+  }
 }
 
 function location(data = {}) {
@@ -609,8 +696,62 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const output = outputTail();
+  let failed = false;
+  let outputSent = false;
+  // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
+  // declared in a loop can share a key, so each key counts its runs.
+  const running = new Map();
+  const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
+      const key = runningKey(event.data);
+      running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
+      continue;
+    }
+    if (event.type === "test:complete" && typeof event.data?.name === "string") {
+      const key = runningKey(event.data);
+      const entry = running.get(key);
+      if (entry?.count > 1) {
+        entry.count -= 1;
+      } else {
+        running.delete(key);
+      }
+      continue;
+    }
+    if (event.type === "test:interrupted") {
+      // The runner's timeout sent SIGTERM and Node exits right after this event,
+      // so send the names first and the output once, newest lines first.
+      yield `${JSON.stringify({
+        type: "test:interrupted",
+        data: {
+          running: [...running.values()].slice(-interruptedTestLimit).map(({ data }) => ({
+            name: data.name,
+            line: data.line,
+            nesting: data.nesting,
+          })),
+        },
+      })}\n`;
+      if (!outputSent) {
+        outputSent = true;
+        yield* interruptedOutput(output.finish());
+      }
+      continue;
+    }
+    if (event.type === "test:stdout" || event.type === "test:stderr") {
+      if (typeof event.data?.message === "string") {
+        output.add(event.type.slice(5), event.data.message);
+      }
+      continue;
+    }
+    if (event.type === "test:fail") {
+      failed = true;
+    }
     if (event.type === "test:diagnostic") {
+      // Per-test diagnostics name their file; the run summary counts do not.
+      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
+        output.diagnostic(event.data.message);
+      }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
       if (
         typeof event.data?.message === "string" &&
@@ -639,5 +780,9 @@ export default async function* jsonLinesReporter(source) {
       type: event.type,
       data: location(event.data),
     })}\n`;
+  }
+  // Passing files send nothing extra.
+  if (failed && !outputSent) {
+    yield `${JSON.stringify({ type: "test:output", data: output.finish() })}\n`;
   }
 }

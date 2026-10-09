@@ -42,7 +42,10 @@ tab is hidden. Namespace rows are read-only.
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
-The console uses a light appearance and OCC-served fonts.
+The console uses a light appearance and OCC-served fonts. Full-page client
+navigation focuses the destination heading when the previous control disappears.
+On mobile, **Open navigation** opens a drawer; widening to desktop closes it
+and releases page controls.
 
 When available, a retained view stays mounted and inert while a full-page return
 is revalidated: matching outcomes reactivate it, recovery or changed data rebuilds it, and
@@ -93,6 +96,7 @@ or policy choices.
 ## Inspect detail, revisions, and channel drafts
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
+The selected tab stays visible in the horizontal strip at narrow widths.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive in-document navigation as drafts
 scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
@@ -110,6 +114,9 @@ Pending channel saves and Secret creation block dismissal.
 requires exact Agent `read`/`update` and a catalog-capable Driver. The curated
 catalog needs no Secret. Hosted browsing reads bound `codex_pat` server-side and
 requires caller and Agent ServicePrincipal Secret `operate`.
+**Access and credential setup** expands the Driver guidance and help links;
+the compact reminder stays visible. Search and pagination remain reachable
+while the catalog list and plugin details scroll within the picker.
 **Save plugin selections** updates the Agent; deployment snapshots them.
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
@@ -118,6 +125,10 @@ displays `activeRevisionId`, which can differ from the viewed snapshot and does
 not prove live serving.
 **Deployment activity** shows the latest visible version's persisted result;
 the viewed version shows its own recorded outcome.
+For a failed deployment, **Open vN Logs** opens that exact version and brings
+its Logs panel into view, including when starting from the draft or another
+version. The panel shows runtime output or the applicable access or availability
+message; see [Agent logs](../guides/topics/agent-logs.md).
 
 **Run diagnostics for this version** fills **Current observations** with a
 bodyless POST that checks the exact viewed version. It requires Agent

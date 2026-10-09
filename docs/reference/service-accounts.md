@@ -68,8 +68,11 @@ account envelope exposes safe credential readiness metadata; backend Secret
 locators and Backend/workspace identities remain private.
 Compute creates one account-owned token Secret in the tenant control plane; the Driver privately
 persists the upstream credential ID for exact cleanup. A second issuance fails
-with `409`; rotation and reconciliation are not implemented. Calling issuance
-without a selected ServiceAccount Driver fails with `503 DEPENDENCY_UNAVAILABLE`.
+with `409`; rotation and reconciliation are not implemented. On an Installation
+with no ChatGPT Backend, and so no ServiceAccount Driver, issuance fails with
+`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix, after the account
+`update` check and lookup. A selected Driver that is unavailable or fails
+returns `503 DEPENDENCY_UNAVAILABLE`.
 
 An Agent binds the same-Namespace account through
 `harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`.
@@ -87,7 +90,11 @@ Inactive historical revisions and permanently failed deployments do not block
 deletion unless the account is still referenced by other live state.
 Backend-managed deletion removes
 the exact upstream credential, the account-owned Secret, and the upstream
-account before deleting OCC account state. Native deletion removes OCC account
+account before deleting OCC account state. If the account holds an issued
+access token and the Installation no longer has a ChatGPT Backend, deletion
+fails with `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`, after the `delete`
+grant and the account lookup, and keeps the account: configure the same
+ChatGPT Backend again (same `backendId`), then retry. Native deletion removes OCC account
 state; the operator owns the referenced source Secret.
 
 ## Revision snapshots and credential delivery
@@ -153,6 +160,10 @@ provider, not IAM, Compute, OCC, or the Harness.
 - `409 RESOURCE_CONFLICT`: Duplicate account name, existing credential,
   referenced-account deletion, missing credential, or unsupported Harness or
   OAuth deployment, or mismatched managed Backend binding.
+- `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The Installation has no ChatGPT
+  Backend, so issuance, deploying an Agent bound to an account without an
+  access token, and deleting an account that holds one cannot succeed. Configure the
+  [ChatGPT Backend](../guides/integrations/chatgpt.md).
 - Provider denial or Kubernetes failure: Creation fails closed; compensation deletes
   only the newly created exact provider account, provider credential, or
   account-owned Secret when durable state confirms it was not committed.

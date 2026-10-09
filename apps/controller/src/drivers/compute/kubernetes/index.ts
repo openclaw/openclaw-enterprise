@@ -108,8 +108,10 @@ import {
 import {
   ActivationFailedError,
   ActivationPendingError,
+  agentEntryMessage,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -270,6 +272,17 @@ const LEGACY_WORKSPACE_NODE_POLICY_SELECTOR: {
 const OPENSHELL_SUPERVISOR_SELECTOR = Object.freeze({
   "openshell.ai/boundary-role": "supervisor",
 });
+/** Every Agent-scoped NetworkPolicy name agentNetworkPolicies and
+ * pluginStatusNetworkPolicies can write (each gets the Agent's suffix). */
+const AGENT_NETWORK_POLICY_NAMES = Object.freeze([
+  "allow-gateway-agent",
+  "allow-gateway-workspace-node",
+  "allow-workspace-node-gateway",
+  "allow-agent-runtime",
+  "allow-plugin-status-proxy",
+  "allow-plugin-status-agent",
+  "allow-plugin-status-gateway",
+]);
 
 interface LifecycleOwnerSelection {
   readonly driver: Driver;
@@ -561,11 +574,14 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
   const failure = preparationFailure(error);
   const cause = privateWriteEvidence(failure.error) ?? failure.error;
   const status = numericErrorStatus(cause);
-  if (cause instanceof ConfigurationFailure) {
+  if (cause instanceof ConfigurationFailure || cause instanceof ConfigurationHarnessError) {
     return {
       code: "KUBERNETES_CONFIGURATION_INVALID",
       stage: failure.stage,
-      errorClass: "ConfigurationFailure",
+      errorClass:
+        cause instanceof ConfigurationHarnessError
+          ? "ConfigurationHarnessError"
+          : "ConfigurationFailure",
       message: cause.message,
     };
   }
@@ -639,7 +655,7 @@ const UNREACHABLE_SOCKET_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 
-function unreachableSocketFailure(error: unknown): boolean {
+export function unreachableSocketFailure(error: unknown): boolean {
   return unreachableSocketCause(error) !== undefined;
 }
 
@@ -998,8 +1014,6 @@ function settledSchedulingConflict(
 const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 const AGENT_TRANSPORT_PORT = 18_790;
-const NATIVE_WORKER_INFERENCE_CONFIG_PATH = "/tmp/openclaw-native-inference.json";
-const NATIVE_WORKER_WORKSPACE_ROOT = "/home/node/.openclaw-node/node-host";
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
 const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compile";
@@ -1088,6 +1102,101 @@ function harnessWorkspaceCategories(oauth: boolean) {
   return oauth
     ? HARNESS_WORKSPACE_CATEGORIES
     : [...HARNESS_WORKSPACE_CATEGORIES, HARNESS_CODEX_SESSIONS_CATEGORY];
+}
+
+/**
+ * Init script that makes each Harness claim subdirectory a uid-1000 0700
+ * directory. The 2026-09-28 release had no Harness init, so the kubelet created
+ * `workspace` and `generated-images` for their subPath mounts: root-owned and
+ * group- and world-writable, which uid 1000 cannot chmod (EPERM, finding 752).
+ * The claim root is writable without a sticky bit, so such a directory is
+ * renamed aside, recreated by uid 1000, and its entries are renamed back. Every
+ * step is a rename on one filesystem, and a retried init resumes an interrupted
+ * move. An entry already present in the new directory stays aside, and is logged.
+ * A directory the tenant made read-only (chmod 0555) moves too (finding 884).
+ * The move assumes no other Pod writes the claim (dedicated Harnesses with node
+ * enrollment roll with Recreate).
+ */
+export function harnessWorkspacePreparationScript(paths: readonly string[]): string {
+  return `{
+  const fs = require("node:fs");
+  const uid = process.getuid();
+  const move = (from, to) => {
+    // Moving a directory to a new parent needs write on the directory itself, so an owned
+    // directory the tenant made read-only gets u+w for the rename and its mode back after
+    // (an init stopped in between leaves it owner-writable).
+    const stat = fs.lstatSync(from);
+    const locked = stat.isDirectory() && stat.uid === uid && (stat.mode & 0o200) === 0;
+    if (locked) fs.chmodSync(from, (stat.mode & 0o7777) | 0o200);
+    try {
+      fs.renameSync(from, to);
+    } catch (error) {
+      error.message += "; uid " + uid + " cannot move " + from + (stat.uid === uid
+        ? " (owned by uid " + uid + "): make its parent directory writable by uid " + uid
+        : " (owner uid " + stat.uid + "): chown it to uid " + uid) + " on the node";
+      if (locked) {
+        try {
+          fs.chmodSync(from, stat.mode & 0o7777);
+        } catch {}
+      }
+      throw error;
+    }
+    if (locked) fs.chmodSync(to, stat.mode & 0o7777);
+  };
+  for (const path of ${JSON.stringify(paths)}) {
+    const aside = path.replace(/\\/([^/]+)$/u, "/.$1.kubelet-created");
+    if (
+      fs.lstatSync(aside, { throwIfNoEntry: false }) === undefined &&
+      fs.lstatSync(path, { throwIfNoEntry: false })?.isDirectory()
+    ) {
+      try {
+        fs.chmodSync(path, 0o700);
+      } catch (error) {
+        if (error.code !== "EPERM") throw error;
+        move(path, aside);
+      }
+    }
+    fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+    if (fs.lstatSync(aside, { throwIfNoEntry: false }) !== undefined) {
+      const kept = [];
+      for (const entry of fs.readdirSync(aside)) {
+        if (fs.lstatSync(path + "/" + entry, { throwIfNoEntry: false }) === undefined) {
+          move(aside + "/" + entry, path + "/" + entry);
+        } else {
+          kept.push(entry);
+        }
+      }
+      if (kept.length === 0) {
+        fs.rmdirSync(aside);
+      } else {
+        console.error("kept in " + aside + ", already in " + path + ": " +
+          JSON.stringify(kept.slice(0, 20)) + (kept.length > 20 ? " and " + (kept.length - 20) + " more" : ""));
+      }
+    }
+    fs.chmodSync(path, 0o700);
+  }
+}`;
+}
+/**
+ * Init script that removes a Harness claim subdirectory. `rmSync` cannot empty a
+ * directory the tenant made read-only, so owned directories get u+rwx first
+ * (finding 884). It never follows a symbolic link.
+ */
+export function harnessStateRemovalScript(path: string): string {
+  return `{
+  const fs = require("node:fs");
+  const pending = [${JSON.stringify(path)}];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    const stat = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (!stat?.isDirectory()) continue;
+    if (stat.uid === process.getuid() && (stat.mode & 0o700) !== 0o700) {
+      fs.chmodSync(directory, (stat.mode & 0o7777) | 0o700);
+    }
+    for (const entry of fs.readdirSync(directory)) pending.push(directory + "/" + entry);
+  }
+  fs.rmSync(${JSON.stringify(path)}, { recursive: true, force: true });
+}`;
 }
 const GATEWAY_SESSION_DIRECTORY = "/home/node/.openclaw/agents/main/sessions";
 const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
@@ -1403,6 +1512,26 @@ function validateDnsHostname(value: string, description: string): void {
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(value)
   ) {
     throw new ConfigurationFailure(`${description} must be a DNS hostname without a port or path.`);
+  }
+}
+
+// Dedicated Agent sandbox routes use agent-<32 hex>.<domain>; the 39-character prefix must
+// still fit the Gateway API Hostname limit of 253, so the domain itself stops at 214.
+const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
+
+function validateSandboxDomain(value: string): void {
+  validateDnsHostname(value, "Sandbox domain");
+  // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
+  // directly under a single label (*.localhost), so such a domain could never serve previews.
+  if (!value.includes(".")) {
+    throw new ConfigurationFailure(
+      "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
+    );
+  }
+  if (value.length > SANDBOX_DOMAIN_MAX_LENGTH) {
+    throw new ConfigurationFailure(
+      `Sandbox domain must not exceed ${SANDBOX_DOMAIN_MAX_LENGTH} characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.`,
+    );
   }
 }
 
@@ -1794,8 +1923,6 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
 
 function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument): object {
   const models = harnessModels(configuration);
-  const configuredAgentIds = Object.keys(asRecord(asRecord(configuration.agents)?.entries) ?? {});
-  const agentIds = configuredAgentIds.length === 0 ? ["main"] : configuredAgentIds;
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
   if (openai === undefined || !Array.isArray(openai.models)) {
@@ -1900,11 +2027,9 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
       );
     }
     return {
-      provider,
       id,
       api,
-      baseUrl,
-      ...(isNonEmptyString(entry.name) ? { name: entry.name } : {}),
+      name: isNonEmptyString(entry.name) ? entry.name : id,
       contextWindow,
       maxTokens,
       ...(entry.reasoning === undefined ? {} : { reasoning: entry.reasoning }),
@@ -1916,17 +2041,19 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
         cacheWrite: cost.cacheWrite,
       },
       ...(input === undefined ? {} : { input }),
-      apiKeyEnv: MODEL_API_KEY,
     };
   });
   return {
-    models: runtimeModels,
-    workspaces: agentIds.map((id) => ({
-      id,
-      path: NATIVE_WORKER_WORKSPACE_ROOT,
-      scope: "subdirectories",
-      models,
-    })),
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: { source: "env", provider: "model", id: MODEL_API_KEY },
+          models: runtimeModels,
+        },
+      },
+    },
+    secrets: { providers: { model: { source: "env", allowlist: [MODEL_API_KEY] } } },
   };
 }
 
@@ -1944,6 +2071,132 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   return {
     configuration: JSON.stringify(nativeRuntimeConfiguration(revision.configuration)),
   };
+}
+
+// Every topology here (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned OpenClaw
+// Gateway on the admitted document. Its config validation rejects these roster shapes and the
+// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. The
+// Gateway drops only an empty agents.list beside an implicit empty roster, so that one passes.
+// A refusal, not a rewrite: OCC skips this on status reads.
+function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
+  // Each refusal names the setting and the rule it breaks. Keys come from the caller's own
+  // Configuration; agentEntryMessage quotes and bounds them.
+  const agents = asRecord(configuration.agents);
+  if (configuration.agents !== undefined && agents === undefined) {
+    throw new ConfigurationHarnessError("The OpenClaw Gateway requires agents to be an object.");
+  }
+  const roster = asRecord(agents?.entries);
+  if (agents?.entries !== undefined && roster === undefined) {
+    throw new ConfigurationHarnessError(
+      "The OpenClaw Gateway requires agents.entries to be an object keyed by Agent ID.",
+    );
+  }
+  // OpenClaw's schema: entries is a record of objects whose keys stay unique after its
+  // normalizeAgentId (lowercase; a key starting with _ also drops trailing dashes).
+  const entries = Object.entries(roster ?? {});
+  const normalized = new Map<string, string>();
+  for (const [id, entry] of entries) {
+    if (asRecord(entry) === undefined) {
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(id, (path) => `The OpenClaw Gateway requires ${path} to be an object.`),
+      );
+    }
+    if (!/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id)) {
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(
+          id,
+          (path) =>
+            `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`,
+        ),
+      );
+    }
+    // A valid ID is plain and at most 64 characters, so both names fit the message cap.
+    const key = id.startsWith("_") ? id.toLowerCase().replace(/-+$/, "") : id.toLowerCase();
+    const first = normalized.get(key);
+    if (first !== undefined) {
+      throw new ConfigurationHarnessError(
+        `The OpenClaw Gateway normalizes agents.entries.${first} and agents.entries.${id} to the same Agent ID: rename one.`,
+      );
+    }
+    normalized.set(key, id);
+  }
+  const rosterSize = entries.length;
+  const explicit = agents?.ownership === "explicit";
+  if (
+    agents?.list !== undefined &&
+    !(Array.isArray(agents.list) && agents.list.length === 0 && rosterSize === 0 && !explicit)
+  ) {
+    throw new ConfigurationHarnessError(
+      "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+    );
+  }
+  const marked = entries.find(([, entry]) => asRecord(entry)?.default !== undefined);
+  if (marked !== undefined) {
+    throw new ConfigurationHarnessError(
+      agentEntryMessage(
+        marked[0],
+        (path) => `The OpenClaw Gateway rejects ${path}.default: remove it.`,
+      ),
+    );
+  }
+  if (agents?.ownership !== undefined && !explicit) {
+    throw new ConfigurationHarnessError(
+      'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.',
+    );
+  }
+  if (rosterSize > 1 && !explicit) {
+    throw new ConfigurationHarnessError(
+      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
+    );
+  }
+  if (explicit && rosterSize === 0) {
+    throw new ConfigurationHarnessError(
+      'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.',
+    );
+  }
+}
+
+// OpenClaw's default Agent (the sole entry, or a named session store or system owner) keeps
+// its own workspace, while the Gateway, file transfer and workspace files address main. A
+// refusal, not a rewrite: OCC skips this on status reads. Each refusal names the setting and
+// the rule it breaks, as requireOpenClawRoster's do. It runs after requireOpenClawRoster, so
+// agents and agents.entries are objects when present, and an explicit roster has at least one
+// entry.
+function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
+  const agents = asRecord(configuration.agents);
+  const defaults = asRecord(agents?.defaults);
+  // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
+  const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
+  for (const owner of ["sessionStore", "systemAgent"] as const) {
+    const agentId = asRecord(defaults?.[owner])?.agentId;
+    if (agentId !== undefined && !isMain(agentId)) {
+      throw new ConfigurationHarnessError(
+        `Dedicated OpenClaw serves the main Agent: set agents.defaults.${owner}.agentId to main, or remove it.`,
+      );
+    }
+  }
+  const entries = Object.entries(asRecord(agents?.entries) ?? {});
+  // OpenClaw reads a missing or empty roster as `{ main: {} }` unless ownership is explicit,
+  // which requireOpenClawRoster refuses.
+  if (entries.length === 0) {
+    return;
+  }
+  // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
+  const spelled = entries.find(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id));
+  if (spelled !== undefined) {
+    throw new ConfigurationHarnessError(
+      agentEntryMessage(
+        spelled[0],
+        (path) =>
+          `Dedicated OpenClaw rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, starting with a letter or digit.`,
+      ),
+    );
+  }
+  if (!entries.some(([id]) => isMain(id))) {
+    throw new ConfigurationHarnessError(
+      "Dedicated OpenClaw serves the main Agent: add agents.entries.main, or rename an entry to main.",
+    );
+  }
 }
 
 function requireNativeWorkerSandbox(
@@ -2491,7 +2744,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       validatePort(routing.envoyHttpsTargetPort ?? 10443, "Envoy HTTPS target port");
       if (routing.sandbox !== undefined) {
-        validateDnsHostname(required(routing.sandbox.domain, "Sandbox domain"), "Sandbox domain");
+        validateSandboxDomain(required(routing.sandbox.domain, "Sandbox domain"));
         validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
         validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
         if (options.runtime === undefined) {
@@ -2835,6 +3088,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure(
         `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
       );
+    }
+    requireOpenClawRoster(configuration);
+    if (native) {
+      requireNativeMainAgentDefault(configuration);
     }
     if (
       (!embedded && !codex && !native) ||
@@ -4873,6 +5130,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
+        if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
+          // A Ready provider Pod proves only its supervisor. Like the Kubernetes
+          // readiness probe, require the Harness transport to answer, and fail on
+          // the Harness's held startup failure (a failed model probe) instead of
+          // activating a revision whose Codex never started.
+          const harness = await this.prepareRevisionStage("sandbox_provision", async () =>
+            sandboxDriver.harnessStatus!({
+              ...sandboxContext,
+              revision,
+              requirements,
+              transportToken: await this.prepareRevisionStage("harness_auth", () =>
+                this.sandboxTransportTokenText(revision),
+              ),
+            }),
+          );
+          if (harness.state === "failed") {
+            const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
+            // `failed` without evidence is as invalid as malformed evidence.
+            if (runtimeFailure === undefined) {
+              throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
+            }
+            return { ...result, runtimeFailure };
+          }
+          if (harness.state !== "serving") {
+            return incomplete();
+          }
+        }
         return ready();
       }
       await this.reconcile(agentDeployment, revisionOwnership, namespace);
@@ -5187,12 +5471,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // activation never becomes ready, retirement would not run before stop.
         await this.deleteReplacedPredecessorArtifacts(revision, gateway, namespace);
       }
-      for (const { resource: policy, namespace: target } of this.agentNetworkPolicies(
-        revision,
-        namespace,
-      )) {
+      const policies = this.agentNetworkPolicies(revision, namespace);
+      for (const { resource: policy, namespace: target } of policies) {
         await this.reconcile(policy, gatewayOwnership, target);
       }
+      await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
       await this.reconcile(
         this.service(gatewayName, gatewayOwnership, namespace, {
           "app.kubernetes.io/name": gatewayName,
@@ -5365,6 +5648,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
           revision,
           requirements,
         });
+        // Preparation saw the Harness serving; activate only while it still is.
+        if (
+          sandboxDriver.harnessStatus !== undefined &&
+          (
+            await sandboxDriver.harnessStatus({
+              ...sandboxContext,
+              revision,
+              requirements,
+              transportToken: await this.sandboxTransportTokenText(revision),
+            })
+          ).state !== "serving"
+        ) {
+          throw new Error("The exact AgentRevision workload is not ready.");
+        }
       }
     }
     const gatewaySecretEnvironment = await this.deliverGatewaySecrets(
@@ -5449,12 +5746,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!providerOwnsHarnessEndpoint) {
       await this.reconcileHarnessRoute(revision, namespace);
     }
-    for (const { resource: policy, namespace: target } of this.agentNetworkPolicies(
-      revision,
-      namespace,
-    )) {
+    const policies = this.agentNetworkPolicies(revision, namespace);
+    for (const { resource: policy, namespace: target } of policies) {
       await this.reconcile(policy, gatewayOwnership, target);
     }
+    await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
     if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
       throw new Error("The exact AgentRevision gateway is not ready.");
     }
@@ -5576,12 +5872,39 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
    * derived exactly as provisioning created it; a missing Namespace or Sandbox has nothing left
-   * to revoke.
+   * to revoke. A configuration that cannot reach the Sandbox, or an object this Driver does
+   * not own, is a CredentialWithdrawalRefusedError: retrying cannot change it.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
+    options: { readonly recheck?: boolean } = {},
+  ): Promise<CredentialAttachmentStatus> {
+    try {
+      return await this.withdrawSandboxCredentialSource(revision, source, signal, options);
+    } catch (error) {
+      if (error instanceof ConfigurationFailure || error instanceof ConfigurationHarnessError) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          error.message,
+        );
+      }
+      if (error instanceof OwnershipFailure) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+          error.message,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async withdrawSandboxCredentialSource(
+    revision: Readonly<AgentRevision>,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+    options: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus> {
     if (
       revision.compute.id !== this.id ||
@@ -5616,6 +5939,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       sandbox,
       sourceId: source.id,
       signal,
+      ...(options.recheck === true ? { recheck: true } : {}),
     });
     if (status.sourceId !== source.id) {
       throw new OwnershipFailure("The Credential Gateway withdrew another credential source.");
@@ -6016,6 +6340,47 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  // Agent-scoped policies have one name per Agent and every revision applies its
+  // own set additively, so a name the active revision no longer writes kept
+  // selecting its Gateway: after a switch away from OpenShell the workspace-node
+  // pair still admitted every supervisor Pod on the Gateway port (finding 861).
+  // Activation therefore drops the names this revision does not write in its
+  // Gateway namespace, the only one where a policy can select that Gateway (the
+  // pair exists only on a single cluster, where both namespaces are one). It runs
+  // after the revision's own set is applied, so the new Gateway never lacks a
+  // grant it needs. Preparation never calls it: there, the serving predecessor
+  // still needs its own names. A later revision, repair or rollback included,
+  // applies and trims its own set the same way. A maintenance re-activation of the
+  // serving revision also drops names a prepared successor wrote; that successor's
+  // next preparation pass writes them again before its readiness probe.
+  private async deleteUnwrittenAgentPolicies(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    written: readonly TargetedKubernetesResource[],
+  ): Promise<void> {
+    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    const suffix = sha256Hex(revision.agentId, 12);
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const kept = new Set(
+      written
+        .filter(
+          ({ namespace: target }) =>
+            target.name === gatewayNamespace.name && target.plane === gatewayNamespace.plane,
+        )
+        .map(({ resource }) => resource.metadata.name),
+    );
+    for (const name of AGENT_NETWORK_POLICY_NAMES) {
+      if (!kept.has(`${name}-${suffix}`)) {
+        await this.deleteOwnedNamespacedResource(
+          "NetworkPolicy",
+          `${name}-${suffix}`,
+          ownership,
+          gatewayNamespace,
+        );
+      }
+    }
+  }
+
   private async deleteRetiredAgentPolicies(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
@@ -6024,9 +6389,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    // Keep these lists in step with AGENT_NETWORK_POLICY_NAMES and the channel
+    // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
       "allow-gateway-channels",
+      "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
       await this.deleteOwnedNamespacedResource(
@@ -6051,6 +6419,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       "allow-agent-runtime",
       "allow-plugin-status-proxy",
       "allow-plugin-status-agent",
+      "allow-workspace-node-gateway",
     ]) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
@@ -12018,6 +12387,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private async sandboxTransportVerifier(
     revision: AgentRevision,
   ): Promise<SandboxEnvironmentVariable> {
+    const token = await this.sandboxTransportToken(revision);
+    return { name: APP_TOKEN_SHA, value: createHash("sha256").update(token).digest("hex") };
+  }
+
+  /** The Agent transport token the Agent Gateway presents to its provider-owned Harness. */
+  private async sandboxTransportTokenText(revision: AgentRevision): Promise<string> {
+    return (await this.sandboxTransportToken(revision)).toString("utf8");
+  }
+
+  private async sandboxTransportToken(revision: AgentRevision): Promise<Buffer> {
     const runtime = this.options.runtime;
     if (runtime === undefined) {
       throw new DependencyUnavailableError("The Agent runtime credentials are not configured.");
@@ -12043,7 +12422,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (token.length === 0 || token.length > MAX_RUNTIME_CREDENTIAL_BYTES) {
       throw new OwnershipFailure("Harness transport credential is invalid.");
     }
-    return { name: APP_TOKEN_SHA, value: createHash("sha256").update(token).digest("hex") };
+    return token;
   }
 
   private async deliverGatewaySecrets(
@@ -12506,21 +12885,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         name: HARNESS_WORKSPACE_VOLUME,
         mountPath: "/harness-workspace-state",
       });
-      (initialization.args as string[])[0] += `
-for (const path of ${JSON.stringify(
+      (initialization.args as string[])[0] += `\n${harnessWorkspacePreparationScript(
         harnessWorkspaceCategories(oauth).map(([subPath]) => `/harness-workspace-state/${subPath}`),
-      )}) {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  chmodSync(path, 0o700);
-}`;
+      )}`;
       if (oauth) {
         // An OAuth home starts without earlier history, as a new OAuth source does.
-        (initialization.args as string[])[0] += `
-require("node:fs").rmSync("/harness-workspace-state/codex-sessions", { recursive: true, force: true });`;
+        (initialization.args as string[])[0] += `\n${harnessStateRemovalScript(
+          "/harness-workspace-state/codex-sessions",
+        )}`;
       } else {
         // A revision without OAuth must not leave a personal login refreshing on the volume.
-        (initialization.args as string[])[0] += `
-require("node:fs").rmSync("/harness-workspace-state/codex-home", { recursive: true, force: true });`;
+        (initialization.args as string[])[0] += `\n${harnessStateRemovalScript(
+          "/harness-workspace-state/codex-home",
+        )}`;
       }
     }
     if (dedicated && role === "gateway") {
@@ -12623,13 +13000,10 @@ require("node:fs").rmSync("/harness-workspace-state/codex-home", { recursive: tr
             { name: "CODEX_HOME", value: "/home/node/.codex" },
           );
         } else {
-          variables.push(
-            { name: "OPENCLAW_NATIVE_INFERENCE_CONFIG", value: nativeRuntime.configuration },
-            {
-              name: "OPENCLAW_NATIVE_INFERENCE_CONFIG_PATH",
-              value: NATIVE_WORKER_INFERENCE_CONFIG_PATH,
-            },
-          );
+          variables.push({
+            name: "OPENCLAW_NATIVE_INFERENCE_CONFIG",
+            value: nativeRuntime.configuration,
+          });
         }
       }
     }

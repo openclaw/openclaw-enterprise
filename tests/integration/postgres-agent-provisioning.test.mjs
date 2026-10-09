@@ -9,6 +9,7 @@ import {
   NativeWorkerSupportError,
   PostgresPlatformState,
   ProvisioningSecretDriverError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -28,6 +29,7 @@ import {
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -1032,6 +1034,63 @@ test(
       { status: "running", error: undefined },
       "a status read that started before the failure commit reports the state before it",
     );
+
+    const after = await fixture.request("GET", url);
+    assert.equal(after.status, 200, JSON.stringify(after.body));
+    assert.equal(after.data.status, "failed");
+    assert.deepEqual(after.data.error, failure);
+  },
+);
+
+test(
+  "a provisioning failure takes the Namespace lock before its claimed work row",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId, url } = admitted.data.provisioning;
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    const failure = {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    };
+
+    // Stopping or deleting a provisioned Agent locks the Namespace, then the Agent, then this
+    // claimed work row (cancelByAgent). Hold the Namespace until the worker's permanent failure
+    // waits on it; the waiting failure must not hold the work row yet, or the two deadlock.
+    let committed;
+    try {
+      await withNamespaceLockHeld(fixture.pool, namespace.id, async (lock) => {
+        committed = fixture.state.transact(async (unit) => {
+          const current = await unit.provisioning.findByWorkId(workId);
+          await unit.provisioning.recordFailure(
+            claim,
+            {
+              completedPhase: current.completedPhase,
+              progress: { ...current.progress, error: failure },
+            },
+            { disposition: "permanent", ...failure },
+          );
+        });
+        // Surface an early failure through the await below instead of an unhandled rejection.
+        committed.catch(() => {});
+        // No worker runs here, so the only backend that can wait on this lock is the failure's.
+        await lock.waitForBlocked("the failure's real wait on the Namespace lock");
+        await lock.assertNotHeld(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1 FOR UPDATE NOWAIT",
+          [workId],
+          "a failure waiting for the Namespace must not already hold its work row",
+        );
+      });
+      await committed;
+    } finally {
+      await committed?.catch(() => {});
+    }
 
     const after = await fixture.request("GET", url);
     assert.equal(after.status, 200, JSON.stringify(after.body));
@@ -2592,6 +2651,20 @@ test(
       return rows[0]?.status === "failed" ? true : undefined;
     });
     await fixture.stopWorker();
+    // This Installation has no ChatGPT Backend, so the failure names it instead of the
+    // generic text.
+    const job = await fixture.pool.query(
+      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+      [workId],
+    );
+    assert.deepEqual(job.rows, [
+      {
+        error: {
+          code: "PROVISIONING_REJECTED",
+          message: new ServiceAccountDriverNotConfiguredError("deploy").message,
+        },
+      },
+    ]);
     const workState = async () =>
       (
         await fixture.pool.query(

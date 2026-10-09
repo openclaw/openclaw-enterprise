@@ -63,6 +63,7 @@ export function bindPlatformUnitOfWork(
       "replaceCredentialSourceSecrets",
       "deleteCredentialSource",
       "hasReferences",
+      "findBlockingReference",
       "findCredentialWithdrawal",
       "listCredentialWithdrawals",
       "requestCredentialWithdrawal",
@@ -160,6 +161,7 @@ export function bindPlatformUnitOfWork(
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",
       "retryFailedNamespaceDeletion",
+      "expediteCredentialWithdrawalWork",
     ]),
   });
 }

@@ -20,6 +20,7 @@ import {
   ChannelDirectoryError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialWithdrawalInProgressError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -46,6 +47,7 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -163,6 +165,46 @@ const cases = [
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
       message: new CredentialGatewayNotConfiguredError().message,
+    },
+  ],
+  [
+    "a source delete blocked only by withdrawal work names the wait and Agent deletion",
+    new CredentialWithdrawalInProgressError(),
+    {
+      status: 409,
+      code: "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+      message:
+        "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    },
+  ],
+  [
+    "service-account issuance on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("issue"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
+    "a ChatGPT Harness deploy on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("deploy"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
+    "deleting a service account with an issued token without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("delete"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [

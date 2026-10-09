@@ -190,7 +190,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- /* The bootstrap Job, in production, refuses plain HTTP unless the host is 127.0.0.1 or localhost. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
-{{- if not .Values.bootstrap.adminEmail -}}{{- fail "bootstrap.adminEmail must identify the first administrator account" -}}{{- end -}}
+{{- /* The bootstrap Job trims with JavaScript trim, lowercases, then requires local@domain.tld. The rendered env keeps the value as written. */ -}}
+{{- $adminEmailTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
+{{- $adminEmail := lower (regexReplaceAll $adminEmailTrim (toString .Values.bootstrap.adminEmail) "") -}}
+{{- if not (regexMatch "^[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+@[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+\\.[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" $adminEmail) -}}
+{{- fail "bootstrap.adminEmail must contain a valid administrator email" -}}
+{{- end -}}
 {{- /* The bootstrap Job checks installation.name with isName before it creates anything. */ -}}
 {{- $installationName := toString .Values.installation.name -}}
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
@@ -389,7 +394,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not $routing.envoyGatewayPodLabels -}}{{- fail "gatewayRouting.envoyGatewayPodLabels must select the Envoy Gateway control-plane Pods for xDS egress" -}}{{- end -}}
 {{- if $routing.sandbox.enabled -}}
-{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.[a-z0-9-]+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
+{{- /* Dedicated Agent routes use agent-<32 hex>.<domain>, which must fit the 253-character Gateway API hostname limit. */ -}}
+{{- if gt (len $routing.sandbox.domain) 214 -}}{{- fail "gatewayRouting.sandbox.domain must not exceed 214 characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames" -}}{{- end -}}
 {{- if not $routing.sandbox.tlsSecretName -}}{{- fail "gatewayRouting.sandbox.tlsSecretName must reference a wildcard certificate Secret" -}}{{- end -}}
 {{- if or (lt (int $routing.sandbox.listenerPort) 1024) (gt (int $routing.sandbox.listenerPort) 65535) (eq (int $routing.sandbox.listenerPort) (int $routing.envoyHttpsTargetPort)) -}}{{- fail "gatewayRouting.sandbox.listenerPort must be an unprivileged port distinct from private Envoy HTTPS" -}}{{- end -}}
 {{- if ge (int $routing.tenantGatewayPort) 65535 -}}{{- fail "gatewayRouting.tenantGatewayPort must leave room for the adjacent sandbox port" -}}{{- end -}}
@@ -501,6 +508,52 @@ capabilities:
 
 {{- define "openclaw.repositoryCredentials.serviceName" -}}
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
+{{- end -}}
+
+{{/* Decimal, matching JavaScript Number. Sprig int is octal, so it must not parse these.
+     A values file delivers a float64, and toString prints 1000000 and above as an exponent. */}}
+{{- define "openclaw.positiveSafeInteger" -}}
+{{- $raw := toString .value -}}
+{{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}
+{{- $raw = printf "%.0f" .value -}}
+{{- end -}}
+{{- $parsed := atoi $raw -}}
+{{- if or (not (regexMatch "^[0-9]+$" $raw)) (lt $parsed 1) (gt $parsed 9007199254740991) -}}
+{{- fail (printf "%s must be a positive safe integer" .name) -}}
+{{- end -}}
+{{- $raw -}}
+{{- end -}}
+
+{{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.
+     Preserve its JSON-text whitespace handling without emulating exponent bounds or numeric parsing. */}}
+{{- define "openclaw.quantity" -}}
+{{- $pattern := "^[+-]?([0-9]*(\\.[0-9]*)?)?(([KMGT]i)|[numkMGTPE]|([eE][+-]?[0-9]+))?$|^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)[PE]i$" -}}
+{{- $encoded := toJson (toString .value) -}}
+{{- $quantity := $encoded -}}
+{{- if ge (len $encoded) 2 -}}
+{{- $last := int (sub (len $encoded) 1) -}}
+{{- if and (eq (substr 0 1 $encoded) "\"") (eq (substr $last (len $encoded) $encoded) "\"") -}}
+{{- $quantity = trim (substr 1 $last $encoded) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (eq $quantity "") (not (regexMatch $pattern $quantity)) -}}
+{{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. */}}
+{{- define "openclaw.resourceRequirements" -}}
+{{- if .requirements -}}
+{{- $name := .name -}}
+{{- $requirements := .requirements -}}
+{{- range $section := list "requests" "limits" -}}
+{{- with index $requirements $section -}}
+{{- range $key, $qty := . -}}
+{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "openclaw.repositoryCredentials.clusterDomain" -}}

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-01
-last_updated_session: authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2
+updated: 2026-10-08
+last_updated_session: authoring-run/95ed7983-818c-4af2-8875-1330333f5e41
 ---
 
 # Common Operational Logging Flow
@@ -144,6 +144,14 @@ syncs: `filelog` reads existing CRI files immediately, and a record processed
 without Pod identity is filtered out while its offset is still committed, so
 startup events such as `worker.started` would otherwise be lost for good.
 
+Before emitting the DaemonSet,
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
+checks the Collector resource and volume quantities for obvious syntax errors.
+Malformed values stop rendering with the setting name; absent optional limits
+pass through. Kubernetes performs complete validation after rendering. See the
+[production settings](../reference/settings/production.md#production-operational-logging-collection)
+for the supported scope.
+
 The chart validates one exporter destination: an IPv4 `/32` or paired namespace/Pod
 selectors, with a bounded TCP port. It renders exporter egress alongside DNS/API
 access. Empty Collector metrics selectors grant no ingress; paired selectors admit
@@ -254,6 +262,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
 
 - 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.
 - 2026-10-06 06:30: Export the API shutdown, idle database connection, device login, cluster credential denial, native admin audit failure and authentication startup warnings that other pages tell operators to look for.

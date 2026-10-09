@@ -43,6 +43,7 @@
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.mjs",
+    "tests/integration/ci-download-pinned.test.mjs",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/repository-runtime-materialization.test.mjs",
@@ -151,6 +152,9 @@
     },
     {
       "path": "tests/integration/ci-image-pull.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-download-pinned.test.mjs"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"

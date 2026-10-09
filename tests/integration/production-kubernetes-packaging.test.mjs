@@ -256,6 +256,42 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
+  const longestLabel = "a".repeat(63);
+  const longestDomain = [longestLabel, longestLabel, "a".repeat(22), longestLabel].join(".");
+  const overlongDomain = [longestLabel, longestLabel, "a".repeat(23), longestLabel].join(".");
+  const hostnameLimitDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(61)].join(".");
+  assert.equal(longestDomain.length, 214);
+  assert.equal(overlongDomain.length, 215);
+  assert.equal(hostnameLimitDomain.length, 253);
+  assert.equal(`agent-${"0".repeat(32)}.${longestDomain}`.length, 253);
+  const longest = await resources(
+    (await render({ ...sandboxValues, "gatewayRouting.sandbox.domain": longestDomain })).stdout,
+  );
+  assert.equal(
+    longest
+      .find((item) => item.kind === "Gateway")
+      .spec.listeners.find((item) => item.name === "sandbox").hostname,
+    `*.${longestDomain}`,
+  );
+  for (const domain of [
+    "a..b.com",
+    "example.com-",
+    "example.-com",
+    `${"a".repeat(64)}.test`,
+    "localhost",
+  ]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must be a DNS hostname/,
+    );
+  }
+  for (const domain of [overlongDomain, hostnameLimitDomain]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must not exceed 214 characters, leaving room for the agent-<32 hex>\. prefix/,
+    );
+  }
   await assert.rejects(
     render({
       ...sandboxValues,
@@ -2829,6 +2865,47 @@ test(
   },
 );
 
+test("the chart refuses administrator emails the bootstrap Job refuses", tooling, async () => {
+  const message = /bootstrap\.adminEmail must contain a valid administrator email/;
+  for (const email of [
+    "",
+    " ",
+    "not-an-email",
+    "a@b",
+    "a@b.",
+    "a@.com",
+    "a@b c.com",
+    "a@b\u00A0c.com",
+    "a@b\u000Bc.com",
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.adminEmail": email } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(email),
+    );
+  }
+  for (const email of [
+    "admin@example.invalid",
+    " Admin@Example.COM ",
+    "a@b.com ",
+    "\nadmin@example.com",
+    "\uFEFFadmin@example.com",
+    "\u0085a@b.com",
+  ]) {
+    const { stdout } = await render({}, { strings: { "bootstrap.adminEmail": email } });
+    const objects = await resources(stdout);
+    const job = objects.find(
+      (object) =>
+        object.kind === "Job" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    );
+    const value = job.spec.template.spec.containers
+      .find((container) => container.name === "bootstrap")
+      .env.find((entry) => entry.name === "OCC_BOOTSTRAP_ADMIN_EMAIL").value;
+    assert.equal(value, email);
+  }
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
@@ -3544,3 +3621,257 @@ test(
     });
   },
 );
+
+test("Helm rejects worker timings the worker process rejects", tooling, async () => {
+  for (const [key, value] of [
+    ["worker.pollIntervalMs", "0"],
+    ["worker.pollIntervalMs", "abc"],
+    ["worker.leaseDurationMs", "1.5"],
+    ["worker.maxAttempts", "-1"],
+    ["worker.convergenceTimeoutMs", "9007199254740993"],
+  ]) {
+    await assert.rejects(render({ [key]: value }), /must be a positive safe integer/);
+  }
+  const rendered = await render({ "worker.pollIntervalMs": "010" });
+  assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
+});
+
+test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-worker-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const valuesFile = join(directory, "worker.yaml");
+  await writeFile(valuesFile, "worker:\n  convergenceTimeoutMs: 1800000\n", { mode: 0o600 });
+  const rendered = await render({}, { valuesFiles: [valuesFile] });
+  assert.match(rendered.stdout, /name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1800000"/);
+  assert.doesNotMatch(rendered.stdout, /OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1\.8e\+06"/);
+});
+
+test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
+  const collector = {
+    "logging.collector.enabled": "true",
+    "logging.collector.image":
+      "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
+    "logging.collector.configSecretName": "occ-otel-collector-config",
+    "logging.collector.envSecretName": "occ-otel-collector-exporter",
+    "logging.collector.exporter.cidr": "203.0.113.10/32",
+  };
+  for (const isUpgrade of [false, true]) {
+    const options = { isUpgrade };
+    for (const [field, value] of [
+      ["logging.collector.state.sizeLimit", "foo"],
+      ["logging.collector.tmp.sizeLimit", "10MiB"],
+      ["resources.requests.cpu", "foo"],
+      ["logging.collector.resources.limits.memory", "10MiB"],
+    ]) {
+      await assert.rejects(render({ ...collector, [field]: value }, options), (error) => {
+        assert.ok(error.stderr.includes(`${field} must be a Kubernetes quantity`));
+        return true;
+      });
+    }
+    const rendered = await render(collector, options);
+    assert.match(rendered.stdout, /sizeLimit: "128Mi"/);
+    assert.match(rendered.stdout, /sizeLimit: "64Mi"/);
+
+    // Numeric YAML quantities must not be mistaken for missing or non-string values.
+    const numeric = await resources(
+      (
+        await render(
+          { ...collector, "resources.requests.cpu": 0, "resources.limits.cpu": 1 },
+          options,
+        )
+      ).stdout,
+    );
+    const api = numeric.find(
+      (object) =>
+        object.kind === "Deployment" &&
+        object.metadata?.labels?.["app.kubernetes.io/component"] === "api",
+    );
+    assert.equal(api.spec.template.spec.containers[0].resources.requests.cpu, 0);
+    assert.equal(api.spec.template.spec.containers[0].resources.limits.cpu, 1);
+
+    // Decimal E is exa; uppercase K is not a suffix. Exponent and binary forms stay.
+    await assert.rejects(
+      render({ "resources.requests.memory": "1K" }, options),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({ ...collector, "logging.collector.resources.requests.memory": "1K" }, options),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({ ...collector, "logging.collector.state.sizeLimit": "1K" }, options),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({ "resources.requests.memory": "1KI" }, options),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const accepted = await render(
+      {
+        ...collector,
+        "resources.requests.memory": "1E",
+        "logging.collector.resources.requests.memory": "1E",
+        "logging.collector.state.sizeLimit": "1E",
+      },
+      options,
+    );
+    assert.match(accepted.stdout, /memory: 1E/);
+    assert.match(accepted.stdout, /sizeLimit: "1E"/);
+    const preserved = await render(
+      {
+        "resources.requests.memory": "1e3",
+        "resources.limits.memory": "1E3",
+        "resources.requests.cpu": "1k",
+        "resources.limits.cpu": "1Ki",
+      },
+      options,
+    );
+    assert.match(preserved.stdout, /memory: "1e3"/);
+    assert.match(preserved.stdout, /memory: "1E3"/);
+    assert.match(preserved.stdout, /cpu: 1k/);
+    assert.match(preserved.stdout, /cpu: 1Ki/);
+
+    // UnmarshalJSON trims spaces on the raw JSON text. Escaped tabs stay rejected.
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.cpu": "  foo " } }),
+      /resources\.requests\.cpu must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": " 1K " } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "\t64Mi" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const padded = await render(collector, {
+      ...options,
+      strings: {
+        "resources.requests.cpu": " 100m ",
+        "resources.limits.memory": " 1E ",
+        "logging.collector.resources.requests.memory": " 64Mi ",
+        "logging.collector.state.sizeLimit": " 128Mi ",
+        "logging.collector.tmp.sizeLimit": " 32Mi ",
+      },
+    });
+    assert.match(padded.stdout, /cpu: ["'] 100m ["']/);
+    assert.match(padded.stdout, /memory: ["'] 1E ["']/);
+    assert.match(padded.stdout, /memory: ["'] 64Mi ["']/);
+    assert.match(padded.stdout, /sizeLimit: " 128Mi "/);
+    assert.match(padded.stdout, /sizeLimit: " 32Mi "/);
+
+    // ParseQuantity treats a missing numerator as zero. Bare Pi has an empty numeric token.
+    const zeros = await render(collector, {
+      ...options,
+      strings: {
+        "resources.requests.cpu": "m",
+        "resources.limits.cpu": "+",
+        "resources.requests.memory": ".",
+        "logging.collector.state.sizeLimit": "m",
+      },
+    });
+    assert.match(zeros.stdout, /cpu: m$/m);
+    assert.match(zeros.stdout, /cpu: \+$/m);
+    assert.match(zeros.stdout, /memory: \.$/m);
+    assert.match(zeros.stdout, /sizeLimit: "m"/);
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "Pi" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const withDigit = await render(
+      {},
+      { ...options, strings: { "resources.requests.memory": "1Pi" } },
+    );
+    assert.match(withDigit.stdout, /memory: 1Pi/);
+
+    // sizeLimit is optional. Null clears the chart default and must stay YAML null on install and upgrade.
+    const clearedLimits = await render(
+      {
+        ...collector,
+        "logging.collector.state.sizeLimit": "null",
+        "logging.collector.tmp.sizeLimit": "null",
+      },
+      options,
+    );
+    const clearedVolumes = (await resources(clearedLimits.stdout)).find(
+      (object) =>
+        object.kind === "DaemonSet" && object.metadata?.name === "openclaw-enterprise-collector",
+    ).spec.template.spec.volumes;
+    assert.equal(
+      clearedVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      null,
+    );
+    assert.equal(
+      clearedVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      null,
+    );
+    const stateCleared = await resources(
+      (await render({ ...collector, "logging.collector.state.sizeLimit": "null" }, options)).stdout,
+    );
+    const stateVolumes = stateCleared.find((object) => object.kind === "DaemonSet").spec.template
+      .spec.volumes;
+    assert.equal(
+      stateVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      null,
+    );
+    assert.equal(
+      stateVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      "64Mi",
+    );
+    const tmpCleared = await resources(
+      (await render({ ...collector, "logging.collector.tmp.sizeLimit": "null" }, options)).stdout,
+    );
+    const tmpVolumes = tmpCleared.find((object) => object.kind === "DaemonSet").spec.template.spec
+      .volumes;
+    assert.equal(
+      tmpVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      "128Mi",
+    );
+    assert.equal(
+      tmpVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      null,
+    );
+    await assert.rejects(
+      render(
+        {
+          ...collector,
+          "logging.collector.state.sizeLimit": "null",
+          "logging.collector.tmp.sizeLimit": "10MiB",
+        },
+        options,
+      ),
+      /logging\.collector\.tmp\.sizeLimit must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(
+        {
+          ...collector,
+          "logging.collector.state.sizeLimit": "foo",
+          "logging.collector.tmp.sizeLimit": "null",
+        },
+        options,
+      ),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+
+    // resources: null clears defaults. Indexing that absent map used to abort the render.
+    const cleared = await render(
+      {
+        ...collector,
+        resources: "null",
+        "logging.collector.resources": "null",
+      },
+      options,
+    );
+    assert.match(cleared.stdout, /sizeLimit: "128Mi"/);
+    assert.doesNotMatch(cleared.stdout, /cpu: 100m/);
+    assert.doesNotMatch(cleared.stdout, /memory: 128Mi/);
+    await assert.rejects(
+      render(
+        { ...collector, resources: "null" },
+        { ...options, strings: { "logging.collector.resources.requests.memory": "foo" } },
+      ),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+  }
+});

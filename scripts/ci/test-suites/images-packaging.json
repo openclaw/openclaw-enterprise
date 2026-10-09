@@ -16,7 +16,7 @@
     "requireEnv": ["NODE_BASE_IMAGE"],
     "nodeBaseImage": true
   },
-  "fileConcurrency": 2,
+  "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",

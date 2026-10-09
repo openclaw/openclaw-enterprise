@@ -447,6 +447,10 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes",
+                    "label": "Breaking Changes"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
                   },

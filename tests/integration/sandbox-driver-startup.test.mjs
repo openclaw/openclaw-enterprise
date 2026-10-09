@@ -4,6 +4,7 @@ import test from "node:test";
 import pg from "pg";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -20,6 +21,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -475,8 +477,9 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
       version: "1.0.0",
       mode: "dedicated",
     }),
-    configuration,
+    { agents: { defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" } } },
   );
+  assert.deepEqual(configuration, { agents: { defaults: { model: "openai/gpt-5" } } });
 
   const codex = driver.configureAgent(configuration, {
     id: "codex",
@@ -492,6 +495,67 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
         mode: "embedded",
       }),
     /supports only dedicated Harness revisions/,
+  );
+});
+
+test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const configuration = {
+    agents: {
+      defaults: { model: "openai/gpt-5", workspace: "/home/node/.openclaw/workspace" },
+      entries: {
+        main: { model: "openai/gpt-5", workspace: "/home/node/elsewhere" },
+        helper: { workspace: "/sandbox/enterprise/helper" },
+      },
+    },
+  };
+  const configured = driver.configureAgent(configuration, harness);
+  assert.deepEqual(configured.agents, {
+    defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" },
+    entries: {
+      main: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" },
+      helper: { workspace: "/sandbox/enterprise/helper" },
+    },
+  });
+  assert.equal(configuration.agents.entries.main.workspace, "/home/node/elsewhere");
+  // Status reads rerun the hook on stored work, so pinning must be idempotent.
+  assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  // OpenClaw resolves entry keys case-insensitively, and an entry without a path is pinned too.
+  assert.deepEqual(
+    driver.configureAgent({ agents: { entries: { Main: {} } } }, harness).agents.entries,
+    { Main: { workspace: "/sandbox/enterprise" } },
+  );
+  assert.throws(
+    () => driver.configureAgent({ agents: { entries: { main: "/home/node/elsewhere" } } }, harness),
+    /OpenShell main Agent entry/,
+  );
+
+  // The admitted revision's Gateway workspace is the mount the Harness and file transfer use.
+  const compute = createKubernetesComputeDriver(
+    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+  );
+  assert.equal(
+    compute.gatewayConfiguration({
+      id: "rev_00000000-0000-4000-8000-000000000001",
+      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+      agentId: "agt_00000000-0000-4000-8000-000000000001",
+      revision: 1,
+      configurationId: "cfg_main_workspace",
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: {
+        ...configured,
+        logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
+        diagnostics: { otel: { logs: false } },
+      },
+      harness,
+    }).workspace,
+    "/sandbox/enterprise",
   );
 });
 
@@ -2234,4 +2298,123 @@ test("an OpenShell bearer-token source stays deletable after toolBinaries is rem
   assert.equal(profiles.has(profileId), false);
   // Removal is idempotent once the provider is gone.
   await modelOnly.removeSource(sourceContext(source));
+});
+
+test("OpenShell observes the Codex Harness through its exact bearer-passthrough service", async () => {
+  const service = {
+    sandbox: "",
+    name: "",
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    advertisedUrl: "http://codex.example.test:8080/",
+    url: "http://codex.example.test:9443/",
+  };
+  const gatewayClient = workspaceGatewayClient();
+  const observed = [];
+  let document = { status: 502 };
+  let handshake = false;
+  gatewayClient.getService = async (_workspace, sandbox, name) => {
+    observed.push(["getService", sandbox, name]);
+    return service === undefined ? undefined : { ...service, sandbox };
+  };
+  gatewayClient.getServiceDocument = async (url, path, bearer) => {
+    observed.push(["getServiceDocument", url, path, bearer]);
+    return document;
+  };
+  gatewayClient.serviceWebSocketHandshake = async (url, bearer) => {
+    observed.push(["serviceWebSocketHandshake", url, bearer]);
+    return handshake;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const statusContext = { ...context, revision, requirements, transportToken: "transport-token" };
+
+  // Nothing listens yet: a refused handshake and OpenShell's own 502 mean starting.
+  assert.deepEqual(await driver.harnessStatus(statusContext), { state: "starting" });
+  const sandboxName = observed[0][1];
+  assert.deepEqual(observed, [
+    ["getService", sandboxName, ""],
+    ["serviceWebSocketHandshake", "http://codex.example.test:9443/", "transport-token"],
+    [
+      "getServiceDocument",
+      "http://codex.example.test:9443/",
+      "/openclaw/runtime/status",
+      "transport-token",
+    ],
+  ]);
+
+  // A serving app-server is never sent a plain request.
+  handshake = true;
+  observed.length = 0;
+  assert.deepEqual(await driver.harnessStatus(statusContext), { state: "serving" });
+  assert.deepEqual(
+    observed.map(([operation]) => operation),
+    ["getService", "serviceWebSocketHandshake"],
+  );
+  handshake = false;
+
+  // A held failure refuses the upgrade; it is returned unvalidated for Compute.
+  const runtimeFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-08T13:00:00.000Z",
+    code: "MODEL_PROBE_FAILED",
+  };
+  document = { status: 200, json: { runtimeFailure } };
+  observed.length = 0;
+  assert.deepEqual(await driver.harnessStatus(statusContext), {
+    state: "failed",
+    runtimeFailure,
+  });
+  assert.equal(observed.length, 3);
+  // Only a 200 status document with a runtime failure counts; anything else is starting.
+  for (const other of [
+    { status: 404, json: { runtimeFailure } },
+    { status: 200, json: { error: "x" } },
+    { status: 200, json: ["runtimeFailure"] },
+    { status: 200 },
+  ]) {
+    document = other;
+    assert.deepEqual(await driver.harnessStatus(statusContext), { state: "starting" });
+  }
+
+  // The same exactness as harnessEndpoint: wrong port, mode, or a missing service fail closed.
+  for (const changed of [
+    { targetPort: 8081 },
+    { authorizationMode: "SERVICE_AUTHORIZATION_MODE_STRIP" },
+  ]) {
+    Object.assign(service, changed);
+    await assert.rejects(driver.harnessStatus(statusContext), /exact Codex bearer-passthrough/);
+    Object.assign(service, { targetPort: 8080, authorizationMode: 2 });
+  }
+  await assert.rejects(
+    driver.harnessStatus({
+      ...statusContext,
+      revision: { ...revision, harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" } },
+    }),
+    /only for dedicated Codex revisions/,
+  );
+  // Another Sandbox Driver's revision, or a deferred managed Workspace, is refused before the
+  // Harness is observed.
+  observed.length = 0;
+  await assert.rejects(
+    driver.harnessStatus({ ...statusContext, revision: { ...revision, sandboxDriverId: "other" } }),
+    /another Sandbox Driver/,
+  );
+  const managedConfiguration = sandboxInstallation().drivers.sandbox.configuration;
+  managedConfiguration.gateway.workspaceMode = "managed";
+  const managed = new OpenShellSandboxDriver(managedConfiguration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  await assert.rejects(
+    managed.harnessStatus(statusContext),
+    /managed workspace mode is not implemented; cannot observe a Harness/,
+  );
+  assert.deepEqual(observed, []);
 });

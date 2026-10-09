@@ -51,6 +51,8 @@ export interface RecoverySummary {
   readonly requeued: number;
   readonly failedPermanent: number;
   readonly exhaustedQueued: number;
+  /** The work this pass failed permanently, for follow-up the worker owns. */
+  readonly failed: readonly ControllerWork[];
 }
 
 export interface PostgresWorkQueueOptions {
@@ -1146,6 +1148,9 @@ export class PostgresWorkQueue {
         "Only an active revision's deployment or maintenance can continue after failure.",
       );
     }
+    // continuing_agent locks the Agent without its Namespace. Callers that continue a
+    // revision must already hold the Namespace (then the Agent) in this transaction, as
+    // the worker does, or this deadlocks with admission's Namespace-then-Agent order.
     const failed = await this.client.query(
       `WITH source AS MATERIALIZED (
          SELECT * FROM occ.controller_work AS work
@@ -1317,20 +1322,17 @@ export class PostgresWorkQueue {
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],
     );
 
-    let requeued = 0;
-    let failedPermanent = exhausted.rows.length;
-    for (const row of stale.rows) {
-      if (asRow(row).state === "queued") {
-        requeued += 1;
-      } else {
-        failedPermanent += 1;
-      }
-    }
+    const recovered = stale.rows.map(asWork);
+    const failed = [
+      ...recovered.filter(({ state }) => state === "failed_permanent"),
+      ...exhausted.rows.map(asWork),
+    ];
     return Object.freeze({
-      recovered: stale.rows.length,
-      requeued,
-      failedPermanent,
+      recovered: recovered.length,
+      requeued: recovered.filter(({ state }) => state === "queued").length,
+      failedPermanent: failed.length,
       exhaustedQueued: exhausted.rows.length,
+      failed: Object.freeze(failed),
     });
   }
 

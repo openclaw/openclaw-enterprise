@@ -749,7 +749,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it.",
+          "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
@@ -862,6 +862,8 @@ export const ERROR_CODES = Object.freeze([
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
+  "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
   "MODEL_DISCOVERY_RATE_LIMITED",
@@ -935,6 +937,14 @@ export const ErrorResponse = Type.Object(
           Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
             description:
               "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+          }),
+          Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
+            description:
+              "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+          }),
+          Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
+            description:
+              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
           }),
           Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
             description:

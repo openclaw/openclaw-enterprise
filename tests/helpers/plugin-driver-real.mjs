@@ -49,7 +49,6 @@ function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
     const scenarioKeys = {
       openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
       codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
-      codex_calendar: "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
       codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
     };
     assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");

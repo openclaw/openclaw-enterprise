@@ -1345,6 +1345,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
+      if (
+        fromNavigation &&
+        previousMountedRouteKey !== routeKey(current) &&
+        document.activeElement === document.body
+      ) {
+        app.querySelector(".content h1")?.focus({ preventScroll: true });
+      }
     }
   }
 }

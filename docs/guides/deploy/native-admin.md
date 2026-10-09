@@ -234,6 +234,7 @@ may try the Agent hostname on port 8081 and report a refused connection.
 Provision a wildcard HTTPS certificate and DNS for a separate preview domain,
 for example `*.previews.example.net`. This domain must be outside
 `agentNativeAdmin.sharedCookieDomain`; it must not receive OCE session cookies.
+Keep it to 214 characters or fewer so each `agent-<32 hex>.` hostname fits.
 Store the wildcard certificate in a TLS Secret in the Helm release namespace.
 Enable a separate Envoy listener with explicit public ingress peers:
 

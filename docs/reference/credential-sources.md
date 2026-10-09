@@ -44,8 +44,9 @@ includes the gateway's `status` but never a credential value.
 The request fields are:
 
 - `name`: required; unique within the Namespace.
-- `type`: required; a type from the gateway catalog. Unknown types fail with
-  `404` before any gateway call.
+- `type`: required; a type from the gateway catalog. A type the selected gateway
+  does not offer fails with `409 RESOURCE_CONFLICT` and a message naming the
+  fix, before any gateway call.
 - `config`: optional nonsecret strings keyed by catalog field name.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace: a reference to another Namespace fails with
@@ -106,12 +107,13 @@ service principal to have `operate` on each source; grant it with a
 underlying Secret. The worker rechecks both grants before it
 provisions the revision. On an Installation with no Credential Gateway, binding
 any source fails with `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, as registration
-does, once the caller holds `operate` on it. Deploying an Agent that lists any
-source also needs a selected Sandbox Driver, because the paired Sandbox applies
-the sources; without one, deployment fails with `409 RESOURCE_CONFLICT` "Agent
-credential sources require a selected Sandbox Driver." (or, when `harnessAuth`
-names a source, "Credential-source Harness authentication requires a selected
-Sandbox Driver."). See [Harness execution](harness-execution.md#harness-authentication)
+does, once the caller holds `operate` on it. The paired Sandbox applies the
+sources, and a Credential Gateway requires a Sandbox Driver, so on an
+Installation without one, deploying an Agent that binds a source normally fails
+with that `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`. Only an Agent whose
+`harnessAuth` names no source, but whose list kept sources from an earlier
+configuration, fails first with `409 RESOURCE_CONFLICT` "Agent credential
+sources require a selected Sandbox Driver." See [Harness execution](harness-execution.md#harness-authentication)
 for the supported topology.
 
 While a Credential Gateway is selected, deployment rejects `api_key` and
@@ -165,10 +167,11 @@ admitted with that source, as its Harness authentication or in
 A deployment admitted with the source but not yet active gets its own
 withdrawal, so it never attaches the source. A withdrawn Harness source fails
 that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it activates without the
-source, and the read below then returns its withdrawal. A replay returns the
-same withdrawal. It queues another attempt only if no
-attempt is already queued or running, and the caller then becomes the
-withdrawal's `requestedBy`.
+source, and the read below then returns its withdrawal. An earlier revision
+that still runs because the active revision's deployment has not finished
+replacing it gets its own withdrawal too. A replay returns the
+same withdrawal and makes the caller its `requestedBy`. It queues another
+attempt only if none is queued or running; a queued attempt runs at once.
 
 The worker detaches the source from the revision's Sandbox and records
 `revoked` only after the gateway confirms that the revision's placeholders no
@@ -183,16 +186,35 @@ attempt is queued or running. A `pending` withdrawal with reason
 running process never confirms revocation. `AUTHORIZATION_DENIED` or
 `ACTOR_REVOKED` means the requester lost `agent:operate`; another operator can
 send the withdraw request again to retry it on their own authority.
+`CREDENTIAL_WITHDRAWAL_MISCONFIGURED` or `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`
+means Compute cannot reach the revision's Sandbox as configured, or found an
+object it does not own; the attempt fails without retries, even with
+maintenance. Correct the cause, then send the request again.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
-(`OCC_WORKER_MAX_ATTEMPTS`). When those attempts run out, the withdrawal stays
-`pending` with `withdrawalInProgress: false`, and nothing retries it on its own
-unless the revision has maintenance (see below). Send the withdraw request
-again to queue another attempt.
+(`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run
+out because the gateway is unreachable or has not confirmed revocation (or the
+last attempt outlived its worker's claim, after a worker restart or a hung
+gateway call), and Compute has no maintenance (the Kubernetes Compute Driver
+has none), the worker queues another series 30 seconds later, then after 1, 2
+and 4 minutes, then every 5 minutes, 15 series in all (about an hour).
+Meanwhile the read shows `pending`, the latest `reason`, and
+`withdrawalInProgress: true`, and the source still resolves in the Sandbox. The first series the gateway confirms
+records `revoked`, with no replay needed. A withdraw request sent while a
+series waits queues nothing more; the series runs at once, on the caller's
+authority.
+
+When the last series fails, or every withdrawal left on the revision is denied
+to its requester, the withdrawal stays `pending` with
+`withdrawalInProgress: false`. Nothing retries it on its own unless the
+revision has maintenance (see below). Send the withdraw request again to queue
+another attempt, with its own series.
 
 A withdrawn source never re-attaches to that revision. If its Sandbox is
 recreated, a withdrawn source is left out and the revision keeps running
-without it, unless `harnessAuth` names it. A withdrawn Harness source instead fails provisioning with
+without it, unless `harnessAuth` names it. If a Sandbox create that started
+before the withdrawal finishes after it, the next deployment or maintenance
+pass detaches the source again. A withdrawn Harness source instead fails provisioning with
 `CREDENTIAL_WITHDRAWN`, and maintenance of the revision stops preparing it. While any
 withdrawal is `pending`, each maintenance pass queues another attempt if none is
 outstanding. Maintenance does not recheck grants on withdrawn sources, which never
@@ -215,8 +237,16 @@ or another authentication method.
 `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 requires exact `delete` and returns `204`:
 
-- It returns `409` while an Agent draft, active revision, or pending deployment
-  references the source.
+- It returns `409 RESOURCE_CONFLICT` while an Agent draft, active revision, or
+  pending deployment references the source. Remove it from those Agents and
+  redeploy, or delete them.
+- When only a withdrawal attempt or retry series, queued or running for a
+  revision that held the source, blocks it, the `409` is
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps
+  its series queued for up to about an hour, even after a redeploy, and the
+  withdraw request no longer applies once the active revision drops the
+  source. Wait for the series to finish, or delete the Agent: a completed Agent
+  deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.
@@ -250,15 +280,15 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Errors
 
-| Status                                  | Meaning                                                                                                                                                                                  |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                   |
-| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                        |
-| `404 NOT_FOUND`                         | The source, Secret, or type is not in the exact Namespace or catalog, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it. |
-| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                            |
-| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver.           |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                         |
-| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, the gateway call failed, or the source was registered through a previously selected gateway.                        |
+| Status                                  | Meaning                                                                                                                                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                              |
+| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                   |
+| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                              |
+| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                       |
+| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; the gateway does not offer its type; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver. |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                    |
+| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, the gateway call failed, or the source was registered through a previously selected gateway.                                                   |
 
 ## Related
 

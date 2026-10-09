@@ -26,6 +26,12 @@ OpenShell retains its separately pinned image. Mutable overrides fail before
 resource creation. Clean up a failed run's owned resources with
 `node scripts/ci/cleanup.mjs --state <private-state-file>` before reusing its state path.
 
+`k3d cluster create` times out after five minutes (hosted runners take under a
+minute, node image pull included; `OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` overrides
+it). The timeout stops k3d's whole process group. Preparation then writes the
+lane's cluster diagnostics, deletes the partial cluster and retries once; a second
+timeout fails preparation and leaves the cluster to lane cleanup.
+
 Preparation reuses a supplied immutable workload image in the local Docker daemon
 only when `docker image inspect` records the requested digest in `RepoDigests`;
 a mutable tag or unverified image is insufficient. Missing or mismatched images

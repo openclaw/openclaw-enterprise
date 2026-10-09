@@ -20,7 +20,10 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
+import {
+  resolveKubernetesControlNamespace,
+  unreachableSocketFailure,
+} from "../../compute/kubernetes/index.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { OAUTH_PHASE_ANNOTATION } from "../../kubernetes/oauth-seal.ts";
 import {
@@ -56,6 +59,11 @@ const SECRET_KEY = "value";
 const MAX_SECRET_VALUE_BYTES = 65_536;
 const REQUEST_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_SECONDS = Math.ceil(REQUEST_TIMEOUT_MS / 1000);
+// Pauses before each retry of a read whose connection never got an answer, or
+// that the API server answered with 429 or 5xx. A load balancer in front of the
+// API server can refuse new connections for a second or more (finding 682), so
+// the pauses span about four seconds. Writes are never retried.
+const READ_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000];
 const NAMESPACE_LABEL = "openclaw.dev/namespace";
 const SECRET_LABEL = "openclaw.dev/secret";
 const NAMESPACE_ANNOTATION = "openclaw.dev/namespace-id";
@@ -155,6 +163,25 @@ function sanitizedFailure(error: unknown, action: string): Error {
     );
   }
   return new SecretBackendUnavailableError(`The Kubernetes Secret ${action} failed.`);
+}
+
+/** Waits before a read retry; false when the owner cancelled the operation meanwhile. */
+function retryPause(delayMs: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const cancelled = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", cancelled);
+      resolve(true);
+    }, delayMs);
+    signal?.addEventListener("abort", cancelled, { once: true });
+  });
 }
 
 function timeoutFailure(action: string): Error {
@@ -480,13 +507,14 @@ export class KubernetesSecretDriver implements SecretDriver {
         const retryable =
           status === 429 ||
           (status !== undefined && status >= 500) ||
-          (status === undefined &&
-            !(error instanceof SecretValidationError) &&
-            !(error instanceof SecretOwnershipError));
-        if (!retryable || options.mutating === true || attempt >= 3) {
+          (status === undefined && unreachableSocketFailure(error));
+        const pauseMs = READ_RETRY_DELAYS_MS[attempt - 1];
+        if (!retryable || options.mutating === true || pauseMs === undefined) {
           throw sanitizedFailure(error, action);
         }
-        await new Promise((resolve) => setTimeout(resolve, attempt * 25));
+        if (!(await retryPause(pauseMs, ownerSignal))) {
+          throw new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`);
+        }
       }
     }
   }

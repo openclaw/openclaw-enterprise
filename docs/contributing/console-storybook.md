@@ -91,9 +91,10 @@ Back/Forward and tab changes. Refresh reloads.
 ## Agent flows and UI gaps
 
 In **Components → Navigation → Namespace switcher**, switch Engineering/Research
-and check URL, collection, and Back behavior. Namespaces omits the header selector.
-**Mobile Namespace selector** checks long-name truncation and switching without
-the drawer. No-readable, unavailable, loading, and denied stories cover restrictions.
+and check URL, collection, and Back behavior. **Mobile Namespace selector** checks
+long names and direct switching. In **Mobile drawer**, widen past 760px while open:
+Agents search must work without Escape. Shrink and check reopening and dismissal.
+No-readable, unavailable, loading, and denied stories cover restrictions.
 
 In **Pages → Namespaces → Unavailable selection**, recover inline and check the
 URL, dismissed warning, unchanged page, and Back navigation. **Unavailable selection
@@ -176,9 +177,9 @@ simulate UI; integration suites verify backend lifecycle and native admission.
 
 ### Return to loaded pages
 
-During delayed reads, exercise Back/Forward, Refresh, refocus, and Namespace
-switches. Agent refocus keeps its editor mounted after successful access checks;
-first visits may load.
+In **Return to loaded pages**, Tab to Namespaces and press Enter: its heading
+receives focus, then Tab reaches Refresh. Check retained editors through
+Back/Forward, Refresh, refocus, and Namespace switches.
 
 **Return Backend access denied** checks Installation-wide denial. **Return access denied** and **Return session expired** must remove retained private
 content when the response arrives. These fixtures prove presentation only; the
@@ -209,8 +210,9 @@ In **Components / Credentials / Slack tokens stored**, inspect references, cance
 creation, then switch app tokens; the bot binding stays unchanged. The API-key
 switch offers another model Secret.
 
-**Secret list denied** retains IDs. **Slack grant denied** preserves the
-reference but requires access recovery before deployment.
+**Secret list denied** retains IDs. **Slack grant denied** requires recovery.
+In **Issued service accounts unavailable**, switch authentication methods:
+account feedback hides and returns with the saved issued-account selection.
 
 In **Components/Channels → Slack Secret menu**, search names/IDs and select with
 arrows and Enter. **Slack create Secret modal** shows Name and masked value.
@@ -232,12 +234,12 @@ Plugin stories use simulated catalogs, Secret metadata, and policy capabilities;
 they do not prove installation, invocation access, runtime enforcement, or live
 Agent turns.
 
-In **Create Agent / Discover plugins with a service account token**, open
-**Configure plugins**, select Calendar, then **Add Calendar**;
-expand a tool to edit its policy. **Done** returns to the form; **Plugin selections
-JSON** shows the draft. **Search plugins** queries the catalog; **Filter tools**
-filters locally. Credential, provider, or Harness changes clear the catalog but
-keep selections.
+In **Create Agent / Discover plugins with a service account token**, expand
+**Access and credential setup** and inspect its links. Collapse it; at 390×844
+and 390×640, check scrolling and reachable pagination. **Add Calendar**, edit a
+tool, then **Done**: **Plugin selections JSON** shows the draft. **Search plugins**
+queries the catalog; **Filter tools** filters locally. Credential changes clear
+the catalog and keep selections.
 
 **Preload plugins after entering a service account token** starts with the picker
 closed; open it to reuse the background request. **Plugin search loading** holds
@@ -271,6 +273,15 @@ admitted revision** shows the frozen snapshot.
 **New version in progress** shows v7 deployment work while v6 stays current;
 **Current version during deployment** opens v6 details while activity follows
 v7. Compare queued, failed, activated, and unavailable activity stories.
+In **First version**, resize the preview: each preparation step keeps its own
+row and continuation lines align under the text.
+
+Use **New version failed** and **Failed deployment logs from draft** to check
+focused v7 Logs, output or denial, and Back. In **Runtime status and logs for v7**,
+exercise source, instance, debug, fields, Follow, and filters. At 390px, check
+readable rows and visible selected tabs through direct routes and Back/Forward.
+These fixtures prove presentation, not live reads.
+
 Version metadata stays visible when saved settings are unreadable. Follow the
 [walkthrough](../../scripts/console-storybook/unreadable-configuration-workflow.md)
 in **Unreadable Agent draft** and **Unreadable revision snapshot** to check

@@ -197,6 +197,12 @@ const server = createServer(
   },
 );
 
+// Whether a caller that sent no request ever reached the provider: each TCP
+// connection, completed TLS handshake and failed handshake.
+server.on("connection", () => emit({ event: "connection" }));
+server.on("secureConnection", () => emit({ event: "secure" }));
+server.on("tlsClientError", (error) => emit({ event: "tls-error", code: error.code ?? null }));
+
 const sockets = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
   if (mode === "reject") {
