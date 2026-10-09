@@ -158,6 +158,14 @@ Use this branch only when deliberately skipping profiles; it refuses to overwrit
 existing configuration YAML. The manual example selects the curated Codex PluginDriver catalog,
 unlike the `codex` profile's default hosted PAT-backed discovery.
 
+To select hosted discovery, use the
+[paired Codex profile output](installation-profiles.md#hosted-discovery-egress).
+If you maintain manual YAML, set both the hosted PluginDriver in
+`installation.yaml` and the matching `api.modelDiscoveryCidrs` in `values.yaml`,
+or provide an equivalent cluster egress policy. Updating the startup Secret
+alone does not configure NetworkPolicy. Verify HTTPS access from the API Pods
+to `auth.openai.com` and `chatgpt.com` before testing **Load plugins**.
+
 ```bash
 (
   set -e

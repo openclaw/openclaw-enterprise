@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-08
+last_updated_session: authoring-run/80c1ae0f-fe2f-4d78-bc5c-ebfacffd1194
 ---
 
 # Installation Profile Rendering Flow
@@ -10,8 +10,9 @@ last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 
 An operator runs `scripts/render-installation-profile.mjs` with a profile, a
 JSON input file, and an output directory. The renderer checks that every
-supplied input belongs to the profile contract, then writes the Helm values
-overlay, Installation startup YAML, and a preflight report. This flow stops at
+supplied input belongs to the profile contract, resolves hosted Codex discovery
+destinations when no CIDR list is supplied, then writes the Helm values overlay,
+Installation startup YAML, and a preflight report. This flow stops at
 the rendered files. The operator still creates Kubernetes Secrets, applies Helm,
 provisions the cluster, sets up hosted plugin and `codex_pat` tokens and the
 optional ChatGPT service account, creates the repository registry, and
@@ -21,8 +22,8 @@ configures Slack consumers.
 
 - Trigger: `node scripts/render-installation-profile.mjs --profile openclaw|codex --input <json> --out-dir <dir>`.
 - Source: `scripts/render-installation-profile.mjs:parseArgs`,
-  `scripts/render-installation-profile.mjs:buildInput`, and
-  `scripts/render-installation-profile.mjs:buildRendered`.
+  `scripts/render-installation-profile.mjs:buildRendered`, and
+  `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`.
 - Assumptions: The caller runs from the repository root with installed
   dependencies, a trusted profile under `deploy/profiles/`, and site inputs that
   contain no plaintext credentials.
@@ -37,11 +38,16 @@ graph TD
   C -->|Yes| R["Clear prior generated files and preflight"]
   R --> D["Load deploy/profiles/<profile>.json and input JSON"]
   D --> E["Reject unsupported sections and fields"]
-  E --> F["Validate consumed image, CIDR, proxy, label, and Backend inputs"]
+  E --> F["Build objects and validate consumed inputs"]
   F --> G{"Any diagnostics errors?"}
   G -->|Yes| H["Write preflight.json with ok:false"]
-  G -->|No| I["Build Helm values and Installation startup objects"]
-  I --> J["Render deterministic YAML"]
+  G -->|No| I{"Hosted codex-plugin without a supplied CIDR list?"}
+  I -->|Yes| M["Resolve auth.openai.com and chatgpt.com IPv4 addresses"]
+  M --> N{"Resolution succeeded?"}
+  N -->|No| H
+  N -->|Yes| O["Set API-only HTTPS CIDRs from sorted unique addresses"]
+  I -->|No| J["Render YAML"]
+  O --> J
   J --> K["Write values.yaml and installation.yaml"]
   K --> L["Write preflight.json with prerequisites and next steps"]
 ```
@@ -70,7 +76,9 @@ malformed input cannot leave deployable files or an old success report behind.
 The renderer reads the profile definition from `deploy/profiles/`. The profile
 owns only its identity and PluginDriver selection. The input JSON supplies
 environment-specific image names, domains, CIDRs, Secrets, and repository
-registry names, so the same profile and input always render the same output.
+registry names. Supplied discovery CIDRs keep rendering offline and stable;
+omitting them for hosted Codex discovery also makes Helm values depend on the
+current DNS answers.
 
 ### 3. Validate every supplied input
 
@@ -150,7 +158,29 @@ entries, but it does not read the files; controller startup resolves the paths
 and validates their contents. Preset input changes alter the Installation
 checksum like any other startup configuration.
 
-### 6. Write outputs and preflight
+### 6. Resolve hosted discovery egress
+
+`scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
+
+After input validation, the renderer checks the profile's selected PluginDriver.
+Hosted `codex-plugin` with no `codex.modelDiscoveryCidrs` triggers bounded DNS A
+queries for `auth.openai.com` and `chatgpt.com`. The renderer deduplicates and
+sorts the resulting IPv4 `/32` hosts into `api.modelDiscoveryCidrs`. The chart
+uses those values for its existing API-only TCP 443 policy; the driver does not
+create or update Kubernetes resources.
+
+A supplied list bypasses discovery DNS queries and remains unchanged. An explicit
+empty list produces no chart grant and tells the operator to configure external
+HTTPS policy for both hosts. Other PluginDriver selections do not trigger these
+queries. Failed resolution adds a preflight error and leaves both YAML files
+absent, including after a previously successful render.
+
+The addresses are a rendering-time snapshot. Preflight requires the operator to
+verify the API Pods' DNS and translated destinations, rerender and upgrade when
+addresses change, and test authenticated Console discovery. There is no ongoing
+policy refresh.
+
+### 7. Write outputs and preflight
 
 `scripts/render-installation-profile.mjs:writeYaml`
 
@@ -176,13 +206,18 @@ activation, and repository registry creation need separate evidence.
 - Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
   CLI and inspect generated profile output.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
-  missing or unsupported input was supplied; `values.yaml` and
+  missing, supplied input is invalid, or hosted discovery DNS failed; `values.yaml` and
   `installation.yaml` are intentionally absent.
 - Run `helm template oce deploy/helm/openclaw-enterprise --namespace <namespace> --values <out-dir>/values.yaml`
   to check chart-level validation before applying the chart.
 - Startup-only input changes should change `controlPlane.installationChecksum`
   in `values.yaml` and the API/worker deployment pod-template annotations in
   Helm output.
+- For hosted discovery, inspect `api.modelDiscoveryCidrs` and the rendered
+  `openclaw-enterprise-api-model-discovery-egress` policy. It must select only
+  the release's API Pods and allow TCP 443 to the resolved or supplied `/32`
+  hosts. DNS success and Helm rendering do not prove API Pod connectivity or
+  authenticated catalog access; verify those through **Load plugins**.
 - For runtime proof, continue through the production installation and Agent
   deployment guides. Rendered files alone do not prove native admin access,
   Codex sandboxing, hosted discovery, Slack connectivity, or repository
@@ -200,6 +235,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 18:17: Resolve hosted Codex discovery destinations when the existing CIDR input is omitted, preserving explicit lists and external policy management. (authoring-run/80c1ae0f-fe2f-4d78-bc5c-ebfacffd1194 - 946e3a5dee61c34ac8d87b715eda1e2cc059d26a)
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
