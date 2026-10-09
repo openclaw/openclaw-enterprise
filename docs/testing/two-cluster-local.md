@@ -108,8 +108,13 @@ cluster-local `.svc` address crosses the cluster boundary.
 
 Create a TLS Secret in the DP system namespace. Install
 `deploy/helm/openclaw-execution` with `routing.hostname`, `gatewayClassName`,
-`tlsSecretName`, and `controlPlaneCidrs`. For k3d, `serviceType: LoadBalancer`
-uses its service load balancer. The chart creates component ServiceAccounts,
+`tlsSecretName`, and `controlPlaneCidrs`. `routing.hostname` must be a string
+holding a DNS hostname without a port or path, the same rule Compute applies to
+`executionCluster.harnessRouting.hostname`; quote an all-digit name. The chart
+also refuses, as Compute does, a `routing.gatewayName` that is not a DNS-safe
+name of at most 63 characters, a `routing.envoyNamespace` that is not a DNS
+label of at most 63 characters, and a `routing.envoyHttpsTargetPort` that is
+not an integer from 1 to 65535. `dns.namespace` must also be a DNS label of at most 63 characters. For k3d, `serviceType: LoadBalancer` uses its service load balancer. The chart creates component ServiceAccounts,
 namespace-level ClusterRoles and bindings, tenant-role definitions, Gateway API
 resources, and the exact Envoy NetworkPolicy. It does not grant tenant access
 or issue cluster credentials.
@@ -260,12 +265,14 @@ only the corrected successor; earlier results do not establish this acceptance.
 ## Upgrade the execution chart
 
 The [image upgrade command](../guides/deploy/production-upgrade.md) upgrades only
-the control-plane `openclaw-enterprise` release. Releases after 2026-09-28
-also need newer `openclaw-execution` grants: Pod `patch` for the tenant worker
-role, and Pod, `pods/proxy`, `pods/log` and Event reads for the tenant API role.
-Without them, workspace node setup patches to running Harness Pods fail with a
-Kubernetes `403`, failing that reconciliation, and log reads return
-`503 RUNTIME_LOGS_CLUSTER_RBAC`.
+the control-plane `openclaw-enterprise` release. The current release also needs
+`openclaw-execution` grants: Pod `patch` and `batch` Job `get`,
+`create`, and `delete` for the tenant worker role, and Pod, `pods/proxy`,
+`pods/log` and Event reads for the tenant API role. Worker Job grants are
+required for OAuth bootstrap even when runtime logs are disabled.
+Missing Pod patch grants block workspace node setup on running Harness Pods with
+Kubernetes `403`; missing Job grants block OAuth bootstrap creation and cleanup.
+Missing API log grants return `503 RUNTIME_LOGS_CLUSTER_RBAC`.
 
 Upgrade the execution release first, from the candidate checkout, while the old
 controller still runs:

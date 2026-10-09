@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   canonicalFailure,
+  cappedPath,
   RequestFailure,
   requestFailure,
 } from "../../apps/controller/src/http/errors.ts";
@@ -20,6 +21,7 @@ import {
   ChannelDirectoryError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialWithdrawalInProgressError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -46,6 +48,8 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountCredentialSecretExistsError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -163,6 +167,72 @@ const cases = [
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
       message: new CredentialGatewayNotConfiguredError().message,
+    },
+  ],
+  [
+    "a source delete blocked only by withdrawal work names the wait and Agent deletion",
+    new CredentialWithdrawalInProgressError(),
+    {
+      status: 409,
+      code: "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+      message:
+        "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    },
+  ],
+  [
+    "service-account issuance on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("issue"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
+    "a ChatGPT Harness deploy on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("deploy"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
+    "deleting a service account with an issued token without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("delete"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    },
+  ],
+  [
+    "a leftover service-account credential Secret is named with the doc's removal step",
+    new ServiceAccountCredentialSecretExistsError(
+      "oce-0123456789abcde",
+      "service-account-0123456789abcdef0123456789abcdef",
+    ),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Kubernetes Secret oce-0123456789abcde/service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    },
+  ],
+  [
+    "a leftover credential Secret in a long Kubernetes namespace keeps the 256-character cap",
+    new ServiceAccountCredentialSecretExistsError(
+      "n".repeat(63),
+      "service-account-0123456789abcdef0123456789abcdef",
+    ),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Kubernetes Secret service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
     },
   ],
   [
@@ -899,4 +969,160 @@ test("a submitted Secret binding destination names its rule and key, never the S
     assert.deepEqual(failure.details, details, destination);
     assert.doesNotMatch(JSON.stringify({ ...failure, message: failure.message }), /sec_private_id/);
   }
+});
+
+// Ajv reports a referenced schema's failures under the reference ("Scalar/anyOf/0/type"), not
+// under the union branch that refers to it, and an inner union there can have a shorter schema
+// path than the outer union (finding 808). Entries as Ajv (verbose) reports a boolean sent for
+// `{ anyOf: [{ $ref: "Scalar" }, { type: "null" }] }` where Scalar is a string-or-number union.
+test("a nullable union of a referenced schema attributes the reference's problems to its branch", () => {
+  const validation = [
+    {
+      keyword: "type",
+      instancePath: "/a",
+      schemaPath: "Scalar/anyOf/0/type",
+      params: { type: "string" },
+    },
+    {
+      keyword: "type",
+      instancePath: "/a",
+      schemaPath: "Scalar/anyOf/1/type",
+      params: { type: "number" },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "Scalar/anyOf",
+      params: {},
+      schema: [{ type: "string" }, { type: "number" }],
+    },
+    {
+      keyword: "type",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf/1/type",
+      params: { type: "null" },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf",
+      params: {},
+      schema: [{ $ref: "Scalar" }, { type: "null" }],
+    },
+  ];
+  const failure = requestFailure(
+    Object.assign(new Error("body/a is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+  assert.equal(failure.status, 400);
+  assert.equal(
+    failure.message,
+    "The request does not match the operation contract: body /a has the wrong type (expected one of string, number, null).",
+  );
+});
+
+// A reference that two branches make could be either branch's, so it is attributed to neither
+// and each problem keeps naming what its field accepts. Entries as Ajv (verbose) reports
+// `{ a: { x: [1, 1] } }` for `{ anyOf: [{ $ref: "List" }, { type: "object", properties:
+// { x: { $ref: "List" } } }] }`, where List is a uniqueItems array.
+test("a reference that two union branches make is attributed to neither", () => {
+  const validation = [
+    { keyword: "type", instancePath: "/a", schemaPath: "List/type", params: { type: "array" } },
+    {
+      keyword: "uniqueItems",
+      instancePath: "/a/x",
+      schemaPath: "List/uniqueItems",
+      params: { i: 1, j: 0 },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf",
+      params: {},
+      schema: [{ $ref: "List" }, { type: "object", properties: { x: { $ref: "List" } } }],
+    },
+  ];
+  const failure = requestFailure(
+    Object.assign(new Error("body/a is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+  assert.equal(
+    failure.message,
+    "The request does not match the operation contract: body /a has the wrong type (expected array); body /a/x has an unsupported value (expected no duplicate items); body /a has an unsupported value.",
+  );
+});
+
+// The cap as it was before the first segment was cut to 1,024 characters (finding 1131).
+function uncutCappedPath(pointer) {
+  if (pointer.length <= 512) {
+    return pointer;
+  }
+  let path = "";
+  for (const segment of pointer.split("/").slice(1)) {
+    if (path.length + segment.length + 1 <= 512) {
+      path += `/${segment}`;
+      continue;
+    }
+    if (path === "") {
+      path = "/";
+      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
+        if (path.length + piece.length > 512) {
+          break;
+        }
+        path += piece;
+      }
+    }
+    break;
+  }
+  return path;
+}
+
+test("a capped detail path is unchanged by cutting a long first segment", () => {
+  const pointers = ["", "/", "/a/b", `/${"a".repeat(511)}`, `/a/${"b".repeat(600)}/c`];
+  // First segments just over the cap and past the 1,024-character cut, with escapes and
+  // surrogate pairs straddling the 512-character boundary and the cut.
+  for (const length of [511, 512, 513, 1023, 1024, 1025, 2048]) {
+    for (const [fill, tail] of [
+      ["k", "k"],
+      ["k", "~0"],
+      ["k", "~1"],
+      ["k", "\u{1F600}"],
+      ["k", "\ud800"],
+      ["~0", "k"],
+      ["\u{1F600}", "k"],
+    ]) {
+      const prefix = fill.repeat(Math.floor((length - 1) / fill.length));
+      for (const key of [`${prefix}${tail}`, `k${prefix}${tail}`]) {
+        pointers.push(`/${key}`, `/${key}/next`, `/${key}${"/x".repeat(10)}`);
+      }
+    }
+  }
+  for (const pointer of pointers) {
+    const path = cappedPath(pointer);
+    assert.equal(path, uncutCappedPath(pointer), `${pointer.length}: ${pointer.slice(0, 40)}`);
+    assert.ok(path.length <= 512);
+  }
+});
+
+test("a multi-megabyte first segment is capped in bounded time and heap", () => {
+  // Before the cut, the per-character split built six million pieces here (finding 1131).
+  const pointer = `/${"k".repeat(6_000_000)}/x`;
+  const expected = `/${"k".repeat(511)}`;
+  // Reading a character flattens the built string, so its 6 MB is not counted below.
+  assert.equal(pointer.at(-1), "x");
+  const before = process.memoryUsage().heapUsed;
+  const started = performance.now();
+  const path = cappedPath(pointer);
+  const elapsedMs = performance.now() - started;
+  const grewMb = (process.memoryUsage().heapUsed - before) / (1024 * 1024);
+  assert.equal(path, expected);
+  // About 0.1 MB with the cut, 85 to 120 MB without it.
+  assert.ok(grewMb < 16, `heap grew ${grewMb.toFixed(1)} MB`);
+  assert.ok(elapsedMs < 1000, `took ${Math.round(elapsedMs)} ms`);
 });

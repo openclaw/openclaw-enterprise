@@ -706,7 +706,7 @@ test("Codex startup default-denies plugins", () => {
     remote_plugin: false,
   });
   assert.deepEqual(empty.configuration.apps, { _default: { enabled: false } });
-  assert.deepEqual(empty.configuration.plugins, {});
+  assert.deepEqual(empty.configuration.plugins, { _default: { enabled: false } });
   assert.deepEqual(empty.installs, []);
 });
 
@@ -778,6 +778,12 @@ test("Codex startup translation renders selected marketplace app plugins", () =>
   const bridgeConfiguration = codexOpenClawConfiguration(selections);
 
   assert.equal(artifact.kind, "codex");
+  assert.deepEqual(artifact.configuration.plugins, {
+    _default: { enabled: false },
+    "linear@openai-curated-remote": { enabled: true },
+    "google-calendar@openai-curated-remote": { enabled: true },
+    "third-plugin@openai-curated-remote": { enabled: true },
+  });
   assert.deepEqual(artifact.configuration.apps, {
     _default: { enabled: false },
     asdk_app_69a089a326dc8191b32a3f2553f5be2c: {
@@ -834,6 +840,45 @@ test("Codex startup translation renders selected marketplace app plugins", () =>
       registry: "openai-curated-remote",
     },
   ]);
+});
+
+test("Codex activates selected skills independently of app tools", () => {
+  const skillPluginId = "codex-plugin:writing@openai-curated-remote";
+  const skillDetail = codexDetail("writing", [], { skills: [{ name: "draft" }] });
+  const selections = {
+    ...codexSelection(linearPluginId, { toolDefaults: { enabled: false } }),
+    ...codexSelection(skillPluginId),
+  };
+  const artifact = codexRuntimeArtifact(selections, [
+    codexDetail("linear", ["app_notes"], { skills: [{ name: "notes" }] }),
+    skillDetail,
+  ]);
+  assert.deepEqual(artifact.configuration.plugins, {
+    _default: { enabled: false },
+    "linear@openai-curated-remote": { enabled: true },
+    "writing@openai-curated-remote": { enabled: true },
+  });
+  assert.deepEqual(artifact.configuration.apps, {
+    _default: { enabled: false },
+    app_notes: {
+      enabled: true,
+      default_tools_enabled: false,
+      default_tools_approval_mode: "auto",
+    },
+  });
+
+  // Aliases cannot represent separate install outcomes for one native plugin.
+  const aliases = {
+    ...codexSelection(skillPluginId),
+    "writing@openai-curated-remote": { enabled: true },
+  };
+  for (const enabled of [true, false]) {
+    aliases["writing@openai-curated-remote"].enabled = enabled;
+    assert.throws(
+      () => codexRuntimeArtifact(aliases, [skillDetail]),
+      /duplicate native plugin IDs/,
+    );
+  }
 });
 
 test("Codex startup translation preserves explicit approval defaults and routed reviewer selection", () => {
@@ -1114,12 +1159,7 @@ test("Codex startup translation fails selected-only policy gaps at startup", () 
     ],
     ...["hooks", "mcpServers", "scheduledTasks"].map((field) => [
       codexSelection(linearPluginId),
-      [
-        codexDetail("linear", ["app"], {
-          skills: [{ name: "linear-workflow" }],
-          [field]: [{ id: "native" }],
-        }),
-      ],
+      [codexDetail("linear", [], { skills: [{ name: "draft" }], [field]: [{ id: "native" }] })],
       new RegExp(field, "i"),
     ]),
     [

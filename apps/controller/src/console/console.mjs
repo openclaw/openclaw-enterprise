@@ -161,6 +161,27 @@ const githubMembershipFailures = {
       : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
 };
 
+// The provider could not answer, or refused this Installation's client: an outage or a
+// configuration fault, not a refusal of the person. Where password sign-in is recovery-only,
+// only the recovery administrator has a password to fall back on.
+function providerUnavailableFailure(label) {
+  return (password) =>
+    password
+      ? `${label} sign-in is unavailable right now. Try again later or use your password.`
+      : `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`;
+}
+
+// The callback failed inside OCE (its database or audit store), so no sign-in can finish.
+function signInUnavailableFailure(label) {
+  return `Could not finish signing in with ${label}. Sign-in is unavailable right now; try again later.`;
+}
+
+// The provider authenticated an identity attached to a disabled account. Retrying, a
+// password or an attach cannot help, so only an administrator is named.
+function accountDisabledFailure(label) {
+  return `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`;
+}
+
 function pinSessionKey(value) {
   pinnedSessionKey = typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -815,10 +836,18 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     ? externalProviders[authError]
     : null;
   const authReason = current.url.searchParams.get("authReason");
-  const membershipFailure =
-    authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
-      ? githubMembershipFailures[authReason]
-      : null;
+  const reasonFailure =
+    providerError === null
+      ? null
+      : authReason === "account-disabled"
+        ? accountDisabledFailure(providerError.label)
+        : authReason === "provider-unavailable"
+          ? providerUnavailableFailure(providerError.label)
+          : authReason === "unavailable"
+            ? signInUnavailableFailure(providerError.label)
+            : authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
+              ? githubMembershipFailures[authReason]
+              : null;
   const externalAttempt = takeExternalAttempt();
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
@@ -864,7 +893,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             : pageUrl(current.target, current.namespace);
       showLogin(
         providerError !== null
-          ? (membershipFailure ?? providerFailure(providerError.label))
+          ? (reasonFailure ?? providerFailure(providerError.label))
           : current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
@@ -1301,6 +1330,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
+      if (
+        fromNavigation &&
+        previousMountedRouteKey !== routeKey(current) &&
+        document.activeElement === document.body
+      ) {
+        app.querySelector(".content h1")?.focus({ preventScroll: true });
+      }
     }
   }
 }

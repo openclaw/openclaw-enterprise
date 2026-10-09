@@ -32,7 +32,9 @@ From the repository root, run the complete application lane:
 )
 ```
 
-For only the revision-worker file, use a fresh run directory:
+For one revision-worker file, use a fresh run directory. The example runs
+`postgres-worker-agent-revision.test.mjs`; its `-credential-sources`, `-health`, `-replacement`,
+`-refused-stop`, `-refused-wait`, `-yielded-redeploy` and `-teardown` siblings run alike:
 
 ```sh
 (

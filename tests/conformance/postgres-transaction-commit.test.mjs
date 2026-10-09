@@ -81,6 +81,21 @@ async function assertCommitUnknown(p) {
   assert.equal(p.releases.at(-1), true);
 }
 
+// The transaction refuses before its callback runs, sends only the given SQL
+// and discards its client exactly once.
+async function assertNotAdmitted(p, rejection, calls) {
+  let called = false;
+  await assert.rejects(
+    p.state.transact(async () => {
+      called = true;
+    }),
+    rejection,
+  );
+  assert.equal(called, false);
+  assert.deepEqual(p.calls, calls);
+  assert.deepEqual(p.releases, [true]);
+}
+
 test("known outer acknowledgment returns the original value after cleanup", async () => {
   const p = protocol();
   const value = Object.freeze({ result: "unchanged" });
@@ -208,17 +223,7 @@ test("observed client error during listener registration prevents admission", as
   const p = protocol({
     on: (listener) => listener(failure),
   });
-  let called = false;
-  await assert.rejects(
-    p.state.transact(async () => {
-      called = true;
-    }),
-    DependencyUnavailableError,
-  );
-  assert.equal(called, false);
-  assert.deepEqual(p.calls, []);
-  assert.deepEqual(p.releases, [true]);
-  assert.equal(p.releases.length, 1);
+  await assertNotAdmitted(p, DependencyUnavailableError, []);
 });
 
 test("listener registration failure discards the checked-out client exactly once", async () => {
@@ -228,17 +233,7 @@ test("listener registration failure discards the checked-out client exactly once
       throw failure;
     },
   });
-  let called = false;
-  await assert.rejects(
-    p.state.transact(async () => {
-      called = true;
-    }),
-    (error) => error === failure,
-  );
-  assert.equal(called, false);
-  assert.deepEqual(p.calls, []);
-  assert.deepEqual(p.releases, [true]);
-  assert.equal(p.releases.length, 1);
+  await assertNotAdmitted(p, (error) => error === failure, []);
 });
 
 test("observed client error during a resolved BEGIN prevents callback and later SQL", async () => {
@@ -249,17 +244,7 @@ test("observed client error during a resolved BEGIN prevents callback and later 
       return { command: "BEGIN", rows: [], rowCount: 0 };
     },
   });
-  let called = false;
-  await assert.rejects(
-    p.state.transact(async () => {
-      called = true;
-    }),
-    DependencyUnavailableError,
-  );
-  assert.equal(called, false);
-  assert.deepEqual(p.calls, ["BEGIN"]);
-  assert.deepEqual(p.releases, [true]);
-  assert.equal(p.releases.length, 1);
+  await assertNotAdmitted(p, DependencyUnavailableError, ["BEGIN"]);
 });
 
 test("an observed client error is unavailable even with a server-looking code", async () => {

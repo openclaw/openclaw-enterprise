@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const execute = promisify(execFile);
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -89,13 +90,14 @@ async function runLauncher(
 
   let expectedDockerHost = "";
   if (engine === "podman") {
-    const socket = join(root, "podman.sock");
+    // After hooks run in registration order: close the server before its directory goes.
     const server = createServer();
+    context.after(() => new Promise((resolvePromise) => server.close(() => resolvePromise())));
+    const socket = join(await socketDirectory(context, "oce-k3d-podman-socket-"), "podman.sock");
     await new Promise((resolvePromise, reject) => {
       server.once("error", reject);
       server.listen(socket, resolvePromise);
     });
-    context.after(() => new Promise((resolvePromise) => server.close(resolvePromise)));
     expectedDockerHost = `unix://${socket}`;
     await command(
       "podman",
@@ -107,7 +109,7 @@ if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
 if [ "$1" = ps ]; then
   case "$*" in
     *openclaw_ci_pg_test*) printf '%s\\n' 'openclaw_ci_pg_test_postgres_1 (Up 1 minute (healthy))' ;;
-    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' 'k3d-openclaw-k8s-test-serverlb (Up 1 minute)' ;;
+    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' ;;
   esac
   exit 0
 fi
@@ -126,7 +128,7 @@ if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
 if [ "$1" = ps ]; then
   case "$*" in
     *openclaw_ci_pg_test*) printf '%s\\n' 'openclaw_ci_pg_test-postgres-1 (Up 1 minute (healthy))' ;;
-    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' 'k3d-openclaw-k8s-test-serverlb (Up 1 minute)' ;;
+    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' ;;
   esac
   exit 0
 fi

@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   isRepositoryCleanupWork,
+  revisionAdmittedBeforeWork,
   WorkClaimLostError,
   type ClaimedWork,
   type PlatformUnitOfWork,
@@ -315,7 +316,7 @@ export class RepositoryCredentialLifecycle {
       });
       const agent = await unit.agents.lockAgent(revision.namespaceId, revision.agentId);
       await this.heartbeat(queue, claim);
-      const beforeSource = Date.parse(revision.createdAt) <= claim.createdAt.getTime();
+      const beforeSource = revisionAdmittedBeforeWork(revision, claim);
       let closeLive = claim.revisionId !== undefined;
       if (claim.agentTarget === "stopped") {
         closeLive = agent?.desiredRuntimeState === "stopped" && beforeSource;

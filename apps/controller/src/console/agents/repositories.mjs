@@ -31,10 +31,10 @@ function recentRepositories(key) {
 
 function repositoryResults(options, recent, { query: queryText, browsing, page: requestedPage }) {
   const small = options.length <= 5;
-  const query = queryText.trim().toLocaleLowerCase();
+  const query = queryText.trim().toLocaleLowerCase("en-US");
   const rank = (entry) => {
     const names = [entry.displayName, entry.repositoryRef].flatMap((value) => {
-      const name = value.toLocaleLowerCase();
+      const name = value.toLocaleLowerCase("en-US");
       return [name, name.split("/").at(-1)];
     });
     if (names.includes(query)) {
@@ -56,7 +56,9 @@ function repositoryResults(options, recent, { query: queryText, browsing, page: 
     .filter(
       (entry) =>
         !query ||
-        [entry.displayName, entry.repositoryRef].some((v) => v.toLocaleLowerCase().includes(query)),
+        [entry.displayName, entry.repositoryRef].some((v) =>
+          v.toLocaleLowerCase("en-US").includes(query),
+        ),
     )
     .sort(
       (a, b) =>
@@ -452,8 +454,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     const list = element("ul", { className: "repository-results-list" });
     for (const entry of visible) {
       const selected = state.selected.has(entry.repositoryRef);
-      const displayName = entry.displayName.toLocaleLowerCase();
-      const reference = entry.repositoryRef.toLocaleLowerCase();
+      const displayName = entry.displayName.toLocaleLowerCase("en-US");
+      const reference = entry.repositoryRef.toLocaleLowerCase("en-US");
       const showReference =
         reference !== displayName && reference !== displayName.split("/").at(-1);
       const readOnly = entry.allowedProfiles.every((profile) => profile === "git-read");

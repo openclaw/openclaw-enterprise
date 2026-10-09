@@ -35,8 +35,23 @@ const TRUNCATION_MARK = "…[truncated]";
 
 const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "runtime.startup_phase": ["container", "phase", "outcome", "ms", "sinceStartMs", "code"],
-  "openclaw.model_probe": ["elapsedMs", "capMs", "cpuWaitMs", "code"],
-  "codex.model_probe": ["attempt", "elapsedMs", "exitCode", "signal", "code"],
+  "openclaw.model_probe": [
+    "elapsedMs",
+    "capMs",
+    "cpuWaitMs",
+    "code",
+    "providerStatus",
+    "providerCode",
+  ],
+  "codex.model_probe": [
+    "attempt",
+    "elapsedMs",
+    "exitCode",
+    "signal",
+    "code",
+    "providerStatus",
+    "providerCode",
+  ],
   "runtime.workspace_node": ["container", "outcome", "code"],
   "runtime.gateway_settings_overridden": ["container"],
 });
@@ -563,6 +578,96 @@ export interface SanitizedRuntimeLogChunk {
   readonly withheld: number;
 }
 
+declare const runtimeLogSanitizeMemo: unique symbol;
+
+/**
+ * Per-line results kept across the prefix builds of one page. A slot is reused only
+ * while its inputs are identical (same raw line and JSON depth, same text), so a
+ * remembered result is always the one a fresh call returns.
+ */
+export type RuntimeLogSanitizeMemo = { readonly [runtimeLogSanitizeMemo]: true };
+
+type SanitizedText = ReturnType<typeof sanitizeRuntimeLogText>;
+
+interface MemoSlots {
+  readonly classified: (
+    { raw: string; depth: number; after: number; result: Classified } | undefined
+  )[];
+  readonly texts: ({ value: string; limit: number; result: SanitizedText } | undefined)[][];
+  readonly sandbox: (
+    { stream: RuntimeLogStream; line: Readonly<SandboxLogLine>; result: SandboxOutcome } | undefined
+  )[];
+}
+
+export function createRuntimeLogSanitizeMemo(): RuntimeLogSanitizeMemo {
+  const slots: MemoSlots = { classified: [], texts: [[], []], sandbox: [] };
+  return slots as unknown as RuntimeLogSanitizeMemo;
+}
+
+function memoSlots(memo: RuntimeLogSanitizeMemo): MemoSlots {
+  return memo as unknown as MemoSlots;
+}
+
+function memoClassify(
+  memo: RuntimeLogSanitizeMemo | undefined,
+  index: number,
+  raw: string,
+  block: JsonBlock,
+): Classified {
+  if (memo === undefined) {
+    return classify(raw, block);
+  }
+  const slots = memoSlots(memo).classified;
+  const slot = slots[index];
+  if (slot !== undefined && slot.raw === raw && slot.depth === block.depth) {
+    block.depth = slot.after;
+    return slot.result;
+  }
+  const depth = block.depth;
+  const result = classify(raw, block);
+  slots[index] = { raw, depth, after: block.depth, result };
+  return result;
+}
+
+function memoText(
+  memo: RuntimeLogSanitizeMemo | undefined,
+  kind: 0 | 1,
+  index: number,
+  value: string,
+  limit: number = RUNTIME_LOG_MAX_OUTPUT_BYTES,
+): SanitizedText {
+  if (memo === undefined) {
+    return sanitizeRuntimeLogText(value, limit);
+  }
+  const slots = memoSlots(memo).texts[kind]!;
+  const slot = slots[index];
+  if (slot !== undefined && slot.value === value && slot.limit === limit) {
+    return slot.result;
+  }
+  const result = sanitizeRuntimeLogText(value, limit);
+  slots[index] = { value, limit, result };
+  return result;
+}
+
+/** Fetched safety decisions; they never advance delivered masking context. */
+export function runtimeLogEvidence(lines: AgentRuntimeLogChunk["lines"]): {
+  readonly masks: ReadonlyMap<number, string>;
+  readonly withheld: ReadonlyMap<number, RuntimeLogWithheldReason>;
+} {
+  const block: JsonBlock = { depth: 0 };
+  const withheld = new Map<number, RuntimeLogWithheldReason>();
+  const texts = lines.map((line, index) => {
+    const classified = classify(line.raw, block);
+    if (classified.type === "withheld") {
+      withheld.set(index, classified.reason);
+    }
+    return classified.type === "line" && classified.kind === "text"
+      ? classified.message
+      : undefined;
+  });
+  return { masks: maskPemBlockLines(texts), withheld };
+}
+
 /**
  * The only producer of `SanitizedRuntimeLogRecord` lines. Classifies each raw line
  * against the operational allowlist, redacts every retained string, bounds sizes and
@@ -573,7 +678,10 @@ export function sanitizeRuntimeLogChunk(
   pemContext?: {
     readonly open: boolean | undefined;
     readonly canClose?: readonly boolean[] | undefined;
+    readonly evidence?: readonly (string | undefined)[];
+    readonly withheld?: readonly (RuntimeLogWithheldReason | undefined)[];
   },
+  memo?: RuntimeLogSanitizeMemo,
 ): SanitizedRuntimeLogChunk & { readonly pemOpen?: boolean } {
   const stream = cleanStream(chunk.stream);
   let lines = chunk.lines;
@@ -586,7 +694,11 @@ export function sanitizeRuntimeLogChunk(
   let run: Mutable<Extract<RuntimeLogRecord, { type: "withheld" }>> | undefined;
   const block: JsonBlock = { depth: 0 };
   // Classify in order: an open pretty-printed JSON block carries across lines.
-  const classifiedLines = lines.map((line) => classify(line.raw, block));
+  const classifiedLines = lines.map((line, index): Classified => {
+    const local = memoClassify(memo, index, line.raw, block);
+    const reason = pemContext?.withheld?.[index];
+    return reason === undefined ? local : { type: "withheld", reason };
+  });
   // A key printed over several lines is split across records; mask the whole block.
   const pemState = { open: pemContext?.open, canClose: pemContext?.canClose };
   const pem = maskPemBlockLines(
@@ -614,11 +726,16 @@ export function sanitizeRuntimeLogChunk(
       records.push(brand(run));
       run = undefined;
     }
-    const message = sanitizeRuntimeLogText(pem.get(index) ?? classified.message);
+    const message = memoText(
+      memo,
+      0,
+      index,
+      pem.get(index) ?? pemContext?.evidence?.[index] ?? classified.message,
+    );
     const subsystem =
       classified.subsystem === undefined
         ? undefined
-        : sanitizeRuntimeLogText(classified.subsystem, MAX_FIELD_CHARS).text;
+        : memoText(memo, 1, index, classified.subsystem, MAX_FIELD_CHARS).text;
     const record: LineRecord = {
       type: "line",
       time,
@@ -778,6 +895,54 @@ function sandboxLineSize(line: Readonly<SandboxLogLine>): number {
   return size;
 }
 
+type SandboxOutcome =
+  { readonly reason: RuntimeLogWithheldReason } | { readonly record: SanitizedRuntimeLogRecord };
+
+/** One Sandbox line on its own: withheld with a reason, or its redacted record. */
+function sandboxLineOutcome(
+  stream: RuntimeLogStream,
+  line: Readonly<SandboxLogLine>,
+): SandboxOutcome {
+  if (sandboxLineSize(line) > RUNTIME_LOG_MAX_INPUT_BYTES) {
+    return { reason: "oversized" };
+  }
+  const text = stripRuntimeLogControls(line.message);
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    // A structured payload in a tracing message is never shown.
+    return { reason: "unrecognised_structured" };
+  }
+  const ocsf = line.level.toUpperCase() === "OCSF";
+  const parsed = ocsf ? ocsfFields(text) : undefined;
+  let shown = parsed?.message ?? text;
+  if (parsed?.fields.url !== undefined) {
+    // The URL in the message is cut like the field so a long query cannot fill a page.
+    // A replacer function: a URL may contain `$&`-style replacement patterns.
+    const url = sanitizeRuntimeLogText(parsed.fields.url, SANDBOX_REDACTED_FIELD_BYTES).text;
+    shown = shown.replace(parsed.fields.url, () => url);
+  }
+  const message = sanitizeRuntimeLogText(shown);
+  const subsystem =
+    line.target.length === 0
+      ? undefined
+      : sanitizeRuntimeLogText(line.target, MAX_FIELD_CHARS).text;
+  const fields = sandboxFields(line, parsed?.fields ?? {});
+  const record: LineRecord = {
+    type: "line",
+    time: validTime(line.time),
+    stream,
+    // Policy decisions name hosts, methods and binaries: activity, never content.
+    contentClass: "activity",
+    kind: "sandbox",
+    level: parsed?.level ?? level(line.level),
+    message: message.text,
+    ...(subsystem === undefined ? {} : { subsystem }),
+    ...(fields === undefined ? {} : { fields }),
+    ...(message.truncated ? { truncated: true as const } : {}),
+  };
+  return { record: brand(record) };
+}
+
 /**
  * The sandbox counterpart of `sanitizeRuntimeLogChunk`: OpenShell policy decisions and
  * supervisor tracing become `activity` records. Messages, command lines and URLs are
@@ -786,26 +951,24 @@ function sandboxLineSize(line: Readonly<SandboxLogLine>): number {
 export function sanitizeSandboxLogLines(
   streamValue: RuntimeLogStream,
   lines: readonly Readonly<SandboxLogLine>[],
+  memo?: RuntimeLogSanitizeMemo,
 ): SanitizedRuntimeLogChunk {
   const stream = cleanStream(streamValue);
   const records: SanitizedRuntimeLogRecord[] = [];
   let withheld = 0;
   let run: Mutable<Extract<RuntimeLogRecord, { type: "withheld" }>> | undefined;
-  for (const line of lines) {
-    const time = validTime(line.time);
-    let reason: RuntimeLogWithheldReason | undefined;
-    let text = "";
-    if (sandboxLineSize(line) > RUNTIME_LOG_MAX_INPUT_BYTES) {
-      reason = "oversized";
-    } else {
-      text = stripRuntimeLogControls(line.message);
-      const trimmed = text.trim();
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        // A structured payload in a tracing message is never shown.
-        reason = "unrecognised_structured";
-      }
+  const slots = memo === undefined ? undefined : memoSlots(memo).sandbox;
+  for (const [index, line] of lines.entries()) {
+    const slot = slots?.[index];
+    const outcome =
+      slot !== undefined && slot.line === line && slot.stream === streamValue
+        ? slot.result
+        : sandboxLineOutcome(stream, line);
+    if (slots !== undefined) {
+      slots[index] = { stream: streamValue, line, result: outcome };
     }
-    if (reason !== undefined) {
+    if ("reason" in outcome) {
+      const { reason } = outcome;
       withheld += 1;
       if (run !== undefined && run.reason === reason) {
         run.count += 1;
@@ -814,42 +977,14 @@ export function sanitizeSandboxLogLines(
       if (run !== undefined) {
         records.push(brand(run));
       }
-      run = { type: "withheld", time, stream, count: 1, reason };
+      run = { type: "withheld", time: validTime(line.time), stream, count: 1, reason };
       continue;
     }
     if (run !== undefined) {
       records.push(brand(run));
       run = undefined;
     }
-    const ocsf = line.level.toUpperCase() === "OCSF";
-    const parsed = ocsf ? ocsfFields(text) : undefined;
-    let shown = parsed?.message ?? text;
-    if (parsed?.fields.url !== undefined) {
-      // The URL in the message is cut like the field so a long query cannot fill a page.
-      // A replacer function: a URL may contain `$&`-style replacement patterns.
-      const url = sanitizeRuntimeLogText(parsed.fields.url, SANDBOX_REDACTED_FIELD_BYTES).text;
-      shown = shown.replace(parsed.fields.url, () => url);
-    }
-    const message = sanitizeRuntimeLogText(shown);
-    const subsystem =
-      line.target.length === 0
-        ? undefined
-        : sanitizeRuntimeLogText(line.target, MAX_FIELD_CHARS).text;
-    const fields = sandboxFields(line, parsed?.fields ?? {});
-    const record: LineRecord = {
-      type: "line",
-      time,
-      stream,
-      // Policy decisions name hosts, methods and binaries: activity, never content.
-      contentClass: "activity",
-      kind: "sandbox",
-      level: parsed?.level ?? level(line.level),
-      message: message.text,
-      ...(subsystem === undefined ? {} : { subsystem }),
-      ...(fields === undefined ? {} : { fields }),
-      ...(message.truncated ? { truncated: true as const } : {}),
-    };
-    records.push(brand(record));
+    records.push(outcome.record);
   }
   if (run !== undefined) {
     records.push(brand(run));

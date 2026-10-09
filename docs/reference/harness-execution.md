@@ -67,14 +67,16 @@ supported runtime policy.
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
 
-Selectable model catalogs and model fallbacks under Agent defaults or entries
-must retain the selected provider. Additional catalog models also need an
+Selectable model catalogs and fallbacks under Agent defaults or entries
+must retain the selected provider. Additional catalog models need an
 explicit matching Harness runtime; fallbacks must resolve through the same
-policy checks to the same Harness. A provider's native `models` array is limited
+policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
-reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-native `agents.list` configurations remain unsupported. Admission preserves the
-fallback order in the immutable revision but does not implement fallback
+reference or the ID after its first slash, and IDs may contain slashes.
+Configuration save and Kubernetes deployment refuse a nonempty `agents.list` and
+the other rosters OpenClaw rejects ([Configuration](configuration.md#create-read-update-and-delete));
+dedicated execution's `main` Agent rules apply only at deployment. Admission
+preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 
 ## Admission and immutable execution
@@ -130,14 +132,12 @@ outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
-Before its app server starts, Codex rejects missing or conflicting runtime
-inputs and, after login, requires a bounded native model turn to succeed; local
-credential storage alone does not prove provider acceptance.
-API-key and PAT login state stays in its bounded ephemeral home. Gateway
-transport and workload identity credentials remain separate; a dedicated
-gateway receives no model credential. Model auth
-cannot be supplied through Configuration `secretBindings` or the initial runtime
-credential API; those own gateway credentials and transport/channel setup.
+Before app-server startup, Codex rejects missing/conflicting runtime inputs and
+requires a successful bounded native model turn after login; stored credentials
+do not prove provider acceptance. API-key/PAT state stays in its bounded ephemeral
+home, separate from transport/workload identity. Dedicated Gateways get no model
+credentials. Configuration `secretBindings` and the initial runtime credential API
+own Gateway transport/channel setup, not model auth.
 
 For initial and replacement deployments, Kubernetes OpenClaw runs one native
 model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
@@ -187,13 +187,11 @@ and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
 `LOGIN_FAILED`. The worker fails deployment at once on each held
 [code](drivers/compute.md#startup-failure-evidence); after a timeout, redeploy.
 
-Gateway and Harness startup wrappers also emit one `runtime.startup_phase` log
-per phase (login, model probe, peer plugin status, plugin install, workspace
-setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
-duration, and time since wrapper start. A gateway also logs
-`peer-status-changed` when its Harness is replaced, then `gateway-respawn` once
-the OpenClaw process it restarts in place serves again. These
-logs carry no provider, model, credential, or path values.
+Startup wrappers emit `runtime.startup_phase` for login, model probe, peer status,
+plugin install, state migration, workspace setup and process spawn, recording container, phase,
+outcome, duration and elapsed startup time. Gateways log `peer-status-changed` on
+Harness replacement and `gateway-respawn` when the restarted process serves again.
+These logs omit provider, model, credential and path values.
 
 On a first dedicated Codex deploy the controller creates the gateway alongside
 its Harness, which the Agent Service selects from the start but lists only once
@@ -300,7 +298,10 @@ explicitly, and test bridges do not establish turnkey production support. See it
 ### Native worker support
 
 The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) supports required
-worker placement (`cloudWorkers.requiredProfile`), but still lacks native worker inference.
+worker placement (`cloudWorkers.requiredProfile`), but is not yet qualified for
+the complete native worker flow. Native worker models and environment SecretRefs
+are rendered in the node’s canonical `models.providers` configuration; there is
+no separate node inference-config setting.
 Deploy and provisioning therefore refuse dedicated native OpenClaw with
 `400 INVALID_REQUEST`, and the console withholds that choice. Provisioning
 status reads do not recheck this support, so work accepted before it was

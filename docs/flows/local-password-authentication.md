@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-07
-last_updated_session: fix-678
+updated: "2026-10-10 20:56"
+last_updated_session: "authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d"
 ---
 
 # Bootstrap and human authentication flow
@@ -207,8 +207,9 @@ Denials after `consumeAttempt` matches are audited as
 `EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
 `apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
-lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`, whose response code the
-callback route turns into the Console's `authReason`;
+lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
+the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
+`authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
@@ -225,7 +226,14 @@ IPv4-mapped addresses before prefix validation, refusing entries covering every
 IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
 header hops.
 
-Password sign-in enters controller admission before `/oce/password`, with the
+Password sign-in detects unstorable email before known-device verification, so
+invalid input cannot trigger account State reads. It rejects inside controller
+admission, preserving budget accounting. Password-only uses `passwordSignInAudit`;
+guarded and recovery-only use `github.ts:recordPasswordDenial`, the same owner as
+credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
+a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
+email without a reserved-account lookup. Password text is not checked.
+Valid email still enters controller admission before `/oce/password`, with the
 recovery email reserved like an administrator's. GitHub, Google and OIDC share bounded
 process-local start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
@@ -344,6 +352,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
 
 - 2026-10-07 10:10: Treat IPv4-mapped trusted proxies as IPv4; refuse catch-all proxy CIDRs. (fix-678 - bf67a4317)
 

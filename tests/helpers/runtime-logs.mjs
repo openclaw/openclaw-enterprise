@@ -99,7 +99,7 @@ export function createRuntimeLogComputeDriver(options = {}) {
                   ];
             const described = {
               revisionId: binding.revision.id,
-              observedAt: "2026-09-30T12:00:00.000Z",
+              observedAt: state.observedAt ?? "2026-09-30T12:00:00.000Z",
               pods: pods.map((pod) => ({
                 role: "gateway",
                 cluster: "control",
@@ -427,7 +427,17 @@ export async function createRuntimeLogFixture(options = {}) {
     return { principal, serviceKey: key.key };
   }
 
+  /** Publishes the deployed revision as the Agent's active one, as a worker activation would. */
+  async function activate({ namespace, agent, revisionId }) {
+    // Bypasses the worker's activation path (not run here) and OCC's private state store.
+    const active = await controller.state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revisionId),
+    );
+    assert.equal(active?.activeRevisionId, revisionId);
+  }
+
   return {
+    activate,
     app,
     admin,
     adminSession,

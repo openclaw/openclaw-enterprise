@@ -194,7 +194,11 @@ const profileEndpoint = "https://api.github.com/user";
 // The audited callback denials whose code the controller turns into a Console reason.
 export const MEMBERSHIP_DENIALS = ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_UNAVAILABLE"] as const;
 type MembershipDenial = (typeof MEMBERSHIP_DENIALS)[number];
-export const CALLBACK_DENIALS = [...MEMBERSHIP_DENIALS, "ACCOUNT_DISABLED"] as const;
+export const CALLBACK_DENIALS = [
+  ...MEMBERSHIP_DENIALS,
+  "ACCOUNT_DISABLED",
+  "PROVIDER_UNAVAILABLE",
+] as const;
 
 // GitHub logins are letters, digits and hyphens; older accounts may break today's hyphen rules.
 const loginPattern = /^[A-Za-z0-9-]{1,39}$/;
@@ -579,12 +583,21 @@ export function createHumanLogin(
     }
   }
 
-  // Denials of a matched attempt say whether the provider or the identity failed.
+  // Denials of a matched attempt say whether the provider or the identity failed. A provider
+  // failure happens before any identity is resolved, so its response code, which becomes the
+  // Console's outage advice, reveals nothing about OCE accounts. A rejected identity stays
+  // generic.
   async function rejectExternal(
     provider: ExternalProviderName,
     reason: "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE",
   ): Promise<never> {
     await state.recordDenied(reason, provider);
+    if (reason === "PROVIDER_UNAVAILABLE") {
+      throw APIError.fromStatus("UNAUTHORIZED", {
+        message: "Authentication was not accepted.",
+        code: reason,
+      });
+    }
     throw rejected();
   }
 
@@ -960,9 +973,10 @@ export function createHumanLogin(
     oidcLogin === undefined ? undefined : externalProviderEndpoints("oidc", oidcLogin);
   // A rejected password is audited before the refusal. When the audit write fails the
   // answer is 503 (audits fail closed), marked so admission still spends the budget.
+  const recordPasswordDenial = () => state.recordDenied("INVALID_CREDENTIALS");
   async function refusePassword(): Promise<never> {
     try {
-      await state.recordDenied("INVALID_CREDENTIALS");
+      await recordPasswordDenial();
     } catch {
       throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
         message: "Authentication dependency unavailable.",
@@ -1090,6 +1104,8 @@ export function createHumanLogin(
           },
         }),
     designateRecovery,
+    // The controller also uses this owner for malformed-email refusals before account reads.
+    recordPasswordDenial,
     /** Whether `email` (normalized) is the recovery account's; its password stays reserved. */
     isRecoveryEmail: (email: string) => recoveryEmail !== undefined && email === recoveryEmail,
     /** Whether the known-device cookie uses its host-only (__Host-) name. */

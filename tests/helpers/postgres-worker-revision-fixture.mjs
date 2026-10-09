@@ -14,6 +14,76 @@ import { waitFor } from "./wait-for.mjs";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
+// Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
+// Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
+// stop, delete or withdrawal. Records each Agent row lock taken first, with its stack.
+function checkClaimLockOrder(worker, violations) {
+  const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
+  worker.state.transactWithQueue = (work, options) =>
+    transactWithQueue((unit, queue) => work(trackLockOrder(unit, violations), queue), options);
+}
+
+function trackLockOrder(unit, violations) {
+  const locked = new Set();
+  const namespaces = {
+    ...unit.namespaces,
+    lockNamespace: async (namespaceId, ...rest) => {
+      const namespace = await unit.namespaces.lockNamespace(namespaceId, ...rest);
+      if (namespace !== undefined) {
+        locked.add(namespaceId);
+      }
+      return namespace;
+    },
+  };
+  const agents = {
+    ...unit.agents,
+    lockAgent: async (namespaceId, agentId, ...rest) => {
+      const agent = await unit.agents.lockAgent(namespaceId, agentId, ...rest);
+      // A lock that matched no row holds nothing.
+      if (agent !== undefined && !locked.has(namespaceId)) {
+        violations.push(
+          new Error(`Agent ${agentId} locked before its Namespace ${namespaceId}`).stack,
+        );
+      }
+      return agent;
+    },
+  };
+  return Object.freeze({ ...unit, namespaces, agents });
+}
+
+// Node's test timeout does not cover after hooks, so a teardown step that never returned hung
+// its file until the CI job timeout, naming nothing (finding 1209). Each step now has a limit.
+// A step past it is left running and fails the hook naming the step, and the steps after it
+// still run: the database drop (WITH (FORCE)) ends the sessions a stuck worker or pool still
+// holds.
+const disposeLimitsMs = {
+  "worker stop": 30_000,
+  "pool end": 15_000,
+  // Waits for the CI state lock, which other files' test databases also take.
+  "drop database": 120_000,
+};
+
+async function disposeStep(step, limitMs, work) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(work),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(
+            `revision fixture teardown: ${step} did not finish within ${limitMs} ms`,
+          );
+          // In the file's output too, before the later steps run.
+          console.error(error.message);
+          reject(error);
+        }, limitMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // One template per owning test file; importing this helper registers no tests or hooks.
 export function createWorkerRevisionFixtures(testFile) {
   // Each test owns a database (Work claims span one), copied from one migrated template
@@ -21,10 +91,16 @@ export function createWorkerRevisionFixtures(testFile) {
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
   let template;
   async function cleanup() {
-    await (await template?.catch(() => undefined))?.cleanup();
+    const prepared = await template?.catch(() => undefined);
+    if (prepared !== undefined) {
+      await disposeStep("drop template database", disposeLimitsMs["drop database"], () =>
+        prepared.cleanup(),
+      );
+    }
   }
 
-  async function prepareDatabase(context) {
+  async function prepareDatabase(context, limitsMs = {}) {
+    const limits = { ...disposeLimitsMs, ...limitsMs };
     assert.ok(
       process.env.OPENCLAW_ENTERPRISE_CI_STATE,
       "Worker tests require an owned PostgreSQL fixture; see docs/testing/postgresql.md.",
@@ -47,17 +123,35 @@ export function createWorkerRevisionFixtures(testFile) {
     let disposal;
     function dispose() {
       return (disposal ??= (async () => {
+        const failures = [];
+        const run = async (step, work) => {
+          try {
+            await disposeStep(step, limits[step], work);
+          } catch (error) {
+            failures.push(error);
+          }
+        };
         // Work claims span the entire database. Join every worker owned by this
         // fixture before dropping it; never rewrite another worker's live claim.
         for (const worker of workers) {
-          await worker.stop();
+          await run("worker stop", () => worker.stop());
         }
         for (const pool of pools) {
-          if (!pool.ended) {
-            await pool.end();
+          // A pool already ending was ended by its worker's stop or by the test.
+          if (!pool.ending) {
+            await run("pool end", () => pool.end());
           }
         }
-        await prepared.cleanup();
+        await run("drop database", () => prepared.cleanup());
+        if (failures.length === 1) {
+          throw failures[0];
+        }
+        if (failures.length > 1) {
+          throw new AggregateError(
+            failures,
+            `revision fixture teardown failed: ${failures.map(({ message }) => message).join("; ")}`,
+          );
+        }
       })());
     }
     context.after(dispose);
@@ -75,6 +169,8 @@ export function createWorkerRevisionFixtures(testFile) {
       metrics,
       repoDriver,
       secretAuthMethod = "api_key",
+      // Shorter teardown step limits, for a test of the teardown itself.
+      disposeLimitsMs: limitsMs,
     } = {},
   ) {
     const [
@@ -92,7 +188,7 @@ export function createWorkerRevisionFixtures(testFile) {
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
     ]);
-    database ??= await prepareDatabase(context);
+    database ??= await prepareDatabase(context, limitsMs);
     function createPool(max) {
       const pool = new Pool({ connectionString: database.url, max });
       database.pools.add(pool);
@@ -120,6 +216,18 @@ export function createWorkerRevisionFixtures(testFile) {
       createdAt: new Date().toISOString(),
     };
     let worker;
+    const lockOrderViolations = [];
+    // A throwing after hook skips every later one, which can leave a worker running and the
+    // file hanging. A hook added while after hooks run goes last, so check from there.
+    context.after(() =>
+      context.after(() =>
+        assert.deepEqual(
+          lockOrderViolations,
+          [],
+          "the worker locked an Agent before its Namespace",
+        ),
+      ),
+    );
     await state.transact((unit) => unit.namespaces.createNamespace(namespace));
     const compute = {
       ...createDevelopmentComputeDriver(),
@@ -306,7 +414,16 @@ export function createWorkerRevisionFixtures(testFile) {
     async function revision(
       owner,
       number,
-      { harness, repositoryCredentials, actorId = actor.id, plugins } = {},
+      {
+        harness,
+        repositoryCredentials,
+        actorId = actor.id,
+        plugins,
+        workAge,
+        // How far the controller clock that stamps the admission runs ahead of PostgreSQL's
+        // (negative: behind). The store restamps admission on its own clock (finding 1195).
+        controllerSkewMs = 0,
+      } = {},
     ) {
       let harnessAuth;
       if (owner.harnessAuth.method === "runtime") {
@@ -369,31 +486,48 @@ export function createWorkerRevisionFixtures(testFile) {
         ...(credentialSources.length === 0 ? {} : { credentialSources }),
         servicePrincipalId: owner.servicePrincipalId,
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
+      let admitted;
       await state.transactWithQueue(async (unit, queue) => {
         // Match production Namespace→Agent admission order so queue foreign keys
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
-        await unit.revisions.createRevision(candidate);
+        admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
           owner.id,
           ["stopped", "running"],
           "running",
         );
-        await queue.enqueue({
-          idempotencyKey,
-          namespaceId: namespace.id,
-          agentId: owner.id,
-          revisionId: candidate.id,
-          actorId,
-          availableAt: new Date(0),
-        });
+        if (workAge === undefined) {
+          await queue.enqueue({
+            idempotencyKey,
+            namespaceId: namespace.id,
+            agentId: owner.id,
+            revisionId: candidate.id,
+            actorId,
+            availableAt: new Date(0),
+          });
+        }
       });
-      return { ...candidate, idempotencyKey };
+      if (workAge !== undefined) {
+        // Work admitted `workAge` (a PostgreSQL interval) ago by the database clock, which
+        // the worker judges work age by. The application role cannot rewrite created_at.
+        await observerPool.query(
+          `INSERT INTO occ.controller_work (
+             idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+             state, available_at, attempt_count, created_at, updated_at
+           ) VALUES (
+             $1, $2, $3, $4, $5, 'queued', to_timestamp(0), 0,
+             clock_timestamp() - $6::interval, clock_timestamp()
+           )`,
+          [idempotencyKey, namespace.id, owner.id, candidate.id, actorId, workAge],
+        );
+      }
+      return { ...candidate, createdAt: admitted.createdAt, idempotencyKey };
     }
 
     async function work(candidate, expected, timeoutMs) {
@@ -457,6 +591,7 @@ export function createWorkerRevisionFixtures(testFile) {
         emit,
       });
       database.workers.add(worker);
+      checkClaimLockOrder(worker, lockOrderViolations);
       return worker.start();
     }
 

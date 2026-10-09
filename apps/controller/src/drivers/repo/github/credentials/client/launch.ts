@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
+import { constants, homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readClientConfiguration, requireGhMaterial } from "./config.ts";
@@ -30,7 +30,7 @@ export async function executeClientCommand(
     });
     child.once("exit", (code, signal) => {
       cleanup();
-      resolveExit(code ?? (signal ? 128 : 1));
+      resolveExit(code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1));
     });
   });
 }

@@ -10,8 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
-	"io"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -55,32 +53,6 @@ var developmentRoutingControllers = []struct {
 }{
 	{"cert-manager", "https://github.com/cert-manager/cert-manager/releases/download/v1.18.4/cert-manager.yaml", "aff085b4f0126f67372e3a02cb18feb70eed37dbd4de01973a159e6c13482f83"},
 	{"envoy-gateway", "https://github.com/envoyproxy/gateway/releases/download/v1.6.7/install.yaml", "9a250c698d78b92c670d9d2bd6bd54615f1dee41ddd520ece9704edf63088df8"},
-}
-
-func downloadDevelopmentRoutingManifest(ctx context.Context, url, expected string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: 90 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("download routing controller manifest: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download routing controller manifest: HTTP %d", response.StatusCode)
-	}
-	const limit = 32 * 1024 * 1024
-	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil || len(data) > limit {
-		return nil, fmt.Errorf("routing controller manifest could not be read within its size limit")
-	}
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != expected {
-		return nil, fmt.Errorf("routing controller manifest checksum does not match the pinned version")
-	}
-	return data, nil
 }
 
 // Preserve k3s's Gateway API CRDs instead of replacing their storage versions.
@@ -194,7 +166,7 @@ func (r *runner) waitDevelopmentGatewayAPICRDs(ctx context.Context, timeout time
 
 func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state *developmentState, timeout time.Duration) (string, error) {
 	for _, controller := range developmentRoutingControllers {
-		data, err := downloadDevelopmentRoutingManifest(ctx, controller.url, controller.sha256)
+		data, err := downloadDevelopmentRoutingManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentRoutingManifestRetry)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", controller.name, err)
 		}

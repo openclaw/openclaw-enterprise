@@ -72,8 +72,13 @@ function validateGateway(gateway: Record<string, unknown>): ServiceConfig["gatew
   if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535) {
     throw new Error("invalid-configuration");
   }
-  const controlSocket = string(gateway.controlSocket, 104);
-  if (!isAbsolute(controlSocket) || resolve(controlSocket) !== controlSocket) {
+  const controlSocket = string(gateway.controlSocket);
+  // Bytes, not characters: the control client and the Driver schema refuse paths over 103 bytes.
+  if (
+    Buffer.byteLength(controlSocket) > 103 ||
+    !isAbsolute(controlSocket) ||
+    resolve(controlSocket) !== controlSocket
+  ) {
     throw new Error("invalid-configuration");
   }
   return Object.freeze({ publicOrigin, listen, controlSocket });

@@ -802,10 +802,9 @@ select:not([multiple])[size="1"] {
   margin-top: 4px;
 }
 .draft-steps {
-  display: flex;
-  gap: 22px;
+  display: grid;
+  gap: 8px;
   padding-left: 20px;
-  flex-wrap: wrap;
 }
 .agent-card {
   background: var(--surface);
@@ -1333,6 +1332,7 @@ summary:focus-visible {
   font-size: 0.8em;
 }
 .plugin-dialog {
+  overflow: hidden;
   width: min(72rem, calc(100vw - 2rem));
   height: min(52rem, calc(100dvh - 2rem));
   max-height: calc(100dvh - 2rem);
@@ -1360,6 +1360,31 @@ summary:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.plugin-access-help {
+  flex-shrink: 0;
+}
+.plugin-access-help > .hint {
+  margin: 0;
+  font-size: 12px;
+}
+.plugin-access-details {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.plugin-access-details > summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+.plugin-access-instructions {
+  max-height: min(12rem, 25dvh);
+  margin-top: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.plugin-access-instructions > .hint {
+  margin-top: 0;
+}
 .plugin-dialog::backdrop {
   background: rgba(15, 23, 42, 0.4);
 }
@@ -1382,13 +1407,15 @@ summary:focus-visible {
 .plugin-workspace {
   display: grid;
   grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
-  flex: 1 0 24rem;
-  min-height: 24rem;
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
   gap: 24px;
 }
 .plugin-browser,
 .plugin-detail {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -1396,9 +1423,11 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow: hidden;
   padding: 4px 16px 4px 4px;
   border-right: 1px solid var(--line);
+}
+.plugin-browser > :not(.plugin-list) {
+  flex-shrink: 0;
 }
 .plugin-browser .form-field,
 .plugin-browser-status .hint {
@@ -2180,45 +2209,272 @@ summary:focus-visible {
 .runtime-events-settled {
   color: var(--muted);
 }
+.log-viewer {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.log-viewer-header {
+  padding: 20px 20px 0;
+}
+.log-viewer-header h3 {
+  margin: 0 0 6px;
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 600;
+}
+.log-safety {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.log-controls {
+  padding: 18px 20px 14px;
+}
 .log-toolbar {
   display: flex;
   flex-wrap: wrap;
+  align-items: end;
+  gap: 14px 16px;
+}
+.log-picker {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  min-width: 0;
+  gap: 6px;
+}
+.log-picker label,
+.log-search label,
+.log-filter-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.log-picker select,
+.log-search input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.log-picker select:not(:disabled):hover,
+.log-search input:hover {
+  border-color: var(--input-border);
+}
+.log-picker select:disabled {
+  color: var(--muted);
+}
+.log-pod-picker {
+  flex-basis: 260px;
+}
+.log-options {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
-  margin: 8px 0;
+  gap: 10px 16px;
+  min-height: 36px;
+}
+.log-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.log-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+.log-option:has(input:disabled) {
+  color: var(--muted);
+}
+.log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.log-actions button {
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.log-follow[aria-pressed="true"] {
+  border-color: var(--success);
+  color: var(--success);
+  background: var(--success-subtle);
+}
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.log-levels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.log-filter-label {
+  margin-right: 4px;
+}
+.log-search {
+  display: flex;
+  flex: 1 1 200px;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.log-filter-status,
+.log-retention {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.log-retention {
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.log-retention:empty,
+.log-output-status:empty {
+  display: none;
+}
+.log-source-hint,
+.log-error {
+  margin: 0 20px 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.log-source-hint {
+  border-color: var(--warning);
+  color: var(--warning);
+  background: var(--warning-subtle);
+}
+.log-error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-subtle);
+  overflow-wrap: anywhere;
+}
+.log-output-status {
+  margin: 0;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--bg);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .log-pane {
   max-height: 60vh;
   overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
   font:
-    12px/1.5 ui-monospace,
+    12px/1.6 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
 }
+.log-pane:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .log-row {
-  padding: 1px 10px;
+  padding: 8px 16px 8px 32px;
+  border-bottom: 1px solid var(--line);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.log-row:last-child {
+  border-bottom: 0;
+}
+.log-row[data-level="error"] {
+  background: var(--danger-subtle);
+}
 .log-row summary {
+  position: relative;
+  display: block;
   cursor: pointer;
+  list-style: none;
 }
-.log-line > span + span {
-  margin-left: 8px;
+.log-row summary::-webkit-details-marker {
+  display: none;
 }
-.log-time,
-.log-kind,
-.log-subsystem {
+.log-row summary::before {
+  position: absolute;
+  left: -18px;
   color: var(--muted);
+  content: "▸";
 }
+.log-row[open] summary::before {
+  content: "▾";
+}
+.log-row summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 170px 48px minmax(72px, 112px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+}
+.log-time {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: normal;
+}
+.log-level {
+  width: fit-content;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  font-family: "Instrument Sans", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.log-origin {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  color: var(--muted);
+  white-space: normal;
+}
+.log-content {
+  min-width: 0;
+}
+.log-code,
 .log-provenance,
 .log-join {
+  display: block;
+  margin-top: 3px;
   color: var(--muted);
+  font-size: 11px;
+}
+.log-code {
+  color: inherit;
 }
 .log-join {
   font-style: italic;
@@ -2229,17 +2485,35 @@ summary:focus-visible {
 .log-level-warn {
   color: var(--warning);
 }
+.log-level.log-level-error {
+  background: var(--danger-subtle);
+}
+.log-level.log-level-warn {
+  background: var(--warning-subtle);
+}
 .log-row-gap,
 .log-row-withheld {
+  padding-top: 5px;
+  padding-bottom: 5px;
   color: var(--muted);
-  font-style: italic;
-  background: var(--hover);
+  background: var(--surface-muted);
+  font-family: "Instrument Sans", sans-serif;
+  font-size: 11px;
+  white-space: normal;
+}
+.log-row-gap {
+  color: var(--warning);
+  background: var(--warning-subtle);
 }
 .log-fields {
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  gap: 2px 12px;
-  margin: 4px 0 6px 18px;
+  grid-template-columns: minmax(80px, 160px) minmax(0, 1fr);
+  gap: 5px 12px;
+  margin: 10px 0 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
 }
 .log-fields dt {
   color: var(--muted);
@@ -2248,11 +2522,84 @@ summary:focus-visible {
   margin: 0;
 }
 .log-chip {
-  padding: 2px 10px;
+  padding: 3px 10px;
   border-radius: 999px;
   font-size: 12px;
 }
+.log-chip[aria-pressed="true"] {
+  border-color: var(--input-border);
+  background: var(--surface-muted);
+}
+.log-chip.log-level-error[aria-pressed="true"] {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+}
+.log-chip.log-level-warn[aria-pressed="true"] {
+  border-color: var(--warning);
+  background: var(--warning-subtle);
+}
 .log-chip[aria-pressed="false"] {
-  opacity: 0.55;
+  color: var(--muted);
   text-decoration: line-through;
+}
+@media (max-width: 1100px) {
+  .log-line {
+    grid-template-columns: 150px 44px minmax(60px, 88px) minmax(0, 1fr);
+    gap: 10px;
+  }
+}
+@media (max-width: 760px) {
+  .log-picker select,
+  .log-search input {
+    font-size: 16px;
+  }
+  .log-actions {
+    margin-left: 0;
+  }
+  .log-line {
+    grid-template-columns: minmax(0, 1fr) 48px minmax(60px, 112px);
+    gap: 4px 10px;
+  }
+  .log-content {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+  }
+  .log-fields {
+    grid-template-columns: minmax(70px, 110px) minmax(0, 1fr);
+  }
+}
+@media (max-width: 520px) {
+  .log-viewer-header {
+    padding: 16px 16px 0;
+  }
+  .log-controls {
+    padding: 16px;
+  }
+  .log-picker,
+  .log-search {
+    flex-basis: 100%;
+  }
+  .log-actions {
+    width: 100%;
+  }
+  .log-source-hint,
+  .log-error {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+  .log-output-status,
+  .log-retention {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+  .log-row {
+    padding-right: 12px;
+    padding-left: 28px;
+  }
+  .log-line {
+    grid-template-columns: minmax(0, 1fr) 48px;
+  }
+  .log-origin {
+    grid-column: 1 / -1;
+  }
 }

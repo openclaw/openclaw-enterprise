@@ -23,6 +23,15 @@ function event(installation, namespace, agent, action) {
   };
 }
 
+// A database-backed store stamps a revision's admission time on its own clock, the one that
+// stamps controller work (finding 1195), so a created revision equals its input except for
+// createdAt. The input adopts the stored stamp, so later reads compare against the record.
+function assertCreatedRevision(created, input) {
+  assert.ok(Number.isFinite(Date.parse(created.createdAt)), "createdAt is a timestamp");
+  assert.deepEqual({ ...created, createdAt: input.createdAt }, input);
+  input.createdAt = created.createdAt;
+}
+
 // Both stores raise the same error class for these refusals but word them differently. The
 // memory store names the refusing check. PostgreSQL either enforces it with a constraint or
 // trigger whose violation databaseError maps to one generic message without a cause, or refuses
@@ -135,7 +144,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ]);
     await transaction.secrets.createSecret(harnessSecret);
     assert.deepEqual(await transaction.agents.createAgent(agent), agent);
-    assert.deepEqual(await transaction.revisions.createRevision(revision), revision);
+    assertCreatedRevision(await transaction.revisions.createRevision(revision), revision);
     await transaction.audit.append(audit);
     await transaction.operations.append(operation);
   });
@@ -875,7 +884,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     );
     assert.deepEqual(await transaction.agents.createAgent(accountAgent), accountAgent);
     assert.deepEqual(await transaction.agents.createAgent(sharedAccountAgent), sharedAccountAgent);
-    assert.deepEqual(await transaction.revisions.createRevision(accountRevision), accountRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(accountRevision),
+      accountRevision,
+    );
   });
 
   const oauthCredential = {
@@ -2059,7 +2071,10 @@ async function verifyCredentialSourceContract(
     await transaction.agents.createAgent(sourceAgent);
     // The Agent draft binding alone retains the source.
     assert.equal(await sourceReferences(transaction), true);
-    assert.deepEqual(await transaction.revisions.createRevision(sourceRevision), sourceRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(sourceRevision),
+      sourceRevision,
+    );
     await transaction.agents.updateConfiguration(
       sourceNamespace.id,
       sourceAgent.id,
@@ -2093,6 +2108,33 @@ async function verifyCredentialSourceContract(
     },
     "An active revision's credential source cannot be deleted.",
   );
+  const blocking = (transaction) =>
+    transaction.credentialSources.findBlockingReference(sourceNamespace.id, source.id);
+  // Queued withdrawal work for a revision that held the source blocks deletion on its own, and
+  // is reported as such so the refusal can say that only waiting helps. Rolled back.
+  const rollback = new Error("roll back the withdrawal-only case");
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      await transaction.agents.compareAndClearActiveRevision(
+        sourceNamespace.id,
+        sourceAgent.id,
+        sourceRevision.id,
+      );
+      await transaction.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        target: "credentials_withdrawn",
+        operationId: "withdrawal-blocking-contract",
+        namespaceId: sourceNamespace.id,
+        resourceId: sourceRevision.id,
+        actorId: "principal-platform-state-contract",
+      });
+      assert.equal(await sourceReferences(transaction), true);
+      assert.equal(await blocking(transaction), "withdrawal_work");
+      throw rollback;
+    }),
+    (error) => error === rollback,
+  );
   await store.transact(async (transaction) => {
     await transaction.agents.compareAndClearActiveRevision(
       sourceNamespace.id,
@@ -2100,6 +2142,7 @@ async function verifyCredentialSourceContract(
       sourceRevision.id,
     );
     assert.equal(await sourceReferences(transaction), false);
+    assert.equal(await blocking(transaction), undefined);
     // A queued deployment will attach the source, so it must survive until that work settles.
     await transaction.operations.append({
       kind: "agent_revision",
@@ -2109,6 +2152,7 @@ async function verifyCredentialSourceContract(
       actorId: "principal-platform-state-contract",
     });
     assert.equal(await sourceReferences(transaction), true);
+    assert.equal(await blocking(transaction), "reference");
     assert.equal(
       await transaction.credentialSources.hasReferences(accountNamespace.id, source.id),
       false,
@@ -2187,6 +2231,25 @@ async function verifyCredentialSourceContract(
         "principal-platform-state-replay",
       ),
       { ...withdrawal, requestedBy: "principal-platform-state-replay" },
+    );
+    // The worker reads the stored requester, so the reassignment must persist.
+    assert.deepEqual(
+      await transaction.credentialSources.listCredentialWithdrawals(
+        sourceNamespace.id,
+        sourceRevision.id,
+      ),
+      [{ ...withdrawal, requestedBy: "principal-platform-state-replay" }],
+    );
+    // A blank requester is refused; the worker would have no principal to authorize. Pinned on
+    // a pending withdrawal, the only kind the controller reassigns.
+    await assert.rejects(
+      transaction.credentialSources.reassignCredentialWithdrawal(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        "",
+      ),
+      { name: "ScopeViolationError", message: "A credential withdrawal requester is missing." },
     );
     assert.deepEqual(
       await transaction.credentialSources.reassignCredentialWithdrawal(
@@ -2349,7 +2412,7 @@ async function verifyCredentialSourceContract(
     "An Agent draft's non-model source cannot be deleted.",
   );
   await store.transact(async (transaction) => {
-    assert.deepEqual(await transaction.revisions.createRevision(toolRevision), toolRevision);
+    assertCreatedRevision(await transaction.revisions.createRevision(toolRevision), toolRevision);
     await transaction.agents.compareAndSetActiveRevision(
       sourceNamespace.id,
       toolAgent.id,
@@ -2492,7 +2555,10 @@ async function verifyCredentialSourceContract(
     );
   }
   await store.transact(async (transaction) => {
-    assert.deepEqual(await transaction.revisions.createRevision(listedRevision), listedRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(listedRevision),
+      listedRevision,
+    );
   });
   // A draft without sources freezes none: an empty snapshot list is not a valid form of that.
   const unlistedAgent = {

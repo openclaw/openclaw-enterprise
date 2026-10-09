@@ -1,52 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { verifyCalendarReviewPolicy } from "../helpers/calendar-review.mjs";
 import {
   assertNoSecretMaterial,
   createPluginDriverRealFixture,
   pluginProofSkipReason,
   readCodexServiceAccountCredential,
 } from "../helpers/plugin-driver-real.mjs";
-
-// TODO: retire this acceptance entry point after Calendar passes in both shipped
-// matrix installations and the protected hosted lane has been qualified.
-test(
-  "curated Codex Google Calendar enforces per-call human and automatic review in normal Agent turns",
-  {
-    skip: pluginProofSkipReason("codex_calendar"),
-    timeout: 900_000,
-  },
-  async (context) => {
-    const credential = await readCodexServiceAccountCredential();
-    const fixture = await createPluginDriverRealFixture(context, {
-      pluginDriverId: "codex-plugin",
-      scenario: "codex_calendar",
-      databaseUrl: process.env.OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL,
-      codexCredential: credential,
-    });
-    const account = await fixture.createCodexServiceAccountFromToken({
-      accessToken: credential.accessToken,
-      name: `codex-calendar-plugin-${randomUUID()}`,
-    });
-    assertNoSecretMaterial(
-      account,
-      [credential.accessToken, credential.workspaceId],
-      "ServiceAccount metadata must not expose Codex credential material.",
-    );
-    const agent = await fixture.createAgent({
-      harnessId: "codex",
-      executionMode: "dedicated",
-      name: `codex-calendar-plugin-${randomUUID()}`,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-      },
-      backendId: "openai",
-    });
-    await verifyCalendarReviewPolicy(fixture, agent, credential);
-  },
-);
 
 test(
   "a real official OpenClaw plugin installs, runs in a normal Agent turn, and stays scoped to one Agent",

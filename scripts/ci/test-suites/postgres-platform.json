@@ -39,7 +39,9 @@
         "the real pg client retains the Azure token callback and verified TLS after URL parsing",
         "workload authentication rejects password fallback and unverified TLS",
         "an idle pooled client error is logged instead of crashing the process",
-        "the pool survives PostgreSQL terminating an idle backend"
+        "the pool survives PostgreSQL terminating an idle backend",
+        "verify-full checks the server certificate against an IP database host",
+        "the IP host identity check leaves other connection configurations unchanged"
       ]
     },
     {
@@ -113,6 +115,7 @@
       "path": "tests/integration/postgres-presets.test.mjs",
       "expectedTests": [
         "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
+        "shipped Preset API preserves contract-sized templates through PostgreSQL",
         "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
       ]
     },
@@ -126,17 +129,20 @@
     {
       "path": "tests/integration/postgres-service-account-deletion.test.mjs",
       "expectedTests": [
-        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects"
+        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
+        "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account"
       ]
     },
     {
       "path": "tests/integration/postgres-agent-provisioning.test.mjs",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
+        "provisioning status judges claim liveness by the database clock, not the controller clock",
         "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
+        "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",

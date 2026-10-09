@@ -10,9 +10,11 @@ import {
   assertProbeDenied,
   inlineProbeCommand,
   isTransientKubectlFailure,
+  namespaceAlreadyTerminating,
   PROBE_DENIED_EXIT_CODE,
   probeDenial,
   retryKubectlRead,
+  retryKubectlWrite,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 
@@ -29,6 +31,12 @@ function kubectlFailure(stderr, code = 1) {
 // gateway Pod lost its stream.
 const execStreamDropped =
   'Defaulted container "gateway" out of: gateway, prepare-private-state (init)\nerror: EOF\n';
+
+// Verbatim stderr from job 112575981750 (finding 682): k3d's API server closed
+// the connection of a create before it answered.
+const createRequestDropped =
+  'error: failed to create secret Post "https://127.0.0.1:43099/api/v1/namespaces/oce-4da49d7613731b7/secrets?fieldManager=kubectl-create&fieldValidation=Strict": EOF\n';
+const secretExists = 'Error from server (AlreadyExists): secrets "transport-1" already exists\n';
 
 function recordingOptions() {
   const sleeps = [];
@@ -66,6 +74,7 @@ test("a kubectl read retries a dropped exec stream and returns the next attempt'
 test("kubectl transport failures are transient", () => {
   for (const stderr of [
     execStreamDropped,
+    createRequestDropped,
     "error: unexpected EOF\n",
     "Unable to connect to the server: EOF\n",
     "Error from server: error dialing backend: EOF\n",
@@ -134,6 +143,118 @@ test(
     assert.equal(failures.length, 4);
     assert.deepEqual(sleeps, [500, 1000, 2000]);
     assert.equal(logs.length, 3);
+  },
+);
+
+test("a dropped kubectl create counts AlreadyExists on its retry as done", async () => {
+  const { sleeps, logs, options } = recordingOptions();
+  let calls = 0;
+  const output = await retryKubectlWrite(async () => {
+    calls += 1;
+    // The dropped request was applied; the retry finds its Secret.
+    throw kubectlFailure(calls === 1 ? createRequestDropped : secretExists);
+  }, options);
+  assert.equal(output, "");
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [500]);
+  assert.equal(logs.length, 1);
+});
+
+test("a dropped Namespace delete counts the terminating Conflict on its retry as done", async () => {
+  const terminating =
+    'Error from server (Conflict): Operation cannot be fulfilled on namespaces "oce-1": The system is ensuring all content is removed from this namespace.  Upon completion, this namespace will automatically be purged by the system.\n';
+  let calls = 0;
+  const output = await retryKubectlWrite(
+    async () => {
+      calls += 1;
+      throw kubectlFailure(calls === 1 ? "Unable to connect to the server: EOF\n" : terminating);
+    },
+    { ...recordingOptions().options, applied: namespaceAlreadyTerminating },
+  );
+  assert.equal(output, "");
+  assert.equal(calls, 2);
+  // Without a dropped attempt, the Conflict is the delete's real answer.
+  const failure = kubectlFailure(terminating);
+  await assert.rejects(
+    retryKubectlWrite(
+      async () => {
+        throw failure;
+      },
+      { ...recordingOptions().options, applied: namespaceAlreadyTerminating },
+    ),
+    (error) => error === failure,
+  );
+});
+
+test("a dropped kubectl write still throws any other result of its retry", async () => {
+  const { sleeps, options } = recordingOptions();
+  const forbidden = kubectlFailure("Error from server (Forbidden): secrets is forbidden\n");
+  let calls = 0;
+  await assert.rejects(
+    retryKubectlWrite(async () => {
+      calls += 1;
+      throw calls === 1 ? kubectlFailure(createRequestDropped) : forbidden;
+    }, options),
+    (error) => error === forbidden,
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [500]);
+});
+
+test("a kubectl write retries a dropped connection and returns the next attempt's output", async () => {
+  const { sleeps, options } = recordingOptions();
+  let calls = 0;
+  const output = await retryKubectlWrite(async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw kubectlFailure("Unable to connect to the server: EOF\n");
+    }
+    return 'namespace "oce-1" deleted\n';
+  }, options);
+  assert.equal(output, 'namespace "oce-1" deleted\n');
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [500]);
+});
+
+test("a kubectl write fails at once on AlreadyExists or another result", async () => {
+  // With no dropped attempt before it, AlreadyExists is the create's real answer.
+  for (const stderr of [
+    secretExists,
+    'Error from server (NotFound): namespaces "oce-1" not found\n',
+    "Error from server (Forbidden): secrets is forbidden\n",
+  ]) {
+    const { sleeps, options } = recordingOptions();
+    const failure = kubectlFailure(stderr);
+    let calls = 0;
+    await assert.rejects(
+      retryKubectlWrite(async () => {
+        calls += 1;
+        throw failure;
+      }, options),
+      (error) => error === failure,
+      stderr,
+    );
+    assert.equal(calls, 1, stderr);
+    assert.deepEqual(sleeps, [], stderr);
+  }
+});
+
+test(
+  "a kubectl write gives up after four dropped attempts with the last error",
+  { timeout: 5_000 },
+  async () => {
+    const { sleeps, options } = recordingOptions();
+    const failures = [];
+    await assert.rejects(
+      retryKubectlWrite(async () => {
+        const failure = kubectlFailure(createRequestDropped);
+        failures.push(failure);
+        throw failure;
+      }, options),
+      (error) => error === failures.at(-1),
+    );
+    assert.equal(failures.length, 4);
+    assert.deepEqual(sleeps, [500, 1000, 2000]);
   },
 );
 

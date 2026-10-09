@@ -6,101 +6,48 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
+  ComputePreparationFailedError,
   DependencyUnavailableError,
   PostgresMetricsSnapshot,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import {
   createAccessTokenServiceAccount,
+  createBackendController,
   poolWithOneBackendBindingReadFault,
   backendDefinition,
   requiresPostgres,
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   assertFailedDeployment,
   runPreparationFailureCase,
   runRuntimeFailureCases,
 } from "../helpers/postgres-worker-revision-scenarios.mjs";
+import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
-  CREDENTIAL_GATEWAY_FIXTURE_ID,
-  createWorkerRevisionFixtures,
-} from "../helpers/postgres-worker-revision-fixture.mjs";
+  advanceCleanupRetries,
+  completion,
+  repositoryAttempts,
+  repositoryBoundary,
+} from "../helpers/postgres-worker-revision-support.mjs";
+
+// Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and
+// listed sources that lose their grant or readiness are in the -credential-sources sibling; the
+// lane runs the revision files at once.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
-
-// The worker emits worker.completed after its queue transaction commits, so another
-// connection can see the committed Work state first. Wait for the event instead of
-// reading the event list once.
-function completion(events, description, predicate) {
-  return waitFor(description, async () => events.find(predicate));
-}
-
-// Selects a paired Sandbox and Credential Gateway so the worker admits credential-source
-// revisions. Compute stands in for the gateway calls; these doubles only identify the pair.
-function withCredentialGateway(drivers) {
-  const sandboxDriver = {
-    id: "sandbox-worker-fixture",
-    capability: "sandbox",
-    implementation: "sandbox-worker-fixture",
-    facets: ["networking"],
-    async cleanup() {},
-  };
-  const credentialGatewayDriver = {
-    id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-    capability: "credential_gateway",
-    implementation: "credential-gateway-worker-fixture",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [];
-    },
-    async registerSource() {
-      return { state: "ready" };
-    },
-    async updateSource() {
-      return { state: "ready" };
-    },
-    async rotateSource() {
-      return { state: "ready" };
-    },
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    async removeSource() {},
-    async attachForRevision() {
-      return [];
-    },
-    async attachmentStatus() {
-      return [];
-    },
-    async withdraw(context) {
-      return { sourceId: context.sourceId, state: "pending" };
-    },
-  };
-  return {
-    ...drivers,
-    installation: {
-      ...drivers.installation,
-      drivers: {
-        ...drivers.installation.drivers,
-        sandbox: { id: sandboxDriver.id, configuration: {} },
-        credential_gateway: { id: credentialGatewayDriver.id, configuration: {} },
-      },
-    },
-    sandboxDriver,
-    credentialGatewayDriver,
-  };
-}
 
 function codexPluginRevisionState(pluginId) {
   return {
@@ -113,734 +60,6 @@ function codexPluginRevisionState(pluginId) {
     },
   };
 }
-
-// Model the next cleanup interval without waiting an hour for the boundary
-// Driver. Change only this revision's queued due times; claims remain real.
-async function advanceCleanupRetries(fixture, revision) {
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE state = 'queued' AND idempotency_key LIKE $1`,
-    [`agent_revision:${revision.id}:repository_cleanup:%`],
-  );
-}
-
-// This boundary Driver supplies protocol observations. The real worker, native
-// IAM, State, and PostgreSQL queue own every lifecycle decision asserted below;
-// these cases do not qualify the concrete credential service or Compute runtime.
-function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 120_000 } = {}) {
-  const bindings = Array.from({ length: count }, (_, index) => ({
-    repositoryRef: `repository-${index}-${randomUUID()}`,
-    profile: "read",
-    backendId: "repository-provider",
-    grant: {
-      providerInstanceId: "repository-provider-instance",
-      repositoryId: `repository-${index}`,
-      grantId: `grant-${index}`,
-    },
-  }));
-  const admissions = new Map();
-  const sessions = new Map();
-  const calls = [];
-  const driver = {
-    id: "repository-worker-boundary",
-    implementation: "repository-worker-boundary",
-    capability: "repo",
-    maintenanceIntervalMs: 3_600_000,
-    async listOptions() {
-      return { options: [], descriptionsPending: false };
-    },
-    resolve() {
-      return { bindings, sessionDurationSeconds: 60 };
-    },
-    async open(input, signal) {
-      calls.push({ operation: input.recoverOnly ? "recover" : "open", input, signal });
-      const existing = admissions.get(input.admissionId);
-      if (existing !== undefined) {
-        return { kind: "recovered", status: existing };
-      }
-      if (input.recoverOnly) {
-        return { kind: "missing" };
-      }
-      const session = {
-        sessionId: `session_${randomUUID()}`,
-        state: "OPEN",
-        deadlineWallMs: Math.min(Date.now() + input.durationSeconds * 1000, input.deadlineWallMs),
-        binding: input.binding.grant,
-      };
-      admissions.set(input.admissionId, session);
-      sessions.set(session.sessionId, session);
-      return {
-        kind: "created",
-        session,
-        files: encodeRepositoryCredentialSessionFiles({
-          session,
-          bearer: `worker_boundary_bearer_${randomUUID().replaceAll("-", "")}`,
-          client: {
-            gatewayOrigin: "https://repository-gateway.example.test",
-            gitRemote: "https://repository-gateway.example.test/organization/repository.git",
-            gitUsername: "repository-session",
-            canonicalApiHost: "api.example.test",
-            apiHost: "repository-gateway.example.test",
-            repository: "organization/repository",
-          },
-        }),
-      };
-    },
-    async status(sessionId) {
-      calls.push({ operation: "status", sessionId });
-      return sessions.get(sessionId);
-    },
-    async close(sessionId) {
-      calls.push({ operation: "close", sessionId });
-      const session = sessions.get(sessionId);
-      if (session === undefined) {
-        return undefined;
-      }
-      const disposed = { ...session, state: "DISPOSED" };
-      sessions.set(sessionId, disposed);
-      for (const [admissionId, admitted] of admissions) {
-        if (admitted.sessionId === sessionId) {
-          admissions.set(admissionId, disposed);
-        }
-      }
-      return disposed;
-    },
-  };
-  return {
-    driver,
-    calls,
-    snapshot: {
-      driver: { id: driver.id, implementation: driver.implementation },
-      deadlineWallMs,
-      bindings,
-    },
-  };
-}
-
-async function coldSshComputeDriver(fixture, operations) {
-  const { SshComputeDriver } =
-    await import("../../apps/controller/src/drivers/compute/ssh/index.ts");
-  return new SshComputeDriver(
-    {
-      ssh: { identityFile: "/fixture/identity", knownHostsFile: "/fixture/hosts" },
-      hosts: { [fixture.namespace.name]: { address: "127.0.0.1", user: "root" } },
-      runtime: {
-        nodePath: "/usr/bin/node",
-        openclawPath: "/opt/openclaw/index.js",
-        user: "runtime",
-        root: "/var/lib/openclaw-enterprise",
-      },
-      network: { gatewayPortRange: { start: 18800, end: 18899 } },
-    },
-    {
-      id: fixture.compute.id,
-      implementation: fixture.compute.implementation,
-      executor: {
-        async execute(request) {
-          operations.push(JSON.parse(Buffer.from(request.operation, "base64").toString()));
-          return { code: 0, stdout: '{"ok":true}', stderr: "" };
-        },
-      },
-    },
-  );
-}
-
-function repositoryAttempts(fixture, revision) {
-  return fixture.state.read((view) =>
-    view.repositorySessions.listRevisionAttempts({
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      revisionId: revision.id,
-    }),
-  );
-}
-
-// The Agent's list starts with its Harness source; the remaining entries are tool sources.
-function toolSources(owner) {
-  return owner.credentialSources.filter(({ sourceId }) => sourceId !== owner.harnessAuth?.sourceId);
-}
-
-test(
-  "worker fixture disposal preserves another database's live claim and activation",
-  requiresPostgres,
-  async (context) => {
-    const first = await setup(context);
-    const firstOwner = await first.agent("isolated-first");
-    await first.revision(firstOwner, 1);
-    const second = await setup(context);
-    const queue = new second.PostgresWorkQueue(second.observerPool);
-    assert.equal(await queue.claim(), undefined, "workers cannot claim another fixture's work");
-
-    const owner = await second.agent("isolated-second");
-    const candidate = await second.revision(owner, 1);
-    const release = Promise.withResolvers();
-    let preparing = false;
-    try {
-      await second.start({
-        ...second.compute,
-        async prepareRevision(revision) {
-          preparing = true;
-          await release.promise;
-          return second.compute.prepareRevision(revision);
-        },
-      });
-      await waitFor("second fixture to hold its claim during preparation", async () =>
-        preparing ? true : undefined,
-      );
-      const before = await second.work(candidate, "claimed");
-      assert.equal(typeof before.claim_token, "string");
-
-      await first.database.dispose();
-      const renewed = await queue.heartbeat({
-        idempotencyKey: candidate.idempotencyKey,
-        claimToken: before.claim_token,
-      });
-      assert.equal(renewed?.claimToken, before.claim_token);
-      release.resolve();
-      await second.work(candidate, "succeeded");
-      const activated = await second.currentAgent(owner);
-      assert.equal(activated.activeRevisionId, candidate.id);
-    } finally {
-      // Release Compute before the registered owner teardown joins its worker.
-      release.resolve();
-    }
-  },
-);
-
-// The worker is serial. A Compute wait that only saves a later pass asks whether
-// other Work is waiting and ends early when it is, so another Agent's deploy
-// runs next instead of queuing behind the wait (D221).
-test(
-  "a revision pass learns when another Agent's Work is waiting for the serial worker",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (context) => {
-    const { computeWorkWaiting } =
-      await import("../../apps/controller/src/drivers/compute/operation-context.ts");
-    const fixture = await setup(context);
-    const first = await fixture.agent("waiting-first", { executionMode: "dedicated" });
-    const second = await fixture.agent("waiting-second", { executionMode: "dedicated" });
-    const prepared = [];
-    let secondRevision;
-    let wait;
-    const compute = {
-      ...fixture.compute,
-      async prepareRevision(revision, deploymentContext) {
-        prepared.push(revision.agentId);
-        if (revision.agentId !== first.id || wait !== undefined) {
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        }
-        // The first Agent's pass waits, as for its node to pair; nothing else is
-        // queued yet, so nothing is waiting for the worker.
-        const before = await computeWorkWaiting();
-        secondRevision = await fixture.revision(second, 1);
-        const started = Date.now();
-        let endedEarly = false;
-        while (Date.now() - started < 10_000) {
-          if (await computeWorkWaiting()) {
-            endedEarly = true;
-            break;
-          }
-          await delay(25);
-        }
-        wait = { before, endedEarly, ms: Date.now() - started };
-        return {
-          ...(await fixture.compute.prepareRevision(revision, deploymentContext)),
-          ready: false,
-        };
-      },
-    };
-    await fixture.start(compute);
-    const firstRevision = await fixture.revision(first, 1);
-    await waitFor("the second Agent to deploy during the first pass", async () => secondRevision);
-    await fixture.work(secondRevision, "succeeded");
-    await fixture.work(firstRevision, "succeeded");
-    assert.equal(wait.before, false, "the pass's own Agent is not other Work");
-    assert.equal(wait.endedEarly, true);
-    assert.ok(wait.ms < 5_000, `the wait ended early (${wait.ms} ms)`);
-    // The pending first pass ended and the second Agent's pass ran next.
-    assert.deepEqual(prepared.slice(0, 2), [first.id, second.id]);
-  },
-);
-
-revisionTest(
-  "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
-  async (fixture) => {
-    const owner = await fixture.agent("exclusive-workspace", { executionMode: "dedicated" });
-    const running = new Set();
-    const prepared = [];
-    let rejectStop = true;
-    let stopFailures = 0;
-    const compute = {
-      ...fixture.compute,
-      requiresStoppedPredecessors: () => true,
-      async prepareRevision(revision) {
-        // This Driver boundary represents a resource which cannot be held by
-        // two revisions. PostgreSQL and the real worker own ordering and retries.
-        assert.deepEqual(
-          [...running].filter((id) => id !== revision.id),
-          [],
-        );
-        running.add(revision.id);
-        prepared.push(revision.id);
-        return {
-          ...(await fixture.compute.prepareRevision(revision)),
-          ready: revision.revision !== 2,
-        };
-      },
-      async stopRevision(revision) {
-        if (rejectStop && running.has(revision.id)) {
-          rejectStop = false;
-          stopFailures += 1;
-          throw new Error("resource release temporarily unavailable");
-        }
-        running.delete(revision.id);
-      },
-      async retireRevision(revision) {
-        running.delete(revision.id);
-      },
-    };
-    await fixture.start(compute, { convergenceTimeoutMs: 3_000 });
-    const first = await fixture.revision(owner, 1);
-    await fixture.work(first, "succeeded");
-    const replacement = await fixture.revision(owner, 2);
-    await waitFor("replacement preparation after predecessor release", async () =>
-      running.has(replacement.id) ? true : undefined,
-    );
-    assert.equal(stopFailures, 1);
-    const firstPreparations = prepared.filter((id) => id === first.id).length;
-    const maintenance = {
-      id: first.id,
-      idempotencyKey: `agent_revision:${first.id}:maintenance:${randomUUID()}`,
-    };
-    await fixture.state.transactWithQueue((_unit, queue) =>
-      queue.enqueue({
-        idempotencyKey: maintenance.idempotencyKey,
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: first.id,
-        actorId: fixture.actor.id,
-        availableAt: new Date(0),
-      }),
-    );
-    await fixture.work(maintenance, "succeeded");
-    assert.equal(prepared.filter((id) => id === first.id).length, firstPreparations);
-    await fixture.work(replacement, "failed_permanent");
-    assert.deepEqual([...running], [replacement.id]);
-    const recovery = await fixture.revision(owner, 3);
-    await fixture.work(recovery, "succeeded");
-    assert.deepEqual([...running], [recovery.id]);
-    const current = await fixture.currentAgent(owner);
-    assert.equal(current.activeRevisionId, recovery.id);
-  },
-  { timeout: 30_000 },
-);
-
-function countingExclusiveCompute(fixture, { ready, onPrepare } = {}) {
-  const running = new Set();
-  const prepared = [];
-  const stops = new Map();
-  const compute = {
-    ...fixture.compute,
-    requiresStoppedPredecessors: () => true,
-    async prepareRevision(revision) {
-      const overlap = [...running].filter((id) => id !== revision.id);
-      running.add(revision.id);
-      prepared.push(revision.id);
-      await onPrepare?.(revision, overlap);
-      // The candidate cannot become ready while any predecessor still runs.
-      const exclusive = [...running].every((id) => id === revision.id);
-      return {
-        ...(await fixture.compute.prepareRevision(revision)),
-        ready: exclusive && (ready?.(revision) ?? true),
-      };
-    },
-    async stopRevision(revision) {
-      stops.set(revision.id, (stops.get(revision.id) ?? 0) + 1);
-      running.delete(revision.id);
-    },
-    async retireRevision(revision) {
-      running.delete(revision.id);
-    },
-  };
-  const count = (revision) => stops.get(revision.id) ?? 0;
-  const preparations = (revision) => prepared.filter((id) => id === revision.id).length;
-  return { compute, running, count, preparations };
-}
-
-async function enqueueMaintenance(fixture, owner, revision) {
-  const maintenance = {
-    id: revision.id,
-    idempotencyKey: `agent_revision:${revision.id}:maintenance:${randomUUID()}`,
-  };
-  await fixture.state.transactWithQueue((_unit, queue) =>
-    queue.enqueue({
-      idempotencyKey: maintenance.idempotencyKey,
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      revisionId: revision.id,
-      actorId: fixture.actor.id,
-      availableAt: new Date(0),
-    }),
-  );
-  return maintenance;
-}
-
-revisionTest(
-  "exclusive replacement stops each predecessor once across pending passes and maintenance",
-  async (fixture) => {
-    const owner = await fixture.agent("exclusive-sweep-once", { executionMode: "dedicated" });
-    let pendingPasses = 4;
-    const driver = countingExclusiveCompute(fixture, {
-      ready: (revision) => revision.revision !== 2 || pendingPasses-- <= 0,
-    });
-    await fixture.start(driver.compute);
-    const first = await fixture.revision(owner, 1);
-    await fixture.work(first, "succeeded");
-    const replacement = await fixture.revision(owner, 2);
-    await fixture.work(replacement, "succeeded", 30_000);
-    assert.ok(driver.preparations(replacement) >= 5, "the replacement must repeat pending passes");
-    // Exactly one stop holds because the fixture lease (30 s) outlasts this pending
-    // window; with a shorter lease the scheduled re-stop would add more.
-    assert.equal(driver.count(first), 1, "pending passes must not repeat the predecessor stop");
-
-    for (let index = 0; index < 2; index += 1) {
-      await fixture.work(await enqueueMaintenance(fixture, owner, replacement), "succeeded");
-    }
-    assert.equal(driver.count(first), 1, "maintenance must not repeat the predecessor stop");
-
-    const recovery = await fixture.revision(owner, 3);
-    await fixture.work(recovery, "succeeded");
-    assert.equal(driver.count(replacement), 1);
-    assert.equal(driver.count(first), 1, "a recorded predecessor is skipped by later sweeps");
-    assert.deepEqual([...driver.running], [recovery.id]);
-  },
-  { timeout: 60_000 },
-);
-
-test(
-  "a predecessor that comes back after the sweep is stopped again",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    for (const { leaseDurationMs, label, returns } of [
-      // A late Compute effect makes the next pass fail, which forgets the record.
-      { leaseDurationMs: 30_000, label: "failed-pass", returns: 1 },
-      // A late effect keeps the candidate pending until one lease has elapsed.
-      { leaseDurationMs: 1_000, label: "lease-restop", returns: 1 },
-      // It comes back again after that re-stop; the next one follows two leases later.
-      { leaseDurationMs: 1_000, label: "repeated-restop", returns: 2 },
-    ]) {
-      const fixture = await setup(context, { leaseDurationMs });
-      const owner = await fixture.agent(`exclusive-resurrection-${label}`, {
-        executionMode: "dedicated",
-      });
-      let first;
-      let resurrections = 0;
-      const driver = countingExclusiveCompute(fixture, {
-        async onPrepare(revision, overlap) {
-          if (revision.revision !== 2) {
-            return;
-          }
-          if (resurrections < returns && driver.count(first) > resurrections) {
-            // Model a lost claim's late Compute write landing after each stop.
-            resurrections += 1;
-            driver.running.add(first.id);
-          } else if (overlap.length > 0 && label === "failed-pass") {
-            driver.running.delete(revision.id);
-            throw new Error("predecessor still holds the exclusive resource");
-          }
-        },
-      });
-      await fixture.start(driver.compute);
-      first = await fixture.revision(owner, 1);
-      await fixture.work(first, "succeeded");
-      const replacement = await fixture.revision(owner, 2);
-      await fixture.work(replacement, "succeeded", 30_000);
-      assert.equal(resurrections, returns);
-      assert.equal(
-        driver.count(first),
-        returns + 1,
-        `${label}: the returned predecessor is stopped again`,
-      );
-      assert.deepEqual([...driver.running], [replacement.id]);
-      const current = await fixture.currentAgent(owner);
-      assert.equal(current.activeRevisionId, replacement.id);
-      await fixture.stop();
-    }
-  },
-);
-
-test(
-  "worker readiness remains available when repository credentials are disabled",
-  requiresPostgres,
-  async (context) => {
-    let healthy = false;
-    const fixture = await setup(context, {
-      onHealthy: async () => {
-        healthy = true;
-      },
-    });
-    const { candidate } = await fixture.admitInitialRevision("no-repository-capability");
-    await fixture.start(fixture.compute);
-    await fixture.work(candidate, "succeeded");
-    await waitFor("repository-disabled worker readiness", async () => (healthy ? true : undefined));
-  },
-);
-
-/**
- * Relay PostgreSQL connections through a local proxy that can go silent: it stops relaying on
- * every open connection without closing it, as a client sees after a failover or partition
- * that sent no RST. New connections still reach the server.
- */
-async function startSilenceableProxy(context, databaseUrl) {
-  const { createServer, connect } = await import("node:net");
-  const target = new URL(databaseUrl);
-  const pairs = new Set();
-  const server = createServer((client) => {
-    const upstream = connect(Number(target.port || 5432), target.hostname);
-    const pair = { client, upstream };
-    pairs.add(pair);
-    client.pipe(upstream);
-    upstream.pipe(client);
-    const close = () => {
-      pairs.delete(pair);
-      client.destroy();
-      upstream.destroy();
-    };
-    for (const socket of [client, upstream]) {
-      socket.on("error", close);
-      socket.on("close", close);
-    }
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const close = () => {
-    for (const { client, upstream } of pairs) {
-      client.destroy();
-      upstream.destroy();
-    }
-    return new Promise((resolve) => server.close(resolve));
-  };
-  context.after(close);
-  const url = new URL(databaseUrl);
-  url.hostname = "127.0.0.1";
-  url.port = String(server.address().port);
-  return {
-    url: url.toString(),
-    silence() {
-      for (const { client, upstream } of pairs) {
-        client.unpipe(upstream);
-        upstream.unpipe(client);
-        client.pause();
-        upstream.pause();
-      }
-    },
-    close,
-  };
-}
-
-test(
-  "a worker abandons a query on a silent database connection and resumes work",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const [{ Pool }, { workerDatabasePoolOptions }] = await Promise.all([
-      import("pg"),
-      import("../../apps/controller/src/worker.ts"),
-    ]);
-    const fixture = await setup(context);
-    const proxy = await startSilenceableProxy(context, fixture.database.url);
-    const pool = new Pool({
-      connectionString: proxy.url,
-      ...workerDatabasePoolOptions(3_000),
-      max: 2,
-    });
-    fixture.database.pools.add(pool);
-    const { candidate: before } = await fixture.admitInitialRevision("before-silence");
-    await fixture.start(fixture.compute, { pool });
-    await fixture.work(before, "succeeded");
-
-    // Every pooled connection now swallows queries without an answer or an error.
-    proxy.silence();
-    const { candidate: after } = await fixture.admitInitialRevision("after-silence");
-    await fixture.work(after, "succeeded", 30_000);
-    await fixture.stop();
-    await proxy.close();
-  },
-);
-
-test(
-  "worker progress continues through a database outage and stops when the loop is stuck",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const { Pool } = await import("pg");
-    let progressed = 0;
-    const fixture = await setup(context, {
-      onProgress: async () => {
-        progressed += 1;
-      },
-    });
-    const proxy = await startSilenceableProxy(context, fixture.database.url);
-    // No query timeout: this isolates the liveness signal from the timeout that would unstick it.
-    const pool = new Pool({ connectionString: proxy.url, max: 1 });
-    fixture.database.pools.add(pool);
-    pool.on("error", () => {});
-    await fixture.start(fixture.compute, { pool });
-    await waitFor("idle worker progress", async () => (progressed >= 2 ? true : undefined));
-
-    proxy.silence();
-    // A negative check needs a fixed window. Progress is reported at most once per second
-    // here (pollIntervalMs 15), so 1.5 s lets an in-flight pass settle and 3 s spans three
-    // reports a moving loop would have made.
-    await delay(1_500);
-    const stuck = progressed;
-    await delay(3_000);
-    assert.equal(
-      progressed,
-      stuck,
-      "a worker stuck on a silent query must stop reporting progress",
-    );
-
-    // Refused connections fail each pass fast; the loop still moves, so liveness holds.
-    await proxy.close();
-    await waitFor("progress through a database outage", async () =>
-      progressed >= stuck + 2 ? true : undefined,
-    );
-    await fixture.stop();
-  },
-);
-
-test(
-  "worker readiness and fresh Agent admission require the broker capability",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    let healthy = 0;
-    const fixture = await setup(context, {
-      onHealthy: async () => {
-        healthy += 1;
-      },
-    });
-    const [
-      { GitHubRepoDriver },
-      { UnixRepositoryCredentialControlClient },
-      { startRegistryCredentialServiceFixture },
-      { startRepositoryReceiptServer },
-      { startControlResponseRelay },
-      { createResourceScope },
-      { dirname },
-    ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
-      import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
-      import("../fixtures/repository-credentials/registry.mjs"),
-      import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
-      import("../fixtures/repository-credentials/control-relay.mjs"),
-      import("../fixtures/repository-credentials/resources.mjs"),
-      import("node:path"),
-    ]);
-    const credentials = await startRegistryCredentialServiceFixture(context, {
-      namespaceId: fixture.namespace.id,
-      autoOpen: false,
-      clock: { ...createControlledClock(), wallNow: Date.now },
-      gateway: { listen: "127.0.0.1:0" },
-    });
-    const scope = createResourceScope();
-    context.after(() => scope.close());
-    const relay = await startControlResponseRelay(scope, {
-      directory: dirname(credentials.config.gateway.controlSocket),
-      target: credentials.config.gateway.controlSocket,
-    });
-    // Simulate the old broker's 404 while all other traffic still reaches the real service.
-    relay.setCapabilitiesHidden(true);
-    const driver = new GitHubRepoDriver(
-      {
-        id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
-        drivers: { repo: "repository-credentials" },
-      },
-      credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
-    );
-    const receiptServer = await startRepositoryReceiptServer({
-      state: fixture.state,
-      controlSocket: credentials.config.gateway.controlSocket,
-      driverId: driver.id,
-      implementation: driver.implementation,
-      backendId: credentials.backendId,
-    });
-    context.after(() => receiptServer.close());
-    const resolution = driver.resolve({
-      namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
-    });
-    const owner = await fixture.agent("repository-capability");
-    const selection = {
-      driver: { id: driver.id, implementation: driver.implementation },
-      deadlineWallMs: Date.now() + 120_000,
-      bindings: resolution.bindings,
-    };
-    const incompatible = await fixture.revision(owner, 1, { repositoryCredentials: selection });
-    await fixture.start(
-      {
-        ...fixture.compute,
-        validateRepositoryCredentials() {},
-      },
-      {
-        pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
-      },
-    );
-    // Four jittered retry delays can total nearly 15 seconds before the fifth claim.
-    await fixture.work(incompatible, "failed_permanent", 20_000);
-    assert.equal(healthy, 0);
-    assert.deepEqual(await repositoryAttempts(fixture, incompatible), []);
-    assert.ok(credentials.repositories.every(({ github }) => github.issuesOfTokens.length === 0));
-    // Restoring the real capability permits an explicit new revision.
-    relay.setCapabilitiesHidden(false);
-    await waitFor("worker readiness after compatible broker selection", async () =>
-      healthy > 0 ? true : undefined,
-    );
-    const open = driver.open.bind(driver);
-    let lostSessionId;
-    driver.open = async (input, signal) => {
-      const result = await open(input, signal);
-      if (lostSessionId === undefined && result.kind === "created") {
-        lostSessionId = result.session.sessionId;
-        // The response is lost after the broker creates a session, then the
-        // capability disappears before recovery gets another worker claim.
-        relay.setCapabilitiesHidden(true);
-        throw new Error("repository admission response lost after creation");
-      }
-      return result;
-    };
-    const uncertain = await fixture.revision(owner, 2, { repositoryCredentials: selection });
-    await fixture.work(uncertain, "failed_permanent", 20_000);
-    assert.ok(lostSessionId);
-    await waitFor("lost session disposal after work failure", async () =>
-      (await repositoryAttempts(fixture, uncertain)).find(
-        ({ sessionId }) => sessionId === lostSessionId,
-      )?.phase === "disposed"
-        ? true
-        : undefined,
-    );
-    assert.equal((await repositoryAttempts(fixture, uncertain)).length, 1);
-    // Recovery and disposal ran while capability was absent; fresh material
-    // requires restoring it and explicitly admitting another revision.
-    relay.setCapabilitiesHidden(false);
-    const compatible = await fixture.revision(owner, 3, { repositoryCredentials: selection });
-    await fixture.work(compatible, "succeeded");
-    assert.equal(
-      (await repositoryAttempts(fixture, compatible)).filter(({ phase }) => phase === "open")
-        .length,
-      1,
-    );
-    // Losing the capability again must not gate the real stop and cleanup paths.
-    relay.setCapabilitiesHidden(true);
-    const stop = await fixture.requestStop(owner);
-    await fixture.work(stop, "succeeded");
-    await waitFor("repository cleanup despite the missing capability", async () =>
-      (await repositoryAttempts(fixture, compatible)).every(({ phase }) => phase === "disposed")
-        ? true
-        : undefined,
-    );
-  },
-);
 
 revisionTest(
   "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
@@ -1141,3082 +360,10 @@ revisionTest(
       "uncertain provider retirement must not be replayed",
     );
   },
-  { timeout: 30_000 },
+  // First in its file, so it also absorbs the file's cold start (finding 1171):
+  // about 12.5 s typically, 31.7 s once on a slow runner.
+  { timeout: 60_000 },
 );
-
-test(
-  "repository admission persists its opening request before dispatch and session ID before Compute",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { candidate } = await fixture.admitInitialRevision("repository-ordering", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const open = repository.driver.open;
-    repository.driver.open = async (input, signal) => {
-      const attempts = await repositoryAttempts(fixture, candidate);
-      assert.equal(attempts.length, 1);
-      assert.equal(attempts[0].phase, "opening");
-      assert.equal(attempts[0].sessionId, undefined);
-      assert.equal(attempts[0].admissionId, input.admissionId);
-      assert.equal(attempts[0].repositoryRef, input.binding.repositoryRef);
-      assert.equal(attempts[0].durationSeconds, input.durationSeconds);
-      assert.equal(attempts[0].deadlineWallMs, input.deadlineWallMs);
-      return open(input, signal);
-    };
-    const material = [];
-    const events = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, deploymentContext) {
-          const attempts = await repositoryAttempts(fixture, revision);
-          const [binding] = deploymentContext.repositoryCredentials;
-          assert.equal(attempts.length, 1);
-          assert.equal(attempts[0].phase, "open");
-          assert.equal(attempts[0].sessionId, binding.sessionId);
-          assert.equal(binding.kind, "new");
-          assert.equal(binding.repositoryRef, repository.snapshot.bindings[0].repositoryRef);
-          material.push(binding.files.bearer);
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-      },
-      { emit: (event) => events.push(event) },
-    );
-    assert.equal((await fixture.work(candidate, "succeeded")).attempt_count, 1);
-    assert.equal(material.length, 1);
-    const persisted = await fixture.observerPool.query(
-      `SELECT to_jsonb(attempt) AS value FROM occ.repository_session_attempts AS attempt
-       WHERE revision_id = $1
-       UNION ALL SELECT to_jsonb(work) FROM occ.controller_work AS work WHERE revision_id = $1
-       UNION ALL SELECT to_jsonb(audit) FROM occ.audit_events AS audit WHERE namespace_id = $2`,
-      [candidate.id, candidate.namespaceId],
-    );
-    assert.equal(JSON.stringify(persisted.rows).includes(material[0]), false);
-    assert.equal(JSON.stringify(events).includes(material[0]), false);
-  },
-);
-
-for (const alreadyDisposed of [false, true]) {
-  test(
-    alreadyDisposed
-      ? "a dropped repository-open response preserves recovered disposal after service pruning"
-      : "a dropped repository-open response recovers and closes its admission before opening fresh material",
-    requiresPostgres,
-    async (context) => {
-      const repository = repositoryBoundary();
-      const fixture = await setup(context, { repoDriver: repository.driver });
-      const { candidate } = await fixture.admitInitialRevision("repository-lost-response", {
-        revision: { repositoryCredentials: repository.snapshot },
-      });
-      const open = repository.driver.open;
-      let lostSessionId;
-      repository.driver.open = async (input, signal) => {
-        const result = await open(input, signal);
-        if (lostSessionId === undefined && result.kind === "created") {
-          lostSessionId = result.session.sessionId;
-          throw new Error("repository admission response lost after creation");
-        }
-        if (alreadyDisposed && result.kind === "recovered") {
-          return { ...result, status: { ...result.status, state: "DISPOSED" } };
-        }
-        return result;
-      };
-      if (alreadyDisposed) {
-        // The service's terminal observation is authoritative even if another
-        // admission prunes that inventory before a redundant close could arrive.
-        repository.driver.close = async (sessionId) => {
-          repository.calls.push({ operation: "close", sessionId });
-          return undefined;
-        };
-      }
-      const material = [];
-      await fixture.start({
-        ...fixture.compute,
-        async prepareRevision(revision, deploymentContext) {
-          material.push(...deploymentContext.repositoryCredentials);
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-      });
-      const completed = await fixture.work(candidate, "succeeded");
-      assert.equal(completed.attempt_count, 2);
-      const attempts = await repositoryAttempts(fixture, candidate);
-      assert.equal(attempts.find(({ sessionId }) => sessionId === lostSessionId).phase, "disposed");
-      assert.deepEqual(
-        repository.calls.map(({ operation }) => operation),
-        alreadyDisposed ? ["open", "recover", "open"] : ["open", "recover", "close", "open"],
-      );
-      const [original, recovered] = repository.calls;
-      const fresh = repository.calls.at(-1);
-      assert.deepEqual(recovered.input, { ...original.input, recoverOnly: true });
-      if (!alreadyDisposed) {
-        assert.equal(repository.calls[2].sessionId, lostSessionId);
-      }
-      assert.notEqual(fresh.input.admissionId, original.input.admissionId);
-      assert.deepEqual(fresh.input.binding, original.input.binding);
-      assert.equal(fresh.input.deadlineWallMs, original.input.deadlineWallMs);
-      assert.ok(fresh.input.durationSeconds <= original.input.durationSeconds);
-      assert.equal(
-        attempts.find(({ admissionId }) => admissionId === fresh.input.admissionId).phase,
-        "open",
-      );
-      assert.equal(material.length, 1);
-      assert.equal(material[0].kind, "new");
-      assert.notEqual(material[0].sessionId, lostSessionId);
-    },
-  );
-}
-
-test(
-  "a missing never-delivered repository opening can recover without inventing disposal",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { candidate } = await fixture.admitInitialRevision("repository-unseen-opening", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const open = repository.driver.open;
-    let undelivered;
-    repository.driver.open = async (input, signal) => {
-      if (undelivered === undefined) {
-        undelivered = input.admissionId;
-        throw new Error("control request did not reach the service");
-      }
-      return open(input, signal);
-    };
-    const material = [];
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision, deploymentContext) {
-        material.push(...deploymentContext.repositoryCredentials);
-        return fixture.compute.prepareRevision(revision, deploymentContext);
-      },
-    });
-    await fixture.work(candidate, "succeeded");
-    const attempts = await repositoryAttempts(fixture, candidate);
-    const missing = attempts.find(({ admissionId }) => admissionId === undelivered);
-    assert.equal(missing.phase, "invalidated");
-    assert.equal(missing.sessionId, undefined);
-    assert.equal(missing.liveRevisionId, candidate.id);
-    assert.equal(attempts.length, 2);
-    assert.equal(material.length, 1);
-    assert.equal(material[0].sessionId, attempts.find(({ phase }) => phase === "open").sessionId);
-    assert.deepEqual(
-      repository.calls.map(({ operation }) => operation),
-      ["recover", "open"],
-    );
-    await fixture.stop();
-  },
-);
-
-test(
-  "exhausted repository maintenance during a dependency outage keeps the active runtime",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    // One attempt makes the first unavailable dependency exhaust the claim, as
-    // a longer outage exhausts the default retries.
-    const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
-    const { owner, candidate } = await fixture.admitInitialRevision(
-      "repository-maintenance-outage",
-      { revision: { repositoryCredentials: repository.snapshot } },
-    );
-    const stopped = [];
-    let iamUnavailable = false;
-    const compute = {
-      ...fixture.compute,
-      async stopRevision(revision) {
-        stopped.push(revision.id);
-        return fixture.compute.stopRevision(revision);
-      },
-    };
-    const withUnavailableIAM = (drivers) => {
-      const createIAMDriver = drivers.createIAMDriver;
-      return {
-        ...drivers,
-        createIAMDriver(state) {
-          const iam = createIAMDriver(state);
-          return {
-            id: iam.id,
-            implementation: iam.implementation,
-            capability: iam.capability,
-            lookupIdentity: iam.lookupIdentity.bind(iam),
-            async authorize(request) {
-              if (iamUnavailable) {
-                throw new Error("IAM is temporarily unavailable");
-              }
-              return iam.authorize(request);
-            },
-          };
-        },
-      };
-    };
-    const startWorker = () =>
-      fixture.start(compute, {
-        pool: fixture.createWorkerPool(),
-        transformDrivers: withUnavailableIAM,
-      });
-    await startWorker();
-    await fixture.work(candidate, "succeeded");
-    await fixture.stop();
-
-    iamUnavailable = true;
-    const maintenance = await fixture.advanceMaintenance(candidate);
-    assert.equal(maintenance.rowCount, 1);
-    const outage = { id: candidate.id, idempotencyKey: maintenance.rows[0].idempotency_key };
-    await startWorker();
-    await fixture.work(outage, "failed_permanent");
-    await fixture.stop();
-    const failed = await fixture.observerPool.query(
-      "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-      [outage.idempotencyKey],
-    );
-    assert.equal(failed.rows[0].reason_code, "DEPENDENCY_UNAVAILABLE");
-    const retirement = await fixture.observerPool.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-      [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-    );
-    assert.equal(retirement.rowCount, 0, "an outage must not retire the authorized runtime");
-    assert.deepEqual(stopped, []);
-    const agent = await fixture.currentAgent(owner);
-    assert.equal(agent.activeRevisionId, candidate.id);
-    assert.equal(agent.desiredRuntimeState, "running");
-
-    // The maintenance chain continues, so the runtime is kept current once
-    // the dependency recovers.
-    iamUnavailable = false;
-    const next = await fixture.advanceMaintenance(candidate);
-    assert.equal(next.rowCount, 1);
-    assert.notEqual(next.rows[0].idempotency_key, outage.idempotencyKey);
-    await startWorker();
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: next.rows[0].idempotency_key },
-      "succeeded",
-    );
-    await fixture.stop();
-    assert.deepEqual(stopped, []);
-  },
-);
-
-test(
-  "an expired exhausted repository maintenance claim keeps the active runtime",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
-    const { owner, candidate } = await fixture.admitInitialRevision(
-      "repository-maintenance-lease-expiry",
-      { revision: { repositoryCredentials: repository.snapshot } },
-    );
-    const stopped = [];
-    const compute = {
-      ...fixture.compute,
-      async stopRevision(revision) {
-        stopped.push(revision.id);
-        return fixture.compute.stopRevision(revision);
-      },
-    };
-    await fixture.start(compute);
-    await fixture.work(candidate, "succeeded");
-    await fixture.stop();
-
-    // A worker claims the maintenance item on its last attempt and crashes
-    // before it finishes, so only lease expiry can release the claim.
-    const maintenance = await fixture.advanceMaintenance(candidate);
-    assert.equal(maintenance.rowCount, 1);
-    const crashedKey = maintenance.rows[0].idempotency_key;
-    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, {
-      leaseDurationMs: 30_000,
-      maxAttempts: 1,
-      random: () => 0,
-    });
-    const crashed = await queue.claim();
-    assert.equal(crashed?.idempotencyKey, crashedKey);
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [crashedKey, crashed.claimToken],
-    );
-    const recovery = await queue.recoverStale();
-    assert.equal(recovery.recovered, 1);
-
-    const failed = await fixture.observerPool.query(
-      "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-      [crashedKey],
-    );
-    assert.deepEqual(failed.rows[0], { state: "failed_permanent", reason_code: "LEASE_EXPIRED" });
-    const retirement = await fixture.observerPool.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-      [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-    );
-    assert.equal(retirement.rowCount, 0, "a crashed worker must not retire the active runtime");
-    const agent = await fixture.currentAgent(owner);
-    assert.equal(agent.activeRevisionId, candidate.id);
-    assert.equal(agent.desiredRuntimeState, "running");
-
-    // The maintenance chain continues with the next bucket.
-    const next = await fixture.advanceMaintenance(candidate);
-    assert.equal(next.rowCount, 1);
-    const bucket = BigInt(crashedKey.slice(crashedKey.lastIndexOf(":") + 1));
-    assert.deepEqual(next.rows[0], {
-      idempotency_key: `agent_revision:${candidate.id}:maintenance:${bucket + 1n}`,
-      attempt_count: 0,
-      actor_id: crashed.actorId,
-    });
-    await fixture.start(compute);
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: next.rows[0].idempotency_key },
-      "succeeded",
-    );
-    await fixture.stop();
-    assert.deepEqual(stopped, []);
-  },
-);
-
-for (const { name, crashes, finish } of [
-  {
-    name: "a deployment whose lease expires on its last attempt after publishing its revision gets one more attempt",
-    crashes: 1,
-    finish: "succeeds",
-  },
-  {
-    name: "a published deployment that loses its lease again fails without retiring the active runtime",
-    crashes: 2,
-    finish: "lease-expires",
-  },
-  {
-    name: "a published deployment whose extra attempt fails ends without retiring the active runtime",
-    crashes: 1,
-    finish: "dependency-unavailable",
-  },
-]) {
-  test(name, requiresPostgres, async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
-    const { owner, candidate: first } = await fixture.admitInitialRevision(
-      `publish-crash-${crashes}-${finish === "dependency-unavailable"}`,
-      { revision: { repositoryCredentials: repository.snapshot } },
-    );
-    const stopped = [];
-    const retired = [];
-    let iamUnavailable = false;
-    const compute = {
-      ...fixture.compute,
-      async stopRevision(revision) {
-        stopped.push(revision.id);
-        return fixture.compute.stopRevision(revision);
-      },
-      async retireRevision(revision) {
-        retired.push(revision.id);
-        return fixture.compute.retireRevision(revision);
-      },
-    };
-    await fixture.start(compute);
-    await fixture.work(first, "succeeded");
-    await fixture.stop();
-
-    // A worker claims the replacement on its last attempt, publishes the active pointer and
-    // crashes before activation, predecessor retirement and completion.
-    const second = await fixture.revision(owner, 2, { repositoryCredentials: repository.snapshot });
-    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, {
-      leaseDurationMs: 30_000,
-      maxAttempts: 1,
-      random: () => 0,
-    });
-    const crash = async () => {
-      const claim = await queue.claim();
-      assert.equal(claim?.idempotencyKey, second.idempotencyKey);
-      await fixture.expireClaim(claim, claim.claimToken);
-      assert.equal((await queue.recoverStale()).recovered, 1);
-    };
-    await fixture.state.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, first.id, second.id),
-    );
-    for (let crash_ = 0; crash_ < crashes; crash_ += 1) {
-      await crash();
-    }
-    const row = async () =>
-      (
-        await fixture.observerPool.query(
-          "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-          [second.idempotencyKey],
-        )
-      ).rows[0];
-    const retirement = await fixture.observerPool.query(
-      "SELECT 1 FROM occ.controller_work WHERE idempotency_key LIKE $1",
-      [`agent_revision:${second.id}:repository_cleanup:retire:%`],
-    );
-    assert.equal(retirement.rowCount, 0, "recovery must not retire the active runtime");
-    const evidence = await fixture.observerPool.query(
-      `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
-         WHERE kind = 'mutation' AND action = 'reconcile' AND details->>'workId' = $1
-         ORDER BY occurred_at, id`,
-      [second.idempotencyKey],
-    );
-    if (crashes === 2) {
-      // The extra attempt is granted once; a second loss ends the deployment.
-      assert.deepEqual(await row(), {
-        state: "failed_permanent",
-        reason_code: "LEASE_EXPIRED",
-        attempt_count: 1,
-      });
-      assert.deepEqual(evidence.rows.map(({ reason_code }) => reason_code).slice(-2), [
-        "ACTIVE_REVISION_RECOVERY",
-        "LEASE_EXPIRED",
-      ]);
-      assert.deepEqual(stopped, []);
-      assert.deepEqual(retired, []);
-      return;
-    }
-    assert.deepEqual(await row(), { state: "queued", reason_code: null, attempt_count: 0 });
-    assert.equal(evidence.rows.at(-1).reason_code, "ACTIVE_REVISION_RECOVERY");
-    const progress = await fixture.state.read((view) =>
-      view.operations.findWorkAttempt(second.idempotencyKey),
-    );
-    assert.equal(progress?.code, "ACTIVE_REVISION_RECOVERY");
-
-    if (finish === "dependency-unavailable") {
-      // A retry outcome on the extra (last) attempt fails the deployment but keeps the
-      // runtime it already activated.
-      iamUnavailable = true;
-      await fixture.start(compute, {
-        transformDrivers: (drivers) => {
-          const createIAMDriver = drivers.createIAMDriver;
-          return {
-            ...drivers,
-            createIAMDriver(state) {
-              const iam = createIAMDriver(state);
-              return {
-                id: iam.id,
-                implementation: iam.implementation,
-                capability: iam.capability,
-                lookupIdentity: iam.lookupIdentity.bind(iam),
-                async authorize(request) {
-                  if (iamUnavailable) {
-                    throw new Error("IAM is temporarily unavailable");
-                  }
-                  return iam.authorize(request);
-                },
-              };
-            },
-          };
-        },
-      });
-      await fixture.work(second, "failed_permanent");
-      await fixture.stop();
-      assert.deepEqual(await row(), {
-        state: "failed_permanent",
-        reason_code: "DEPENDENCY_UNAVAILABLE",
-        attempt_count: 1,
-      });
-      const retireAfterFailure = await fixture.observerPool.query(
-        "SELECT 1 FROM occ.controller_work WHERE idempotency_key LIKE $1",
-        [`agent_revision:${second.id}:repository_cleanup:retire:%`],
-      );
-      assert.equal(retireAfterFailure.rowCount, 0, "a failed finish must not retire the runtime");
-      assert.deepEqual(stopped, []);
-      assert.deepEqual(retired, []);
-      return;
-    }
-
-    // A worker finishes the published deployment through the already-active path.
-    await fixture.start(compute);
-    await fixture.work(second, "succeeded");
-    await fixture.stop();
-    assert.equal((await row()).reason_code, "REVISION_ALREADY_ACTIVE");
-    assert.deepEqual(retired, [first.id], "the predecessor must be retired");
-    assert.deepEqual(stopped, [], "the active revision must keep running");
-    const agent = await fixture.currentAgent(owner);
-    assert.equal(agent.activeRevisionId, second.id);
-  });
-}
-
-for (const loss of ["missing", "closed-repair"]) {
-  test(
-    loss === "missing"
-      ? "repository missing refuses replacement after exposure and retains refusal across worker restart"
-      : "repository closed-repair waits across worker restart and replaces material only after disposal",
-    requiresPostgres,
-    async (context) => {
-      const repository = repositoryBoundary();
-      const fixture = await setup(context, {
-        repoDriver: repository.driver,
-        leaseDurationMs: 600,
-      });
-      const { owner, candidate } = await fixture.admitInitialRevision(`repository-${loss}`, {
-        revision: { repositoryCredentials: repository.snapshot },
-      });
-      const delivered = [];
-      const stopped = [];
-      let missingMaterial = false;
-      const compute = {
-        ...fixture.compute,
-        async prepareRevision(revision, deploymentContext) {
-          delivered.push(...deploymentContext.repositoryCredentials);
-          const observation = await fixture.compute.prepareRevision(revision, deploymentContext);
-          return missingMaterial
-            ? {
-                ...observation,
-                ready: false,
-                repositoryCredentialMaterialMissing: [
-                  {
-                    repositoryRef: delivered[0].repositoryRef,
-                    sessionId: delivered[0].sessionId,
-                  },
-                ],
-              }
-            : observation;
-        },
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
-      };
-      await fixture.start(compute);
-      await fixture.work(candidate, "succeeded");
-      await fixture.stop();
-      const [original] = await repositoryAttempts(fixture, candidate);
-      const status = await repository.driver.status(original.sessionId);
-      const close = repository.driver.close;
-      // These are Driver protocol observations. Real PostgreSQL and worker
-      // admission must refuse replacement without inferring provider settlement.
-      if (loss === "missing") {
-        repository.driver.status = async () => undefined;
-        repository.driver.close = async () => undefined;
-      } else {
-        missingMaterial = true;
-        repository.driver.close = async () => ({ ...status, state: "CLOSED" });
-      }
-      const maintenance = await fixture.advanceMaintenance(candidate);
-      assert.equal(maintenance.rowCount, 1);
-      await fixture.start(compute, { pool: fixture.createWorkerPool() });
-      if (loss === "closed-repair") {
-        await waitFor("known closing session to retain cleanup ownership", async () => {
-          const [attempt] = await repositoryAttempts(fixture, candidate);
-          return attempt.phase === "closing" ? attempt : undefined;
-        });
-        await fixture.work(
-          { id: candidate.id, idempotencyKey: maintenance.rows[0].idempotency_key },
-          "failed_permanent",
-        );
-        await fixture.stop();
-        const [pending] = await repositoryAttempts(fixture, candidate);
-        assert.equal(pending.sessionId, original.sessionId);
-        assert.equal(pending.liveRevisionId, candidate.id);
-        assert.deepEqual(pending.cleanupContext, original.cleanupContext);
-        assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
-        assert.equal(delivered.filter(({ kind }) => kind === "new").length, 1);
-
-        // A restarted worker must still wait; CLOSED has not settled the
-        // original session's provider obligations or authorized new material.
-        const queued = await fixture.advanceMaintenance(candidate);
-        assert.equal(queued.rowCount, 1);
-        const retry = { id: candidate.id, idempotencyKey: queued.rows[0].idempotency_key };
-        await fixture.start(compute, { pool: fixture.createWorkerPool() });
-        await fixture.work(retry, "failed_permanent");
-        await fixture.stop();
-        const refusal = await fixture.observerPool.query(
-          "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-          [retry.idempotencyKey],
-        );
-        assert.equal(refusal.rows[0].reason_code, "REVISION_FINALIZATION_INCOMPLETE");
-        assert.equal((await repositoryAttempts(fixture, candidate)).length, 1);
-        assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
-        assert.equal(delivered.filter(({ kind }) => kind === "new").length, 1);
-        assert.deepEqual(stopped, []);
-
-        // Only confirmed disposal permits the existing bounded continuation
-        // to obtain a fresh session under the original revision deadline.
-        repository.driver.close = close;
-        missingMaterial = false;
-        const continuation = await fixture.advanceMaintenance(candidate);
-        assert.ok(continuation.rowCount > 0);
-        await fixture.start(compute, { pool: fixture.createWorkerPool() });
-        await fixture.work(
-          { id: candidate.id, idempotencyKey: continuation.rows[0].idempotency_key },
-          "succeeded",
-        );
-        await fixture.stop();
-        const attempts = await repositoryAttempts(fixture, candidate);
-        assert.equal(
-          attempts.find(({ sessionId }) => sessionId === original.sessionId).phase,
-          "disposed",
-        );
-        const fresh = attempts.find(({ phase }) => phase === "open");
-        assert.ok(fresh);
-        assert.notEqual(fresh.sessionId, original.sessionId);
-        assert.notEqual(fresh.admissionId, original.admissionId);
-        assert.equal(fresh.deadlineWallMs, original.deadlineWallMs);
-        assert.ok(fresh.durationSeconds <= original.durationSeconds);
-        assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 2);
-        assert.equal(delivered.filter(({ kind }) => kind === "new").length, 2);
-        assert.deepEqual(stopped, []);
-        return;
-      }
-      await fixture.work(
-        { id: candidate.id, idempotencyKey: maintenance.rows[0].idempotency_key },
-        "failed_permanent",
-      );
-      await waitFor("unsafe revision runtime to retire", async () =>
-        stopped.includes(candidate.id) ? true : undefined,
-      );
-      if (loss === "missing") {
-        await waitFor("invalidated cleanup to wait for Driver maintenance", async () => {
-          const delayed = await fixture.observerPool.query(
-            `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
-             FROM occ.controller_work
-             WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2`,
-            [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-          );
-          return Number(delayed.rows[0]?.delay_ms) >=
-            repository.driver.maintenanceIntervalMs - 1_000
-            ? true
-            : undefined;
-        });
-      }
-      await fixture.stop();
-      const refusal = await fixture.observerPool.query(
-        "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-        [maintenance.rows[0].idempotency_key],
-      );
-      assert.equal(refusal.rows[0].reason_code, "REPOSITORY_SESSION_RECOVERY_UNSAFE");
-      const [retained] = await repositoryAttempts(fixture, candidate);
-      assert.equal(retained.phase, loss === "missing" ? "invalidated" : "closing");
-      assert.equal(retained.sessionId, original.sessionId);
-      assert.equal(retained.liveRevisionId, candidate.id);
-      assert.deepEqual(retained.cleanupContext, original.cleanupContext);
-      const cleanup = await fixture.observerPool.query(
-        `SELECT state, actor_id FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-      );
-      assert.equal(cleanup.rowCount, 1);
-      assert.equal(cleanup.rows[0].state, "queued");
-      assert.equal(cleanup.rows[0].actor_id, fixture.actor.id);
-
-      // Previously admitted maintenance observations must keep refusing the
-      // lost session without multiplying the durable retirement obligation.
-      await fixture.start(compute, { pool: fixture.createWorkerPool() });
-      for (let index = 0; index < 4; index += 1) {
-        const another = {
-          id: candidate.id,
-          idempotencyKey: `agent_revision:${candidate.id}:maintenance:${Math.floor(Date.now() / repository.driver.maintenanceIntervalMs) + 2 + index}`,
-        };
-        await fixture.state.transactWithQueue((_unit, queue) =>
-          queue.enqueue({
-            idempotencyKey: another.idempotencyKey,
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            actorId: fixture.actor.id,
-            availableAt: new Date(0),
-          }),
-        );
-        await fixture.work(another, "failed_permanent");
-      }
-      await fixture.stop();
-      const repeatedCleanup = await fixture.observerPool.query(
-        `SELECT state, actor_id FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-      );
-      assert.equal(repeatedCleanup.rowCount, 1);
-      assert.equal(repeatedCleanup.rows[0].state, "queued");
-      assert.equal(repeatedCleanup.rows[0].actor_id, fixture.actor.id);
-      assert.equal((await repositoryAttempts(fixture, candidate)).length, 1);
-      assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
-      assert.equal(delivered.filter(({ kind }) => kind === "new").length, 1);
-      assert.ok(stopped.every((id) => id === candidate.id));
-
-      // A separately admitted revision is a new user request. It must not erase
-      // the old unresolved evidence or inherit the old session's authority.
-      missingMaterial = false;
-      const replacement = await fixture.revision(owner, 2, {
-        repositoryCredentials: repository.snapshot,
-      });
-      await fixture.start(compute, { pool: fixture.createWorkerPool() });
-      await fixture.work(replacement, "succeeded");
-      await fixture.stop();
-      const [fresh] = await repositoryAttempts(fixture, replacement);
-      assert.equal(fresh.phase, "open");
-      assert.notEqual(fresh.sessionId, original.sessionId);
-      assert.notEqual(fresh.admissionId, original.admissionId);
-      assert.equal((await repositoryAttempts(fixture, candidate))[0].phase, retained.phase);
-      assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 2);
-    },
-  );
-}
-
-test(
-  "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary({ count: 2 });
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { candidate } = await fixture.admitInitialRevision("repository-maintenance-restart", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const initial = [];
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision, deploymentContext) {
-        initial.push(...deploymentContext.repositoryCredentials);
-        return fixture.compute.prepareRevision(revision, deploymentContext);
-      },
-    });
-    await fixture.work(candidate, "succeeded");
-    await fixture.stop();
-    assert.equal(initial.length, 2);
-    const initialAttempts = await repositoryAttempts(fixture, candidate);
-    for (const binding of initial) {
-      const attempt = initialAttempts.find(
-        (entry) =>
-          entry.repositoryRef === binding.repositoryRef && entry.sessionId === binding.sessionId,
-      );
-      assert.ok(attempt);
-      assert.equal(binding.admissionId, attempt.admissionId);
-    }
-
-    // Successful activation already owns a queued observation with its original
-    // actor. Advancing this owned work's due time models a restart at that time.
-    const maintenance = await fixture.advanceMaintenance(candidate);
-    assert.equal(maintenance.rowCount, 1);
-    assert.equal(maintenance.rows[0].actor_id, fixture.actor.id);
-    const observed = [];
-    const stopped = [];
-    const callsBeforeRestart = repository.calls.length;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
-        async prepareRevision(revision, deploymentContext) {
-          observed.push(deploymentContext.repositoryCredentials);
-          const result = await fixture.compute.prepareRevision(revision, deploymentContext);
-          return observed.length === 1
-            ? {
-                ...result,
-                ready: false,
-                repositoryCredentialMaterialMissing: [
-                  { repositoryRef: initial[0].repositoryRef, sessionId: initial[0].sessionId },
-                ],
-              }
-            : result;
-        },
-      },
-      { pool: fixture.createWorkerPool() },
-    );
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: maintenance.rows[0].idempotency_key },
-      "succeeded",
-    );
-    assert.equal(observed.length, 2, "one missing observation permits one bounded repair");
-    assert.deepEqual(
-      observed[0].map(({ kind, repositoryRef, sessionId, admissionId }) => ({
-        kind,
-        repositoryRef,
-        sessionId,
-        admissionId,
-      })),
-      initial.map(({ repositoryRef, sessionId, admissionId }) => ({
-        kind: "retained",
-        repositoryRef,
-        sessionId,
-        admissionId,
-      })),
-    );
-    const repaired = observed[1].find(
-      ({ repositoryRef }) => repositoryRef === initial[0].repositoryRef,
-    );
-    const retained = observed[1].find(
-      ({ repositoryRef }) => repositoryRef === initial[1].repositoryRef,
-    );
-    assert.equal(repaired.kind, "new");
-    assert.notEqual(repaired.sessionId, initial[0].sessionId);
-    assert.notEqual(repaired.admissionId, initial[0].admissionId);
-    assert.deepEqual(retained, observed[0][1]);
-    const repairedAttempts = await repositoryAttempts(fixture, candidate);
-    const repairedAttempt = repairedAttempts.find(
-      (entry) => entry.sessionId === repaired.sessionId,
-    );
-    assert.ok(repairedAttempt);
-    assert.equal(repaired.admissionId, repairedAttempt.admissionId);
-    const recoveryCalls = repository.calls.slice(callsBeforeRestart);
-    assert.deepEqual(
-      recoveryCalls
-        .filter(({ operation }) => operation === "status")
-        .map(({ sessionId }) => sessionId)
-        .sort(),
-      initial.map(({ sessionId }) => sessionId).sort(),
-    );
-    assert.deepEqual(
-      recoveryCalls
-        .filter(({ operation }) => operation === "close")
-        .map(({ sessionId }) => sessionId),
-      [initial[0].sessionId],
-    );
-    assert.equal(recoveryCalls.filter(({ operation }) => operation === "open").length, 1);
-    await waitFor("session-only repair cleanup to settle", async () => {
-      const cleanup = await fixture.observerPool.query(
-        `SELECT state FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-      );
-      return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
-    });
-    assert.deepEqual(stopped, []);
-  },
-);
-
-test(
-  "repeated missing repository material fails the observation after one repair and cannot activate",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-repair-bound", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    let preparations = 0;
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision, deploymentContext) {
-        preparations += 1;
-        const observation = await fixture.compute.prepareRevision(revision, deploymentContext);
-        const [binding] = deploymentContext.repositoryCredentials;
-        return {
-          ...observation,
-          ready: false,
-          repositoryCredentialMaterialMissing: [
-            {
-              repositoryRef: binding.repositoryRef,
-              sessionId: binding.sessionId,
-            },
-          ],
-        };
-      },
-    });
-    assert.equal((await fixture.work(candidate, "failed_permanent")).attempt_count, 1);
-    assert.equal(preparations, 2);
-    assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 2);
-    const current = await fixture.currentAgent(owner);
-    assert.equal(current.activeRevisionId, undefined);
-    await waitFor("both unusable material attempts to be disposed", async () => {
-      const attempts = await repositoryAttempts(fixture, candidate);
-      return attempts.length === 2 && attempts.every(({ phase }) => phase === "disposed")
-        ? true
-        : undefined;
-    });
-  },
-);
-
-for (const change of ["revoked", "stopped", "expired", "superseded"]) {
-  test(
-    `an unfinished repository admission cannot reopen after its revision is ${change}`,
-    requiresPostgres,
-    async (context) => {
-      const repository = repositoryBoundary();
-      const fixture = await setup(context, { repoDriver: repository.driver });
-      const owner = await fixture.agent(`repository-${change}`);
-      if (change === "expired") {
-        repository.snapshot.deadlineWallMs = Date.now() + 3_000;
-      }
-      let actorId = fixture.actor.id;
-      if (change === "revoked") {
-        actorId = `principal-${randomUUID()}`;
-        await fixture.observerPool.query(
-          `INSERT INTO occ.iam_identities (id, kind, issuer, subject)
-           SELECT $1, kind, issuer, $1 FROM occ.iam_identities WHERE id = $2`,
-          [actorId, fixture.actor.id],
-        );
-        const granted = await fixture.observerPool.query(
-          `INSERT INTO occ.iam_access_bindings
-            (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
-           SELECT gen_random_uuid()::text, namespace_id, $1, NULL, role_id, resource_kind, resource_id
-           FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
-          [actorId, fixture.actor.id],
-        );
-        assert.ok(granted.rowCount > 0);
-      }
-      const candidate = await fixture.revision(owner, 1, {
-        repositoryCredentials: repository.snapshot,
-        actorId,
-      });
-      const open = repository.driver.open;
-      let lostSessionId;
-      repository.driver.open = async (input, signal) => {
-        const result = await open(input, signal);
-        if (lostSessionId === undefined && result.kind === "created") {
-          lostSessionId = result.session.sessionId;
-          // Change real authority while its external admission result is lost.
-          // Cleanup may recover that admission but cannot deliver or replace it.
-          if (change === "revoked") {
-            // Restrictions are the supported app-role mutation that revokes
-            // effective authority; identity deletion requires a different role.
-            await fixture.observerPool.query(
-              `INSERT INTO occ.iam_restrictions
-                 (id, namespace_id, action, resource_kind, resource_id, effect)
-               VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
-              [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
-            );
-          } else if (change === "stopped") {
-            await fixture.requestStop(owner);
-          } else if (change === "expired") {
-            await delay(Math.max(0, repository.snapshot.deadlineWallMs - Date.now()) + 30);
-          } else {
-            const replacement = await fixture.revision(owner, 2);
-            await fixture.state.transact((unit) =>
-              unit.agents.compareAndSetActiveRevision(
-                fixture.namespace.id,
-                owner.id,
-                undefined,
-                replacement.id,
-              ),
-            );
-          }
-          throw new Error("repository admission response lost during authority change");
-        }
-        return result;
-      };
-      const prepared = [];
-      const events = [];
-      await fixture.start(
-        {
-          ...fixture.compute,
-          async prepareRevision(revision, deploymentContext) {
-            prepared.push(revision.id);
-            return fixture.compute.prepareRevision(revision, deploymentContext);
-          },
-        },
-        { emit: (event) => events.push(event) },
-      );
-      if (change === "superseded") {
-        await waitFor("the superseded revision to finish without new authority", async () => {
-          const result = await fixture.observerPool.query(
-            "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
-            [candidate.idempotencyKey],
-          );
-          return ["succeeded", "failed_permanent"].includes(result.rows[0]?.state)
-            ? true
-            : undefined;
-        });
-      } else {
-        await fixture.work(candidate, change === "stopped" ? "succeeded" : "failed_permanent");
-      }
-      await waitFor("the unfinished admission to settle without renewed authority", async () => {
-        const attempts = await repositoryAttempts(fixture, candidate);
-        return attempts.length === 1 && attempts[0].phase === "disposed" ? attempts : undefined;
-      });
-      assert.ok(lostSessionId);
-      assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
-      assert.ok(repository.calls.some(({ operation }) => operation === "recover"));
-      assert.ok(
-        repository.calls.some(
-          ({ operation, sessionId }) => operation === "close" && sessionId === lostSessionId,
-        ),
-      );
-      assert.equal(prepared.includes(candidate.id), false);
-      const reasons = {
-        revoked: ["AUTHORIZATION_DENIED"],
-        stopped: ["REVISION_STOPPED"],
-        expired: ["REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED"],
-        superseded: ["REPOSITORY_REVISION_SUPERSEDED", "REVISION_SUPERSEDED"],
-      };
-      await waitFor("the worker's exact terminal authority reason", async () =>
-        events.find(
-          ({ event, workId, code }) =>
-            event === "worker.completed" &&
-            workId === candidate.idempotencyKey &&
-            reasons[change].includes(code),
-        ),
-      );
-      if (change === "revoked") {
-        const cleanup = await fixture.observerPool.query(
-          `SELECT actor_id FROM occ.controller_work
-           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-        );
-        assert.ok(cleanup.rowCount > 0);
-        assert.ok(cleanup.rows.every(({ actor_id }) => actor_id === actorId));
-      }
-    },
-  );
-}
-
-test(
-  "repository service outage during Agent stop still stops Compute and retains durable closing work",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-stop-outage", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const stopped = [];
-    await fixture.start({
-      ...fixture.compute,
-      async stopRevision(revision) {
-        stopped.push(revision.id);
-        return fixture.compute.stopRevision(revision);
-      },
-    });
-    await fixture.work(candidate, "succeeded");
-    const close = repository.driver.close;
-    let unavailable = true;
-    repository.driver.close = async (sessionId, signal) => {
-      if (unavailable) {
-        throw new Error("repository service temporarily unavailable");
-      }
-      return close(sessionId, signal);
-    };
-    const stop = await fixture.requestStop(owner);
-    await waitFor("Compute shutdown despite the credential service outage", async () =>
-      stopped.includes(candidate.id) ? true : undefined,
-    );
-    const attempts = await repositoryAttempts(fixture, candidate);
-    assert.equal(attempts.length, 1);
-    assert.equal(attempts[0].phase, "closing");
-    const cleanup = await fixture.observerPool.query(
-      `SELECT actor_id, state FROM occ.controller_work
-       WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-      [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-    );
-    assert.ok(cleanup.rowCount >= 1);
-    assert.ok(
-      cleanup.rows.every(
-        ({ actor_id, state }) =>
-          actor_id === fixture.actor.id && ["queued", "claimed"].includes(state),
-      ),
-    );
-    assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
-    // Hold the outage through a completed cleanup pass. Otherwise recovery can
-    // race the first close and never exercise the durable retry schedule.
-    await waitFor("outage cleanup to defer at the Driver interval", async () => {
-      const deferred = await fixture.observerPool.query(
-        `SELECT state FROM occ.controller_work
-         WHERE idempotency_key LIKE $1 AND state = 'queued'
-           AND available_at - updated_at >= $2::double precision * interval '1 millisecond'`,
-        [
-          `agent_revision:${candidate.id}:repository_cleanup:%`,
-          repository.driver.maintenanceIntervalMs - 1_000,
-        ],
-      );
-      return deferred.rowCount === 1 ? true : undefined;
-    });
-    unavailable = false;
-    await advanceCleanupRetries(fixture, candidate);
-    await waitFor(
-      "the persisted shutdown obligation to settle after service recovery",
-      async () => {
-        const current = await repositoryAttempts(fixture, candidate);
-        return current[0]?.phase === "disposed" ? true : undefined;
-      },
-    );
-    await fixture.work(stop, "succeeded");
-  },
-);
-
-test(
-  "terminal repository retirement survives repeated Compute failures and restart without reopening authority",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-grant-drift", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const prepared = [];
-    const stopped = [];
-    let unavailable = true;
-    const compute = {
-      ...fixture.compute,
-      async prepareRevision(revision, deploymentContext) {
-        prepared.push(revision.id);
-        return fixture.compute.prepareRevision(revision, deploymentContext);
-      },
-      async stopRevision(revision) {
-        stopped.push(revision.id);
-        if (unavailable) {
-          throw new Error("Compute retirement temporarily unavailable");
-        }
-        return fixture.compute.stopRevision(revision);
-      },
-    };
-    await fixture.start(compute);
-    await fixture.work(candidate, "succeeded");
-    await fixture.stop();
-    const [original] = await repositoryAttempts(fixture, candidate);
-    repository.driver.resolve = () => ({
-      sessionDurationSeconds: 60,
-      bindings: repository.snapshot.bindings.map((binding) => ({
-        ...binding,
-        grant: { ...binding.grant, grantId: "replacement-grant" },
-      })),
-    });
-    const maintenance = await fixture.advanceMaintenance(candidate);
-    assert.equal(maintenance.rowCount, 1);
-    await fixture.start(compute, { pool: fixture.createWorkerPool() });
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: maintenance.rows[0].idempotency_key },
-      "failed_permanent",
-    );
-    await waitFor("the old grant's existing session to be disposed", async () => {
-      const attempts = await repositoryAttempts(fixture, candidate);
-      return attempts.length === 1 && attempts[0].phase === "disposed" ? true : undefined;
-    });
-    // The foreground is already terminal and every session is disposed. Compute
-    // must retain a separate durable obligation beyond its ordinary failure budget.
-    await waitFor("retirement to retry beyond the foreground's five attempts", async () => {
-      if (stopped.length <= 5) {
-        await advanceCleanupRetries(fixture, candidate);
-        return undefined;
-      }
-      // Join the final failed pass before shutdown; aborting it mid-claim would
-      // leave a stale lease instead of the deferred work this restart exercises.
-      const deferred = await fixture.observerPool.query(
-        "SELECT state FROM occ.controller_work WHERE idempotency_key LIKE $1 AND state = 'queued'",
-        [`agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-      );
-      return deferred.rowCount === 1 ? true : undefined;
-    });
-    await fixture.stop();
-    const retirement = await fixture.observerPool.query(
-      `SELECT idempotency_key, state, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-      [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
-    );
-    assert.equal(retirement.rowCount, 1);
-    assert.equal(retirement.rows[0].state, "queued");
-    assert.equal(retirement.rows[0].actor_id, fixture.actor.id);
-    assert.deepEqual(prepared, [candidate.id]);
-
-    // A restart may retire only the failed revision, even after a newer revision
-    // and another Agent become active. Neither needs this expired repository grant.
-    const sibling = await fixture.agent("repository-retirement-sibling");
-    const newer = await fixture.revision(owner, 2);
-    const siblingRevision = await fixture.revision(sibling, 1);
-    const stopsBeforeRestart = stopped.length;
-    await fixture.start(compute, { pool: fixture.createWorkerPool() });
-    await fixture.work(newer, "succeeded");
-    await fixture.work(siblingRevision, "succeeded");
-    await waitFor("the restarted worker to resume exact retirement", async () => {
-      if (stopped.length > stopsBeforeRestart) {
-        return true;
-      }
-      await advanceCleanupRetries(fixture, candidate);
-      return undefined;
-    });
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: retirement.rows[0].idempotency_key },
-      "queued",
-    );
-    unavailable = false;
-    await advanceCleanupRetries(fixture, candidate);
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: retirement.rows[0].idempotency_key },
-      "succeeded",
-    );
-    assert.ok(stopped.every((id) => id === candidate.id));
-    assert.equal(prepared.filter((id) => id === candidate.id).length, 1);
-    const active = await fixture.state.read(async (view) => [
-      await view.agents.findAgent(fixture.namespace.id, owner.id),
-      await view.agents.findAgent(fixture.namespace.id, sibling.id),
-    ]);
-    assert.deepEqual(
-      active.map((agent) => agent.activeRevisionId),
-      [newer.id, siblingRevision.id],
-    );
-    assert.deepEqual(
-      (await repositoryAttempts(fixture, candidate)).map(({ phase }) => phase),
-      ["disposed"],
-    );
-    assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
-    assert.ok(
-      repository.calls.some(
-        ({ operation, sessionId }) => operation === "close" && sessionId === original.sessionId,
-      ),
-    );
-    const failure = await fixture.observerPool.query(
-      `SELECT details->>'reasonCode' AS code FROM occ.audit_events
-       WHERE resource_id = $1 AND action = 'reconcile' AND outcome = 'failure'`,
-      [candidate.id],
-    );
-    assert.ok(failure.rows.some(({ code }) => code === "REPOSITORY_BINDING_CHANGED"));
-  },
-);
-
-test(
-  "repository stop rechecks locked intent after a newer deployment commits while cleanup waits",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { owner, candidate: first } = await fixture.admitInitialRevision(
-      "repository-stop-admission-race",
-      { revision: { repositoryCredentials: repository.snapshot } },
-    );
-    await fixture.start(fixture.compute);
-    await fixture.work(first, "succeeded");
-    await fixture.stop();
-    const [original] = await repositoryAttempts(fixture, first);
-    const stop = await fixture.requestStop(owner);
-    const replacement = {
-      ...first,
-      id: `rev_${randomUUID()}`,
-      revision: 2,
-      configuration: { revision: "2" },
-      createdAt: new Date().toISOString(),
-    };
-    delete replacement.idempotencyKey;
-    const replacementKey = `agent_revision:${replacement.id}:reconcile`;
-    const commitAdmission = Promise.withResolvers();
-    const releaseCompute = Promise.withResolvers();
-    let locked = false;
-    let preparingReplacement = false;
-    const stopped = [];
-    const events = [];
-    // Follow production Namespace→Agent lock ordering. The stop worker can read
-    // committed stopped intent, then waits while admission atomically publishes
-    // its newer revision, running intent, and queue item.
-    const admission = fixture.state.transactWithQueue(async (unit, queue) => {
-      await unit.namespaces.lockNamespace(fixture.namespace.id);
-      await unit.agents.lockAgent(fixture.namespace.id, owner.id);
-      locked = true;
-      await commitAdmission.promise;
-      await unit.revisions.createRevision(replacement);
-      await unit.agents.transitionAgentDesiredRuntimeState(
-        fixture.namespace.id,
-        owner.id,
-        ["stopped"],
-        "running",
-      );
-      await queue.enqueue({
-        idempotencyKey: replacementKey,
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: replacement.id,
-        actorId: fixture.actor.id,
-        availableAt: new Date(0),
-      });
-    });
-    // Keep a rejected setup promise observed while the finally block owns its join.
-    void admission.catch(() => {});
-    try {
-      await waitFor("replacement admission to hold its resource locks", async () =>
-        locked ? true : undefined,
-      );
-      const workerPool = fixture.createWorkerPool();
-      const backend = await workerPool.query("SELECT pg_backend_pid() AS pid");
-      await fixture.start(
-        {
-          ...fixture.compute,
-          async prepareRevision(revision, deploymentContext) {
-            if (revision.id === replacement.id) {
-              preparingReplacement = true;
-              await releaseCompute.promise;
-            }
-            return fixture.compute.prepareRevision(revision, deploymentContext);
-          },
-          async stopRevision(revision) {
-            stopped.push(revision.id);
-            return fixture.compute.stopRevision(revision);
-          },
-        },
-        { emit: (event) => events.push(event), pool: workerPool },
-      );
-      await waitFor("the stop worker's real database lock wait", async () => {
-        const waiting = await fixture.observerPool.query(
-          `SELECT pid FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'
-           AND query LIKE '%FROM occ.namespaces%' AND query LIKE '%FOR UPDATE%'
-           AND cardinality(pg_blocking_pids(pid)) > 0`,
-          [backend.rows[0].pid],
-        );
-        return waiting.rowCount === 1 ? true : undefined;
-      });
-      assert.equal((await fixture.work(stop, "claimed")).attempt_count, 1);
-      commitAdmission.resolve();
-      await admission;
-      await waitFor("the newer revision to reach Compute preparation", async () =>
-        preparingReplacement ? true : undefined,
-      );
-      assert.equal((await fixture.work(stop, "succeeded")).attempt_count, 1);
-      await completion(
-        events,
-        "the stop's STOP_SUPERSEDED completion",
-        ({ event, workId, code }) =>
-          event === "worker.completed" &&
-          workId === stop.idempotencyKey &&
-          code === "STOP_SUPERSEDED",
-      );
-      assert.deepEqual(stopped, []);
-      assert.equal(
-        repository.calls.some(
-          ({ operation, sessionId }) => operation === "close" && sessionId === original.sessionId,
-        ),
-        false,
-      );
-      const [retained] = await repositoryAttempts(fixture, first);
-      assert.equal(retained.phase, "open");
-      assert.equal(retained.sessionId, original.sessionId);
-      const current = await fixture.currentAgent(owner);
-      assert.equal(current.desiredRuntimeState, "running");
-      assert.equal(current.activeRevisionId, first.id);
-    } finally {
-      commitAdmission.resolve();
-      releaseCompute.resolve();
-      await admission;
-    }
-    await fixture.work({ id: replacement.id, idempotencyKey: replacementKey }, "succeeded");
-    const current = await fixture.currentAgent(owner);
-    assert.equal(current.activeRevisionId, replacement.id);
-  },
-);
-
-test(
-  "repository cleanup rereads obligations added while its external close is outstanding",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary({ count: 2 });
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-cleanup-reread", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const open = repository.driver.open;
-    const close = repository.driver.close;
-    const releaseCleanup = Promise.withResolvers();
-    let firstSession;
-    let cleanupWaiting = false;
-    let preparations = 0;
-    const stopped = [];
-    repository.driver.open = async (input, signal) => {
-      const result = await open(input, signal);
-      if (result.kind === "created" && firstSession === undefined) {
-        firstSession = result.session;
-      }
-      return result;
-    };
-    repository.driver.close = async (sessionId, signal) => {
-      if (sessionId === firstSession?.sessionId && !cleanupWaiting) {
-        const source = await fixture.observerPool.query(
-          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
-          [candidate.idempotencyKey],
-        );
-        if (source.rows[0].state === "claimed") {
-          // A failed repair leaves its first binding closing while the other
-          // binding remains open until foreground exhaustion transfers it.
-          throw new Error("repository close temporarily unavailable");
-        }
-        cleanupWaiting = true;
-        await releaseCleanup.promise;
-      }
-      return close(sessionId, signal);
-    };
-    await fixture.start({
-      ...fixture.compute,
-      async stopRevision(revision) {
-        stopped.push(revision.id);
-        return fixture.compute.stopRevision(revision);
-      },
-      async prepareRevision(revision, deploymentContext) {
-        preparations += 1;
-        if (preparations > 1) {
-          throw new Error("Compute unavailable during repair");
-        }
-        const observation = await fixture.compute.prepareRevision(revision, deploymentContext);
-        const [binding] = deploymentContext.repositoryCredentials;
-        return {
-          ...observation,
-          ready: false,
-          repositoryCredentialMaterialMissing: [
-            {
-              repositoryRef: binding.repositoryRef,
-              sessionId: binding.sessionId,
-            },
-          ],
-        };
-      },
-    });
-    let cleanupKey;
-    try {
-      await waitFor("the durable cleanup worker to enter its pending close", async () =>
-        cleanupWaiting ? true : undefined,
-      );
-      const before = await repositoryAttempts(fixture, candidate);
-      assert.equal(before.length, 2);
-      assert.deepEqual(before.map(({ phase }) => phase).sort(), ["closing", "open"]);
-      const cleanup = await fixture.observerPool.query(
-        `SELECT idempotency_key, state, actor_id, claim_token FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-      );
-      assert.equal(cleanup.rowCount, 1);
-      assert.equal(cleanup.rows[0].state, "claimed");
-      assert.equal(cleanup.rows[0].actor_id, fixture.actor.id);
-      cleanupKey = cleanup.rows[0].idempotency_key;
-
-      // Recovery transfers another stop's session cleanup while the first
-      // worker is in the external close. The Agent remains running, as when
-      // later intent supersedes an earlier stop; recovery must retain the claim.
-      const stopKey = `agent:${owner.id}:reconcile:stopped:${randomUUID()}`;
-      await fixture.state.transactWithQueue((_unit, queue) =>
-        queue.enqueue({
-          idempotencyKey: stopKey,
-          namespaceId: candidate.namespaceId,
-          agentId: candidate.agentId,
-          agentTarget: "stopped",
-          actorId: fixture.actor.id,
-        }),
-      );
-      await fixture.observerPool.query(
-        "UPDATE occ.controller_work SET attempt_count = 1 WHERE idempotency_key = $1",
-        [stopKey],
-      );
-      // A separately configured queue can exhaust the original queued source
-      // while its already-claimed session cleanup retains its own purpose.
-      const recovery = new fixture.PostgresWorkQueue(fixture.observerPool, {
-        leaseDurationMs: 30_000,
-        maxAttempts: 1,
-        random: () => 0,
-      });
-      assert.ok((await recovery.recoverStale()).exhaustedQueued >= 2);
-      await fixture.work(candidate, "failed_permanent");
-      const stillClaimed = await fixture.observerPool.query(
-        "SELECT state, claim_token FROM occ.controller_work WHERE idempotency_key = $1",
-        [cleanupKey],
-      );
-      assert.deepEqual(stillClaimed.rows[0], {
-        state: "claimed",
-        claim_token: cleanup.rows[0].claim_token,
-      });
-      assert.ok(
-        (await repositoryAttempts(fixture, candidate)).every(({ phase }) => phase === "closing"),
-      );
-    } finally {
-      releaseCleanup.resolve();
-    }
-    await waitFor(
-      "cleanup to close the newly transferred obligation before completion",
-      async () => {
-        const attempts = await repositoryAttempts(fixture, candidate);
-        return attempts.length === 2 && attempts.every(({ phase }) => phase === "disposed")
-          ? true
-          : undefined;
-      },
-    );
-    await advanceCleanupRetries(fixture, candidate);
-    await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "succeeded");
-    const cleanup = await fixture.observerPool.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-      [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-    );
-    assert.equal(cleanup.rowCount, 2);
-    const retirement = cleanup.rows.find(({ idempotency_key }) =>
-      idempotency_key.includes(":repository_cleanup:retire:"),
-    );
-    assert.ok(retirement);
-    await fixture.work(
-      { id: candidate.id, idempotencyKey: retirement.idempotency_key },
-      "succeeded",
-    );
-    assert.deepEqual(stopped, [candidate.id]);
-    assert.equal(preparations, 1);
-    assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 2);
-  },
-);
-
-test(
-  "a PostgreSQL claim lost during repository admission aborts its signal and rejects late material",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary();
-    const fixture = await setup(context, {
-      leaseDurationMs: 600,
-      repoDriver: repository.driver,
-    });
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-stale-claim", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const release = Promise.withResolvers();
-    const open = repository.driver.open;
-    let firstInput;
-    let operationSignal;
-    let staleSessionId;
-    repository.driver.open = async (input, signal) => {
-      const result = await open(input, signal);
-      if (firstInput === undefined) {
-        firstInput = input;
-        operationSignal = signal;
-        staleSessionId = result.session.sessionId;
-        // A remote response can arrive even after cancellation. The worker must
-        // fence the successful result, independently of Driver cooperation.
-        await release.promise;
-      }
-      return result;
-    };
-    const prepared = [];
-    let preparations = 0;
-    const events = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, deploymentContext) {
-          preparations += 1;
-          prepared.push(...deploymentContext.repositoryCredentials);
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-      },
-      { emit: (event) => events.push(event) },
-    );
-    let recoveryQueue;
-    let recovered;
-    try {
-      await waitFor("the worker to dispatch its first repository admission", async () =>
-        firstInput === undefined ? undefined : true,
-      );
-      const original = await fixture.work(candidate, "claimed");
-      await fixture.expireClaim(candidate, original.claim_token);
-      recoveryQueue = new fixture.PostgresWorkQueue(fixture.observerPool, {
-        leaseDurationMs: 30_000,
-        maxAttempts: 5,
-        random: () => 0,
-      });
-      assert.ok((await recoveryQueue.recoverStale()).recovered >= 1);
-      recovered = await recoveryQueue.claim();
-      assert.equal(recovered?.idempotencyKey, candidate.idempotencyKey);
-      assert.equal(recovered.attemptCount, 2);
-      assert.notEqual(recovered.claimToken, original.claim_token);
-      await waitFor("the lost PostgreSQL claim to abort the outstanding admission", async () =>
-        operationSignal.aborted ? true : undefined,
-      );
-      assert.deepEqual(prepared, []);
-      assert.equal(preparations, 0);
-    } finally {
-      release.resolve();
-    }
-    await waitFor("the stale worker to reject the late admission response", async () =>
-      events.find(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
-    );
-    assert.deepEqual(prepared, []);
-    assert.equal(preparations, 0);
-    const attempts = await repositoryAttempts(fixture, candidate);
-    assert.equal(attempts.length, 1);
-    assert.equal(attempts[0].admissionId, firstInput.admissionId);
-    assert.equal(attempts[0].phase, "opening");
-    assert.equal(attempts[0].sessionId, undefined);
-    const unchanged = await fixture.observerPool.query(
-      `SELECT state, claim_token, attempt_count, completed_at
-       FROM occ.controller_work WHERE idempotency_key = $1`,
-      [candidate.idempotencyKey],
-    );
-    assert.deepEqual(unchanged.rows, [
-      {
-        state: "claimed",
-        claim_token: recovered.claimToken,
-        attempt_count: 2,
-        completed_at: null,
-      },
-    ]);
-    const inactive = await fixture.currentAgent(owner);
-    assert.equal(inactive.activeRevisionId, undefined);
-    await recoveryQueue.retry(recovered, { code: "TEST_RECOVERY_HANDOFF" });
-    await fixture.work(candidate, "succeeded");
-    assert.equal(prepared.length, 1);
-    assert.equal(preparations, 1);
-    assert.notEqual(prepared[0].sessionId, staleSessionId);
-    assert.equal(
-      (await repositoryAttempts(fixture, candidate)).find(
-        ({ admissionId }) => admissionId === firstInput.admissionId,
-      ).phase,
-      "disposed",
-    );
-  },
-);
-
-test(
-  "worker health remains current while a Compute operation holds a renewed PostgreSQL lease",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context, { leaseDurationMs: 1_200 });
-    const { candidate } = await fixture.admitInitialRevision("long-compute-health");
-    const entered = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    const events = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, deploymentContext) {
-          entered.resolve();
-          await release.promise;
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-      },
-      { emit: (event) => events.push(event) },
-    );
-    try {
-      await entered.promise;
-      const healthCount = () => events.filter(({ event }) => event === "worker.health").length;
-      const before = healthCount();
-      // A busy worker must report fresh database health before Compute returns,
-      // not only after completion. The real queue continues renewing its lease.
-      await waitFor("health observations during the unfinished Compute operation", async () =>
-        healthCount() >= before + 2 ? true : undefined,
-      );
-      const claimed = await fixture.work(candidate, "claimed");
-      assert.equal(claimed.attempt_count, 1);
-    } finally {
-      release.resolve();
-    }
-    await fixture.work(candidate, "succeeded");
-  },
-);
-
-for (const slowCall of [1, 2]) {
-  test(
-    `slow health update ${slowCall} does not block Compute or PostgreSQL lease renewal`,
-    requiresPostgres,
-    async (context) => {
-      const healthEntered = Promise.withResolvers();
-      const releaseHealth = Promise.withResolvers();
-      const releaseCompute = Promise.withResolvers();
-      let healthCalls = 0;
-      const fixture = await setup(context, {
-        leaseDurationMs: 1_200,
-        async onHealthy() {
-          if (++healthCalls !== slowCall) {
-            return;
-          }
-          healthEntered.resolve();
-          await releaseHealth.promise;
-        },
-      });
-      const { owner, candidate } = await fixture.admitInitialRevision("slow-health");
-      const events = [];
-      let preparing = false;
-      await fixture.start(
-        {
-          ...fixture.compute,
-          async prepareRevision(revision, deploymentContext) {
-            preparing = true;
-            await releaseCompute.promise;
-            return fixture.compute.prepareRevision(revision, deploymentContext);
-          },
-        },
-        { emit: (event) => events.push(event) },
-      );
-      try {
-        await healthEntered.promise;
-        // Cover both the health update before the first effect and one started
-        // during Compute. Neither may hold the claim's renewal chain hostage.
-        await waitFor("Compute to start despite the pending health update", async () =>
-          preparing ? true : undefined,
-        );
-        const original = await fixture.work(candidate, "claimed");
-        await delay(2_600);
-        const lease = await fixture.observerPool.query(
-          `SELECT claim_token, attempt_count, lease_expires_at > clock_timestamp() AS live
-           FROM occ.controller_work WHERE idempotency_key = $1`,
-          [candidate.idempotencyKey],
-        );
-        assert.deepEqual(lease.rows, [
-          { claim_token: original.claim_token, attempt_count: 1, live: true },
-        ]);
-        assert.equal(healthCalls, slowCall, "health updates must not overlap");
-        assert.equal(
-          events.some(({ code }) => code === "CLAIM_LOST"),
-          false,
-        );
-      } finally {
-        releaseHealth.resolve();
-        releaseCompute.resolve();
-      }
-      await fixture.work(candidate, "succeeded");
-      const active = await fixture.currentAgent(owner);
-      assert.equal(active.activeRevisionId, candidate.id);
-    },
-  );
-}
-
-test(
-  "failed readiness updates do not abort Compute or spend its retry budget",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context, {
-      leaseDurationMs: 1_200,
-      async onHealthy() {
-        throw new Error("readiness sink unavailable");
-      },
-    });
-    const { candidate } = await fixture.admitInitialRevision("failed-health");
-    const events = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, deploymentContext) {
-          await delay(2_600);
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-      },
-      { emit: (event) => events.push(event) },
-    );
-    const completed = await fixture.work(candidate, "succeeded");
-    assert.equal(completed.attempt_count, 1);
-    assert.ok(events.some(({ code }) => code === "HEALTH_UNAVAILABLE"));
-    assert.equal(
-      events.some(({ code }) => code === "CLAIM_LOST"),
-      false,
-    );
-    assert.equal(
-      events.some(({ event }) => event === "worker.health"),
-      false,
-    );
-  },
-);
-
-revisionTest(
-  "credential withdrawal work revokes from the active revision without redeploying it",
-  async (fixture) => {
-    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-target", {
-      agent: { auth: "credential_source" },
-    });
-    const prepared = [];
-    const withdrawn = [];
-    let pendingOnce = true;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, revisionContext) {
-          if (revision.namespaceId === fixture.namespace.id) {
-            prepared.push(revision.id);
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(revision, source) {
-          withdrawn.push([revision.id, source.id]);
-          // The first observation is still pending, so the worker must retry, not report success.
-          if (pendingOnce) {
-            pendingOnce = false;
-            return { sourceId: source.id, state: "pending" };
-          }
-          return { sourceId: source.id, state: "revoked" };
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "succeeded");
-    const deployments = prepared.length;
-
-    // Record the withdrawal the way the API does: a pending row plus revision-scoped work.
-    const source = { id: owner.harnessAuth.sourceId };
-    const operationId = randomUUID();
-    await fixture.state.transact(async (unit) => {
-      await unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: source.id,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      });
-      await unit.operations.append({
-        kind: "agent_revision",
-        action: "reconcile",
-        target: "credentials_withdrawn",
-        operationId,
-        namespaceId: fixture.namespace.id,
-        resourceId: active.id,
-        actorId: fixture.actor.id,
-      });
-    });
-    const withdrawal = {
-      idempotencyKey: `agent_revision:${active.id}:reconcile:credentials_withdrawn:${operationId}`,
-      id: active.id,
-    };
-    const completed = await fixture.work(withdrawal, "succeeded");
-    assert.equal(completed.attempt_count, 2, "a pending revocation retries until confirmed");
-    assert.deepEqual(withdrawn, [
-      [active.id, source.id],
-      [active.id, source.id],
-    ]);
-
-    // Withdrawal never redeploys or replaces the active revision.
-    assert.equal(prepared.length, deployments);
-    const [agent, recorded] = await fixture.state.read(async (view) =>
-      Promise.all([
-        view.agents.findAgent(fixture.namespace.id, owner.id),
-        view.credentialSources.findCredentialWithdrawal(fixture.namespace.id, active.id, source.id),
-      ]),
-    );
-    assert.equal(agent.activeRevisionId, active.id);
-    assert.equal(recorded.state, "revoked");
-    assert.ok(recorded.completedAt);
-    const deployment = await fixture.observerPool.query(
-      "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-      [active.idempotencyKey],
-    );
-    assert.deepEqual(deployment.rows[0], { state: "succeeded", attempt_count: 1 });
-    const audit = await fixture.observerPool.query(
-      `SELECT resource_id, outcome, details->>'reasonCode' AS reason_code,
-              details->>'revisionId' AS revision_id, details->'credentialSourceIds' AS sources
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'`,
-      [fixture.namespace.id],
-    );
-    assert.deepEqual(audit.rows, [
-      {
-        resource_id: owner.id,
-        outcome: "success",
-        reason_code: "CREDENTIALS_WITHDRAWN",
-        revision_id: active.id,
-        sources: [source.id],
-      },
-    ]);
-  },
-);
-
-test(
-  "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context, { maxAttempts: 2 });
-    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-exhausted", {
-      agent: { auth: "credential_source" },
-    });
-    let revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async withdrawCredentialSource(_revision, source) {
-          // A Sandbox without a running process never reports REVOKED.
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "succeeded");
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: owner.harnessAuth.sourceId,
-    };
-    const withdrawalWork = async () =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key, state FROM occ.controller_work
-           WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-           ORDER BY created_at`,
-          [active.id],
-        )
-      ).rows;
-    const requested = await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(requested.withdrawalInProgress, true);
-    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
-    assert.equal((await read()).withdrawalInProgress, true);
-    const [first] = await withdrawalWork();
-    await fixture.work(
-      { id: active.id, idempotencyKey: first.idempotency_key },
-      "failed_permanent",
-    );
-
-    // Exhausting attempts leaves the withdrawal pending, and the row says why. Nothing retries
-    // it (this revision has no maintenance), so the read must not suggest an attempt is coming.
-    const exhausted = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(exhausted.state, "pending");
-    assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
-    assert.ok(exhausted.lastAttemptAt);
-    assert.equal(exhausted.withdrawalInProgress, false);
-    const audit = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS reason_code FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'`,
-      [fixture.namespace.id],
-    );
-    assert.deepEqual(audit.rows, [
-      { outcome: "failure", reason_code: "CREDENTIAL_WITHDRAWAL_PENDING" },
-    ]);
-
-    // With no attempt outstanding, a replay queues another one, which can then succeed.
-    revoke = true;
-    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
-    const work = await withdrawalWork();
-    assert.equal(work.length, 2);
-    assert.equal((await read()).withdrawalInProgress, true);
-    await fixture.work({ id: active.id, idempotencyKey: work[1].idempotency_key }, "succeeded");
-    const revoked = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(revoked.state, "revoked");
-    assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
-    assert.equal(revoked.withdrawalInProgress, false);
-  },
-);
-
-revisionTest(
-  "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
-  async (fixture) => {
-    const { owner, candidate: active } = await fixture.admitInitialRevision(
-      "withdraw-maintenance",
-      { agent: { auth: "credential_source" } },
-    );
-    const prepared = [];
-    let revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          prepared.push(revision.id);
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "succeeded");
-    const deployments = prepared.length;
-    const sourceId = owner.harnessAuth.sourceId;
-
-    // A pending withdrawal with no attempt outstanding, as exhausted attempts leave it.
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: sourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
-    const runMaintenance = async () => {
-      const due = await fixture.advanceMaintenance(active);
-      assert.equal(due.rowCount, 1);
-      const pass = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
-      await fixture.work(pass, "succeeded");
-      return pass;
-    };
-    const queuedWork = async (pattern) =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key FROM occ.controller_work
-           WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2`,
-          [active.id, pattern],
-        )
-      ).rows;
-
-    // Maintenance never re-attaches the source; it queues a withdrawal attempt and keeps going.
-    const first = await runMaintenance();
-    const withdrawal = await fixture.observerPool.query(
-      `SELECT idempotency_key, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
-    );
-    assert.equal(withdrawal.rowCount, 1);
-    assert.equal(withdrawal.rows[0].actor_id, fixture.actor.id);
-    // Five pending attempts back off 1+2+4+8 s times jitter, which can exceed the default wait.
-    await fixture.work(
-      { id: active.id, idempotencyKey: withdrawal.rows[0].idempotency_key },
-      "failed_permanent",
-      30_000,
-    );
-    const [next] = await queuedWork(`agent_revision:${active.id}:maintenance:%`);
-    assert.notEqual(next.idempotency_key, first.idempotencyKey);
-    assert.equal(prepared.length, deployments);
-
-    // The next pass queues another attempt, which is revoked; after that maintenance stops.
-    revoke = true;
-    await runMaintenance();
-    await waitFor("the withdrawal to be revoked", async () => {
-      const found = await fixture.state.read((view) =>
-        view.credentialSources.findCredentialWithdrawal(fixture.namespace.id, active.id, sourceId),
-      );
-      return found.state === "revoked" ? found : undefined;
-    });
-    await runMaintenance();
-    assert.deepEqual(await queuedWork(`agent_revision:${active.id}:%`), []);
-    assert.equal(prepared.length, deployments);
-  },
-);
-
-revisionTest(
-  "a deployment retry never re-attaches a source withdrawn while it was finishing",
-  async (fixture) => {
-    const { owner, candidate: active } = await fixture.admitInitialRevision(
-      "withdraw-during-activation",
-      { agent: { auth: "credential_source" } },
-    );
-    const sourceId = owner.harnessAuth.sourceId;
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: sourceId,
-    };
-    const prepared = [];
-    const withdrawn = [];
-    const events = [];
-    let interruptActivation = true;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        // The Harness receives the source's attachment only through a prepare.
-        async prepareRevision(revision, revisionContext) {
-          if (revision.namespaceId === fixture.namespace.id) {
-            prepared.push(revision.id);
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async activateRevision(revision) {
-          if (revision.id === active.id && interruptActivation) {
-            interruptActivation = false;
-            // The active pointer is already published, so admission accepts the withdrawal
-            // while this deployment still has to be retried.
-            await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
-            throw new Error("activation interrupted");
-          }
-        },
-        async withdrawCredentialSource(revision, source) {
-          withdrawn.push([revision.id, source.id]);
-          return { sourceId: source.id, state: "revoked" };
-        },
-      },
-      { emit: (event) => events.push(event), transformDrivers: withCredentialGateway },
-    );
-    await waitFor(
-      "the deployment retry to stop at the withdrawal",
-      async () =>
-        events.some(
-          (event) =>
-            event.event === "worker.completed" &&
-            event.revisionId === active.id &&
-            event.operation === "agent_revision.reconcile" &&
-            event.code === "CREDENTIAL_WITHDRAWN",
-        )
-          ? true
-          : undefined,
-      30_000,
-    );
-    await waitFor(
-      "the withdrawal to be revoked",
-      async () => {
-        const found = await fixture.state.read((view) =>
-          view.credentialSources.findCredentialWithdrawal(
-            fixture.namespace.id,
-            active.id,
-            sourceId,
-          ),
-        );
-        return found?.state === "revoked" ? found : undefined;
-      },
-      30_000,
-    );
-    await fixture.stop();
-
-    // Only the first attempt prepared the revision; the retry stopped before re-attaching.
-    assert.deepEqual(prepared, [active.id]);
-    const deployment = await fixture.deploymentStatus(owner, active);
-    assert.notEqual(deployment.status, "succeeded");
-    assert.deepEqual(withdrawn, [[active.id, sourceId]]);
-    const agent = await fixture.currentAgent(owner);
-    assert.equal(agent.activeRevisionId, active.id);
-    // Keep the deferred deployment from being claimed by a later test's worker.
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-       SET state = 'failed_permanent', claim_token = NULL, lease_expires_at = NULL,
-           completed_at = now(), reason_code = 'WITHDRAWN_DEPLOYMENT_TEST_CLEANUP',
-           result_data = NULL, updated_at = now()
-       WHERE idempotency_key = $1 AND state = 'queued'`,
-      [active.idempotencyKey],
-    );
-  },
-);
-
-revisionTest(
-  "non-model sources reach Compute at dispatch and a retry omits the ones withdrawn meanwhile",
-  async (fixture) => {
-    const owner = await fixture.agent("withdraw-tool-sources", {
-      auth: "credential_source",
-      nonModelSources: 2,
-    });
-    const active = await fixture.revision(owner, 1);
-    const [first, second] = toolSources(owner).map(({ sourceId }) => sourceId);
-    const dispatched = [];
-    const withdrawn = [];
-    let interruptActivation = true;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        // Compute attaches the model source and each resolved non-model source.
-        async prepareRevision(revision, revisionContext) {
-          if (revision.namespaceId === fixture.namespace.id) {
-            dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async activateRevision(revision) {
-          if (revision.id === active.id && interruptActivation) {
-            interruptActivation = false;
-            // Withdraw both non-model sources while this deployment must still be retried. The
-            // second request queues no work while the first attempt is outstanding.
-            for (const credentialSourceId of [first, second]) {
-              await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-                namespaceId: fixture.namespace.id,
-                agentId: owner.id,
-                credentialSourceId,
-              });
-            }
-            throw new Error("activation interrupted");
-          }
-        },
-        async withdrawCredentialSource(revision, source) {
-          withdrawn.push([revision.id, source.id]);
-          return { sourceId: source.id, state: "revoked" };
-        },
-      },
-      { transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "succeeded", 30_000);
-    await waitFor(
-      "both withdrawals to be revoked",
-      async () => {
-        const found = await fixture.state.read((view) =>
-          view.credentialSources.listCredentialWithdrawals(fixture.namespace.id, active.id),
-        );
-        return found.length === 2 && found.every(({ state }) => state === "revoked")
-          ? found
-          : undefined;
-      },
-      30_000,
-    );
-    await fixture.stop();
-
-    // Unlike a withdrawn model source, withdrawn tool sources do not stop the revision: the
-    // retry prepares it again without them and the deployment succeeds.
-    assert.deepEqual(dispatched, [[first, second], []]);
-    // One withdrawal pass revoked every pending source, in admission order.
-    assert.deepEqual(withdrawn, [
-      [active.id, first],
-      [active.id, second],
-    ]);
-    const audit = await fixture.observerPool.query(
-      `SELECT details->'credentialSourceIds' AS sources
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'
-         AND outcome = 'success'`,
-      [fixture.namespace.id],
-    );
-    assert.deepEqual(audit.rows, [{ sources: [first, second] }]);
-  },
-);
-
-revisionTest(
-  "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
-  async (fixture) => {
-    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-denied", {
-      agent: { auth: "credential_source" },
-    });
-    const withdrawn = [];
-    const compute = {
-      ...fixture.compute,
-      async withdrawCredentialSource(revision, source) {
-        withdrawn.push([revision.id, source.id]);
-        return { sourceId: source.id, state: "revoked" };
-      },
-    };
-    const startWorker = () =>
-      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
-    await startWorker();
-    await fixture.work(active, "succeeded");
-    await fixture.stop();
-
-    // A second operator requests the withdrawal and is offboarded before the worker runs it.
-    const requester = `withdraw-requester-${randomUUID()}`;
-    await fixture.copyActorGrants(requester);
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: owner.harnessAuth.sourceId,
-    };
-    await fixture.controller.withdrawAgentCredentialSource(requester, request);
-    // While that attempt is outstanding, a replay neither queues another nor takes it over.
-    const pendingReplay = await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(pendingReplay.requestedBy, requester);
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [requester],
-    );
-    const work = await fixture.observerPool.query(
-      `SELECT idempotency_key, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
-    );
-    assert.equal(work.rowCount, 1);
-    assert.equal(work.rows[0].actor_id, requester);
-
-    await startWorker();
-    const failed = await fixture.work(
-      { id: active.id, idempotencyKey: work.rows[0].idempotency_key },
-      "failed_permanent",
-    );
-    // A denial is final on the first attempt and never reaches the gateway.
-    assert.equal(failed.attempt_count, 1);
-    assert.deepEqual(withdrawn, []);
-    const recorded = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(recorded.state, "pending");
-    assert.equal(recorded.requestedBy, requester);
-    assert.equal(recorded.lastReason, "AUTHORIZATION_DENIED");
-    assert.ok(recorded.lastAttemptAt);
-    const audit = await fixture.observerPool.query(
-      `SELECT kind, actor_id, outcome, details->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'`,
-      [fixture.namespace.id],
-    );
-    assert.deepEqual(audit.rows, [
-      {
-        kind: "authorization_denial",
-        actor_id: requester,
-        outcome: "denied",
-        reason_code: "AUTHORIZATION_DENIED",
-      },
-    ]);
-
-    // An authorized operator's replay queues the next attempt on its own authority, so the
-    // offboarded requester cannot leave the source usable until a redeploy.
-    await fixture.stop();
-    const replayed = await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(replayed.state, "pending");
-    assert.equal(replayed.requestedBy, fixture.actor.id);
-    assert.equal(replayed.requestedAt, recorded.requestedAt);
-    assert.equal(replayed.withdrawalInProgress, true);
-    const retry = await fixture.observerPool.query(
-      `SELECT idempotency_key, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn' AND state = 'queued'`,
-      [active.id],
-    );
-    assert.equal(retry.rowCount, 1);
-    assert.equal(retry.rows[0].actor_id, fixture.actor.id);
-    await startWorker();
-    await fixture.work(
-      { id: active.id, idempotencyKey: retry.rows[0].idempotency_key },
-      "succeeded",
-    );
-    assert.deepEqual(withdrawn, [[active.id, owner.harnessAuth.sourceId]]);
-    const revoked = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(revoked.state, "revoked");
-    assert.equal(revoked.requestedBy, fixture.actor.id);
-    const revocations = await fixture.observerPool.query(
-      `SELECT actor_id FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'
-         AND kind = 'mutation' AND outcome = 'success'`,
-      [fixture.namespace.id],
-    );
-    assert.deepEqual(revocations.rows, [{ actor_id: fixture.actor.id }]);
-  },
-);
-
-revisionTest(
-  "each batched withdrawal is authorized by its own requester, never the claim's actor",
-  async (fixture) => {
-    const withdrawn = [];
-    const compute = {
-      ...fixture.compute,
-      async withdrawCredentialSource(revision, source) {
-        withdrawn.push([revision.id, source.id]);
-        return { sourceId: source.id, state: "revoked" };
-      },
-    };
-    const startWorker = () =>
-      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
-    // A second operator with the actor's grants, offboarded after requesting a withdrawal.
-    const offboarded = `withdraw-offboarded-${randomUUID()}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_identities (id, kind, issuer, subject)
-       SELECT $1, kind, issuer, $1 FROM occ.iam_identities WHERE id = $2`,
-      [offboarded, fixture.actor.id],
-    );
-    const owners = [];
-    for (const label of ["claim-by-offboarded", "claim-by-authorized"]) {
-      const owner = await fixture.agent(label, { auth: "credential_source", nonModelSources: 2 });
-      owners.push({ owner, active: await fixture.revision(owner, 1), label });
-    }
-    await startWorker();
-    for (const { active } of owners) {
-      await fixture.work(active, "succeeded");
-    }
-    await fixture.stop();
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_access_bindings
-         (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-       SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
-              resource_kind, resource_id
-       FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
-      [offboarded, fixture.actor.id],
-    );
-    // Each Agent gets one withdrawal per requester on one revision-scoped claim. The first
-    // request owns the claim: the offboarded operator's for one Agent, the actor's for the other.
-    const expectations = [];
-    for (const { owner, active, label } of owners) {
-      const [first, second] = toolSources(owner).map(({ sourceId }) => sourceId);
-      const order =
-        label === "claim-by-offboarded"
-          ? [
-              [offboarded, first],
-              [fixture.actor.id, second],
-            ]
-          : [
-              [fixture.actor.id, first],
-              [offboarded, second],
-            ];
-      for (const [requester, credentialSourceId] of order) {
-        await fixture.controller.withdrawAgentCredentialSource(requester, {
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          credentialSourceId,
-        });
-      }
-      const work = await fixture.observerPool.query(
-        `SELECT idempotency_key, actor_id FROM occ.controller_work
-         WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-        [active.id],
-      );
-      assert.equal(work.rowCount, 1, "both requests share one revision-scoped claim");
-      assert.equal(work.rows[0].actor_id, order[0][0]);
-      const allowed = order.find(([requester]) => requester === fixture.actor.id)[1];
-      const deniedSource = order.find(([requester]) => requester === offboarded)[1];
-      expectations.push({ owner, active, work: work.rows[0], allowed, deniedSource });
-    }
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [offboarded],
-    );
-
-    await startWorker();
-    for (const { owner, active, work, allowed, deniedSource } of expectations) {
-      // The denied requester fails the claim, but only after the authorized one was revoked.
-      await fixture.work(
-        { id: active.id, idempotencyKey: work.idempotency_key },
-        "failed_permanent",
-      );
-      const read = (credentialSourceId) =>
-        fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, {
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          credentialSourceId,
-        });
-      assert.equal((await read(allowed)).state, "revoked");
-      const denied = await read(deniedSource);
-      assert.equal(denied.state, "pending");
-      assert.equal(denied.lastReason, "AUTHORIZATION_DENIED");
-    }
-    await fixture.stop();
-    // No claim, whoever owned it, detached the offboarded operator's source.
-    assert.deepEqual(
-      withdrawn,
-      expectations.map(({ active, allowed }) => [active.id, allowed]),
-    );
-    const audit = await fixture.observerPool.query(
-      `SELECT kind, actor_id, outcome, details->>'revisionId' AS revision_id,
-              details->'credentialSourceIds' AS sources
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'
-       ORDER BY kind DESC`,
-      [fixture.namespace.id],
-    );
-    // Both events commit in one transaction and can share a timestamp, so order by kind.
-    for (const { active, allowed, deniedSource } of expectations) {
-      const rows = audit.rows.filter(({ revision_id }) => revision_id === active.id);
-      assert.deepEqual(
-        rows.map(({ kind, actor_id, outcome, sources }) => ({ kind, actor_id, outcome, sources })),
-        [
-          { kind: "mutation", actor_id: fixture.actor.id, outcome: "success", sources: [allowed] },
-          {
-            kind: "authorization_denial",
-            actor_id: offboarded,
-            outcome: "denied",
-            sources: [deniedSource],
-          },
-        ],
-      );
-    }
-  },
-);
-
-revisionTest(
-  "a withdrawal counts an absent credential as revoked, keeps confirmed revocations through a failure, and never withdraws through another Compute",
-  async (fixture) => {
-    const partial = await fixture.agent("withdraw-partial", {
-      auth: "credential_source",
-      nonModelSources: 2,
-    });
-    const moved = await fixture.agent("withdraw-moved", {
-      auth: "credential_source",
-      nonModelSources: 1,
-    });
-    const partialRevision = await fixture.revision(partial, 1);
-    const movedRevision = await fixture.revision(moved, 1);
-    const [first, second] = toolSources(partial).map(({ sourceId }) => sourceId);
-    const [movedSource] = toolSources(moved).map(({ sourceId }) => sourceId);
-    const withdrawn = [];
-    let failSecond = true;
-    const compute = {
-      ...fixture.compute,
-      async withdrawCredentialSource(revision, source) {
-        withdrawn.push([revision.id, source.id]);
-        if (source.id === second && failSecond) {
-          failSecond = false;
-          throw new Error("Sandbox unreachable");
-        }
-        // A Sandbox that no longer holds the credential reports it absent.
-        return { sourceId: source.id, state: source.id === first ? "absent" : "revoked" };
-      },
-    };
-    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
-    await fixture.start(compute, options);
-    await fixture.work(partialRevision, "succeeded");
-    await fixture.work(movedRevision, "succeeded");
-    await fixture.stop();
-
-    const withdraw = async (owner, revision, credentialSourceIds) => {
-      for (const credentialSourceId of credentialSourceIds) {
-        await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          credentialSourceId,
-        });
-      }
-      const work = await fixture.observerPool.query(
-        `SELECT idempotency_key FROM occ.controller_work
-         WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-        [revision.id],
-      );
-      assert.equal(work.rowCount, 1);
-      return { id: revision.id, idempotencyKey: work.rows[0].idempotency_key };
-    };
-    const read = (owner, credentialSourceId) =>
-      fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId,
-      });
-
-    // The first source is revoked (reported absent) before the second one fails. The retry
-    // withdraws only the unconfirmed source and leaves the confirmed revocation alone.
-    const partialWork = await withdraw(partial, partialRevision, [first, second]);
-    await fixture.start(compute, options);
-    const completed = await fixture.work(partialWork, "succeeded", 30_000);
-    await fixture.stop();
-    assert.equal(completed.attempt_count, 2);
-    assert.deepEqual(withdrawn, [
-      [partialRevision.id, first],
-      [partialRevision.id, second],
-      [partialRevision.id, second],
-    ]);
-    // Both sources end revoked, each with the reason of the pass that confirmed it.
-    assert.deepEqual(
-      [await read(partial, first), await read(partial, second)].map(({ state, lastReason }) => ({
-        state,
-        lastReason,
-      })),
-      [
-        { state: "revoked", lastReason: "CREDENTIALS_WITHDRAWN" },
-        { state: "revoked", lastReason: "CREDENTIALS_WITHDRAWN" },
-      ],
-    );
-
-    // A worker for another Compute never withdraws, or confirms, a revision it does not run.
-    const movedWork = await withdraw(moved, movedRevision, [movedSource]);
-    await fixture.start({ ...compute, id: `${fixture.compute.id}-other` }, options);
-    await fixture.work(movedWork, "failed_permanent", 30_000);
-    await fixture.stop();
-    assert.equal(withdrawn.length, 3);
-    const pending = await read(moved, movedSource);
-    assert.equal(pending.state, "pending");
-    assert.equal(pending.lastReason, "COMPUTE_DRIVER_MISMATCH");
-  },
-);
-
-revisionTest(
-  "maintenance re-queues an exhausted non-model withdrawal and keeps repairing the revision",
-  async (fixture) => {
-    const owner = await fixture.agent("withdraw-tool-maintenance", {
-      auth: "credential_source",
-      nonModelSources: 2,
-    });
-    const active = await fixture.revision(owner, 1);
-    const [toolSourceId, remainingToolSourceId] = toolSources(owner).map(
-      ({ sourceId }) => sourceId,
-    );
-    const dispatched = [];
-    let revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          if (revision.id === active.id) {
-            dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "succeeded");
-    assert.deepEqual(dispatched, [[toolSourceId, remainingToolSourceId]]);
-
-    // A pending tool-source withdrawal with no attempt outstanding, as an outage that
-    // exhausted every attempt leaves it.
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: toolSourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
-    const runMaintenance = async () => {
-      const due = await fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp()
-         WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2
-         RETURNING idempotency_key`,
-        [active.id, `agent_revision:${active.id}:maintenance:%`],
-      );
-      assert.equal(due.rowCount, 1);
-      await fixture.work(
-        { id: active.id, idempotencyKey: due.rows[0].idempotency_key },
-        "succeeded",
-      );
-    };
-    const withdrawalWork = async () =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key, state FROM occ.controller_work
-           WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-           ORDER BY created_at`,
-          [active.id],
-        )
-      ).rows;
-
-    // Maintenance queues a withdrawal attempt and still repairs the revision, without the tool.
-    await runMaintenance();
-    const [queued] = await withdrawalWork();
-    assert.ok(queued, "maintenance must queue the pending withdrawal again");
-    assert.deepEqual(dispatched.at(-1), [remainingToolSourceId]);
-
-    // After the gateway recovers, that attempt revokes the source and the chain continues.
-    revoke = true;
-    await fixture.work({ id: active.id, idempotencyKey: queued.idempotency_key }, "succeeded");
-    const recorded = await fixture.state.read((view) =>
-      view.credentialSources.findCredentialWithdrawal(
-        fixture.namespace.id,
-        active.id,
-        toolSourceId,
-      ),
-    );
-    assert.equal(recorded.state, "revoked");
-    await runMaintenance();
-    assert.equal((await withdrawalWork()).length, 1, "a revoked withdrawal is not queued again");
-
-    // A revoked model source must stop preparation, but an exhausted tool withdrawal still
-    // needs maintenance to recover after a gateway outage.
-    const modelWithdrawal = await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: owner.harnessAuth.sourceId,
-      },
-    );
-    await waitFor("model source withdrawal to be revoked", async () => {
-      const withdrawal = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: owner.harnessAuth.sourceId,
-      });
-      return withdrawal.state === "revoked" ? withdrawal : undefined;
-    });
-    assert.equal(modelWithdrawal.state, "pending");
-    const preparedBeforeWithdrawalRecovery = dispatched.length;
-    await fixture.stop();
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: remainingToolSourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
-    revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await runMaintenance();
-    const recovered = (await withdrawalWork()).at(-1);
-    assert.equal(
-      (await withdrawalWork()).length,
-      3,
-      "maintenance must recover the remaining tool withdrawal",
-    );
-    assert.equal(
-      dispatched.length,
-      preparedBeforeWithdrawalRecovery,
-      "a model-withdrawn revision must not be prepared",
-    );
-    revoke = true;
-    await fixture.work({ id: active.id, idempotencyKey: recovered.idempotency_key }, "succeeded");
-    await runMaintenance();
-    assert.equal(
-      (await withdrawalWork()).length,
-      3,
-      "revoked tool sources must not be queued again",
-    );
-    assert.equal(dispatched.length, preparedBeforeWithdrawalRecovery);
-    const maintenance = await fixture.observerPool.query(
-      `SELECT count(*)::integer AS count FROM occ.controller_work
-       WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2`,
-      [active.id, `agent_revision:${active.id}:maintenance:%`],
-    );
-    assert.equal(
-      maintenance.rows[0].count,
-      0,
-      "maintenance stops only after all withdrawals are revoked",
-    );
-  },
-);
-
-revisionTest(
-  "maintenance keeps re-queuing withdrawals after a withdrawn source loses its Agent grant",
-  async (fixture) => {
-    const owner = await fixture.agent("withdrawn-grant-revoked", {
-      auth: "credential_source",
-      nonModelSources: 1,
-    });
-    const active = await fixture.revision(owner, 1);
-    const toolSourceId = toolSources(owner)[0].sourceId;
-    const modelSourceId = owner.harnessAuth.sourceId;
-    const dispatched = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          if (revision.id === active.id) {
-            dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: "revoked" };
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "succeeded");
-    assert.deepEqual(dispatched, [[toolSourceId]]);
-
-    // A pending withdrawal whose attempts ran out, after which the Agent principal's grant on
-    // the withdrawn source is removed. The source never attaches again either way.
-    const strandWithdrawal = async (credentialSourceId) => {
-      await fixture.state.transact((unit) =>
-        unit.credentialSources.requestCredentialWithdrawal({
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          revisionId: active.id,
-          credentialSourceId,
-          state: "pending",
-          requestedBy: fixture.actor.id,
-          requestedAt: new Date().toISOString(),
-        }),
-      );
-      const removed = await fixture.observerPool.query(
-        `DELETE FROM occ.iam_access_bindings
-         WHERE identity_subject_id = $1 AND resource_kind = 'credential_source'
-           AND resource_id = $2`,
-        [owner.servicePrincipalId, credentialSourceId],
-      );
-      assert.equal(removed.rowCount, 1);
-    };
-    const runMaintenance = async () => {
-      const due = await fixture.advanceMaintenance(active);
-      assert.equal(due.rowCount, 1, "the maintenance chain must continue");
-      const settled = await waitFor("the maintenance pass to settle", async () => {
-        const rows = await fixture.observerPool.query(
-          `SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1`,
-          [due.rows[0].idempotency_key],
-        );
-        return ["succeeded", "failed_permanent"].includes(rows.rows[0]?.state)
-          ? rows.rows[0]
-          : undefined;
-      });
-      assert.equal(settled.state, "succeeded", `maintenance ended ${settled.reason_code}`);
-    };
-    const withdrawalWork = async () =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key FROM occ.controller_work
-           WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-           ORDER BY created_at`,
-          [active.id],
-        )
-      ).rows.map(({ idempotency_key }) => ({ id: active.id, idempotencyKey: idempotency_key }));
-    const withdrawalState = async (credentialSourceId) =>
-      (
-        await fixture.state.read((view) =>
-          view.credentialSources.findCredentialWithdrawal(
-            fixture.namespace.id,
-            active.id,
-            credentialSourceId,
-          ),
-        )
-      ).state;
-
-    // A tool source: maintenance re-queues its withdrawal and repairs the revision without it.
-    await strandWithdrawal(toolSourceId);
-    await runMaintenance();
-    const [toolWithdrawal, ...extra] = await withdrawalWork();
-    assert.ok(toolWithdrawal, "maintenance must queue the pending tool withdrawal again");
-    assert.deepEqual(extra, []);
-    assert.deepEqual(dispatched.at(-1), []);
-    await fixture.work(toolWithdrawal, "succeeded");
-    assert.equal(await withdrawalState(toolSourceId), "revoked");
-
-    // The model source: maintenance re-queues its withdrawal without preparing the revision.
-    await strandWithdrawal(modelSourceId);
-    const prepared = dispatched.length;
-    await runMaintenance();
-    const work = await withdrawalWork();
-    assert.equal(work.length, 2, "maintenance must queue the pending model withdrawal again");
-    const modelWithdrawal = work[1];
-    await fixture.work(modelWithdrawal, "succeeded");
-    assert.equal(await withdrawalState(modelSourceId), "revoked");
-    await runMaintenance();
-    assert.equal(dispatched.length, prepared, "a model-withdrawn revision must not be prepared");
-  },
-);
-
-revisionTest(
-  "an Agent that loses operate on a non-model source after admission never attaches it",
-  async (fixture) => {
-    const owner = await fixture.agent("tool-grant-revoked", {
-      auth: "credential_source",
-      nonModelSources: 1,
-    });
-    const toolSourceId = toolSources(owner)[0].sourceId;
-    const active = await fixture.revision(owner, 1);
-    // The Agent principal's exact grant is removed between admission and dispatch.
-    const removed = await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings
-       WHERE identity_subject_id = $1 AND resource_kind = 'credential_source' AND resource_id = $2`,
-      [owner.servicePrincipalId, toolSourceId],
-    );
-    assert.equal(removed.rowCount, 1);
-    const prepared = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, revisionContext) {
-          prepared.push(revision.id);
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-      },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
-    await fixture.work(active, "failed_permanent");
-    const failed = await fixture.observerPool.query(
-      "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-      [active.idempotencyKey],
-    );
-    assert.equal(failed.rows[0].reason_code, "AUTHORIZATION_DENIED");
-    // Compute never prepared the revision, so the gateway never attached the source.
-    assert.deepEqual(prepared, []);
-  },
-);
-
-test(
-  "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
-  requiresPostgres,
-  async (context) => {
-    const metrics = createOccMetrics("worker", () =>
-      new PostgresMetricsSnapshot(fixture.observerPool).collect(),
-    );
-    const fixture = await setup(context, { metrics });
-    const before = await new PostgresMetricsSnapshot(fixture.observerPool).collect();
-    const owner = await fixture.agent("stop-target");
-    const sibling = await fixture.agent("stop-sibling");
-    const targetRevision = await fixture.revision(owner, 1);
-    const siblingRevision = await fixture.revision(sibling, 1);
-    const stoppedRevisions = [];
-    let failStopOnce = true;
-    let failedCandidate;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision) {
-          const observation = await fixture.compute.prepareRevision(revision);
-          return revision.namespaceId === fixture.namespace.id && revision.revision === 2
-            ? { ...observation, ready: false }
-            : observation;
-        },
-        async stopRevision(revision) {
-          // The real queue can dispatch due work from earlier Namespaces. Keep
-          // this failure injection and its ownership assertions in this fixture.
-          if (revision.namespaceId !== fixture.namespace.id) {
-            return fixture.compute.stopRevision(revision);
-          }
-          const during = await new PostgresMetricsSnapshot(fixture.observerPool).collect();
-          assert.equal(
-            during.agents.stopping,
-            before.agents.stopping + 1,
-            "stop stays in progress until Compute shutdown commits",
-          );
-          const current = await fixture.currentAgent(owner);
-          if (stoppedRevisions.length < 3) {
-            assert.equal(
-              current.activeRevisionId,
-              targetRevision.id,
-              "the serving pointer remains until candidate cleanup succeeds",
-            );
-          }
-          if (revision.id === failedCandidate.id && failStopOnce) {
-            failStopOnce = false;
-            throw new Error("transient Compute stop failure");
-          }
-          stoppedRevisions.push(revision.id);
-        },
-      },
-      { convergenceTimeoutMs: 50 },
-    );
-    await Promise.all([
-      fixture.work(targetRevision, "succeeded"),
-      fixture.work(siblingRevision, "succeeded"),
-    ]);
-
-    // The replacement owns resources but never becomes ready. Terminal queue
-    // failure must not make it invisible to the real Agent-stop workflow.
-    failedCandidate = await fixture.revision(owner, 2);
-    await fixture.work(failedCandidate, "failed_permanent");
-    const firstStop = await fixture.requestStop(owner);
-    const completedStop = await fixture.work(firstStop, "succeeded");
-    assert.equal(completedStop.attempt_count, 2);
-    // Stop work must retain its own bounded kind and committed retry/success
-    // outcomes after integrating stop support with metrics instrumentation. Both
-    // are recorded after the stop commits, the attempt outcome last.
-    const exposition = await waitFor("the stop's successful attempt metric", async () => {
-      const text = await metrics.exposition();
-      return /occ_reconciliation_attempts_total\{[^\n]*work_kind="agent_stop"[^\n]*outcome="success"/.test(
-        text,
-      )
-        ? text
-        : undefined;
-    });
-    assert.match(
-      exposition,
-      /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 1(?:\n|$)/,
-    );
-    const after = await new PostgresMetricsSnapshot(fixture.observerPool).collect();
-    assert.equal(after.agents.stopped, before.agents.stopped + 1);
-    assert.equal(after.agents.running, before.agents.running + 1);
-    for (const outcome of ["retry", "success"]) {
-      assert.match(
-        exposition,
-        new RegExp(
-          `occ_reconciliation_attempts_total\\{[^\\n]*work_kind="agent_stop"[^\\n]*outcome="${outcome}"[^\\n]*\\} 1(?:\\n|$)`,
-        ),
-      );
-    }
-    const [stopped, unaffected, retainedRevision] = await fixture.state.read(async (view) =>
-      Promise.all([
-        view.agents.findAgent(fixture.namespace.id, owner.id),
-        view.agents.findAgent(fixture.namespace.id, sibling.id),
-        view.revisions.findRevision(fixture.namespace.id, owner.id, targetRevision.id),
-      ]),
-    );
-    assert.equal(stopped.desiredRuntimeState, "stopped");
-    assert.equal(stopped.activeRevisionId, undefined);
-    assert.equal(unaffected.activeRevisionId, siblingRevision.id);
-    assert.equal(retainedRevision.id, targetRevision.id);
-    assert.deepEqual(stoppedRevisions, [targetRevision.id, targetRevision.id, failedCandidate.id]);
-
-    const repeatedStop = await fixture.requestStop(owner);
-    await fixture.work(repeatedStop, "succeeded");
-    assert.deepEqual(stoppedRevisions, [
-      targetRevision.id,
-      targetRevision.id,
-      failedCandidate.id,
-      targetRevision.id,
-      failedCandidate.id,
-    ]);
-    const audit = await fixture.observerPool.query(
-      `SELECT action, resource_id, details->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.stop'
-       ORDER BY occurred_at`,
-      [fixture.namespace.id],
-    );
-    assert.deepEqual(audit.rows, [
-      {
-        action: "openclaw.agents.lifecycle.stop",
-        resource_id: owner.id,
-        reason_code: "AGENT_STOPPED",
-      },
-      {
-        action: "openclaw.agents.lifecycle.stop",
-        resource_id: owner.id,
-        reason_code: "AGENT_ALREADY_STOPPED",
-      },
-    ]);
-  },
-);
-
-for (const recovery of [false, true]) {
-  revisionTest(
-    `fresh worker binds SSH ownership before ${recovery ? "stopped revision recovery" : "Agent stop"}`,
-    async (fixture) => {
-      const owner = await fixture.agent("cold-stop", { auth: "runtime" });
-      let candidate = await fixture.revision(owner, 1);
-      await fixture.start(fixture.compute);
-      await fixture.work(candidate, "succeeded");
-      await fixture.stop();
-      if (recovery) {
-        const previous = candidate;
-        candidate = await fixture.revision(owner, 2);
-        // A worker can exit after publication but before completing revision work.
-        await fixture.state.transact((unit) =>
-          unit.agents.compareAndSetActiveRevision(
-            fixture.namespace.id,
-            owner.id,
-            previous.id,
-            candidate.id,
-          ),
-        );
-      }
-      const stop = await fixture.requestStop(owner);
-      const operations = [];
-      // Exercise the bundled SSH Driver's actual cold binding validation. Only
-      // remote SSH execution is controlled; the queue and worker use PostgreSQL.
-      const cold = await coldSshComputeDriver(fixture, operations);
-      await fixture.start(
-        {
-          ...fixture.compute,
-          bindAgent: cold.bindAgent.bind(cold),
-          stopRevision: cold.stopRevision.bind(cold),
-          retireRevision: cold.retireRevision.bind(cold),
-        },
-        { pool: fixture.createWorkerPool() },
-      );
-      if (recovery) {
-        assert.equal((await fixture.work(candidate, "succeeded")).attempt_count, 1);
-      }
-      assert.equal((await fixture.work(stop, "succeeded")).attempt_count, 1);
-      const current = await fixture.currentAgent(owner);
-      assert.equal(current.activeRevisionId, undefined);
-      assert.equal(current.desiredRuntimeState, "stopped");
-      assert.ok(operations.some((op) => op.operation === "stop-revision"));
-      assert.ok(
-        operations.every(
-          (op) => op.namespace.id === fixture.namespace.id && op.revision.agentId === owner.id,
-        ),
-      );
-      if (recovery) {
-        assert.ok(operations.some((op) => op.operation === "retire-revision"));
-      }
-    },
-  );
-}
-
-revisionTest("fresh worker binds SSH ownership before Agent deletion", async (fixture) => {
-  const { owner, candidate } = await fixture.admitInitialRevision("cold-delete", {
-    agent: { auth: "runtime" },
-  });
-  await fixture.start(fixture.compute);
-  await fixture.work(candidate, "succeeded");
-  await fixture.stop();
-
-  // Deletion is admitted while the Agent is running, then a fresh worker must
-  // reconstruct the SSH binding before it can retire the persisted revision.
-  await fixture.requestDeletion(owner);
-  const operations = [];
-  const cold = await coldSshComputeDriver(fixture, operations);
-  await fixture.start(
-    {
-      ...fixture.compute,
-      bindAgent: cold.bindAgent.bind(cold),
-      retireRevision: cold.retireRevision.bind(cold),
-    },
-    { pool: fixture.createWorkerPool() },
-  );
-
-  await waitFor(`Agent ${owner.id} deletion to complete`, async () => {
-    const deleted = await fixture.currentAgent(owner);
-    return deleted === undefined ? true : undefined;
-  });
-  const audit = await fixture.observerPool.query(
-    `SELECT (details->>'attemptCount')::integer AS attempt_count
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND resource_id = $2
-         AND action = 'openclaw.agents.lifecycle.delete' AND outcome = 'success'`,
-    [fixture.namespace.id, owner.id],
-  );
-  assert.deepEqual(audit.rows, [{ attempt_count: 1 }]);
-  assert.deepEqual(
-    operations.map(({ operation }) => operation),
-    ["retire-revision"],
-  );
-  assert.ok(
-    operations.every(
-      (operation) =>
-        operation.namespace.id === fixture.namespace.id && operation.revision.agentId === owner.id,
-    ),
-  );
-});
 
 revisionTest(
   "Agent deploy, stop, and deletion complete as one persisted lifecycle",
@@ -4312,1925 +459,47 @@ revisionTest(
   },
 );
 
-test(
-  "a repository cleanup stuck on an invalidated attempt logs its cause once and backs off",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary({ count: 2 });
-    // The production default; the fixture's hour-long interval would hide the backoff.
-    repository.driver.maintenanceIntervalMs = 30_000;
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-invalidated", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
-    const events = [];
-    await fixture.start(fixture.compute, { emit: (event) => events.push(event) });
+revisionTest(
+  "maintenance completion takes the Namespace lock before the Agent, like deployment admission",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("maintenance-lock-order");
+    await fixture.start({ ...fixture.compute, maintenanceIntervalMs: 200 });
     await fixture.work(candidate, "succeeded");
-    const [attempt, sibling] = await repositoryAttempts(fixture, candidate);
-    // An invalidated attempt has no outgoing transition, so no pass can settle this cleanup.
-    await fixture.observerPool.query(
-      `UPDATE occ.repository_session_attempts
-       SET phase = 'invalidated', updated_at = clock_timestamp()
-       WHERE admission_id = $1`,
-      [attempt.admissionId],
-    );
-    const cleanupKey = `agent_revision:${candidate.id}:repository_cleanup:${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.controller_work
-         (idempotency_key, namespace_id, agent_id, revision_id, actor_id,
-          namespace_target, agent_target, state, available_at, attempt_count, created_at,
-          updated_at)
-       VALUES ($1, $2, $3, $4, $5, NULL, NULL, 'queued',
-          clock_timestamp(), 0, clock_timestamp() - interval '1 day', clock_timestamp())`,
-      [cleanupKey, fixture.namespace.id, owner.id, candidate.id, fixture.actor.id],
-    );
-    const deferred = async (passes) =>
-      waitFor(`cleanup pass ${passes} to defer`, async () => {
-        const completed = events.filter(
-          (event) => event.event === "worker.completed" && event.workId === cleanupKey,
-        );
-        if (completed.length < passes) {
-          return undefined;
-        }
-        const { rows } = await fixture.observerPool.query(
-          `SELECT state, EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
-           FROM occ.controller_work WHERE idempotency_key = $1`,
-          [cleanupKey],
-        );
-        return rows[0]?.state === "queued" ? rows[0] : undefined;
-      });
-    // A day-old stuck cleanup rechecks every 10 minutes, not every 30 s.
-    const first = await deferred(1);
-    assert.ok(Number(first.delay_ms) >= 590_000, `delay ${first.delay_ms} ms`);
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
-    await deferred(2);
-    // The cause is logged once, not on every recheck.
-    assert.deepEqual(
-      events
-        .filter(
-          (event) =>
-            event.event === "worker.repository-cleanup-warning" && event.workId === cleanupKey,
-        )
-        .map(({ code, cause }) => ({ code, cause })),
-      [{ code: "REPOSITORY_CLEANUP_STALLED", cause: "REPOSITORY_ATTEMPT_INVALIDATED" }],
-    );
-    // A session still closing keeps the configured cadence, even next to an invalidated one.
-    repository.driver.close = async () => {
-      throw new Error("REPOSITORY_BROKER_UNAVAILABLE");
-    };
-    await fixture.observerPool.query(
-      `UPDATE occ.repository_session_attempts
-       SET phase = 'closing', updated_at = clock_timestamp()
-       WHERE admission_id = $1`,
-      [sibling.admissionId],
-    );
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
-    const closing = await deferred(3);
-    assert.ok(Number(closing.delay_ms) < 60_000, `delay ${closing.delay_ms} ms`);
-    // Retain the unsettled obligation while keeping it out of later scheduling.
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = 'infinity' WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
-    await fixture.stop();
-  },
-);
-
-test(
-  "Agent deletion completes with unresolved repository sessions retained as evidence",
-  requiresPostgres,
-  async (context) => {
-    const repository = repositoryBoundary({ count: 2 });
-    // Release blocked broker calls before setup's worker shutdown hook, including on failure.
-    const cleanupBarrier = Promise.withResolvers();
-    context.after(() => cleanupBarrier.resolve());
-    const fixture = await setup(context, { repoDriver: repository.driver });
-    const pendingOwner = await fixture.agent("delete-repository-unresolved");
-    const missingOwner = await fixture.agent("delete-repository-missing");
-    const pendingRevision = await fixture.revision(pendingOwner, 1, {
-      repositoryCredentials: repository.snapshot,
-    });
-    const missingRevision = await fixture.revision(missingOwner, 1);
-    const close = repository.driver.close.bind(repository.driver);
-    repository.driver.close = async (...args) => {
-      await cleanupBarrier.promise;
-      return close(...args);
-    };
-    await fixture.start(fixture.compute);
-    await Promise.all([
-      fixture.work(pendingRevision, "succeeded"),
-      fixture.work(missingRevision, "succeeded"),
-    ]);
-    const opened = await repositoryAttempts(fixture, pendingRevision);
-    assert.deepEqual(
-      opened.map(({ phase, liveRevisionId }) => ({ phase, liveRevisionId })),
-      [
-        { phase: "open", liveRevisionId: pendingRevision.id },
-        { phase: "open", liveRevisionId: pendingRevision.id },
-      ],
-    );
-    await fixture.observerPool.query(
-      `UPDATE occ.repository_session_attempts
-       SET phase = 'invalidated', updated_at = clock_timestamp()
-       WHERE admission_id = $1`,
-      [opened[0].admissionId],
-    );
-    const missingAdmissionId = `missing-${randomUUID()}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.repository_session_attempts
-         (namespace_id, agent_id, revision_id, repository_ref, admission_id,
-          duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at,
-          broker_protocol)
-       VALUES ($1, $2, $3, $4, $5, 60, $6, 'opening', NULL, clock_timestamp(),
-          clock_timestamp(), 0)`,
-      [
-        fixture.namespace.id,
-        pendingOwner.id,
-        pendingRevision.id,
-        repository.snapshot.bindings[0].repositoryRef,
-        missingAdmissionId,
-        repository.snapshot.deadlineWallMs,
-      ],
-    );
-    await fixture.stop();
-    await fixture.requestDeletion(pendingOwner);
-    await fixture.requestDeletion(missingOwner);
-    const retireCleanupKey = `agent_revision:${pendingRevision.id}:repository_cleanup:retire:${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.controller_work
-         (idempotency_key, namespace_id, agent_id, revision_id, actor_id,
-          namespace_target, agent_target, state, available_at, attempt_count, created_at,
-          updated_at)
-       VALUES ($1, $2, $3, $4, $5, NULL, NULL, 'queued',
-          clock_timestamp(), 0, clock_timestamp(), clock_timestamp())`,
-      [
-        retireCleanupKey,
-        fixture.namespace.id,
-        pendingOwner.id,
-        pendingRevision.id,
-        fixture.actor.id,
-      ],
-    );
-    await fixture.start(fixture.compute);
-    await waitFor("Agent deletion to finish despite unresolved repository sessions", async () =>
-      (await fixture.currentAgent(pendingOwner)) === undefined &&
-      (await fixture.currentAgent(missingOwner)) === undefined
-        ? true
-        : undefined,
-    );
-    await Promise.all([
-      fixture.requestDeletion(pendingOwner).then(
-        () => assert.fail("repeated DELETE after completion should not recreate the Agent"),
-        (error) => assert.match(error.message, /exact Namespace/),
-      ),
-      fixture.requestDeletion(missingOwner).then(
-        () => assert.fail("repeated DELETE after completion should not recreate the Agent"),
-        (error) => assert.match(error.message, /exact Namespace/),
-      ),
-    ]);
-
-    const retained = await repositoryAttempts(fixture, pendingRevision);
-    assert.deepEqual(
-      retained.map(({ phase, liveRevisionId, cleanupContext }) => ({
-        phase,
-        liveRevisionId,
-        repositoryRef: cleanupContext.binding.repositoryRef,
-      })),
-      [
-        {
-          phase: "invalidated",
-          liveRevisionId: null,
-          repositoryRef: repository.snapshot.bindings[0].repositoryRef,
-        },
-        {
-          phase: "closing",
-          liveRevisionId: null,
-          repositoryRef: repository.snapshot.bindings[1].repositoryRef,
-        },
-        {
-          phase: "closing",
-          liveRevisionId: null,
-          repositoryRef: repository.snapshot.bindings[0].repositoryRef,
-        },
-      ],
-    );
-    await waitFor("retained runtime cleanup to claim without live owner", async () => {
-      const { rows } = await fixture.observerPool.query(
-        `SELECT agent_id, revision_id, state
-         FROM occ.controller_work
-         WHERE idempotency_key = $1`,
-        [retireCleanupKey],
+    const succeededMaintenance = async () =>
+      Number(
+        (
+          await fixture.observerPool.query(
+            `SELECT count(*) AS count FROM occ.controller_work
+             WHERE revision_id = $1 AND idempotency_key LIKE '%:maintenance:%'
+               AND state = 'succeeded'`,
+            [candidate.id],
+          )
+        ).rows[0].count,
       );
-      return rows[0]?.agent_id === null &&
-        rows[0]?.revision_id === null &&
-        rows[0]?.state === "claimed"
-        ? true
-        : undefined;
-    });
-    assert.equal(
-      retained.some(({ phase }) => phase === "disposed"),
-      false,
-      "deletion must not fabricate disposal for unresolved repository sessions",
-    );
-    const retainedCounts = await fixture.observerPool.query(
-      `SELECT
-         (SELECT count(*)::integer FROM occ.repository_session_attempts
-          WHERE agent_id = $1) AS attempts,
-         (SELECT count(*)::integer FROM occ.agent_revisions
-          WHERE agent_id IN ($1, $2)) AS revisions,
-         (SELECT count(*)::integer FROM occ.controller_work
-          WHERE agent_id IN ($1, $2) OR idempotency_key LIKE $3) AS work`,
-      [
-        pendingOwner.id,
-        missingOwner.id,
-        `agent_revision:${pendingRevision.id}:repository_cleanup:%`,
-      ],
-    );
-    assert.deepEqual(retainedCounts.rows, [{ attempts: 3, revisions: 0, work: 2 }]);
-    cleanupBarrier.resolve();
-    let missing;
-    await waitFor("retained repository cleanup to run after Agent deletion", async () => {
-      const afterCleanup = await repositoryAttempts(fixture, pendingRevision);
-      missing = await fixture.state.read((view) =>
-        view.repositorySessions.findAttempt(missingAdmissionId),
-      );
-      if (
-        missing.phase !== "closing" &&
-        afterCleanup.some(
-          ({ phase, repositoryRef, liveRevisionId }) =>
-            repositoryRef === repository.snapshot.bindings[1].repositoryRef &&
-            phase === "disposed" &&
-            liveRevisionId === null,
-        )
-      ) {
-        return true;
-      }
-      // Incomplete cleanup defers by the boundary Driver's hourly interval.
-      await advanceCleanupRetries(fixture, pendingRevision);
-      return undefined;
-    });
-    assert.equal(missing.phase, "invalidated");
-    assert.equal(missing.liveRevisionId, null);
-    assert.equal(missing.sessionId, undefined);
-  },
-);
-
-test(
-  "Agent deletion retries teardown, removes owned state, and preserves sibling resources",
-  requiresPostgres,
-  async (context) => {
-    let snapshot;
-    const metrics = createOccMetrics("worker", () => snapshot.collect());
-    const fixture = await setup(context, { metrics });
-    snapshot = new PostgresMetricsSnapshot(fixture.observerPool);
-    const owner = await fixture.agent("delete-target");
-    const sibling = await fixture.agent("delete-sibling");
-    const targetRevision = await fixture.revision(owner, 1);
-    const siblingRevision = await fixture.revision(sibling, 1);
-    const retiredRevisions = [];
-    const deletedCredentialOwners = [];
-    let failRetirementOnce = true;
-    await fixture.start({
-      ...fixture.compute,
-      async retireRevision(revision) {
-        retiredRevisions.push(revision.id);
-        if (revision.id === targetRevision.id && failRetirementOnce) {
-          failRetirementOnce = false;
-          throw new Error("transient Compute retirement failure");
-        }
-      },
-      async deleteAgentRuntimeCredentials({ agent }) {
-        deletedCredentialOwners.push(agent.id);
-      },
-    });
-    await Promise.all([
-      fixture.work(targetRevision, "succeeded"),
-      fixture.work(siblingRevision, "succeeded"),
-    ]);
-
-    // Use an exact Namespace-local role so the binding is realistic and the
-    // finalizer must remove it without relying on a foreign-key cascade.
-    const revisionRoleId = `role-${randomUUID()}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
-       VALUES ($1, $2, $3, $4::jsonb)`,
-      [
-        revisionRoleId,
-        fixture.namespace.id,
-        `Agent revision reader ${randomUUID()}`,
-        JSON.stringify([{ action: "read", resourceKind: "agent_revision" }]),
-      ],
-    );
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_access_bindings
-         (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-       VALUES ($1, $2, $3, $4, 'agent_revision', $5)`,
-      [
-        `binding-${randomUUID()}`,
-        fixture.namespace.id,
-        owner.servicePrincipalId,
-        revisionRoleId,
-        targetRevision.id,
-      ],
-    );
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_restrictions
-         (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, 'read', 'agent', $3, 'deny')`,
-      [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
-    );
-    await fixture.observerPool.query(
-      `INSERT INTO occ.apikey
-         (id, config_id, reference_id, key, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, now(), now())`,
-      [randomUUID(), randomUUID(), owner.servicePrincipalId, randomUUID()],
+    await waitFor("one completed maintenance pass", async () =>
+      (await succeededMaintenance()) > 0 ? true : undefined,
     );
 
-    await fixture.requestDeletion(owner);
-    await waitFor(`Agent ${owner.id} to be removed`, async () => {
-      const deleted = await fixture.currentAgent(owner);
-      return deleted === undefined ? true : undefined;
-    });
-
-    await fixture.stop();
-    // Deletion passes have their own work kind and record the committed retry
-    // and completion, rather than appearing as Namespace errors.
-    const exposition = await metrics.exposition();
-    assert.match(
-      exposition,
-      /occ_reconciliation_attempts_total\{[^}]*work_kind="agent_delete"[^}]*outcome="retry"[^}]*\} 1/,
-    );
-    assert.match(
-      exposition,
-      /occ_reconciliation_attempts_total\{[^}]*work_kind="agent_delete"[^}]*outcome="success"[^}]*\} 1/,
-    );
-    assert.doesNotMatch(exposition, /work_kind="namespace_ensure"[^}]*outcome="error"/);
-
-    const [survivingAgent, survivingRevision, survivingConfiguration] = await fixture.state.read(
-      async (view) =>
-        Promise.all([
-          view.agents.findAgent(fixture.namespace.id, sibling.id),
-          view.revisions.findRevision(fixture.namespace.id, sibling.id, siblingRevision.id),
-          view.configurations.findConfiguration(fixture.namespace.id, owner.configurationId),
-        ]),
-    );
-    assert.equal(survivingAgent?.activeRevisionId, siblingRevision.id);
-    assert.equal(survivingRevision?.id, siblingRevision.id);
-    assert.equal(survivingConfiguration?.id, owner.configurationId);
-    assert.deepEqual(
-      retiredRevisions.filter((id) => id === targetRevision.id),
-      [targetRevision.id, targetRevision.id],
-    );
-    assert.equal(retiredRevisions.includes(siblingRevision.id), false);
-    assert.deepEqual(
-      deletedCredentialOwners.filter((id) => id === owner.id),
-      [owner.id],
-    );
-    assert.equal(deletedCredentialOwners.includes(sibling.id), false);
-
-    const leftovers = await fixture.observerPool.query(
-      `SELECT
-         (SELECT count(*)::integer FROM occ.agent_revisions
-           WHERE namespace_id = $1 AND agent_id = $2) AS revisions,
-         (SELECT count(*)::integer FROM occ.iam_identities WHERE id = $3) AS identities,
-         (SELECT count(*)::integer FROM occ.iam_access_bindings
-           WHERE identity_subject_id = $3 OR resource_id IN ($2, $4)) AS bindings,
-         (SELECT count(*)::integer FROM occ.iam_restrictions
-           WHERE resource_id IN ($2, $4)) AS restrictions,
-         (SELECT count(*)::integer FROM occ.apikey WHERE reference_id = $3) AS api_keys,
-         (SELECT count(*)::integer FROM occ.controller_work
-           WHERE namespace_id = $1 AND agent_id = $2) AS work`,
-      [fixture.namespace.id, owner.id, owner.servicePrincipalId, targetRevision.id],
-    );
-    assert.deepEqual(leftovers.rows, [
-      { revisions: 0, identities: 0, bindings: 0, restrictions: 0, api_keys: 0, work: 0 },
-    ]);
-    const audit = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS reason_code,
-              (details->>'attemptCount')::integer AS attempt_count
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.delete'
-         AND resource_id = $2`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.deepEqual(audit.rows, [
-      { outcome: "success", reason_code: "AGENT_DELETED", attempt_count: 2 },
-    ]);
-  },
-);
-
-test(
-  "repeating Agent deletion recovers exhausted teardown without resetting an active claim",
-  requiresPostgres,
-  async (context) => {
-    const retirement = Promise.withResolvers();
-    context.after(() => retirement.resolve());
-    const fixture = await setup(context, { maxAttempts: 1 });
-    const owner = await fixture.agent("delete-exhausted");
-    const sibling = await fixture.agent("delete-retry-sibling");
-    const revision = await fixture.revision(owner, 1);
-    const siblingRevision = await fixture.revision(sibling, 1);
-    let unavailable = true;
-    let retirementAttempts = 0;
-    await fixture.start({
-      ...fixture.compute,
-      async retireRevision(target) {
-        assert.equal(target.id, revision.id);
-        retirementAttempts += 1;
-        if (unavailable) {
-          throw new Error("Compute temporarily unavailable during teardown");
-        }
-        await retirement.promise;
-      },
-    });
-    await Promise.all([
-      fixture.work(revision, "succeeded"),
-      fixture.work(siblingRevision, "succeeded"),
-    ]);
-    const deletion = await fixture.requestDeletion(owner);
-    await fixture.work(deletion, "failed_permanent");
-    const observe = () =>
-      fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
-    const exhausted = await observe();
-    assert.equal(exhausted.attemptCount, 1);
-    assert.equal(exhausted.reasonCode, "DEPENDENCY_UNAVAILABLE");
-
-    // A rejected caller cannot replenish the worker's attempt budget.
-    await assert.rejects(
-      fixture.controller.deleteAgent(
-        `unprivileged-${randomUUID()}`,
-        fixture.namespace.id,
-        owner.id,
-      ),
-    );
-    assert.deepEqual(await observe(), exhausted);
-
-    const otherActor = `delete-operator-${randomUUID()}`;
-    await fixture.copyActorGrants(otherActor);
-    await assert.rejects(
-      fixture.controller.deleteAgent(otherActor, fixture.namespace.id, owner.id),
-      {
-        name: "DeletionRetryOwnedError",
-        message: /Only the actor that started this deletion can retry it/,
-        initiatingActorId: fixture.actor.id,
-        authorization: {
-          action: "delete",
-          resource: { kind: "agent", id: owner.id, namespaceId: fixture.namespace.id },
-        },
-      },
-    );
-    assert.deepEqual(await observe(), exhausted);
-
-    unavailable = false;
-    await fixture.requestDeletion(owner);
-    const retried = await observe();
-    assert.ok(
-      ["queued", "claimed"].includes(retried.state),
-      "authorized repeated DELETE must requeue the exhausted teardown",
-    );
-    assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
-    assert.equal(retried.actorId, exhausted.actorId);
-    assert.equal(retried.createdAt.getTime(), exhausted.createdAt.getTime());
-    assert.equal(retried.reasonCode, undefined);
-    await waitFor("retried teardown to hold a live claim", async () => {
-      const work = await observe();
-      return work.state === "claimed" && retirementAttempts === 2 ? work : undefined;
-    });
-    const claimed = await observe();
-    await Promise.all([fixture.requestDeletion(owner), fixture.requestDeletion(owner)]);
-    const repeated = await observe();
-    assert.equal(repeated.state, "claimed");
-    assert.equal(repeated.claimToken, claimed.claimToken);
-    assert.equal(repeated.attemptCount, claimed.attemptCount);
-
-    retirement.resolve();
-    await waitFor("retried deletion to remove its Agent", async () =>
-      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
-    );
-    assert.equal(retirementAttempts, 2);
-    assert.equal(await observe(), undefined);
-    const surviving = await fixture.currentAgent(sibling);
-    assert.equal(surviving.activeRevisionId, siblingRevision.id);
-    const { rows: ownedAudit } = await fixture.observerPool.query(
-      `SELECT action, actor_id AS "actorId", outcome, details FROM occ.audit_events
-       WHERE namespace_id = $1 AND resource_id = $2`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.equal(
-      ownedAudit.filter((event) => event.action === "reconcile" && event.outcome === "failure")
-        .length,
-      1,
-      "retry must retain the original failure evidence",
-    );
-    assert.deepEqual(
-      ownedAudit
-        .filter((event) => event.action === "openclaw.agents.delete.retry")
-        .map((event) => ({
-          actorId: event.actorId,
-          outcome: event.outcome,
-          details: {
-            workId: event.details.workId,
-            previousAttemptCount: event.details.previousAttemptCount,
-            previousReasonCode: event.details.previousReasonCode,
-          },
-        })),
-      [
-        {
-          actorId: fixture.actor.id,
-          outcome: "success",
-          details: {
-            workId: deletion.idempotencyKey,
-            previousAttemptCount: 1,
-            previousReasonCode: "DEPENDENCY_UNAVAILABLE",
-          },
-        },
-      ],
-    );
-  },
-);
-
-test(
-  "another authorized actor takes over failed Agent deletion once the initiator loses permission",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context, { maxAttempts: 1 });
-    const { owner, candidate: revision } = await fixture.admitInitialRevision("delete-takeover");
-    let unavailable = true;
-    let retirementAttempts = 0;
-    await fixture.start({
-      ...fixture.compute,
-      async retireRevision(target) {
-        assert.equal(target.id, revision.id);
-        retirementAttempts += 1;
-        if (unavailable) {
-          throw new Error("Compute temporarily unavailable during teardown");
-        }
-      },
-    });
-    await fixture.work(revision, "succeeded");
-    const deletion = await fixture.requestDeletion(owner);
-    await fixture.work(deletion, "failed_permanent");
-    const observe = () =>
-      fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
-    const exhausted = await observe();
-    assert.equal(exhausted.actorId, fixture.actor.id);
-
-    const otherActor = `delete-successor-${randomUUID()}`;
-    await fixture.copyActorGrants(otherActor);
-    // The initiator is offboarded: it no longer holds any access.
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [fixture.actor.id],
-    );
-    // A caller without delete permission still cannot take over.
-    await assert.rejects(
-      fixture.controller.deleteAgent(
-        `unprivileged-${randomUUID()}`,
-        fixture.namespace.id,
-        owner.id,
-      ),
-    );
-    assert.deepEqual(await observe(), exhausted);
-
-    unavailable = false;
-    await fixture.controller.deleteAgent(otherActor, fixture.namespace.id, owner.id);
-    const retried = await observe();
-    assert.ok(
-      retried === undefined || ["queued", "claimed"].includes(retried.state),
-      "an authorized takeover must requeue the exhausted teardown",
-    );
-    if (retried !== undefined) {
-      assert.equal(retried.actorId, otherActor);
-      assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
-    }
-    await waitFor("taken-over deletion to remove its Agent", async () =>
-      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
-    );
-    assert.equal(retirementAttempts, 2);
-    const { rows: retryAudit } = await fixture.observerPool.query(
-      `SELECT actor_id AS "actorId", outcome, details FROM occ.audit_events
-       WHERE namespace_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.delete.retry'`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.deepEqual(
-      retryAudit.map((event) => ({
-        actorId: event.actorId,
-        outcome: event.outcome,
-        takeover: event.details.takeover,
-        previousActorId: event.details.previousActorId,
-      })),
-      [
-        {
-          actorId: otherActor,
-          outcome: "success",
-          takeover: true,
-          previousActorId: fixture.actor.id,
-        },
-      ],
-    );
-  },
-);
-
-revisionTest(
-  "repeating Namespace deletion recovers a teardown that exceeded its convergence deadline",
-  async (fixture) => {
-    const namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-exhausted-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
-    await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
-    // A stuck finalizer keeps the Namespace terminating past the deadline.
-    let terminating = true;
-    let deleteAttempts = 0;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async deleteNamespace(target) {
-          assert.equal(target.id, namespace.id);
-          deleteAttempts += 1;
-          return { namespaceId: target.id, namespaceDeleted: !terminating };
-        },
-      },
-      { convergenceTimeoutMs: 1 },
-    );
-    const deletion = {
-      id: namespace.id,
-      idempotencyKey: `namespace:${namespace.id}:reconcile:deleted`,
-    };
-    const observe = () =>
-      fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
-    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(deletion, "failed_permanent");
-    const exhausted = await observe();
-    assert.equal(exhausted.reasonCode, "CONVERGENCE_DEADLINE_EXCEEDED");
-    assert.equal(deleteAttempts, 1);
-    const stranded = await fixture.state.read((view) =>
-      view.namespaces.findNamespace(namespace.id),
-    );
-    assert.equal(stranded.status, "deleting");
-
-    // A rejected caller cannot replenish the worker's attempt budget.
-    await assert.rejects(
-      fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
-    );
-    assert.deepEqual(await observe(), exhausted);
-
-    // Retrying before the teardown is repaired keeps the original deadline and
-    // fails again after one pass instead of looping.
-    const repeated = await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    assert.equal(repeated.status, "deleting");
-    const retried = await observe();
-    assert.ok(
-      ["queued", "claimed"].includes(retried.state),
-      "authorized repeated DELETE must requeue the failed Namespace teardown",
-    );
-    assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
-    assert.equal(retried.actorId, exhausted.actorId);
-    assert.equal(retried.reasonCode, undefined);
-    await waitFor("unrepaired retry to fail again", async () => {
-      const work = await observe();
-      return deleteAttempts === 2 && work.state === "failed_permanent" ? work : undefined;
-    });
-
-    terminating = false;
-    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(deletion, "succeeded");
-    assert.equal(deleteAttempts, 3);
-    assert.equal(
-      await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id)),
-      undefined,
-    );
-    const { rows: retryAudit } = await fixture.observerPool.query(
-      `SELECT actor_id AS "actorId", outcome, details FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.delete.retry'
-       ORDER BY occurred_at, id`,
-      [namespace.id],
-    );
-    assert.deepEqual(
-      retryAudit.map(({ actorId, outcome, details }) => ({
-        actorId,
-        outcome,
-        workId: details.workId,
-        previousReasonCode: details.previousReasonCode,
-      })),
-      Array.from({ length: 2 }, () => ({
-        actorId: fixture.actor.id,
-        outcome: "success",
-        workId: deletion.idempotencyKey,
-        previousReasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
-      })),
-    );
-  },
-);
-
-revisionTest(
-  "Namespace teardown audits one pending pass and the terminal pass, not every pass",
-  async (fixture) => {
-    // D323: each worker pass while Kubernetes namespaces terminated wrote its own
-    // lifecycle.delete audit row (38 rows for one deletion).
-    const namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-audit-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
-    await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
-    let deleteAttempts = 0;
-    await fixture.start({
-      ...fixture.compute,
-      async deleteNamespace(target) {
-        assert.equal(target.id, namespace.id);
-        deleteAttempts += 1;
-        return { namespaceId: target.id, namespaceDeleted: deleteAttempts >= 4 };
-      },
-    });
-    const deletion = {
-      id: namespace.id,
-      idempotencyKey: `namespace:${namespace.id}:reconcile:deleted`,
-    };
-    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(deletion, "succeeded");
-    assert.equal(deleteAttempts, 4);
-    const { rows } = await fixture.observerPool.query(
-      `SELECT outcome, details FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.lifecycle.delete'
-       ORDER BY occurred_at, id`,
-      [namespace.id],
-    );
-    assert.deepEqual(
-      rows.map(({ outcome, details }) => ({
-        outcome,
-        namespaceDeleted: details.namespaceDeleted,
-        convergencePending: details.convergencePending,
-      })),
-      [
-        { outcome: "success", namespaceDeleted: false, convergencePending: true },
-        { outcome: "success", namespaceDeleted: true, convergencePending: undefined },
-      ],
-    );
-    // The queue's own reconcile evidence follows the same rule: one row for the
-    // unchanged waiting state, one for completion.
-    const reconcile = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'reconcile' AND resource_kind = 'namespace'
-       ORDER BY occurred_at, id`,
-      [namespace.id],
-    );
-    assert.deepEqual(
-      reconcile.rows.map(({ outcome, code }) => ({ outcome, code })),
-      [
-        { outcome: "success", code: "NAMESPACE_INCOMPLETE" },
-        { outcome: "success", code: "RECONCILE_SUCCEEDED" },
-      ],
-    );
-  },
-);
-
-test(
-  "a failed Namespace logs the Compute refusal reason while status and audit keep only the failure",
-  requiresPostgres,
-  async (context) => {
-    // D521: a refused existing-namespace selection ended `failed` with no reason anywhere.
-    const fixture = await setup(context);
-    const reason =
-      "Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.";
-    const timedOut = "Kubernetes API request timed out.";
-    const results = [
-      { failure: "retryable", reason: timedOut },
-      // Only a failed pass keeps a reason, and only bounded printable text: the worker drops
-      // the rest itself, before the logger sees it.
-      { reason: timedOut },
-      { failure: "retryable", reason: "line\nbreak" },
-      { failure: "retryable", reason: "x".repeat(257) },
-      { failure: "permanent", reason },
-    ];
-    let attempts = 0;
-    let deletes = 0;
-    const output = [];
-    const events = [];
-    const logger = createWorkerLogEmitter(
-      createOccLogger({
-        component: "occ-worker",
-        destination: {
-          write(chunk) {
-            for (const line of String(chunk).split("\n")) {
-              if (line.length > 0) {
-                output.push(JSON.parse(line));
-              }
-            }
-            return true;
-          },
-        },
-      }),
-    );
-    const log = (event) => {
-      events.push(event);
-      logger(event);
-    };
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async deleteNamespace(target) {
-          deletes += 1;
-          return deletes === 1
-            ? {
-                namespaceId: target.id,
-                namespaceDeleted: false,
-                failure: "retryable",
-                reason: timedOut,
-              }
-            : { namespaceId: target.id, namespaceDeleted: true };
-        },
-        async ensureNamespace(target) {
-          const result = results[Math.min(attempts, results.length - 1)];
-          attempts += 1;
-          return { namespaceId: target.id, namespaceReady: false, ...result };
-        },
-      },
-      { emit: log },
-    );
-    const namespace = await fixture.controller.createNamespace(fixture.actor.id, {
-      name: `refused-${randomUUID()}`,
-    });
-    assert.equal(namespace.status, "provisioning");
-    await fixture.work(
-      { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:ready` },
-      "failed_permanent",
-      // The retries back off, under 10 s in all; the pending pass uses no attempt.
-      40_000,
-    );
-    const ensured = (lines) =>
-      lines.filter(
-        (line) =>
-          line.event === "worker.completed" &&
-          line.namespaceId === namespace.id &&
-          line.operation === "namespace.ensure",
-      );
-    const completed = await waitFor("every logged Namespace pass", async () =>
-      ensured(output).length === results.length ? ensured(output) : undefined,
-    );
-    const passes = [
-      ["retry", timedOut],
-      ["pending", undefined],
-      ["retry", undefined],
-      ["retry", undefined],
-      ["permanent", reason],
-    ];
-    assert.deepEqual(
-      completed.map(({ outcome, code, reason }) => [outcome, code, reason]),
-      passes.map(([outcome, reason]) => [outcome, "NAMESPACE_INCOMPLETE", reason]),
-    );
-    // The worker's own events already lack the dropped reasons.
-    assert.deepEqual(
-      ensured(events).map((event) => event.reason),
-      passes.map(([, reason]) => reason),
-    );
-    const failed = await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id));
-    assert.equal(failed.status, "failed");
-    // The reason stays in the operator log: the Namespace and its audit events carry none.
-    assert.equal(JSON.stringify(failed).includes("another tenant"), false);
-    const { rows } = await fixture.observerPool.query(
-      `SELECT details FROM occ.audit_events WHERE namespace_id = $1`,
-      [namespace.id],
-    );
-    assert.ok(rows.length > 0);
-    assert.equal(JSON.stringify(rows).includes("another tenant"), false);
-    assert.equal(JSON.stringify(rows).includes("timed out"), false);
-    // A delete pass logs no reason, even when its Driver returns one.
-    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(
-      { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:deleted` },
-      "succeeded",
-    );
-    const deleted = await waitFor("both Namespace delete passes", async () => {
-      const passes = events.filter(
-        (event) =>
-          event.event === "worker.completed" &&
-          event.namespaceId === namespace.id &&
-          event.operation === "namespace.delete",
-      );
-      return passes.length === 2 ? passes : undefined;
-    });
-    assert.deepEqual(
-      deleted.map((event) => Object.hasOwn(event, "reason")),
-      [false, false],
-    );
-  },
-);
-
-revisionTest(
-  "Namespace teardown records the same waiting state again after a retry in between",
-  async (fixture) => {
-    const namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-retry-audit-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
-    await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
-    let deleteAttempts = 0;
-    await fixture.start({
-      ...fixture.compute,
-      async deleteNamespace(target) {
-        deleteAttempts += 1;
-        // waiting, waiting, retryable failure, waiting, waiting, deleted
-        return deleteAttempts === 3
-          ? { namespaceId: target.id, namespaceDeleted: false, failure: "retryable" }
-          : { namespaceId: target.id, namespaceDeleted: deleteAttempts >= 6 };
-      },
-    });
-    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(
-      { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:deleted` },
-      "succeeded",
-    );
-    assert.equal(deleteAttempts, 6);
-    const { rows } = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'reconcile' AND resource_kind = 'namespace'
-       ORDER BY occurred_at, id`,
-      [namespace.id],
-    );
-    assert.deepEqual(
-      rows.map(({ outcome, code }) => ({ outcome, code })),
-      [
-        { outcome: "success", code: "NAMESPACE_INCOMPLETE" },
-        { outcome: "failure", code: "NAMESPACE_INCOMPLETE" },
-        { outcome: "success", code: "NAMESPACE_INCOMPLETE" },
-        { outcome: "success", code: "RECONCILE_SUCCEEDED" },
-      ],
-    );
-  },
-);
-
-revisionTest(
-  "another authorized actor takes over failed Namespace deletion once the initiator loses permission",
-  async (fixture) => {
-    const namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-takeover-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
-    await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
-    // A stuck finalizer keeps the Namespace terminating past the deadline.
-    let terminating = true;
-    let deleteAttempts = 0;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async deleteNamespace(target) {
-          assert.equal(target.id, namespace.id);
-          deleteAttempts += 1;
-          return { namespaceId: target.id, namespaceDeleted: !terminating };
-        },
-      },
-      { convergenceTimeoutMs: 1 },
-    );
-    const deletion = {
-      id: namespace.id,
-      idempotencyKey: `namespace:${namespace.id}:reconcile:deleted`,
-    };
-    const observe = () =>
-      fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
-    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(deletion, "failed_permanent");
-    const exhausted = await observe();
-    assert.equal(exhausted.actorId, fixture.actor.id);
-
-    const otherActor = `delete-successor-${randomUUID()}`;
-    await fixture.copyActorGrants(otherActor);
-    // While the initiator still holds delete permission, it keeps ownership.
-    await assert.rejects(fixture.controller.deleteNamespace(otherActor, namespace.id), {
-      name: "DeletionRetryOwnedError",
-      message: /Only the actor that started this deletion can retry it/,
-      initiatingActorId: fixture.actor.id,
-      authorization: {
-        action: "delete",
-        resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
-      },
-    });
-    assert.deepEqual(await observe(), exhausted);
-
-    // The initiator is offboarded: it no longer holds any access.
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [fixture.actor.id],
-    );
-    // A caller without delete permission still cannot take over.
-    await assert.rejects(
-      fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
-    );
-    assert.deepEqual(await observe(), exhausted);
-
-    terminating = false;
-    const repeated = await fixture.controller.deleteNamespace(otherActor, namespace.id);
-    assert.equal(repeated.status, "deleting");
-    const retried = await observe();
-    assert.ok(
-      retried === undefined || ["queued", "claimed", "succeeded"].includes(retried.state),
-      "an authorized takeover must requeue the exhausted teardown",
-    );
-    if (retried !== undefined) {
-      assert.equal(retried.actorId, otherActor);
-      assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
-    }
-    // Namespace policy left at teardown is removed with the tombstone and audited.
-    const policyRole = `role-${randomUUID()}`;
-    const policyBinding = `binding-${randomUUID()}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
-       VALUES ($1, $2, NULL, '[{"action":"read","resourceKind":"namespace"}]'::jsonb)`,
-      [policyRole, namespace.id],
-    );
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_access_bindings
-         (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-       VALUES ($1, $2, $3, $4, 'namespace', $2)`,
-      [policyBinding, namespace.id, otherActor, policyRole],
-    );
-    await fixture.work(deletion, "succeeded");
-    assert.equal(deleteAttempts, 2);
-    assert.equal(
-      await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id)),
-      undefined,
-    );
-    const { rows: leftover } = await fixture.observerPool.query(
-      `SELECT (SELECT count(*) FROM occ.iam_roles WHERE namespace_id = $1)::int AS roles,
-              (SELECT count(*) FROM occ.iam_access_bindings WHERE namespace_id = $1)::int AS bindings`,
-      [namespace.id],
-    );
-    assert.deepEqual(leftover, [{ roles: 0, bindings: 0 }]);
-    const { rows: teardownAudit } = await fixture.observerPool.query(
-      `SELECT details FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.lifecycle.delete'
-         AND outcome = 'success'`,
-      [namespace.id],
-    );
-    assert.equal(teardownAudit.length, 1);
-    assert.ok(teardownAudit[0].details.removedRoleIds.includes(policyRole));
-    assert.ok(
-      teardownAudit[0].details.removedAccessBindings.some(
-        (binding) => binding.id === policyBinding && binding.subjectId === otherActor,
-      ),
-    );
-    const { rows: retryAudit } = await fixture.observerPool.query(
-      `SELECT actor_id AS "actorId", outcome, details FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.delete.retry'`,
-      [namespace.id],
-    );
-    assert.deepEqual(
-      retryAudit.map(({ actorId, outcome, details }) => ({
-        actorId,
-        outcome,
-        takeover: details.takeover,
-        previousActorId: details.previousActorId,
-      })),
-      [
-        {
-          actorId: otherActor,
-          outcome: "success",
-          takeover: true,
-          previousActorId: fixture.actor.id,
-        },
-      ],
-    );
-  },
-);
-
-test(
-  "Agent deletion fails closed when a credential-provisioning Driver cannot delete credentials",
-  requiresPostgres,
-  async (context) => {
-    let snapshot;
-    const metrics = createOccMetrics("worker", () => snapshot.collect());
-    const fixture = await setup(context, { metrics });
-    snapshot = new PostgresMetricsSnapshot(fixture.observerPool);
-    const owner = await fixture.agent("delete-credentials-unsupported");
-    const before = await snapshot.collect();
-    const deletion = await fixture.requestDeletion(owner);
-    // Even a draft enters teardown while deletion is queued. Failed cleanup
-    // retains the Agent and must remain visible as a failed lifecycle.
-    const pending = await snapshot.collect();
-    assert.equal(pending.agents.draft, before.agents.draft - 1);
-    assert.equal(pending.agents.stopping, before.agents.stopping + 1);
-    await fixture.start({
-      ...fixture.compute,
-      async provisionAgentRuntimeCredentials() {},
-    });
-
-    const failed = await fixture.work(deletion, "failed_permanent");
-    assert.equal(failed.attempt_count, 1);
-    await fixture.stop();
-    const after = await snapshot.collect();
-    assert.equal(after.agents.failed, before.agents.failed + 1);
-    assert.equal(after.agents.draft, before.agents.draft - 1);
-    assert.match(
-      await metrics.exposition(),
-      /occ_reconciliation_attempts_total\{[^}]*work_kind="agent_delete"[^}]*outcome="permanent"[^}]*\} 1/,
-    );
-    const retained = await fixture.currentAgent(owner);
-    assert.equal(retained?.status, "deleting");
-    assert.equal(retained?.desiredRuntimeState, "stopped");
-    const audit = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.delete'
-         AND resource_id = $2`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.deepEqual(audit.rows, [
-      { outcome: "failure", reason_code: "CREDENTIAL_DELETION_UNSUPPORTED" },
-    ]);
-  },
-);
-
-revisionTest(
-  "Agent deletion finalization rejects an expired lease without removing state",
-  async (fixture) => {
-    const owner = await fixture.agent("delete-expired-lease");
-    const deletion = await fixture.requestDeletion(owner);
-    const claimToken = randomUUID();
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-       SET state = 'claimed', claim_token = $1, lease_expires_at = now() - interval '1 second',
-           attempt_count = 1, updated_at = now()
-       WHERE idempotency_key = $2`,
-      [claimToken, deletion.idempotencyKey],
-    );
-    const queue = new fixture.PostgresWorkQueue(fixture.workerPool);
-
-    await assert.rejects(
-      queue.completeAgentDeletion(
-        { idempotencyKey: deletion.idempotencyKey, claimToken },
-        fixture.namespace.id,
-        owner.id,
-      ),
-      { name: "WorkClaimLostError" },
-    );
-    const [retained, revisions, identity, work] = await Promise.all([
-      fixture.currentAgent(owner),
-      fixture.observerPool.query(
-        "SELECT count(*)::integer AS count FROM occ.agent_revisions WHERE agent_id = $1",
-        [owner.id],
-      ),
-      fixture.observerPool.query(
-        "SELECT count(*)::integer AS count FROM occ.iam_identities WHERE id = $1",
-        [owner.servicePrincipalId],
-      ),
-      fixture.observerPool.query(
-        "SELECT count(*)::integer AS count FROM occ.controller_work WHERE idempotency_key = $1",
-        [deletion.idempotencyKey],
-      ),
-    ]);
-    assert.equal(retained?.status, "deleting");
-    assert.deepEqual(revisions.rows, [{ count: 0 }]);
-    assert.deepEqual(identity.rows, [{ count: 1 }]);
-    assert.deepEqual(work.rows, [{ count: 1 }]);
-    // Keep this deliberately expired fixture from being recovered by a later
-    // worker test; the assertions above already proved the live product path.
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-       SET state = 'failed_permanent', claim_token = NULL, lease_expires_at = NULL,
-           completed_at = now(), reason_code = 'EXPIRED_LEASE_TEST_CLEANUP',
-           result_data = NULL, updated_at = now()
-       WHERE idempotency_key = $1`,
-      [deletion.idempotencyKey],
-    );
-  },
-);
-
-revisionTest(
-  "deleting the last Agent releases its Namespace for ordinary offboarding",
-  async (fixture) => {
-    const owner = await fixture.agent("last-agent");
-    await fixture.start(fixture.compute);
-
-    await fixture.requestDeletion(owner);
-    await waitFor(`last Agent ${owner.id} to be removed`, async () => {
-      const deleted = await fixture.currentAgent(owner);
-      return deleted === undefined ? true : undefined;
-    });
-
-    // Agent deletion preserves Namespace-owned inputs. Remove the surviving
-    // harness Secret through the production controller before offboarding.
-    assert.equal(owner.harnessAuth.method, "api_key");
-    await fixture.controller.deleteSecret(
-      fixture.actor.id,
+    // Deployment admission locks the Namespace, then the Agent. Hold the Namespace
+    // until the worker waits on it; the waiting worker must not hold the Agent, or
+    // admission and maintenance completion deadlock.
+    const before = await withNamespaceLockHeld(
+      fixture.observerPool,
       fixture.namespace.id,
-      owner.harnessAuth.source.id,
-    );
-    await fixture.state.transactWithQueue(async (unit, queue) => {
-      assert.equal(await unit.namespaces.hasAgents(fixture.namespace.id), false);
-      assert.equal(
-        await unit.configurations.deleteConfiguration(fixture.namespace.id, owner.configurationId),
-        true,
-      );
-      const deleting = await unit.namespaces.transitionNamespaceStatus(
-        fixture.namespace.id,
-        "ready",
-        "deleting",
-      );
-      assert.ok(deleting);
-      await queue.enqueue({
-        idempotencyKey: `namespace:${fixture.namespace.id}:reconcile:deleted`,
-        namespaceId: fixture.namespace.id,
-        namespaceTarget: "deleted",
-        actorId: fixture.actor.id,
-        availableAt: new Date(0),
-      });
-    });
-    await waitFor(`Namespace ${fixture.namespace.id} to be tombstoned`, async () => {
-      const namespace = await fixture.state.read((view) =>
-        view.namespaces.findNamespace(fixture.namespace.id),
-      );
-      return namespace === undefined ? true : undefined;
-    });
-  },
-);
-
-revisionTest(
-  "the application role can finalize Agent deletion without direct table deletion grants",
-  async (fixture) => {
-    const privileges = await fixture.observerPool.query(
-      `SELECT
-         has_table_privilege(current_user, 'occ.agents', 'DELETE') AS delete_agent,
-         has_table_privilege(current_user, 'occ.agent_revisions', 'DELETE') AS delete_revision,
-         has_table_privilege(current_user, 'occ.iam_identities', 'DELETE') AS delete_identity,
-         has_function_privilege(
-           current_user,
-           'occ.finalize_agent_deletion(text,text,text,uuid)',
-           'EXECUTE'
-         ) AS execute_finalizer,
-         EXISTS (
-           SELECT 1
-           FROM information_schema.routine_privileges
-           WHERE routine_schema = 'occ'
-             AND routine_name = 'finalize_agent_deletion'
-             AND grantee = 'PUBLIC'
-             AND privilege_type = 'EXECUTE'
-         ) AS public_execute`,
-    );
-    assert.deepEqual(privileges.rows, [
-      {
-        delete_agent: false,
-        delete_revision: false,
-        delete_identity: false,
-        execute_finalizer: true,
-        public_execute: false,
-      },
-    ]);
-  },
-);
-
-test(
-  "a deployment admitted after stop supersedes stale stop work before Compute mutation",
-  requiresPostgres,
-  async (context) => {
-    const metrics = createOccMetrics("worker", () =>
-      new PostgresMetricsSnapshot(fixture.observerPool).collect(),
-    );
-    const fixture = await setup(context, { metrics });
-    const { owner, candidate: first } = await fixture.admitInitialRevision("stop-then-deploy");
-    const stoppedRevisions = [];
-    let releaseStopAuthorization;
-    const stopAuthorizationReleased = new Promise((resolve) => {
-      releaseStopAuthorization = resolve;
-    });
-    let stopAuthorizationStarted;
-    const stopAuthorizationObserved = new Promise((resolve) => {
-      stopAuthorizationStarted = resolve;
-    });
-    const compute = {
-      ...fixture.compute,
-      async stopRevision(candidate) {
-        stoppedRevisions.push(candidate.id);
-      },
-    };
-    await fixture.start(compute, {
-      pool: fixture.workerPool,
-      transformDrivers: (drivers) => {
-        const createIAMDriver = drivers.createIAMDriver;
-        return {
-          ...drivers,
-          createIAMDriver(state) {
-            const iam = createIAMDriver(state);
-            return {
-              id: iam.id,
-              implementation: iam.implementation,
-              capability: iam.capability,
-              lookupIdentity: iam.lookupIdentity.bind(iam),
-              async authorize(request) {
-                if (
-                  request.action === "operate" &&
-                  request.resource.kind === "agent" &&
-                  request.resource.id === owner.id
-                ) {
-                  stopAuthorizationStarted();
-                  await stopAuthorizationReleased;
-                }
-                return iam.authorize(request);
-              },
-            };
-          },
-        };
-      },
-    });
-    await fixture.work(first, "succeeded");
-
-    const stop = await fixture.requestStop(owner);
-    await stopAuthorizationObserved;
-    // This later admission changes intent while stop is inside its required IAM check.
-    const second = await fixture.revision(owner, 2);
-    releaseStopAuthorization();
-
-    await Promise.all([fixture.work(stop, "succeeded"), fixture.work(second, "succeeded")]);
-    const running = await fixture.currentAgent(owner);
-    assert.equal(running.desiredRuntimeState, "running");
-    assert.equal(running.activeRevisionId, second.id);
-    assert.deepEqual(stoppedRevisions, []);
-    assert.match(
-      await metrics.exposition(),
-      /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 0(?:\n|$)/,
-    );
-    const audit = await fixture.observerPool.query(
-      `SELECT details->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.stop'
-         AND resource_id = $2`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.deepEqual(audit.rows, [{ reason_code: "STOP_SUPERSEDED" }]);
-  },
-);
-
-revisionTest(
-  "Agent stop cleans a terminal candidate without an active revision",
-  async (fixture) => {
-    const { owner, candidate } = await fixture.admitInitialRevision("stop-initial-failure");
-    const stopped = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision) {
-          return { ...(await fixture.compute.prepareRevision(revision)), ready: false };
-        },
-        async stopRevision(revision) {
-          // The shared queue can also dispatch another fixture's durable cleanup.
-          if (revision.namespaceId === fixture.namespace.id) {
-            stopped.push(revision.id);
-          }
-          return fixture.compute.stopRevision(revision);
-        },
-      },
-      { convergenceTimeoutMs: 50 },
-    );
-    await fixture.work(candidate, "failed_permanent");
-    // Historical records from another selected Compute are not cleanup inputs
-    // for this worker, even when the Agent has no active pointer.
-    await fixture.state.transact((unit) =>
-      unit.revisions.createRevision({
-        ...candidate,
-        id: `rev_${randomUUID()}`,
-        revision: 2,
-        compute: { id: "retired-compute", implementation: "retired-compute" },
-      }),
-    );
-    const stop = await fixture.requestStop(owner);
-    await fixture.work(stop, "succeeded");
-    assert.deepEqual(stopped, [candidate.id]);
-    const current = await fixture.currentAgent(owner);
-    assert.equal(current.desiredRuntimeState, "stopped");
-    assert.equal(current.activeRevisionId, undefined);
-  },
-);
-
-for (const admissionDuring of ["active", "candidate"]) {
-  revisionTest(
-    `a deployment during ${admissionDuring} cleanup supersedes the remaining Agent stop effects`,
-    async (fixture) => {
-      const { owner, candidate: active } = await fixture.admitInitialRevision(
-        `stop-race-${admissionDuring}`,
-      );
-      const stopped = [];
-      let candidate;
-      let newer;
-      let activeWhenNewerPrepared;
-      await fixture.start(
-        {
-          ...fixture.compute,
-          async prepareRevision(revision) {
-            if (revision.revision === 3) {
-              const current = await fixture.currentAgent(owner);
-              activeWhenNewerPrepared = current.activeRevisionId;
-            }
-            return {
-              ...(await fixture.compute.prepareRevision(revision)),
-              ready: revision.revision !== 2,
-            };
-          },
-          async stopRevision(revision) {
-            // The shared queue can also dispatch another fixture's durable cleanup.
-            if (revision.namespaceId !== fixture.namespace.id) {
-              return fixture.compute.stopRevision(revision);
-            }
-            stopped.push(revision.id);
-            if (revision.id === (admissionDuring === "active" ? active.id : candidate.id)) {
-              // Admission changes desired state during an exact cleanup call. The
-              // old pointer must survive both the next-effect and final-CAS fences.
-              newer = await fixture.revision(owner, 3);
-            }
-          },
-        },
-        { convergenceTimeoutMs: 50 },
-      );
-      await fixture.work(active, "succeeded");
-      candidate = await fixture.revision(owner, 2);
-      await fixture.work(candidate, "failed_permanent");
-      const stop = await fixture.requestStop(owner);
-      await fixture.work(stop, "succeeded");
-      assert.ok(newer);
-      await fixture.work(newer, "succeeded");
-      assert.deepEqual(
-        stopped,
-        admissionDuring === "active" ? [active.id] : [active.id, candidate.id],
-      );
-      assert.equal(
-        activeWhenNewerPrepared,
-        active.id,
-        "stale stop must not clear the serving pointer after a later admission",
-      );
-      const current = await fixture.currentAgent(owner);
-      assert.equal(current.desiredRuntimeState, "running");
-      assert.equal(current.activeRevisionId, newer.id);
-    },
-  );
-}
-
-for (const { operation, action } of [
-  { operation: "stop", action: "operate" },
-  { operation: "delete", action: "delete" },
-]) {
-  test(
-    `Agent ${operation} reauthorizes the recorded actor before Compute mutation`,
-    requiresPostgres,
-    async (context) => {
-      const metrics = createOccMetrics("worker", () =>
-        new PostgresMetricsSnapshot(fixture.observerPool).collect(),
-      );
-      const fixture = await setup(context, { metrics });
-      const before = await new PostgresMetricsSnapshot(fixture.observerPool).collect();
-      const { owner, candidate: revision } = await fixture.admitInitialRevision(
-        `${operation}-reauthorization`,
-      );
-      const effects = [];
-      const compute = {
-        ...fixture.compute,
-        async stopRevision(candidate) {
-          effects.push({ action: "stop", agentId: candidate.agentId });
-        },
-        async retireRevision(candidate) {
-          effects.push({ action: "retire", agentId: candidate.agentId });
-        },
-        async deleteAgentRuntimeCredentials({ agent }) {
-          effects.push({ action: "credentials", agentId: agent.id });
-        },
-      };
-      await fixture.start(compute);
-      await fixture.work(revision, "succeeded");
-
-      await fixture.stop();
-      const work = await (operation === "stop"
-        ? fixture.requestStop(owner)
-        : fixture.requestDeletion(owner));
-      // Admission was authorized; revoke before restarting the worker to prove
-      // dispatch independently rechecks the recorded actor's permission.
-      await fixture.observerPool.query(
-        `INSERT INTO occ.iam_restrictions
-         (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, $3, 'agent', $4, 'deny')`,
-        [`restriction-${randomUUID()}`, fixture.namespace.id, action, owner.id],
-      );
-      await fixture.start(compute, { pool: fixture.createWorkerPool() });
-      assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
-      if (operation === "stop") {
-        assert.equal(
-          (await new PostgresMetricsSnapshot(fixture.observerPool).collect()).agents.failed,
-          before.agents.failed + 1,
+      async (lock) => {
+        await lock.waitForBlocked("the worker's real wait on the Namespace lock");
+        const succeeded = await succeededMaintenance();
+        await lock.assertNotHeld(
+          "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
+          [fixture.namespace.id, owner.id],
+          "a worker waiting for the Namespace must not already hold the Agent",
         );
-        assert.match(
-          await metrics.exposition(),
-          /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 0(?:\n|$)/,
-        );
-      }
-
-      // The shared queue can also dispatch another fixture's durable cleanup.
-      assert.deepEqual(
-        effects.filter(({ agentId }) => agentId === owner.id),
-        [],
-      );
-      const current = await fixture.currentAgent(owner);
-      assert.equal(current.activeRevisionId, revision.id);
-      assert.equal(current.desiredRuntimeState, "stopped");
-      assert.equal(current.status, operation === "delete" ? "deleting" : "active");
-      const audit = await fixture.observerPool.query(
-        `SELECT kind, action, outcome,
-              details->'__occAuditMetadata'->'authorization' AS authorization,
-              details->'__occAuditMetadata'->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND resource_id = $2
-         AND kind = 'authorization_denial'`,
-        [fixture.namespace.id, owner.id],
-      );
-      assert.deepEqual(audit.rows, [
-        {
-          kind: "authorization_denial",
-          action: `openclaw.agents.${operation}`,
-          outcome: "denied",
-          authorization: {
-            principalId: fixture.actor.id,
-            action,
-            resource: { kind: "agent", id: owner.id, namespaceId: fixture.namespace.id },
-          },
-          reason_code: "AUTHORIZATION_DENIED",
-        },
-      ]);
-    },
-  );
-}
-
-revisionTest(
-  "active revision maintenance defers shutdown to the separately authorized Agent stop work",
-  async (fixture, context) => {
-    const { owner, candidate: revision } = await fixture.admitInitialRevision(
-      "stop-maintenance-authorization",
-    );
-    await fixture.start(fixture.compute);
-    await fixture.work(revision, "succeeded");
-    await fixture.stop();
-
-    // The shared queue can also deliver an independently authorized stop from
-    // another Namespace while this Namespace denies its own Agent's shutdown.
-    const neighbor = await setup(context, { database: fixture.database });
-    const neighborOwner = await neighbor.agent("authorized-neighbor-stop");
-    const neighborRevision = await neighbor.revision(neighborOwner, 1);
-    await neighbor.start(neighbor.compute);
-    await neighbor.work(neighborRevision, "succeeded");
-    await neighbor.stop();
-    const neighborStop = await neighbor.requestStop(neighborOwner);
-
-    const maintenance = {
-      id: revision.id,
-      idempotencyKey: `agent_revision:${revision.id}:maintenance:${randomUUID()}`,
-    };
-    await fixture.state.transactWithQueue((_unit, queue) =>
-      queue.enqueue({
-        idempotencyKey: maintenance.idempotencyKey,
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: revision.id,
-        actorId: fixture.actor.id,
-        availableAt: new Date(0),
-      }),
-    );
-    const stop = await fixture.requestStop(owner);
-
-    // Maintenance may observe stopped intent first, but only the Agent-stop claim
-    // may perform shutdown after reauthorizing its recorded actor.
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_restrictions
-         (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, 'operate', 'agent', $3, 'deny')`,
-      [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
-    );
-    const stoppedRevisions = [];
-    const events = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async stopRevision(candidate) {
-          if (candidate.namespaceId === fixture.namespace.id) {
-            stoppedRevisions.push(candidate.id);
-          }
-          return fixture.compute.stopRevision(candidate);
-        },
+        return succeeded;
       },
-      { emit: (event) => events.push(event), pool: fixture.createWorkerPool() },
     );
-
-    await fixture.work(maintenance, "succeeded");
-    await fixture.work(stop, "failed_permanent");
-    await neighbor.work(neighborStop, "succeeded");
-    assert.deepEqual(stoppedRevisions, []);
-    const current = await fixture.currentAgent(owner);
-    assert.equal(current.activeRevisionId, revision.id);
-    assert.equal(current.desiredRuntimeState, "stopped");
-    await completion(
-      events,
-      "the maintenance's REVISION_MAINTENANCE_SUPERSEDED completion",
-      ({ event, code, revisionId }) =>
-        event === "worker.completed" &&
-        code === "REVISION_MAINTENANCE_SUPERSEDED" &&
-        revisionId === revision.id,
+    await waitFor("the maintenance chain to continue", async () =>
+      (await succeededMaintenance()) > before ? true : undefined,
     );
-  },
-);
-
-revisionTest(
-  "a stop accepted during revision preparation prevents the candidate from becoming active",
-  async (fixture, context) => {
-    const owner = await fixture.agent("stop-prepare-race");
-    // Other Namespaces share this worker's queue. Their durable stop work must
-    // drain without changing this candidate's preparation gate or observations.
-    const foreign = await setup(context, { database: fixture.database });
-    const foreignOwner = await foreign.agent("stop-prepare-foreign");
-    const foreignRevision = await foreign.revision(foreignOwner, 1);
-    const foreignStop = await foreign.requestStop(foreignOwner);
-    const candidate = await fixture.revision(owner, 1);
-    let releasePreparation;
-    const preparationReleased = new Promise((resolve) => {
-      releasePreparation = resolve;
-    });
-    let preparationStarted = false;
-    const stoppedRevisions = [];
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        if (revision.namespaceId === fixture.namespace.id) {
-          preparationStarted = true;
-          await preparationReleased;
-        }
-        return fixture.compute.prepareRevision(revision);
-      },
-      async stopRevision(revision) {
-        if (revision.namespaceId === fixture.namespace.id) {
-          stoppedRevisions.push(revision.id);
-        }
-        return fixture.compute.stopRevision(revision);
-      },
-    });
-    await waitFor("revision preparation to start", async () =>
-      preparationStarted ? true : undefined,
-    );
-
-    const stop = await fixture.requestStop(owner);
-    releasePreparation();
-    await fixture.work(candidate, "succeeded");
-    await fixture.work(stop, "succeeded");
-    await foreign.work(foreignRevision, "succeeded");
-    await foreign.work(foreignStop, "succeeded");
-
-    const stopped = await fixture.currentAgent(owner);
-    assert.equal(stopped.activeRevisionId, undefined);
-    assert.equal(stopped.desiredRuntimeState, "stopped");
-    // Both the interrupted revision and Agent-stop owner perform exact,
-    // idempotent cleanup; neither may activate the candidate.
-    assert.deepEqual(stoppedRevisions, [candidate.id, candidate.id]);
-    const activation = await fixture.observerPool.query(
-      `SELECT id FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.activate'
-         AND resource_id = $2`,
-      [fixture.namespace.id, candidate.id],
-    );
-    assert.deepEqual(activation.rows, []);
-    // The deployment did not activate, and its error says why instead of a generic failure.
-    const status = await fixture.deploymentStatus(owner, candidate);
-    assert.equal(status.status, "failed");
-    assert.deepEqual(status.error, {
-      code: "REVISION_STOPPED",
-      message: "Deployment ended because the Agent was stopped.",
-    });
-  },
-);
-
-revisionTest(
-  "a stop committed after the last running check never publishes the candidate",
-  async (fixture) => {
-    const { owner, candidate: predecessor } =
-      await fixture.admitInitialRevision("stop-before-publication");
-    await fixture.start(fixture.compute);
-    await fixture.work(predecessor, "succeeded");
-    await fixture.stop();
-
-    // A before-commit Driver activates the candidate after the worker's last check
-    // that the Agent runs. A stop admitted then is seen only when publication locks
-    // the Agent: the candidate must stay unpublished, and the predecessor is left
-    // to the stop instead of being retired by a candidate that never served.
-    const candidate = await fixture.revision(owner, 2);
-    let releaseActivation;
-    const activationReleased = new Promise((resolve) => {
-      releaseActivation = resolve;
-    });
-    let activationStarted = false;
-    const stoppedRevisions = [];
-    const retiredRevisions = [];
-    await fixture.start({
-      ...fixture.compute,
-      activationOrder: "beforeCommit",
-      async activateRevision(revision) {
-        if (revision.id === candidate.id) {
-          activationStarted = true;
-          await activationReleased;
-        }
-      },
-      async stopRevision(revision) {
-        stoppedRevisions.push(revision.id);
-        return fixture.compute.stopRevision(revision);
-      },
-      async retireRevision(revision) {
-        retiredRevisions.push(revision.id);
-        return fixture.compute.retireRevision(revision);
-      },
-    });
-    await waitFor("candidate activation to start", async () =>
-      activationStarted ? true : undefined,
-    );
-
-    let stop;
-    try {
-      stop = await fixture.requestStop(owner);
-    } finally {
-      releaseActivation();
-    }
-    await fixture.work(candidate, "succeeded");
-    await fixture.work(stop, "succeeded");
-
-    const stopped = await fixture.currentAgent(owner);
-    assert.equal(stopped.desiredRuntimeState, "stopped");
-    assert.equal(stopped.activeRevisionId, undefined);
-    // The candidate stops itself. The stop work then stops the still-serving predecessor
-    // first and cleans up the candidate after it.
-    assert.deepEqual(stoppedRevisions, [candidate.id, predecessor.id, candidate.id]);
-    assert.deepEqual(retiredRevisions, []);
-    const status = await fixture.deploymentStatus(owner, candidate);
-    assert.equal(status.status, "failed");
-    assert.deepEqual(status.error, {
-      code: "REVISION_STOPPED",
-      message: "Deployment ended because the Agent was stopped.",
-    });
-  },
-);
-
-revisionTest(
-  "a stop admitted immediately after publication retires the predecessor before completion",
-  async (fixture, context) => {
-    const { owner, candidate: predecessor } =
-      await fixture.admitInitialRevision("stop-publication-race");
-    await fixture.start(fixture.compute);
-    await fixture.work(predecessor, "succeeded");
-    await fixture.stop();
-
-    // This worker must drain another Namespace's real stop work without adding
-    // its effects to this Agent's observations or consuming its injected fault.
-    const foreign = await setup(context, { database: fixture.database });
-    const foreignOwner = await foreign.agent("stop-publication-foreign");
-    const foreignRevision = await foreign.revision(foreignOwner, 1);
-    const foreignStop = await foreign.requestStop(foreignOwner);
-
-    const replacement = await fixture.revision(owner, 2);
-    await fixture.compute.prepareRevision(replacement);
-    // Recreate the committed publication boundary before route finalization. Stop
-    // admission can observe this exact durable state while revision work remains.
-    const published = await fixture.state.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(
-        fixture.namespace.id,
-        owner.id,
-        predecessor.id,
-        replacement.id,
-      ),
-    );
-    assert.equal(published.activeRevisionId, replacement.id);
-    const stop = await fixture.requestStop(owner);
-
-    const stoppedRevisions = [];
-    const retiredRevisions = [];
-    let failRetirement = true;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async stopRevision(candidate) {
-          if (candidate.namespaceId !== fixture.namespace.id) {
-            return fixture.compute.stopRevision(candidate);
-          }
-          stoppedRevisions.push(candidate.id);
-          return fixture.compute.stopRevision(candidate);
-        },
-        async retireRevision(candidate) {
-          if (candidate.namespaceId !== fixture.namespace.id) {
-            return fixture.compute.retireRevision(candidate);
-          }
-          retiredRevisions.push(candidate.id);
-          if (failRetirement) {
-            failRetirement = false;
-            throw new Error("transient predecessor retirement failure");
-          }
-          return fixture.compute.retireRevision(candidate);
-        },
-      },
-      { pool: fixture.createWorkerPool() },
-    );
-
-    await fixture.work(replacement, "succeeded");
-    await fixture.work(stop, "succeeded");
-    await Promise.all([
-      foreign.work(foreignRevision, "succeeded"),
-      foreign.work(foreignStop, "succeeded"),
-    ]);
-    const [stopped, retainedPredecessor, retainedReplacement] = await fixture.state.read(
-      async (view) =>
-        Promise.all([
-          view.agents.findAgent(fixture.namespace.id, owner.id),
-          view.revisions.findRevision(fixture.namespace.id, owner.id, predecessor.id),
-          view.revisions.findRevision(fixture.namespace.id, owner.id, replacement.id),
-        ]),
-    );
-    assert.equal(stopped.desiredRuntimeState, "stopped");
-    assert.equal(stopped.activeRevisionId, undefined);
-    assert.equal(retainedPredecessor.id, predecessor.id);
-    assert.equal(retainedReplacement.id, replacement.id);
-    assert.deepEqual(retiredRevisions, [predecessor.id, predecessor.id]);
-    // Agent stop also covers the older same-Compute predecessor whose
-    // retirement failed after publication, with serving revision cleanup first.
-    assert.deepEqual(stoppedRevisions, [
-      replacement.id,
-      replacement.id,
-      predecessor.id,
-      replacement.id,
-    ]);
-  },
-);
-
-test(
-  "maintenance retains its real lease across consecutive short predecessor retirements",
-  requiresPostgres,
-  async (context) => {
-    const metrics = createOccMetrics("worker", () =>
-      new PostgresMetricsSnapshot(fixture.observerPool).collect(),
-    );
-    const fixture = await setup(context, { metrics, leaseDurationMs: 1_200 });
-    const { owner, candidate: first } =
-      await fixture.admitInitialRevision("short-retirement-lease");
-    const events = [];
-    let completedRetirements = 0;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 200,
-        async retireRevision(previous) {
-          // Exercise the real worker and PostgreSQL lease with short external
-          // effects: each finishes before the heartbeat timer, but the whole
-          // cleanup sequence exceeds the lease. No claim timestamps are edited.
-          await delay(120);
-          const result = await fixture.compute.retireRevision(previous);
-          completedRetirements += 1;
-          return result;
-        },
-      },
-      { emit: (event) => events.push(event) },
-    );
-    await fixture.work(first, "succeeded");
-    // Admitted intermediate revisions can be superseded before execution. They
-    // remain valid predecessors that active-revision maintenance must retire.
-    await fixture.state.transact(async (unit) => {
-      for (let number = 2; number <= 24; number += 1) {
-        const skipped = { ...first, id: `rev_${randomUUID()}`, revision: number };
-        delete skipped.idempotencyKey;
-        await unit.revisions.createRevision(skipped);
-      }
-    });
-    const current = await fixture.revision(owner, 25);
-    await fixture.work(current, "succeeded");
-    const maintenance = await waitFor("one successful short-effect maintenance claim", async () => {
-      assert.equal(
-        events.some(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
-        false,
-        "consecutive short effects must not starve lease renewal",
-      );
-      const result = await fixture.observerPool.query(
-        `SELECT state, attempt_count FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE '%:maintenance:%'
-           AND state = 'succeeded'`,
-        [current.id],
-      );
-      return result.rows[0];
-    });
-    assert.equal(maintenance.attempt_count, 1);
-    // Periodic reconciliation must not inflate successful deployment counts.
-    assert.match(
-      await metrics.exposition(),
-      /occ_agent_operation_duration_seconds_count\{[^\n]*operation="deploy"[^\n]*\} 2(?:\n|$)/,
-    );
-    assert.ok(completedRetirements >= 25, "activation and all predecessors were retired");
-    const active = await fixture.currentAgent(owner);
-    assert.equal(active.activeRevisionId, current.id);
   },
 );
 
@@ -6574,6 +843,12 @@ revisionTest(
       [candidates[1].id],
     );
     assert.deepEqual(failures.rows, [{ reason_code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" }]);
+    // The status names the fix instead of the generic failure text (finding 828).
+    assert.deepEqual((await fixture.deploymentStatus(owners[1], candidates[1])).error, {
+      code: "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+      message:
+        "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.",
+    });
   },
 );
 
@@ -6860,6 +1135,41 @@ revisionTest(
 );
 
 revisionTest(
+  "deployment status judges claim liveness by the database clock, not the controller clock",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("deployment-clock");
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { leaseDurationMs: 60_000 });
+    // Both controllers read the same durable work with clocks skewed far from PostgreSQL's.
+    const statusFrom = (instant) => {
+      const controller = createBackendController(fixture, {
+        backends: [],
+        now: () => new Date(instant),
+      });
+      return async () =>
+        (
+          await controller.getDeploymentStatus(
+            fixture.actor.id,
+            fixture.namespace.id,
+            owner.id,
+            candidate.id,
+          )
+        ).status;
+    };
+    const statusAhead = statusFrom("2999-01-01T00:00:00Z");
+    const statusBehind = statusFrom("1970-01-01T00:00:00Z");
+
+    const claim = await queue.claim();
+    assert.equal(claim.idempotencyKey, candidate.idempotencyKey);
+    // A controller clock ahead of the lease still reports the live claim.
+    assert.equal(await statusAhead(), "running");
+
+    await fixture.expireClaim(candidate, claim.claimToken);
+    // A controller clock behind the lease still reports the expired claim as waiting.
+    assert.equal(await statusBehind(), "queued");
+  },
+);
+
+revisionTest(
   "real PostgreSQL preserves the failure budget while an Agent runtime converges",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("slow-runtime");
@@ -6998,16 +1308,21 @@ revisionTest(
 
 revisionTest(
   "deployment progress names Compute's pending reason and old pending work rechecks less often",
-  async (fixture, context) => {
+  async (fixture) => {
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
-    const unpairedRevision = await fixture.revision(unpaired, 1);
+    // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
+    // and still inside the 900-second deadline.
+    const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
     const reasons = new Map([
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
     ]);
-    const delays = [];
+    const delays = new Map([
+      [unscheduledRevision.idempotencyKey, []],
+      [unpairedRevision.idempotencyKey, []],
+    ]);
     await fixture.start(
       {
         ...fixture.compute,
@@ -7023,10 +1338,10 @@ revisionTest(
         emit: (event) => {
           if (
             event.event === "worker.completed" &&
-            event.workId === unpairedRevision.idempotencyKey &&
+            delays.has(event.workId) &&
             event.outcome === "pending"
           ) {
-            delays.push(
+            delays.get(event.workId).push(
               fixture.observerPool
                 .query(
                   `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
@@ -7055,21 +1370,17 @@ revisionTest(
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
     });
-    const fresh = await delays[0];
+    const firstDelay = async (revision) => {
+      const recorded = delays.get(revision.idempotencyKey);
+      await waitFor(`a recheck of ${revision.id}`, async () => recorded.length > 0 || undefined);
+      return recorded[0];
+    };
+    const fresh = await firstDelay(unscheduledRevision);
     assert.ok(fresh > 450 && fresh <= 500, `a new deployment rechecks in 500 ms (${fresh} ms)`);
 
-    // Five minutes later, still inside the 900-second deadline, a runtime that
-    // stays unready is rechecked every 5 s, so one stuck Agent cannot take most
-    // of the serial worker (D223). Only the worker's wall clock moves.
-    const realNow = Date.now;
-    Date.now = () => realNow() + 300_000;
-    context.after(() => {
-      Date.now = realNow;
-    });
-    const seen = delays.length;
-    await waitFor("a recheck after five minutes", async () => delays.length > seen || undefined);
-    const old = await delays[seen];
-    Date.now = realNow;
+    // A runtime that stays unready for five minutes is rechecked every 5 s, so
+    // one stuck Agent cannot take most of the serial worker (D223).
+    const old = await firstDelay(unpairedRevision);
     assert.ok(old > 4_500 && old <= 5_000, `an old deployment rechecks in 5 s (${old} ms)`);
   },
 );
@@ -7141,6 +1452,196 @@ test(
   },
 );
 
+test(
+  "a graceful shutdown during Compute preparation logs the interrupted pass, not errors",
+  requiresPostgres,
+  async (context) => {
+    // Finding 1040: stopping the worker aborts the pass in flight. Its claim is recovered when
+    // the lease expires, so no compute-prepare-failed or CLAIM_LOST error is logged.
+    const events = [];
+    const lines = [];
+    const logged = createWorkerLogEmitter(
+      createOccLogger({
+        component: "occ-worker",
+        level: "debug",
+        destination: {
+          write(chunk) {
+            for (const line of String(chunk).split("\n")) {
+              if (line.length > 0) {
+                lines.push(JSON.parse(line));
+              }
+            }
+            return true;
+          },
+        },
+      }),
+    );
+    const fixture = await setup(context);
+    const { candidate } = await fixture.admitInitialRevision("compute-preparation-shutdown");
+    let entered;
+    const preparing = new Promise((resolve) => {
+      entered = resolve;
+    });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, revisionContext) {
+          if (revision.id !== candidate.id) {
+            return fixture.compute.prepareRevision(revision, revisionContext);
+          }
+          const signal = currentComputeAbortSignal();
+          entered();
+          await new Promise((resolve) => {
+            signal.addEventListener("abort", resolve, { once: true });
+          });
+          throw new Error("Kubernetes request aborted by the worker");
+        },
+        describePrepareRevisionFailure() {
+          return { code: "KUBERNETES_PREPARATION_FAILED", stage: "prepare_revision" };
+        },
+      },
+      {
+        emit: (event) => {
+          events.push(event);
+          logged(event);
+        },
+      },
+    );
+    await preparing;
+    await fixture.stop();
+
+    assert.deepEqual(
+      events.filter(({ event }) => event !== "worker.health").map(({ event }) => event),
+      ["worker.started", "worker.pass-interrupted", "worker.stopped"],
+    );
+    assert.deepEqual(
+      events.find(({ event }) => event === "worker.pass-interrupted"),
+      {
+        event: "worker.pass-interrupted",
+        workId: candidate.idempotencyKey,
+        attempt: 1,
+        operation: "agent_revision.reconcile",
+        cause: "WorkerStopping",
+      },
+    );
+    assert.deepEqual(
+      lines
+        .filter(({ event }) => event !== "worker.health")
+        .map(({ event, severity }) => ({ event, severity })),
+      [
+        { event: "worker.started", severity: "INFO" },
+        { event: "worker.pass-interrupted", severity: "INFO" },
+        { event: "worker.stopped", severity: "INFO" },
+      ],
+    );
+    // The work keeps its claim until the lease expires; then another worker resumes it.
+    const work = await fixture.observerPool.query(
+      "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(work.rows, [{ state: "claimed", attempt_count: 1 }]);
+  },
+);
+
+revisionTest(
+  "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("bootstrap-failure");
+    let preparations = 0;
+    let cleanupAllowed = false;
+    let cleanups = 0;
+    const preparation = {
+      workload: {
+        kind: "Job",
+        name: "oauth-bootstrap-fixture",
+        uid: randomUUID(),
+        namespace: "tenant-fixture",
+      },
+      reason: "retry_limit",
+      observedAt: "2026-10-12T12:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+      pods: [],
+    };
+    const compute = {
+      ...fixture.compute,
+      async prepareRevision() {
+        preparations += 1;
+        throw new ComputePreparationFailedError("HARNESS_CREDENTIAL_BOOTSTRAP_FAILED", preparation);
+      },
+      async stopRevision(revision) {
+        // Runtime retirement must start only after the deployment is terminal.
+        const failed = await fixture.workResult(candidate);
+        assert.equal(failed.rows[0].reason_code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+        assert.equal(revision.id, candidate.id);
+        cleanups += 1;
+        if (!cleanupAllowed) {
+          throw new DependencyUnavailableError("Temporary cleanup outage.");
+        }
+        await fixture.compute.stopRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    await assertFailedDeployment(
+      fixture,
+      { owner, candidate },
+      {
+        error: {
+          code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+          message: "Harness credential initialization failed. Correct the cause and deploy again.",
+          data: { preparation },
+        },
+        resultData: { preparation },
+      },
+    );
+    const cleanupRow = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state, reason_code FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows[0];
+    await waitFor("failed preparation to retain its cleanup obligation", async () => {
+      const row = await cleanupRow();
+      return cleanups > 0 && row?.state === "queued" ? row : undefined;
+    });
+    await fixture.stop();
+
+    const pendingStatus = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(pendingStatus.cleanup.status, "queued");
+    assert.equal(typeof pendingStatus.cleanup.nextAttemptAt, "string");
+    // The database must reject raw provider output even if a writer bypasses
+    // the controller's public evidence validator.
+    await assert.rejects(
+      fixture.observerPool.query(
+        "UPDATE occ.controller_work SET result_data = $2::jsonb WHERE idempotency_key = $1",
+        [
+          candidate.idempotencyKey,
+          JSON.stringify({ preparation: { ...preparation, rawOutput: "provider detail" } }),
+        ],
+      ),
+      (error) => error.code === "23514" && error.constraint === "controller_work_result_data_state",
+    );
+
+    // The new worker resumes cleanup from PostgreSQL, without invoking
+    // preparation again even though the Driver's bootstrap resources are gone.
+    cleanupAllowed = true;
+    await advanceCleanupRetries(fixture, candidate);
+    await fixture.start(compute);
+    await waitFor("failed preparation cleanup after restart", async () => {
+      const row = await cleanupRow();
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    assert.equal(preparations, 1);
+    assert.ok(cleanups >= 2);
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    const completedStatus = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(completedStatus.cleanup.status, "succeeded");
+    assert.deepEqual(completedStatus.error.data, { preparation });
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+  },
+);
+
 revisionTest(
   "an overdue Agent runtime fails closed without activating its incomplete revision",
   async (fixture) => {
@@ -7185,6 +1686,328 @@ revisionTest(
       data: { timeoutMs: 1, runtimeFailure },
     });
     assert.deepEqual(status.warnings, []);
+    // A runtime that failed by itself stays for diagnosis: nothing retires it.
+    assert.equal(status.cleanup, null);
+  },
+);
+
+revisionTest(
+  "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("expired-bootstrap");
+    const stopped = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+          };
+        },
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          await fixture.compute.stopRevision(revision);
+        },
+      },
+      { convergenceTimeoutMs: 1 },
+    );
+
+    await fixture.work(candidate, "failed_permanent");
+    // The retirement obligation commits with the failure, so the bootstrap Job and its
+    // seed Secret (the OAuth token bundle) cannot outlive the failed revision.
+    const cleanupRow = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+    assert.equal((await cleanupRow()).length, 1);
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "CONVERGENCE_DEADLINE_EXCEEDED",
+      message: "Deployment convergence deadline exceeded.",
+      data: { timeoutMs: 1 },
+    });
+    assert.notEqual(status.cleanup, null);
+    await waitFor("the expired bootstrap's revision cleanup", async () => {
+      const [row] = await cleanupRow();
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    assert.ok(stopped.includes(candidate.id));
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+  },
+);
+
+revisionTest(
+  "the convergence deadline judges work age by the database clock, not the controller clock",
+  async (fixture, context) => {
+    // The worker's wall clock disagrees with PostgreSQL's by five minutes, first ahead and then
+    // behind. Work's creation time is on the database clock, so its deadline must be too:
+    // otherwise skew alone retires a pending OAuth bootstrap early or holds it past the deadline.
+    // Each direction has its own deployment, a minute or more from the deadline by the database
+    // clock, so neither outcome depends on how soon the worker's first pass runs (finding 1171).
+    const timeoutMs = 60_000;
+    const skewMs = 300_000;
+    let controllerSkewMs = skewMs;
+    // The worker reads the global clock. context.mock restores it when this test ends, even on
+    // failure, and the file runs one test at a time, so no other test sees the skew.
+    const realNow = Date.now;
+    const controllerClock = context.mock.method(Date, "now", () => realNow() + controllerSkewMs);
+    const outcomes = new Map();
+    const passes = ({ idempotencyKey }) => outcomes.get(idempotencyKey) ?? [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+          };
+        },
+      },
+      {
+        convergenceTimeoutMs: timeoutMs,
+        emit: (event) => {
+          if (event.event === "worker.completed") {
+            outcomes.set(event.workId, [...(outcomes.get(event.workId) ?? []), event.outcome]);
+          }
+        },
+      },
+    );
+    const workRow = async (candidate) =>
+      (
+        await fixture.observerPool.query(
+          `SELECT state, EXTRACT(EPOCH FROM COALESCE(completed_at, clock_timestamp()) - created_at)
+                    * 1000 AS age_ms
+           FROM occ.controller_work WHERE idempotency_key = $1`,
+          [candidate.idempotencyKey],
+        )
+      ).rows[0];
+    const cleanupRows = async (candidate) =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+
+    // Ahead: the controller clock already counts new work as five minutes old, past the deadline,
+    // yet by the database clock it is young, so the bootstrap keeps waiting.
+    const young = await fixture.admitInitialRevision("deadline-clock-ahead");
+    await waitFor(
+      "a pass ahead of the database clock",
+      async () => passes(young.candidate)[0],
+      timeoutMs - 15_000,
+    );
+    const youngRow = await workRow(young.candidate);
+    assert.ok(Number(youngRow.age_ms) < timeoutMs, `work is still young (${youngRow.age_ms} ms)`);
+    assert.equal(passes(young.candidate)[0], "pending");
+    assert.notEqual(youngRow.state, "failed_permanent");
+    assert.deepEqual(await cleanupRows(young.candidate), []);
+
+    // Behind: work admitted two minutes ago by the database clock is past the deadline, though the
+    // controller clock would not count it as old for another four minutes. Its first pass fails it.
+    controllerSkewMs = -skewMs;
+    const old = await fixture.admitInitialRevision("deadline-clock-behind", {
+      revision: { workAge: `${(2 * timeoutMs) / 1000} seconds` },
+    });
+    await fixture.work(old.candidate, "failed_permanent", 30_000);
+    await waitFor("the old work's pass", async () => passes(old.candidate)[0]);
+    controllerClock.mock.restore();
+    const failed = await workRow(old.candidate);
+    assert.ok(Number(failed.age_ms) >= timeoutMs, `failed past the deadline (${failed.age_ms} ms)`);
+    assert.deepEqual(passes(old.candidate), ["permanent"]);
+    const status = await fixture.deploymentStatus(old.owner, old.candidate);
+    assert.equal(status.error?.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+    assert.deepEqual(status.error?.data, { timeoutMs });
+    // The deadline retires the bootstrap with the failure.
+    assert.equal((await cleanupRows(old.candidate)).length, 1);
+  },
+);
+
+revisionTest(
+  "a stop orders the running revision by the database clock, not the controller clock",
+  async (fixture) => {
+    // The controller clock that stamps each admission runs five minutes ahead of PostgreSQL's
+    // for one Agent and behind for the other. The stop's creation time is on the database clock,
+    // so the admission must be too. Ahead, the running revision would read as admitted after the
+    // stop, which would finish STOP_SUPERSEDED and leave the runtime running (finding 1195).
+    const stopped = [];
+    await fixture.start({
+      ...fixture.compute,
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+    });
+    for (const [label, controllerSkewMs] of [
+      ["ahead", 300_000],
+      ["behind", -300_000],
+    ]) {
+      const owner = await fixture.agent(`stop-clock-${label}`);
+      const candidate = await fixture.revision(owner, 1, { controllerSkewMs });
+      const admitted = (
+        await fixture.observerPool.query(
+          `SELECT admitted_at, EXTRACT(EPOCH FROM clock_timestamp() - admitted_at) * 1000 AS age_ms
+           FROM occ.agent_revisions WHERE id = $1`,
+          [candidate.id],
+        )
+      ).rows[0];
+      // The store stamped admission on its own clock and returned that stamp.
+      const ageMs = Number(admitted.age_ms);
+      assert.ok(ageMs >= 0 && ageMs < 60_000, `${label}: admitted ${ageMs} ms ago`);
+      assert.equal(candidate.createdAt, admitted.admitted_at.toISOString(), label);
+      await fixture.work(candidate, "succeeded");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id, label);
+
+      const stop = await fixture.requestStop(owner);
+      await fixture.work(stop, "succeeded");
+      const audit = await fixture.observerPool.query(
+        `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
+         WHERE namespace_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.lifecycle.stop'`,
+        [fixture.namespace.id, owner.id],
+      );
+      assert.deepEqual(audit.rows, [{ reason_code: "AGENT_STOPPED" }], label);
+      assert.ok(stopped.includes(candidate.id), `${label}: the running revision was stopped`);
+      const current = await fixture.currentAgent(owner);
+      assert.equal(current.desiredRuntimeState, "stopped", label);
+      assert.equal(current.activeRevisionId, undefined, label);
+    }
+  },
+);
+
+revisionTest(
+  "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
+  async (fixture) => {
+    // Three OAuth deployments see their bootstrap running, then the Kubernetes API fails on every
+    // pass until the deadline. The pass that expires sees only the outage, so the work's latest
+    // readiness evidence decides: a bootstrap last seen running is retired with the failure
+    // (finding 1165), a deployment that got past it keeps its runtime for diagnosis, and a
+    // revision published since (only its activation fails) is never retired.
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
+    const published = await fixture.admitInitialRevision("expired-activation-outage");
+    // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
+    // except that the published revision's later passes are ready and its activation fails.
+    const script = new Map([
+      [running.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [progressed.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", undefined]],
+      [published.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+    ]);
+    const passes = new Map(
+      [running, progressed, published].map(({ candidate }) => [candidate.idempotencyKey, []]),
+    );
+    const outage = () =>
+      new TransientDependencyError(
+        "kubernetes_api",
+        "unavailable",
+        "The Kubernetes API answered HTTP 503.",
+      );
+    // The scripted passes must all run before the deadline, so it is real time from admission.
+    // 30 s leaves a stalled runner room for them; the outage then fills the rest (finding 1171).
+    const timeoutMs = 30_000;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          const steps = script.get(revision.id);
+          if (steps === undefined) {
+            return fixture.compute.prepareRevision(revision);
+          }
+          if (steps.length === 0) {
+            if (revision.id === published.candidate.id) {
+              return fixture.compute.prepareRevision(revision);
+            }
+            throw outage();
+          }
+          const pendingReason = steps.shift();
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            ...(pendingReason === undefined ? {} : { pendingReason }),
+          };
+        },
+        async activateRevision(revision, revisionContext) {
+          if (revision.id === published.candidate.id) {
+            throw outage();
+          }
+          return fixture.compute.activateRevision?.(revision, revisionContext);
+        },
+      },
+      {
+        convergenceTimeoutMs: timeoutMs,
+        emit: (event) => {
+          if (event.event === "worker.completed" && passes.has(event.workId)) {
+            passes.get(event.workId).push({ outcome: event.outcome, code: event.code });
+          }
+        },
+      },
+    );
+    const cleanupRows = async (candidate) =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+
+    for (const { candidate } of [running, progressed, published]) {
+      await fixture.work(candidate, "failed_permanent", timeoutMs + 60_000);
+      // The pass that ended it ran at the deadline, by the database clock, not before it.
+      const { rows } = await fixture.observerPool.query(
+        `SELECT EXTRACT(EPOCH FROM completed_at - created_at) * 1000 AS age_ms
+         FROM occ.controller_work WHERE idempotency_key = $1`,
+        [candidate.idempotencyKey],
+      );
+      assert.ok(Number(rows[0].age_ms) >= timeoutMs, `failed at ${rows[0].age_ms} ms`);
+    }
+    // The scripted readiness came before the deadline (a starved runner fails here), and the
+    // outage, not the deadline, ends each deployment.
+    for (const [{ candidate }, readiness] of [
+      [running, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [progressed, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", "REVISION_INCOMPLETE"]],
+      [published, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+    ]) {
+      const seen = passes.get(candidate.idempotencyKey);
+      assert.deepEqual(
+        seen.slice(0, readiness.length),
+        readiness.map((code) => ({ outcome: "pending", code })),
+        `scripted passes of ${candidate.id} ran before the deadline`,
+      );
+      assert.ok(seen.length > readiness.length + 1, "the outage spans several passes");
+      assert.deepEqual(seen.at(-1), {
+        outcome: "permanent",
+        code: "KUBERNETES_API_UNAVAILABLE",
+      });
+    }
+    const failedStatus = await fixture.deploymentStatus(running.owner, running.candidate);
+    assert.equal(failedStatus.status, "failed");
+    assert.equal(failedStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
+    // The bootstrap last seen running goes with the failure: its Job and seed Secret (the OAuth
+    // token bundle) cannot outlive the failed revision.
+    assert.equal((await cleanupRows(running.candidate)).length, 1);
+    assert.notEqual(failedStatus.cleanup, null);
+    await waitFor("the expired bootstrap's revision cleanup", async () => {
+      const [row] = await cleanupRows(running.candidate);
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    // A deployment whose bootstrap finished keeps its runtime, as at a plain deadline.
+    assert.deepEqual(await cleanupRows(progressed.candidate), []);
+    const keptStatus = await fixture.deploymentStatus(progressed.owner, progressed.candidate);
+    assert.equal(keptStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
+    assert.equal(keptStatus.cleanup, null);
+    // A published revision recorded no readiness code after its bootstrap, yet stays published
+    // and running.
+    assert.deepEqual(await cleanupRows(published.candidate), []);
+    assert.equal(
+      (await fixture.activePointer(published.owner)).rows[0].active_revision_id,
+      published.candidate.id,
+    );
   },
 );
 
@@ -7489,6 +2312,36 @@ revisionTest(
       },
     });
     assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "a revision whose Credential Gateway is no longer selected fails with a fixed status message",
+  async (fixture) => {
+    // The Installation dropped the Credential Gateway after admission, so dispatch fails the
+    // revision at once. The status names the cause and the fix, without IDs, instead of the
+    // generic "Deployment reconciliation failed." (D549).
+    const { owner, candidate } = await fixture.admitInitialRevision("credential-gateway-removed", {
+      agent: { auth: "credential_source" },
+    });
+    const prepared = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, revisionContext);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    await fixture.stop();
+    assert.deepEqual(prepared, []);
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "CREDENTIAL_GATEWAY_MISMATCH",
+      message:
+        "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.",
+    });
   },
 );
 
@@ -7850,10 +2703,17 @@ for (const pendingPasses of [0, 1]) {
       );
       const events = [];
       let activations = 0;
+      const stopped = [];
 
       await fixture.start(
         {
           ...fixture.compute,
+          // Exclusive Compute stops a refused candidate, but never the published revision.
+          requiresStoppedPredecessors: () => true,
+          async stopRevision(revision) {
+            stopped.push(revision.id);
+            return fixture.compute.stopRevision(revision);
+          },
           async activateRevision() {
             activations += 1;
             if (activations <= pendingPasses) {
@@ -7885,6 +2745,7 @@ for (const pendingPasses of [0, 1]) {
       );
       // No retry after the refusal: the first refused pass ends the deployment.
       assert.equal(activations, pendingPasses + 1);
+      assert.deepEqual(stopped, [], "the published revision keeps its workload");
       await completion(
         events,
         "the refused activation's terminal completion",
@@ -8026,6 +2887,7 @@ revisionTest(
       error: null,
       warnings,
       progress: null,
+      cleanup: null,
     });
   },
 );
@@ -8202,6 +3064,68 @@ test(
   },
 );
 
+test(
+  "a deploy denial during repository admission leaves a first deployment's runtime untouched",
+  requiresPostgres,
+  async (context) => {
+    // On Compute that does not declare exclusive replacement, a refused candidate without an
+    // active revision is stopped only if Compute may have prepared it. Here the actor loses
+    // deploy while the first pass opens its repository session; the repository lifecycle's
+    // authority recheck, as it records the opened session, refuses it before Compute is asked to
+    // prepare, with no earlier evidence: nothing may stop it.
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("repository-denied", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const open = repository.driver.open;
+    repository.driver.open = async (input, signal) => {
+      const result = await open(input, signal);
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+         VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
+        [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
+      );
+      return result;
+    };
+    const effects = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        effects.push("prepare");
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+      async stopRevision(revision) {
+        // The failed work's repository cleanup retires the runtime afterwards. Only a stop while
+        // the deployment work is unfinished would be the refused-candidate stop.
+        const work = await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+          [candidate.idempotencyKey],
+        );
+        effects.push(`stop:${work.rows[0].state}`);
+        return fixture.compute.stopRevision(revision);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    const failure = await fixture.observerPool.query(
+      `SELECT details->>'reasonCode' AS code FROM occ.audit_events
+       WHERE resource_id = $1 AND action = 'reconcile' AND outcome = 'failure'`,
+      [candidate.id],
+    );
+    assert.deepEqual(failure.rows, [{ code: "AUTHORIZATION_DENIED" }]);
+    assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
+    await waitFor("the repository cleanup to retire the runtime", async () =>
+      effects.includes("stop:failed_permanent") ? true : undefined,
+    );
+    assert.ok(
+      effects.every((effect) => effect === "stop:failed_permanent"),
+      effects.join(","),
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+  },
+);
+
 revisionTest(
   "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
   async (fixture) => {
@@ -8244,6 +3168,12 @@ revisionTest(
     assert.equal(activeByAgent.get(dedicated.id), dedicatedRevision.id);
     assert.equal(activeByAgent.get(unsupported.id), null);
     assert.equal(activeByAgent.get(mismatched.id), null);
+    // The status names the way out, not the generic failure text (finding 828).
+    assert.deepEqual((await fixture.deploymentStatus(unsupported, unsupportedRevision)).error, {
+      code: "HARNESS_DESCRIPTOR_MISMATCH",
+      message:
+        "This revision's Harness or Harness version is no longer approved, for example after a controller upgrade. Deploy again to admit a revision with the approved version.",
+    });
   },
 );
 
@@ -8495,6 +3425,42 @@ revisionTest(
       [candidate.id],
     );
     assert.equal(work.rows[0].reason_code, "SECRET_DRIVER_MISMATCH");
+    // The status names the fix, without IDs, instead of the generic failure text (finding 828).
+    assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
+      code: "SECRET_DRIVER_MISMATCH",
+      message:
+        "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.",
+    });
+  },
+);
+
+revisionTest(
+  "revision dispatch refuses a different selected Compute Driver with a fixed status message",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("changed-compute-owner");
+    // Installation composition changed after admission: the revision stays pinned to the
+    // Compute Driver it was admitted with, so dispatch refuses it before any Compute effect.
+    const effects = [];
+    await fixture.start({
+      ...fixture.compute,
+      id: "compute-replacement",
+      async bindAgent() {
+        effects.push("bind");
+      },
+      async prepareRevision(revision) {
+        effects.push("prepare");
+        return fixture.compute.prepareRevision(revision);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    await fixture.stop();
+    assert.deepEqual(effects, []);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
+      code: "COMPUTE_DRIVER_MISMATCH",
+      message:
+        "The Installation no longer selects the Compute Driver this revision was admitted with. Deploy again to admit a revision for the selected driver.",
+    });
   },
 );
 

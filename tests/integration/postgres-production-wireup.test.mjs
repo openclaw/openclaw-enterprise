@@ -528,6 +528,36 @@ test(
       } finally {
         await worker.stop();
       }
+      // Production composition must retain the same contract-sized route budget as development.
+      const workspaceContent = (
+        "# Workspace guidance\n" + "Routine fixture instructions.\n".repeat(600)
+      ).slice(0, 16 * 1024);
+      const workspaceTemplate = {
+        agent: {
+          initialWorkspaceFiles: Object.fromEntries(
+            ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => [
+              name,
+              workspaceContent,
+            ]),
+          ),
+        },
+      };
+      const largePreset = await request("POST", presetPath, {
+        name: "Full workspace",
+        template: workspaceTemplate,
+      });
+      assert.equal(largePreset.status, 201);
+      const replacedPreset = await request("PATCH", `${presetPath}/${largePreset.data.id}`, {
+        name: "Full workspace updated",
+        template: workspaceTemplate,
+      });
+      assert.equal(replacedPreset.status, 200);
+      assert.deepEqual(
+        (await request("GET", `${presetPath}/${largePreset.data.id}`)).data.template,
+        workspaceTemplate,
+      );
+      assert.equal((await request("DELETE", `${presetPath}/${largePreset.data.id}`)).status, 204);
+
       const customized = await request("PATCH", `${presetPath}/${copied.id}`, {
         template: { agent: { name: "Kept across restart" } },
       });

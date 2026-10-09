@@ -22,6 +22,9 @@ import {
   message,
   rejectionMessage,
   assertReadableConfiguration,
+  GENERIC_CONFLICT,
+  GENERIC_DENIAL,
+  NAMESPACE_NOT_READY_MESSAGE,
 } from "./list.mjs";
 import {
   createChannelSecretsPanel,
@@ -29,6 +32,32 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
+
+function deployFailureText(error, submitted) {
+  if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
+    return "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again.";
+  }
+  if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
+    return NAMESPACE_NOT_READY_MESSAGE;
+  }
+  if (error.status !== 403 && error.status !== 409) {
+    return rejectionMessage(error, submitted);
+  }
+  // A typed refusal is written for the caller: a 409 names the setting or state to fix, and a
+  // 403 other than the caller's own denial names the Agent's service principal and a resource
+  // the caller was already authorized to operate. Showing it reveals nothing the API did not
+  // already tell this caller (D94).
+  if (
+    error.serverMessage !== undefined &&
+    error.serverMessage !== GENERIC_DENIAL &&
+    error.serverMessage !== GENERIC_CONFLICT
+  ) {
+    return error.serverMessage;
+  }
+  return error.status === 403
+    ? "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask a Namespace administrator to confirm the required grants."
+    : "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them.";
+}
 
 function errorPanel(error, context, retry, { version = false } = {}) {
   if (error.status === 401) {
@@ -129,7 +158,18 @@ const RUNTIME_FAILURE_CAUSE_LABELS = {
   WRAPPER_ERROR: "The runtime could not run the check",
 };
 
+// Provider refusals the operator fixes at the provider account, not in the Configuration.
+const PROBE_STATUS_DETAIL_TEXT = {
+  rate_limit:
+    "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
+  billing:
+    "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
+};
+
 function runtimeFailureCauseText(cause) {
+  if (cause.kind === "PROBE_STATUS" && Object.hasOwn(PROBE_STATUS_DETAIL_TEXT, cause.detail)) {
+    return PROBE_STATUS_DETAIL_TEXT[cause.detail];
+  }
   const label = Object.hasOwn(RUNTIME_FAILURE_CAUSE_LABELS, cause.kind)
     ? RUNTIME_FAILURE_CAUSE_LABELS[cause.kind]
     : cause.kind;
@@ -141,11 +181,12 @@ const DEPLOYMENT_FAILURE_LINK_LABELS = {
   configuration: "Open Configuration",
 };
 
-function deploymentFailure(error, hrefs = {}, logs = null) {
+function deploymentFailure(error, hrefs = {}, logsLink = null) {
   if (!error) {
     return element("p", { className: "muted" }, "No persisted startup failure.");
   }
   const runtimeFailure = error.data?.runtimeFailure;
+  const preparation = error.data?.preparation;
   const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_GUIDANCE, error.code)
     ? DEPLOYMENT_FAILURE_GUIDANCE[error.code]
     : null;
@@ -165,14 +206,51 @@ function deploymentFailure(error, hrefs = {}, logs = null) {
             : null,
         )
       : null,
-    // A failed version may never become current, so link its output directly.
-    logs
+    preparation
       ? element(
-          "p",
-          { className: "hint" },
-          element("a", { href: logs.href }, `Open v${logs.revision} Logs`),
+          "div",
+          { className: "bootstrap-failure-evidence" },
+          element("h4", {}, "Credential preparation evidence"),
+          element(
+            "p",
+            {},
+            `${preparation.workload.kind} ${preparation.workload.name} · ${preparation.workload.namespace} · ${preparation.reason}`,
+          ),
+          element(
+            "p",
+            { className: "muted" },
+            `Observed ${displayDate(preparation.observedAt)}. This local file handoff does not verify provider login acceptance.`,
+          ),
+          element("p", { className: "resource-id" }, `Workload UID: ${preparation.workload.uid}`),
+          element(
+            "p",
+            {},
+            `Started: ${preparation.startedAt ? displayDate(preparation.startedAt) : "Unknown"} · Finished: ${preparation.finishedAt ? displayDate(preparation.finishedAt) : "Unknown"}`,
+          ),
+          ...preparation.pods.map((pod) =>
+            element(
+              "div",
+              {},
+              element("strong", {}, `${pod.name} · ${pod.phase} · scheduling ${pod.scheduling}`),
+              element("p", { className: "resource-id" }, `Pod UID: ${pod.uid}`),
+              ...pod.containers.map((container) =>
+                element(
+                  "p",
+                  {},
+                  `${container.kind} container ${container.name}: ${container.state}${container.reason ? ` · ${container.reason}` : ""}${container.exitCode === null ? "" : ` · exit ${container.exitCode}`}${container.startedAt ? ` · started ${displayDate(container.startedAt)}` : ""}${container.finishedAt ? ` · finished ${displayDate(container.finishedAt)}` : ""}`,
+                ),
+              ),
+            ),
+          ),
+          element(
+            "p",
+            { className: "hint" },
+            "For unschedulable Pods, check capacity and placement. For image or volume setup failures, check image access, mounts and private-volume permissions. Correct the cause and deploy a new version of this Agent.",
+          ),
         )
       : null,
+    // A failed version may never become current, so link its output directly.
+    logsLink ? element("p", { className: "hint" }, logsLink) : null,
     runtimeFailure && typeof runtimeFailure === "object"
       ? element(
           "dl",
@@ -252,7 +330,7 @@ function createDeploymentStatusPanel(
   onAgentChange,
   onStatusChange,
   credentialsHref = null,
-  logsHref = null,
+  logsLink = null,
   configurationHref = null,
 ) {
   const section = element("section", { className: "agent-card deployment-status" });
@@ -270,7 +348,11 @@ function createDeploymentStatusPanel(
   function schedulePoll() {
     clearTimeout(pollTimer);
     pollTimer = null;
-    if (state.error || !PENDING_DEPLOYMENT_STATUSES.has(state.status?.status)) {
+    if (
+      state.error ||
+      (!PENDING_DEPLOYMENT_STATUSES.has(state.status?.status) &&
+        !PENDING_DEPLOYMENT_STATUSES.has(state.status?.cleanup?.status))
+    ) {
       return;
     }
     pollTimer = setTimeout(() => {
@@ -369,6 +451,22 @@ function createDeploymentStatusPanel(
       "div",
       {},
       deploymentProgress(state.status.status, state.status.progress),
+      state.status.cleanup
+        ? element(
+            "p",
+            { role: "status", className: "deployment-cleanup" },
+            {
+              // One retire cleanup per version: OAuth bootstrap or repository credential resources.
+              queued:
+                "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
+              running:
+                "Revision cleanup is running. This version's resources have not been confirmed removed.",
+              succeeded: "Revision cleanup completed for this version.",
+              failed:
+                "Revision cleanup failed. Ask an operator to inspect the retained cleanup obligation.",
+            }[state.status.cleanup.status],
+          )
+        : null,
       state.status.progress
         ? element(
             "div",
@@ -398,7 +496,7 @@ function createDeploymentStatusPanel(
       deploymentFailure(
         state.status.error,
         { credentials: credentialsHref, configuration: configurationHref },
-        logsHref ? { href: logsHref, revision: revision.revision } : null,
+        logsLink,
       ),
       state.status.warnings?.length
         ? element(
@@ -928,6 +1026,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
     versionLayout,
   );
+  function revealSelectedTab() {
+    const strip = tabs.getBoundingClientRect();
+    const bounds = tabControls.get(selectedTab).getBoundingClientRect();
+    if (bounds.left < strip.left) {
+      tabs.scrollLeft += Math.floor(bounds.left - strip.left);
+    } else if (bounds.right > strip.right) {
+      tabs.scrollLeft += Math.ceil(bounds.right - strip.right);
+    }
+  }
+  const tabResize = new ResizeObserver(() => {
+    if (!context.isCurrent() || !tabs.isConnected) {
+      tabResize.disconnect();
+      return;
+    }
+    revealSelectedTab();
+  });
+  tabResize.observe(tabs);
+  // Detached views stop observing; Back's retained view re-arms the strip.
+  context.onResume?.(() => {
+    if (tabs.isConnected) {
+      tabResize.observe(tabs);
+    }
+  });
   let details;
   const retainedTabs = new Map();
   let mountedTab = null;
@@ -1293,10 +1414,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             agent.harnessAuth?.method === "runtime"
               ? null
               : context.pageUrl(`agents/${agent.id}?revision=draft&tab=credentials`, namespaceId),
-            context.pageUrl(
-              `agents/${agent.id}?revision=${encodeURIComponent(mostRecent.id)}&tab=logs`,
-              namespaceId,
-            ),
+            link(`Open v${mostRecent.revision} Logs`, target(mostRecent.id, "logs"), context),
             context.pageUrl(`agents/${agent.id}?revision=draft&tab=configuration`, namespaceId),
           )
         : element(
@@ -1655,13 +1773,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
           // The cluster refused the credential check before admission: no version was created.
           const clusterRbac = error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC";
-          deployFeedback.textContent = clusterRbac
-            ? "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again."
-            : error.status === 403
-              ? "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask a Namespace administrator to confirm the required grants."
-              : error.status === 409
-                ? "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them."
-                : rejectionMessage(error, submitted);
+          deployFeedback.textContent = deployFailureText(error, submitted);
           if (!submitted || clusterRbac || [400, 403, 404, 409, 429].includes(error.status)) {
             deployPending = false;
           }
@@ -1790,6 +1902,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         control.removeAttribute("aria-current");
       }
     }
+    revealSelectedTab();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
@@ -1839,6 +1952,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       content.append(renderAgentLogs(tabContext, { agent, revisionId: selected }));
       state.loading = false;
       content.style.minHeight = "";
+      // Finish the overview layout before bringing this version's output into view.
+      await details;
+      if (tabContext.isCurrent() && !deleting) {
+        tabControls.get("logs").focus({ preventScroll: true });
+        detailPane.scrollIntoView({ block: "start" });
+      }
       return;
     }
     content.append(element("p", { role: "status" }, "Loading configuration…"));
