@@ -543,6 +543,7 @@ export async function runDevUpModelProviderCase(
     run,
   });
   let forcedTermination = false;
+  let commandFailed = false;
   const command = async (program, args, options = {}) => {
     signal.throwIfAborted();
     try {
@@ -553,6 +554,7 @@ export async function runDevUpModelProviderCase(
         killSignal: "SIGTERM",
       });
     } catch (error) {
+      commandFailed = true;
       forcedTermination ||= error.forcedTermination === true;
       throw error;
     }
@@ -569,6 +571,14 @@ export async function runDevUpModelProviderCase(
       throw new Error(`Command required forced termination; recovery state preserved at ${root}.`);
     }
     if (existsSync(stateDirectory)) {
+      // A failed or cancelled launcher can deliberately retain an unresolved
+      // creation journal. Process closure and an absent cluster inspection do
+      // not settle that obligation; automatic dev-down would erase it.
+      if (commandFailed) {
+        throw new Error(
+          `Command outcome remains uncertain; recovery state preserved at ${stateDirectory}.`,
+        );
+      }
       try {
         await run(join(repository, "scripts", "dev-down"), [], {
           env: environment,
