@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-07
-last_updated_session: authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02
+updated: 2026-10-08
+last_updated_session: authoring-run/94bcaa16-065c-44b4-b8b2-85e5f198c181
 ---
 
 # Agent Plugin Deployment Flow
@@ -40,12 +40,17 @@ graph TD
   D1 -->|transient token or no credential| D6
   D6 -->|unsupported| D7["Return unavailable capability"]
   D6 -->|Secret reference| D3["Read owned current value"]
-  D6 -->|transient token or no credential| D4["Call selected PluginDriver"]
-  D3 -->|Create Agent| E4["Recheck Agent create and Secret operate"]
-  E4 --> D4
+  D6 -->|transient token or no credential| E4
+  D3 -->|Create Agent| E4["Recheck current scope and grants"]
+  E4 --> D4["Call selected PluginDriver"]
   D3 -->|Existing Agent| E3["Recheck grants and binding"]
   E3 --> D4
-  D4 --> D5["Return safe catalog metadata"]
+  D4 -->|curated| D5["Return safe catalog metadata"]
+  D4 -->|hosted request constructed| D8["Await current OCC authority"]
+  D8 -->|denied, unavailable or cancelled| D9["Stop discovery"]
+  D8 -->|allowed and before deadline| D10["Send provider request"]
+  D10 -->|construct next request| D8
+  D10 -->|complete| D5
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot revision"]
@@ -70,19 +75,19 @@ graph TD
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
 transient PATs, same-Namespace Secrets, or supported credential-free access.
 OCC checks Namespace Agent `create` and caller Secret `operate` before Driver
-support, and again after the Secret read, before the Driver call; unsupported
-discovery reads no Secret. A `secretRef` or `oauthLogin` in
-another Namespace, here or in existing-Agent discovery, fails with
-`400 INVALID_REQUEST` before any Secret check; a Secret the Namespace does not
-hold is `404`.
+support, then rechecks before invoking the Driver; unsupported discovery reads
+no Secret. Transient and credential-free requests also recheck current authority.
+A `secretRef` or `oauthLogin` in another Namespace, here or in existing-Agent
+discovery, fails with `400 INVALID_REQUEST` before any Secret check; a Secret the
+Namespace does not hold is `404`.
 
 Existing-Agent discovery requires active Agent `read`/`update`; inputs are queries,
 cursors, or plugin IDs. Hosted discovery resolves bound `codex_pat` and rechecks
 binding and caller/Agent Secret `operate` inside
 [`SecretDriver.withValue`](../reference/drivers/secret.md). Curated discovery needs
 no Secret. Missing, denied, or unavailable Secrets fail before discovery.
-Nontransactional reads may precede rotation; discovery persists neither state nor
-credentials.
+Discovery also supports provisioning Namespaces. Nontransactional reads may precede rotation;
+discovery persists neither state nor credentials.
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
 hosted identity, searches `q`, and pages GLOBAL entries with opaque cursors.
@@ -96,7 +101,20 @@ cancellation abort requests. Tools (`null`: unknown) load on demand; supported
 entries then become selectable. Unsupported releases remain unavailable.
 Curated catalogs filter bundled entries without verifying tools/account access.
 
-Bounded hosted reads forbid redirects. OCC returns `no-store` metadata, rejects
+`OpenClawController.withPluginDiscoveryCredential` supplies the required
+`PluginDiscoveryContext.authorizeSend` callback. In
+[`hosted-catalog.ts:withCredential`](../../apps/controller/src/drivers/plugin/hosted-catalog.ts),
+`send` awaits the check after constructing each identity, catalog, detail, or
+tool request. The callback rechecks current grants, scope, and saved binding.
+Denial or unavailable authority stops discovery. Authorization waits share the
+Driver's 15-second deadline, which starts after entry credential acquisition.
+`send` checks expiry and cancellation again after the wait, so a late result
+cannot restart a send. HTTP disconnects abort through
+`createFastifyApp:withPluginDiscoverySignal`, including connections closed during
+identity admission before discovery listeners are installed. The
+[contract limits](../reference/drivers/plugin.md#native-mappings-and-limits) apply.
+
+Hosted reads forbid redirects. OCC returns `no-store` metadata, rejects
 credential echoes, and suppresses upstream errors/artifacts. Selections exclude
 Driver links/setup guidance. Connections remain unverified; HTTPS logos omit
 referrers and default to initials.
@@ -306,6 +324,8 @@ deadline.
 
 ## Changelog
 
+- 2026-10-08 23:02: Recheck discovery authority before each hosted provider send; bound authorization waits and propagate HTTP cancellation. (authoring-run/94bcaa16-065c-44b4-b8b2-85e5f198c181 - fbcb3961cb59548c91eed4976678de55bde7325c)
+
 - 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
 
 - 2026-10-04 05:00: Recheck Create Agent discovery grants after the Secret read. (bughunt-11)
@@ -317,9 +337,5 @@ deadline.
 - 2026-09-30 02:10: Recheck the peer before replacement readiness. (authoring-run/fc09b5f8-3fc8-4144-ac80-8bfd8ef24f52 - ed69e6eee87ca004d2970069e8e18cf4cce29a32)
 
 - 2026-09-30 00:33: Propagate Gateway exits while awaiting peer recovery. (authoring-run/bf3b8146-9d72-42a4-84e5-2293581c890c - 0d72f6a4e4e3003d457c4498e81e7de414f85649)
-
-- 2026-09-28 21:26: Batch Codex metadata reads; preserve ordered writes and verification. (authoring-run/7c8bff1b-a2d1-48f6-a996-1be6a06719fa - 8352c0932bcbde43e88b44c6975496ca5431ff55)
-
-- 2026-09-28 10:46: Materialize inherited app policy; native proof pending. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 44ed2405)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

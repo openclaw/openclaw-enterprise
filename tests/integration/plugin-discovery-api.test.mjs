@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -1410,3 +1411,568 @@ test("Hosted discovery requires a credential, and curated discovery still requir
     assert.equal(denied.status, 403);
   }
 });
+
+async function createHostedSendFixture(t, { ready = true, catalogSource = "hosted", onSend } = {}) {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, {
+    auditSink,
+    provisionedPeople: ["discovery-editor"],
+    onSend,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Current discovery authority", { ready });
+  const driver = new CodexPluginDriver({ catalogSource });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const actor = fixture.provisionedAccounts[0];
+  const session = await fixture.signIn(actor.credentials);
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const grant = async (subjectId, resourceKind, resourceId, actions) => {
+    const role = await fixture.request("POST", `${policyPath}/roles`, {
+      body: { permissions: actions.map((action) => ({ action, resourceKind })) },
+    });
+    assert.equal(role.status, 201, JSON.stringify(role.body));
+    const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+      body: { subjectKind: "identity", subjectId, roleId: role.data.id, resourceKind, resourceId },
+    });
+    assert.equal(binding.status, 201, JSON.stringify(binding.body));
+    return binding.data;
+  };
+  // Namespace create grants are provisioned policy; the public IAM API only
+  // manages exact-resource grants and deliberately cannot create these Roles.
+  const grantCreate = () => {
+    const id = `discovery-create-${randomUUID()}`;
+    grantRole(fixture.policy, actor.principal.id, {
+      id,
+      bindingId: id,
+      namespaceId: namespace.id,
+      permissions: { agent: ["create"] },
+    });
+    return id;
+  };
+  const revoke = async (binding) => {
+    const result = await fixture.request("DELETE", `${policyPath}/access-bindings/${binding.id}`);
+    assert.equal(result.status, 204, JSON.stringify(result.body));
+  };
+  const sends = [];
+  let afterSend = async () => {};
+  const fetch = globalThis.fetch;
+  const plugin = {
+    id: remoteId,
+    name: "knowledge",
+    scope: "GLOBAL",
+    status: "ENABLED",
+    installation_policy: "AVAILABLE",
+    release: {
+      interface: {},
+      requires_local_executor: false,
+      app_ids: ["app_knowledge"],
+      skills: [],
+      mcp_servers: [],
+    },
+  };
+  // Only external provider responses are fixtures. Fastify, OCC, IAM decisions and
+  // policy mutations use the supported path, with the in-memory State adapter.
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const address = String(url);
+    if (
+      !address.startsWith("https://auth.openai.com/") &&
+      !address.startsWith("https://chatgpt.com/backend-api/ps/")
+    ) {
+      return fetch(url, init);
+    }
+    assert.equal(init.redirect, "error");
+    let operation = "details";
+    if (address.endsWith("/whoami")) {
+      operation = "identity";
+    } else if (address.endsWith("apps/batch")) {
+      operation = "tools";
+    } else if (address.includes("plugins/list?")) {
+      operation = "catalog";
+    }
+    sends.push(operation);
+    await afterSend(operation, init.signal);
+    if (operation === "identity") {
+      return Response.json({
+        chatgpt_account_id: "account_fixture",
+        chatgpt_account_is_fedramp: false,
+      });
+    }
+    if (operation === "catalog") {
+      return Response.json({ plugins: [plugin], pagination: { next_page_token: null } });
+    }
+    if (operation === "details") {
+      return Response.json(plugin);
+    }
+    return Response.json({
+      apps: [{ id: "app_knowledge", status: "ENABLED", tools: [{ name: "search" }] }],
+    });
+  });
+  return {
+    ...fixture,
+    namespace,
+    actor,
+    session,
+    grant,
+    grantCreate,
+    revoke,
+    sends,
+    auditSink,
+    path: `/namespaces/${namespace.id}/agents/plugins`,
+    afterSend(callback) {
+      afterSend = callback;
+    },
+  };
+}
+
+async function savedSendScope(fixture) {
+  const saved = await createSavedAgent(fixture);
+  // Use committed policy bindings for the revocation scenarios, rather than the
+  // ordinary fixture's seeded Agent grant.
+  fixture.policy.bindings = fixture.policy.bindings.filter(
+    (binding) => binding.subjectId !== saved.agent.servicePrincipalId,
+  );
+  const read = await fixture.grant(fixture.actor.principal.id, "agent", saved.agent.id, ["read"]);
+  const update = await fixture.grant(fixture.actor.principal.id, "agent", saved.agent.id, [
+    "update",
+  ]);
+  const callerSecret = await fixture.grant(fixture.actor.principal.id, "secret", saved.secret.id, [
+    "operate",
+  ]);
+  const agentSecret = await fixture.grant(
+    saved.agent.servicePrincipalId,
+    "secret",
+    saved.secret.id,
+    ["operate"],
+  );
+  return { ...saved, grants: { read, update, callerSecret, agentSecret } };
+}
+
+test("Hosted API discovery allows each identity, catalog and tool send under current authority", async (t) => {
+  const fixture = await createHostedSendFixture(t);
+  const saved = await savedSendScope(fixture);
+  const catalog = await fixture.request("POST", saved.path, { session: fixture.session, body: {} });
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+  const detail = await fixture.request("POST", `${saved.path}/details`, {
+    session: fixture.session,
+    body: { pluginId: remoteId },
+  });
+  assert.equal(detail.status, 200, JSON.stringify(detail.body));
+  assert.equal(detail.data.tools[0].id, "app_knowledge/search");
+  assert.deepEqual(fixture.sends, ["identity", "catalog", "identity", "details", "tools"]);
+});
+
+for (const [grant, boundary] of [
+  ["read", "identity"],
+  ["update", "details"],
+  ["callerSecret", "identity"],
+  ["agentSecret", "details"],
+]) {
+  test(`Hosted API discovery stops after committed ${grant} revocation at ${boundary}`, async (t) => {
+    const fixture = await createHostedSendFixture(t);
+    const saved = await savedSendScope(fixture);
+    fixture.afterSend(async (operation) => {
+      if (operation === boundary) {
+        await fixture.revoke(saved.grants[grant]);
+      }
+    });
+    const denied = await fixture.request("POST", `${saved.path}/details`, {
+      session: fixture.session,
+      body: { pluginId: remoteId },
+    });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assert.deepEqual(
+      fixture.sends,
+      boundary === "identity" ? ["identity"] : ["identity", "details"],
+    );
+    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+    assert.equal(
+      JSON.stringify([denied.body, fixture.auditSink.events]).includes(accessToken),
+      false,
+    );
+  });
+}
+
+test("Hosted API discovery refuses a saved binding changed between details and tools", async (t) => {
+  const fixture = await createHostedSendFixture(t);
+  const saved = await savedSendScope(fixture);
+  const replacement = await fixture.createSecret(
+    fixture.namespace.id,
+    "Replacement",
+    `${accessToken}-replacement`,
+  );
+  await fixture.grant(fixture.actor.principal.id, "secret", replacement.id, ["operate"]);
+  await fixture.grant(saved.agent.servicePrincipalId, "secret", replacement.id, ["operate"]);
+  fixture.afterSend(async (operation) => {
+    if (operation === "details") {
+      const changed = await fixture.request(
+        "PATCH",
+        `/namespaces/${fixture.namespace.id}/agents/${saved.agent.id}`,
+        {
+          body: {
+            configurationId: saved.agent.configurationId,
+            harnessAuth: { method: "codex_pat", source: replacement.ref },
+          },
+        },
+      );
+      assert.equal(changed.status, 200, JSON.stringify(changed.body));
+    }
+  });
+  const result = await fixture.request("POST", `${saved.path}/details`, {
+    session: fixture.session,
+    body: { pluginId: remoteId },
+  });
+  assert.equal(result.status, 409, JSON.stringify(result.body));
+  assert.equal(
+    result.body.error.message,
+    "The Agent's plugin credential changed. Refresh and retry.",
+  );
+  assert.deepEqual(fixture.sends, ["identity", "details"]);
+});
+
+for (const credential of ["transient", "secret"]) {
+  test(`Hosted Namespace discovery rechecks ${credential} caller rights after identity lookup`, async (t) => {
+    const fixture = await createHostedSendFixture(t);
+    const create = fixture.grantCreate();
+    let body = { accessToken };
+    let revoked = create;
+    if (credential === "secret") {
+      const secret = await fixture.createSecret(fixture.namespace.id, "Discovery", accessToken);
+      body = { secretRef: secret.ref };
+      revoked = await fixture.grant(fixture.actor.principal.id, "secret", secret.id, ["operate"]);
+    }
+    fixture.afterSend(async (operation) => {
+      if (operation === "identity") {
+        if (credential === "transient") {
+          fixture.policy.bindings = fixture.policy.bindings.filter(
+            (binding) => binding.id !== create,
+          );
+        } else {
+          await fixture.revoke(revoked);
+        }
+      }
+    });
+    const result = await fixture.request("POST", fixture.path, { session: fixture.session, body });
+    assert.equal(result.status, 403, JSON.stringify(result.body));
+    assert.deepEqual(fixture.sends, ["identity"]);
+    assert.equal(
+      fixture.auditSink.events.at(-1).authorization.principalId,
+      fixture.actor.principal.id,
+    );
+  });
+}
+
+test("Hosted API discovery fails closed when the IAM state store becomes unavailable", async (t) => {
+  const fixture = await createHostedSendFixture(t);
+  fixture.grantCreate();
+  fixture.afterSend(async (operation) => {
+    if (operation === "identity") {
+      // Fault only the IAM persistence dependency; neither the OCC callback nor
+      // NativeIAMDriver's authorization decision is replaced.
+      t.mock.method(fixture.iamDriver.state, "loadNativeIAMState", async () => {
+        throw new Error("private IAM persistence outage");
+      });
+    }
+  });
+  const result = await fixture.request("POST", fixture.path, {
+    session: fixture.session,
+    body: { accessToken },
+  });
+  assert.equal(result.status, 503, JSON.stringify(result.body));
+  assert.deepEqual(fixture.sends, ["identity"]);
+  assert.doesNotMatch(JSON.stringify(result.body), /private IAM|at-plugin-discovery/);
+});
+
+for (const ending of ["abort", "deadline", "expired-allow"]) {
+  test(
+    `Hosted discovery ${ending} bounds an actual pending authority read and prevents a late send`,
+    { timeout: 20_000 },
+    async (t) => {
+      const fixture = await createHostedSendFixture(t);
+      fixture.grantCreate();
+      const held = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      const firstSend = Promise.withResolvers();
+      const abort = new AbortController();
+      let transaction;
+      let sendStarted;
+      let clockOffset = 0;
+      if (ending === "expired-allow") {
+        const now = performance.now.bind(performance);
+        t.mock.method(performance, "now", () => now() + clockOffset);
+      }
+      fixture.afterSend(async (operation) => {
+        if (operation === "identity") {
+          sendStarted = performance.now();
+          if (ending === "deadline") {
+            // Provider work consumes the same total budget as the later IAM wait.
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+          // In-memory State queues real reads behind an open transaction. This
+          // stalls the next Native IAM read without inventing its decision.
+          transaction = fixture.controller.transact(async () => {
+            held.resolve();
+            await release.promise;
+          });
+          await held.promise;
+          firstSend.resolve();
+        }
+      });
+      const pending = fixture.controller.discoverAgentPlugins(
+        fixture.actor.principal.id,
+        fixture.namespace.id,
+        { accessToken },
+        abort.signal,
+      );
+      const rejected = assert.rejects(pending, {
+        name: "PluginDiscoveryError",
+        reason: "unavailable",
+      });
+      try {
+        await firstSend.promise;
+        await new Promise((resolve) => setImmediate(resolve));
+        if (ending === "abort") {
+          abort.abort();
+        } else if (ending === "expired-allow") {
+          // Simulate expiry before the timer callback runs. The real IAM check
+          // succeeds after release, but the post-check deadline must prevent send.
+          clockOffset = 16_000;
+          release.resolve();
+        }
+        await rejected;
+        if (ending === "deadline") {
+          assert.ok(
+            performance.now() - sendStarted < 16_500,
+            "Later requests must not reset the 15-second budget.",
+          );
+        }
+        assert.deepEqual(fixture.sends, ["identity"]);
+      } finally {
+        release.resolve();
+        await transaction;
+      }
+      // Draining the now-successful reads cannot revive the cancelled operation.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(fixture.sends, ["identity"]);
+    },
+  );
+}
+
+test("Hosted API disconnect cancels pending authorization before later provider sends", async (t) => {
+  const fixture = await createHostedSendFixture(t);
+  fixture.grantCreate();
+  const held = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const firstSend = Promise.withResolvers();
+  const cancelled = Promise.withResolvers();
+  let transaction;
+  fixture.registerCleanupBeforeAppClose(() => {
+    release.resolve();
+    fixture.app.server.closeAllConnections();
+  });
+  fixture.afterSend(async (operation, signal) => {
+    if (operation === "identity") {
+      // Observe the real transport signal while a real IAM read waits on State.
+      signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+      transaction = fixture.controller.transact(async () => {
+        held.resolve();
+        await release.promise;
+      });
+      await held.promise;
+      firstSend.resolve();
+    }
+  });
+  const request = httpRequest(`${fixture.origin}${fixture.path}`, {
+    method: "POST",
+    headers: { ...authenticatedHeaders(fixture.session), "content-type": "application/json" },
+  });
+  request.on("error", () => {}); // Destroying the client socket intentionally resets this request.
+  request.end(JSON.stringify({ accessToken }));
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Provider cancellation did not complete.")), 3_000);
+  });
+  try {
+    await Promise.race([firstSend.promise, timeout]);
+    await new Promise((resolve) => setImmediate(resolve));
+    request.destroy();
+    await Promise.race([cancelled.promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+    request.destroy();
+    release.resolve();
+    await transaction;
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(fixture.sends, ["identity"]);
+});
+
+for (const suffix of ["", "/details"]) {
+  test(
+    `Hosted API disconnect during identity admission prevents ${suffix || "catalog"} sends`,
+    { timeout: 10_000 },
+    async (t) => {
+      const completed = Promise.withResolvers();
+      let path;
+      const fixture = await createHostedSendFixture(t, {
+        async onSend(request, reply, payload) {
+          if (request.raw.url === path) {
+            completed.resolve(reply.statusCode);
+          }
+          return payload;
+        },
+      });
+      fixture.grantCreate();
+      path = `${fixture.path}${suffix}`;
+      const admitted = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      const closed = Promise.withResolvers();
+      let incoming;
+      let outgoing;
+      const observe = (request, reply) => {
+        if (request.url === path) {
+          incoming = request;
+          outgoing = reply;
+          reply.once("close", () => closed.resolve());
+        }
+      };
+      fixture.app.server.on("request", observe);
+      const lookupIdentity = fixture.iamDriver.lookupIdentity.bind(fixture.iamDriver);
+      t.mock.method(fixture.iamDriver, "lookupIdentity", async (...args) => {
+        // Hold delivery of the real Native IAM result after Fastify consumed the
+        // body, before its preHandler can enter discovery. No decision is replaced.
+        const identity = await lookupIdentity(...args);
+        assert.ok(identity);
+        admitted.resolve();
+        await release.promise;
+        return identity;
+      });
+      fixture.registerCleanupBeforeAppClose(() => {
+        release.resolve();
+        fixture.app.server.off("request", observe);
+        fixture.app.server.closeAllConnections();
+      });
+      const request = httpRequest(`${fixture.origin}${path}`, {
+        method: "POST",
+        headers: { ...authenticatedHeaders(fixture.session), "content-type": "application/json" },
+      });
+      request.on("error", () => {}); // The intentional disconnect resets the client request.
+      request.end(JSON.stringify({ accessToken, ...(suffix ? { pluginId: remoteId } : {}) }));
+      try {
+        await admitted.promise;
+        assert.equal(incoming.complete, true);
+        request.destroy();
+        await closed.promise;
+        assert.equal(incoming.aborted, false);
+        assert.equal(outgoing.destroyed, true);
+        assert.equal(outgoing.writableEnded, false);
+        release.resolve();
+        // onSend proves the route finished after admission resumed; elapsed time
+        // alone would not prove that delayed authorization cannot send later.
+        const status = await completed.promise;
+        assert.deepEqual(fixture.sends, []);
+        assert.equal(status, 503);
+        assert.equal(incoming.listenerCount("aborted"), 0);
+      } finally {
+        release.resolve();
+        request.destroy();
+      }
+    },
+  );
+}
+
+for (const [catalogSource, scope] of [
+  ["hosted", "Namespace"],
+  ["openai-curated", "Namespace"],
+  ["openai-curated", "saved Agent"],
+]) {
+  test(`Provisioning Namespace permits ${catalogSource} ${scope} discovery and enforces revocation`, async (t) => {
+    const fixture = await createHostedSendFixture(t, { ready: false, catalogSource });
+    assert.equal(fixture.namespace.status, "provisioning");
+    let saved;
+    if (scope === "saved Agent") {
+      // A draft dedicated Agent needs no Secret for curated discovery. Secret
+      // creation itself requires ready infrastructure and is not bypassed here.
+      const agent = await fixture.createAgent(
+        fixture.namespace.id,
+        "Provisioning curated Agent",
+        createHarnessConfiguration("codex", "gpt-5.1"),
+        { executionMode: "dedicated", harnessAuth: null },
+      );
+      await fixture.grant(fixture.actor.principal.id, "agent", agent.id, ["read"]);
+      const update = await fixture.grant(fixture.actor.principal.id, "agent", agent.id, ["update"]);
+      saved = {
+        agent,
+        grants: { update },
+        path: `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`,
+      };
+    }
+    const create = saved === undefined ? fixture.grantCreate() : undefined;
+    const path = saved?.path ?? fixture.path;
+    const credential = catalogSource === "hosted" && saved === undefined ? { accessToken } : {};
+    const id =
+      catalogSource === "hosted" ? remoteId : "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
+    if (saved !== undefined) {
+      assert.equal(saved.agent.status, "active");
+    }
+    // Namespace and draft Agent creation use the actual APIs. No runtime-ready
+    // transition is needed to discover plugins under current edit authority.
+    const catalog = await fixture.request("POST", path, {
+      session: fixture.session,
+      body: credential,
+    });
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    assert.ok(catalog.data.plugins.some((plugin) => plugin.remoteId === id));
+    const details = await fixture.request("POST", `${path}/details`, {
+      session: fixture.session,
+      body: { ...credential, pluginId: id },
+    });
+    assert.equal(details.status, 200, JSON.stringify(details.body));
+    assert.equal(details.data.remoteId, id);
+    assert.deepEqual(
+      fixture.sends,
+      catalogSource === "hosted" ? ["identity", "catalog", "identity", "details", "tools"] : [],
+    );
+    fixture.sends.length = 0;
+    const revoke = async () => {
+      if (saved !== undefined) {
+        await fixture.revoke(saved.grants.update);
+      } else {
+        // Namespace create authority is provisioned policy, as in the existing
+        // send regressions; withdrawal changes the real evaluator's input.
+        fixture.policy.bindings = fixture.policy.bindings.filter(
+          (binding) => binding.id !== create,
+        );
+      }
+    };
+    if (catalogSource === "hosted") {
+      fixture.afterSend(async (operation) => {
+        if (operation === "identity") {
+          await revoke();
+        }
+      });
+      const interrupted = await fixture.request("POST", `${path}/details`, {
+        session: fixture.session,
+        body: { ...credential, pluginId: id },
+      });
+      assert.equal(interrupted.status, 403, JSON.stringify(interrupted.body));
+      assert.deepEqual(fixture.sends, ["identity"]);
+      fixture.sends.length = 0;
+    } else {
+      await revoke();
+    }
+    for (const suffix of ["", "/details"]) {
+      const denied = await fixture.request("POST", `${path}${suffix}`, {
+        session: fixture.session,
+        body: { ...credential, ...(suffix ? { pluginId: id } : {}) },
+      });
+      assert.equal(denied.status, 403, JSON.stringify(denied.body));
+      assert.equal(denied.body.error.code, "FORBIDDEN");
+    }
+    assert.deepEqual(fixture.sends, []);
+    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+    const namespace = await fixture.request("GET", `/namespaces/${fixture.namespace.id}`);
+    assert.equal(namespace.data.status, "provisioning");
+  });
+}

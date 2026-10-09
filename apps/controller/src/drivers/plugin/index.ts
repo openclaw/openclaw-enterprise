@@ -4,6 +4,7 @@ import {
   type PluginCatalogEntry,
   type PluginCatalogPage,
   type PluginDiscoveryAuthentication,
+  type PluginDiscoveryContext,
   type PluginDriver,
   type PluginDesiredState,
   type PluginApprovers,
@@ -417,7 +418,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
 
   async discoverCatalog(
     input: PluginDiscoveryAuthentication & { readonly cursor?: string; readonly q?: string },
-    signal?: AbortSignal,
+    context: PluginDiscoveryContext,
   ): Promise<PluginCatalogPage> {
     if (this.catalogSource === "openai-curated") {
       if (input.cursor !== undefined) {
@@ -434,12 +435,12 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
         setup: CURATED_SETUP,
       };
     }
-    return discoverHostedPlugins(input, signal);
+    return discoverHostedPlugins(input, context);
   }
 
   async getCatalogPlugin(
     input: PluginDiscoveryAuthentication & { readonly pluginId: string },
-    signal?: AbortSignal,
+    context: PluginDiscoveryContext,
   ): Promise<PluginCatalogEntry> {
     if (this.catalogSource === "openai-curated") {
       const entry = OPENAI_CURATED_CATALOG.find((plugin) => plugin.remoteId === input.pluginId);
@@ -448,7 +449,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       }
       return this.catalog([entry])[0]!;
     }
-    return getHostedPlugin(input, signal);
+    return getHostedPlugin(input, context);
   }
 
   constructor(

@@ -62,8 +62,8 @@ saving Agent selections and deploying supported selections can still use the
 Agent runtime's discovery path.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
-cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
-`getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
+cursor?, q?}, context)` returns `{plugins, nextCursor, setup?}`, and
+`getCatalogPlugin({accessToken?, pluginId}, context)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. The selected Driver reports `pluginDiscovery.credential`
@@ -92,6 +92,33 @@ serve Secret-backed requests. These methods do not require an existing Agent,
 plugin installation, or runtime connection.
 See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalogs).
 
+### Current authority before provider sends
+
+Both discovery methods require a trusted `PluginDiscoveryContext`, separate from
+credential data and HTTP inputs. It contains `authorizeSend: () => Promise<void>`
+and an optional `signal: AbortSignal`. OCC supplies the callback to recheck
+authority. This required second argument replaces the optional signal argument;
+existing Driver callers must adapt. Authentication inputs are unchanged.
+
+For hosted discovery, the Driver awaits the callback after constructing each
+request and before every provider send, including identity, catalog, detail, and
+tool requests. Denial or unavailable authority prevents that send. There is no
+default allow callback; direct trusted callers must supply one.
+
+OCC checks current Namespace Agent `create` for pre-Agent discovery, including
+transient credentials. Saved-Agent PAT discovery checks exact active Agent
+`read`/`update`, caller and Agent Secret `operate`, and the unchanged saved Secret
+binding. Discovery also supports provisioning Namespaces. Credential-free curated
+discovery retains OCC's entry checks and makes no provider requests.
+
+The hosted Driver uses one 15-second deadline for discovery after entry
+credential acquisition. It bounds authorization waits by that deadline and
+caller cancellation, then checks both again before sending. A late authorization
+result cannot restart a completed operation. Trusted OCC authorization and binding
+failures retain their safe API errors; provider errors remain sanitized. A check
+can race a later revocation; a check that observes it blocks the next send.
+Cancellation cannot undo a request that has already been sent.
+
 ## IAM
 
 OCC authorizes the exact Agent operation. Reading or changing Agent selections
@@ -100,7 +127,8 @@ plugin action. Plugin approval settings are separate from platform IAM, workload
 isolation, and the external provider's authentication. Runtime credentials use
 the existing Harness and ServiceAccount path; never put credential values or
 native command output in startup diagnostics. The Driver supplies no sandbox,
-egress grant, filesystem grant, approval service, OAuth interface, or IAM hook.
+egress grant, filesystem grant, approval service, or OAuth interface. The discovery
+callback asks OCC to recheck authority; the Driver does not decide platform IAM.
 See [Agent plugin permissions](../agent-plugins.md) and [authorization](../authorization.md).
 
 ## Lifecycle
@@ -132,6 +160,11 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 ## Limits
 
 ### Native mappings and limits
+
+Per-send discovery checks do not implement complete route or material-version
+binding, a warm-only credential resolver, provider-secret exclusion from
+workloads, or OpenShell enforcement. Native OAuth custody is unchanged. This
+contract does not establish production qualification of the Egress Proxy design.
 
 - A catalog entry does not guarantee that its policy can be enforced by a given
   Harness. The current bundles reject policy they cannot represent; see the

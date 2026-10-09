@@ -2,6 +2,7 @@ import type {
   PluginCatalogEntry,
   PluginCatalogPage,
   PluginDiscoveryAuthentication,
+  PluginDiscoveryContext,
   PluginToolCatalogEntry,
 } from "@openclaw-enterprise/contracts";
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
@@ -133,7 +134,7 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
 
 async function withCredential<T>(
   input: PluginDiscoveryAuthentication,
-  signal: AbortSignal | undefined,
+  context: PluginDiscoveryContext,
   run: (request: (path: string, body?: unknown) => Promise<Record<string, unknown>>) => Promise<T>,
 ): Promise<T> {
   if (
@@ -143,8 +144,36 @@ async function withCredential<T>(
   ) {
     throw new PluginDiscoveryError("credentials_rejected");
   }
+  if (typeof context?.authorizeSend !== "function") {
+    throw new PluginDiscoveryError("unavailable");
+  }
+  const expiresAt = performance.now() + 15_000;
   const deadline = AbortSignal.timeout(15_000);
-  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const requestSignal = context.signal ? AbortSignal.any([context.signal, deadline]) : deadline;
+  const checkDeadline = () => {
+    requestSignal.throwIfAborted();
+    if (performance.now() >= expiresAt) {
+      throw new PluginDiscoveryError("unavailable");
+    }
+  };
+  const send = async (url: string, init: RequestInit): Promise<Response> => {
+    checkDeadline();
+    let abort: (() => void) | undefined;
+    try {
+      // The authorization read may outlive cancellation; it must never resume a send.
+      await new Promise<void>((resolve, reject) => {
+        abort = () => reject(new PluginDiscoveryError("unavailable"));
+        requestSignal.addEventListener("abort", abort, { once: true });
+        context.authorizeSend().then(resolve, reject);
+      });
+    } finally {
+      if (abort !== undefined) {
+        requestSignal.removeEventListener("abort", abort);
+      }
+    }
+    checkDeadline();
+    return fetch(url, init);
+  };
   try {
     let accessToken: string;
     let accountId: string;
@@ -155,7 +184,7 @@ async function withCredential<T>(
       accessToken = input.accessToken!;
       // Account authority comes from the PAT issuer, never a browser-provided account ID.
       const identity = await readResponse(
-        await fetch("https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", {
+        await send("https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", {
           headers: { Authorization: `Bearer ${accessToken}` },
           redirect: "error",
           signal: requestSignal,
@@ -178,7 +207,7 @@ async function withCredential<T>(
     };
     const result = await run(async (path, body) =>
       readResponse(
-        await fetch(`${CATALOG_URL}${path}`, {
+        await send(`${CATALOG_URL}${path}`, {
           method: body === undefined ? "GET" : "POST",
           headers: {
             ...headers,
@@ -283,9 +312,9 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
 
 export async function discoverHostedPlugins(
   input: PluginDiscoveryAuthentication & { readonly cursor?: string; readonly q?: string },
-  signal?: AbortSignal,
+  context: PluginDiscoveryContext,
 ): Promise<PluginCatalogPage> {
-  return withCredential(input, signal, async (request) => {
+  return withCredential(input, context, async (request) => {
     const query = new URLSearchParams({ scope: "GLOBAL", limit: String(PAGE_SIZE) });
     const search = input.q?.trim();
     if (search) {
@@ -318,9 +347,9 @@ export async function discoverHostedPlugins(
 
 export async function getHostedPlugin(
   input: PluginDiscoveryAuthentication & { readonly pluginId: string },
-  signal?: AbortSignal,
+  context: PluginDiscoveryContext,
 ): Promise<PluginCatalogEntry> {
-  return withCredential(input, signal, async (request) => {
+  return withCredential(input, context, async (request) => {
     const pluginId = text(input.pluginId, 256);
     // Request complete declarations for compatibility checks; artifact URLs never leave this Driver.
     const response = await request(

@@ -574,7 +574,10 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   ]);
   assert.equal(drivers.pluginDriver.id, "codex-plugin");
   assert.equal(drivers.pluginDriver.discoveryCredential, "none");
-  const catalog = await drivers.pluginDriver.discoverCatalog({ q: "Linear" });
+  const catalog = await drivers.pluginDriver.discoverCatalog(
+    { q: "Linear" },
+    { authorizeSend: async () => {} },
+  );
   assert.ok(catalog.plugins.some(({ name }) => name === "Linear"));
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;

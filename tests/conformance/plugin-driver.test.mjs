@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -18,6 +19,9 @@ import {
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
+
+// These Driver-only fixtures admit sends explicitly; API tests exercise real OCC/IAM checks.
+const discoveryContext = { authorizeSend: async () => {} };
 
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
@@ -433,7 +437,7 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
     throw new Error("Unexpected provider request");
   });
   const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  const page = await driver.discoverCatalog({});
+  const page = await driver.discoverCatalog({}, discoveryContext);
   assert.equal(page.nextCursor, null);
   assert.deepEqual(
     new Set(page.plugins.map((entry) => entry.name)),
@@ -457,11 +461,17 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
   assert.equal(linear.remoteId, "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c");
   assert.equal(linear.tools, null);
   assert.equal(linear.selectableWithoutTools, true);
-  assert.deepEqual(await driver.getCatalogPlugin({ pluginId: linear.remoteId }), linear);
+  assert.deepEqual(
+    await driver.getCatalogPlugin({ pluginId: linear.remoteId }, discoveryContext),
+    linear,
+  );
   const github = page.plugins.find((entry) => entry.name === "GitHub");
   assert.ok(github);
   assert.equal(github.remoteId, "plugin_connector_1p_1a69035c238881919c4190932b2df699");
-  assert.deepEqual(await driver.getCatalogPlugin({ pluginId: github.remoteId }), github);
+  assert.deepEqual(
+    await driver.getCatalogPlugin({ pluginId: github.remoteId }, discoveryContext),
+    github,
+  );
   // Recorded releases with unsupported components must never be offered for selection.
   assert.deepEqual(
     new Set(page.plugins.filter((entry) => entry.available === false).map((entry) => entry.name)),
@@ -470,7 +480,10 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
   assert.equal(new Set(page.plugins.map((entry) => entry.remoteId)).size, page.plugins.length);
   for (const entry of page.plugins) {
     assert.ok(entry.remoteId);
-    assert.deepEqual(await driver.getCatalogPlugin({ pluginId: entry.remoteId }), entry);
+    assert.deepEqual(
+      await driver.getCatalogPlugin({ pluginId: entry.remoteId }, discoveryContext),
+      entry,
+    );
     if (entry.available === false) {
       assert.match(entry.unavailableReason, /no concrete hosted app/);
     } else {
@@ -480,8 +493,14 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
   assert.deepEqual(await driver.listCatalog(context("dedicated")), page.plugins);
   // The curated catalog is a single page with fixed IDs; anything else is an invalid response.
   const invalidResponse = { name: "PluginDiscoveryError", reason: "invalid_response" };
-  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), invalidResponse);
-  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), invalidResponse);
+  await assert.rejects(
+    driver.discoverCatalog({ cursor: "invalid" }, discoveryContext),
+    invalidResponse,
+  );
+  await assert.rejects(
+    driver.getCatalogPlugin({ pluginId: "invalid" }, discoveryContext),
+    invalidResponse,
+  );
   assert.deepEqual(requests, []);
 });
 

@@ -70,7 +70,11 @@ Enter, page navigation, and explicit loads run immediately. Loading feedback
 covers that delay and lasts until the response, even with no earlier entries;
 tool lookups show it until details arrive. Configured-plugin and tool filters
 stay instant and local. Closing the picker or changing its credential cancels
-pending searches. Requests have a 15-second deadline and 4 MiB response limit.
+pending searches. Hosted discovery has one 15-second deadline covering identity,
+catalog, tools, and awaited authorization, plus a 4 MiB limit per response.
+The deadline starts after entry credential acquisition.
+Every provider send uses OCC's [current-authority check](plugin.md#current-authority-before-provider-sends);
+HTTP disconnects cancel pending sends. Redirects remain forbidden.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service
 links; invalid or non-HTTPS URLs are omitted.

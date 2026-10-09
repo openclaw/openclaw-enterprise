@@ -1384,6 +1384,37 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  async function withPluginDiscoverySignal<T>(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    discover: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const closed = () => {
+      if (!reply.raw.writableEnded) {
+        abort();
+      }
+    };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", closed);
+    try {
+      // Identity admission may finish after a fully received request disconnects.
+      if (
+        request.raw.aborted ||
+        request.raw.socket.destroyed ||
+        reply.raw.destroyed ||
+        reply.raw.closed
+      ) {
+        abort();
+      }
+      return await discover(controller.signal);
+    } finally {
+      request.raw.off("aborted", abort);
+      reply.raw.off("close", closed);
+    }
+  }
+
   function workspaceFileRequestSignal(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -2092,32 +2123,47 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    const discoveryController = controller;
     if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
-          ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-        ...(body?.q === undefined ? {} : { q: body.q as string }),
-      });
+      const catalog = await withPluginDiscoverySignal(request, reply, (signal) =>
+        discoveryController.discoverAgentPlugins(
+          context.actorId,
+          namespaceId,
+          {
+            ...(body?.oauthLogin === undefined
+              ? {}
+              : { oauthLogin: body.oauthLogin as SecretReference }),
+            ...(body?.secretRef === undefined
+              ? { accessToken: body?.accessToken as string }
+              : { secretRef: body.secretRef as SecretReference }),
+            ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+            ...(body?.q === undefined ? {} : { q: body.q as string }),
+          },
+          signal,
+        ),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
       return;
     }
 
     if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
-          ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        pluginId: body?.pluginId as string,
-      });
+      const plugin = await withPluginDiscoverySignal(request, reply, (signal) =>
+        discoveryController.discoverAgentPluginDetails(
+          context.actorId,
+          namespaceId,
+          {
+            ...(body?.oauthLogin === undefined
+              ? {}
+              : { oauthLogin: body.oauthLogin as SecretReference }),
+            ...(body?.secretRef === undefined
+              ? { accessToken: body?.accessToken as string }
+              : { secretRef: body.secretRef as SecretReference }),
+            pluginId: body?.pluginId as string,
+          },
+          signal,
+        ),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
       return;
@@ -2135,17 +2181,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "discoverSavedAgentPlugins") {
-      const catalog = await controller.discoverSavedAgentPlugins(
-        context.actorId,
-        namespaceId,
-        params.agentId as string,
-        {
-          ...(body?.oauthLogin === undefined
-            ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
-          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-          ...(body?.q === undefined ? {} : { q: body.q as string }),
-        },
+      const catalog = await withPluginDiscoverySignal(request, reply, (signal) =>
+        discoveryController.discoverSavedAgentPlugins(
+          context.actorId,
+          namespaceId,
+          params.agentId as string,
+          {
+            ...(body?.oauthLogin === undefined
+              ? {}
+              : { oauthLogin: body.oauthLogin as SecretReference }),
+            ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+            ...(body?.q === undefined ? {} : { q: body.q as string }),
+          },
+          signal,
+        ),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
@@ -2153,16 +2202,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "discoverSavedAgentPluginDetails") {
-      const plugin = await controller.discoverSavedAgentPluginDetails(
-        context.actorId,
-        namespaceId,
-        params.agentId as string,
-        {
-          pluginId: body?.pluginId as string,
-          ...(body?.oauthLogin === undefined
-            ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
-        },
+      const plugin = await withPluginDiscoverySignal(request, reply, (signal) =>
+        discoveryController.discoverSavedAgentPluginDetails(
+          context.actorId,
+          namespaceId,
+          params.agentId as string,
+          {
+            pluginId: body?.pluginId as string,
+            ...(body?.oauthLogin === undefined
+              ? {}
+              : { oauthLogin: body.oauthLogin as SecretReference }),
+          },
+          signal,
+        ),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });

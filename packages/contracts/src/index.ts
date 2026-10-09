@@ -1393,6 +1393,13 @@ export interface PluginDiscoveryAuthentication {
   readonly credential?: { readonly kind: "oauth"; readonly value: string };
 }
 
+/** Trusted OCC authority, separate from credential material and public request inputs. */
+export interface PluginDiscoveryContext {
+  /** Recheck current authority after construction and immediately before every provider send. */
+  readonly authorizeSend: () => Promise<void>;
+  readonly signal?: AbortSignal;
+}
+
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   readonly policyCapabilities: PluginPolicyCapabilities;
@@ -1403,11 +1410,11 @@ export interface PluginDriver extends Driver {
   readonly discoveryCredential?: "required" | "none";
   discoverCatalog?(
     input: PluginDiscoveryAuthentication & { readonly cursor?: string; readonly q?: string },
-    signal?: AbortSignal,
+    context: PluginDiscoveryContext,
   ): Promise<PluginCatalogPage>;
   getCatalogPlugin?(
     input: PluginDiscoveryAuthentication & { readonly pluginId: string },
-    signal?: AbortSignal,
+    context: PluginDiscoveryContext,
   ): Promise<PluginCatalogEntry>;
 }
 

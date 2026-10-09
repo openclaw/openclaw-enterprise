@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+
+// These Driver-only fixtures admit sends explicitly; API tests exercise real OCC/IAM checks.
+const discoveryContext = { authorizeSend: async () => {} };
 
 const accessToken = "at-discovery-fixture";
 const pluginId = "plugins~discovery-fixture";
@@ -140,7 +144,7 @@ for (const q of [undefined, "  ", " linear & docs? "]) {
       });
     });
     const driver = new CodexPluginDriver();
-    const first = await driver.discoverCatalog({ accessToken, q });
+    const first = await driver.discoverCatalog({ accessToken, q }, discoveryContext);
     assert.equal(requests.length, 1);
     assert.equal(first.plugins[0].id, "codex-plugin:discovery-fixture@openai-curated-remote");
     assert.equal(first.plugins[0].logoUrl, "https://public.example/logo.png");
@@ -153,7 +157,10 @@ for (const q of [undefined, "  ", " linear & docs? "]) {
       { label: "Service account credentials", url: "https://admin.openai.com/" },
       runtimeHelp,
     ]);
-    const second = await driver.discoverCatalog({ accessToken, q, cursor: first.nextCursor });
+    const second = await driver.discoverCatalog(
+      { accessToken, q, cursor: first.nextCursor },
+      discoveryContext,
+    );
     assert.deepEqual(second, { plugins: [], nextCursor: null, setup: first.setup });
     assert.deepEqual(
       requests.map((url) => ({
@@ -208,11 +215,14 @@ for (const isFedramp of [false, true]) {
     });
     const driver = new CodexPluginDriver();
     const credential = oauthCredential(isFedramp);
-    const page = await driver.discoverCatalog({ credential });
+    const page = await driver.discoverCatalog({ credential }, discoveryContext);
     assert.equal(page.plugins[0].remoteId, pluginId);
-    const search = await driver.discoverCatalog({ credential, q: "hosted tools" });
+    const search = await driver.discoverCatalog(
+      { credential, q: "hosted tools" },
+      discoveryContext,
+    );
     assert.equal(search.plugins[0].remoteId, pluginId);
-    const detail = await driver.getCatalogPlugin({ credential, pluginId });
+    const detail = await driver.getCatalogPlugin({ credential, pluginId }, discoveryContext);
     assert.equal(detail.tools[0].id, "connector_fixture/search");
     assert.equal(detail.available, true);
     assert.deepEqual(requests, [
@@ -242,17 +252,20 @@ test("hosted OAuth discovery rejects handed-off, invalid and conflicting credent
     },
   ]) {
     const driver = new CodexPluginDriver();
-    await assert.rejects(driver.discoverCatalog({ credential }), {
+    await assert.rejects(driver.discoverCatalog({ credential }, discoveryContext), {
       name: "PluginDiscoveryError",
       reason: "credentials_rejected",
     });
-    await assert.rejects(driver.getCatalogPlugin({ credential, pluginId }), {
+    await assert.rejects(driver.getCatalogPlugin({ credential, pluginId }, discoveryContext), {
       name: "PluginDiscoveryError",
       reason: "credentials_rejected",
     });
   }
   await assert.rejects(
-    new CodexPluginDriver().discoverCatalog({ accessToken, credential: oauthCredential() }),
+    new CodexPluginDriver().discoverCatalog(
+      { accessToken, credential: oauthCredential() },
+      discoveryContext,
+    ),
     { name: "PluginDiscoveryError", reason: "credentials_rejected" },
   );
   assert.equal(request.mock.callCount(), 0);
@@ -265,10 +278,13 @@ test("hosted OAuth discovery rejects provider metadata that echoes its bearer cr
       pagination: { next_page_token: null },
     }),
   );
-  await assert.rejects(new CodexPluginDriver().discoverCatalog({ credential: oauthCredential() }), {
-    name: "PluginDiscoveryError",
-    reason: "invalid_response",
-  });
+  await assert.rejects(
+    new CodexPluginDriver().discoverCatalog({ credential: oauthCredential() }, discoveryContext),
+    {
+      name: "PluginDiscoveryError",
+      reason: "invalid_response",
+    },
+  );
 });
 
 test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid cosmetic values", async (t) => {
@@ -302,7 +318,7 @@ test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid co
   ];
   for (const [presentation, expected] of cases) {
     detail.release.interface = presentation;
-    const result = await driver.getCatalogPlugin({ accessToken, pluginId });
+    const result = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
     assert.equal(result.logoUrl, expected);
     assert.equal(Object.hasOwn(result, "logoUrl"), expected !== undefined);
     // Bad decorative metadata must not make an otherwise available plugin unusable.
@@ -335,7 +351,7 @@ test("hosted plugin website and legal links preserve safe URLs and omit unsafe m
       terms_of_service_url: value,
     };
     const serialized = JSON.parse(
-      JSON.stringify(await driver.getCatalogPlugin({ accessToken, pluginId })),
+      JSON.stringify(await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext)),
     );
     for (const field of ["websiteUrl", "privacyPolicyUrl", "termsOfServiceUrl"]) {
       assert.equal(serialized[field], value === safeUrl ? safeUrl : undefined);
@@ -360,7 +376,7 @@ test("hosted plugin unavailability explains known workspace reasons without expo
     [`private upstream ${accessToken}`, /did not provide a recognized reason/],
   ]) {
     detail.disabled_reason = reason;
-    const result = await driver.getCatalogPlugin({ accessToken, pluginId });
+    const result = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
     assert.equal(result.available, false);
     assert.match(result.unavailableReason, expected);
     assert.deepEqual(result.unavailableHelp, workspaceHelp);
@@ -378,7 +394,7 @@ test("hosted plugin tools respect parent app access independently of action poli
       app("connector_action_denied", "ENABLED", false),
     ],
   );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.deepEqual(
     detail.tools.map(({ ownerId, available }) => ({ ownerId, available })),
     [
@@ -403,7 +419,7 @@ test("hosted plugin detail follows native authored app IDs and removes their MCP
     [app("connector_authored")],
     (body) => assert.deepEqual(body, { app_ids: ["connector_authored"], include_tools: true }),
   );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.available, true);
   assert.equal(detail.tools[0].ownerId, "connector_authored");
   assert.equal(detail.tools[0].id, "connector_authored/search");
@@ -416,7 +432,7 @@ test("hosted plugin detail rejects an unmatched MCP despite a cloud executor ove
     plugin({ mcp_servers: [{ key: "local-only", metadata: { command: "local-tool" } }] }),
     [app("connector_fixture")],
   );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.available, false);
   assert.match(detail.unavailableReason, /components not supported/i);
   assert.deepEqual(detail.unavailableHelp, runtimeHelp);
@@ -432,7 +448,7 @@ test("hosted plugin detail admits skills and an MCP route replaced by its hosted
     }),
     [app("connector_fixture")],
   );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.available, true);
   assert.equal(detail.tools[0].id, "connector_fixture/search");
 });
@@ -451,13 +467,13 @@ test("hosted plugin detail keeps MCPs whose duplicate app declaration Codex disc
     }),
     [app("connector_fixture")],
   );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.available, false);
 });
 
 test("hosted plugin detail cannot enable a release with no effective native apps", async (t) => {
   const driver = useService(t, plugin({ app_manifest: { apps: {} } }), []);
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.available, false);
   assert.equal(detail.tools, null);
   assert.equal(
@@ -471,7 +487,7 @@ test("hosted plugin detail preserves an unknown tool list when an app is omitted
   const driver = useService(t, plugin({ app_ids: ["connector_fixture", "connector_omitted"] }), [
     app("connector_fixture"),
   ]);
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.tools, null);
 });
 
@@ -481,11 +497,14 @@ test("hosted plugin detail accepts native optional tool metadata", async (t) => 
   delete metadata.tools[0].is_enabled;
   delete metadata.tools[0].is_read_only;
   const driver = useService(t, plugin(), [metadata]);
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+  const detail = await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext);
   assert.equal(detail.tools[0].available, true);
   assert.equal(detail.tools[0].writes, true);
   delete metadata.tools;
-  assert.equal((await driver.getCatalogPlugin({ accessToken, pluginId })).tools, null);
+  assert.equal(
+    (await driver.getCatalogPlugin({ accessToken, pluginId }, discoveryContext)).tools,
+    null,
+  );
 });
 
 for (const [name, upstream, reason] of [
@@ -504,14 +523,17 @@ for (const [name, upstream, reason] of [
 ]) {
   test(`hosted plugin discovery sanitizes ${name}`, async (t) => {
     t.mock.method(globalThis, "fetch", upstream);
-    await assert.rejects(new CodexPluginDriver().discoverCatalog({ accessToken }), (error) => {
-      assert.ok(error instanceof PluginDiscoveryError);
-      assert.equal(error.reason, reason);
-      assert.equal(error.message, "Plugin discovery failed.");
-      assert.equal(error.cause, undefined);
-      assert.doesNotMatch(JSON.stringify(error), /at-discovery-fixture|private upstream/);
-      return true;
-    });
+    await assert.rejects(
+      new CodexPluginDriver().discoverCatalog({ accessToken }, discoveryContext),
+      (error) => {
+        assert.ok(error instanceof PluginDiscoveryError);
+        assert.equal(error.reason, reason);
+        assert.equal(error.message, "Plugin discovery failed.");
+        assert.equal(error.cause, undefined);
+        assert.doesNotMatch(JSON.stringify(error), /at-discovery-fixture|private upstream/);
+        return true;
+      },
+    );
   });
 }
 
@@ -532,9 +554,24 @@ test("hosted plugin discovery bounds and cancels an oversized streamed response"
         }),
       ),
   );
-  await assert.rejects(new CodexPluginDriver().discoverCatalog({ accessToken }), {
+  await assert.rejects(new CodexPluginDriver().discoverCatalog({ accessToken }, discoveryContext), {
     name: "PluginDiscoveryError",
     reason: "invalid_response",
   });
   assert.equal(cancelled, true);
+});
+
+test("hosted discovery refuses a missing trusted send authorizer before provider I/O", async (t) => {
+  const sends = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    sends.push(url);
+    throw new Error("An unauthorised request reached the provider fixture.");
+  });
+  for (const context of [undefined, {}]) {
+    await assert.rejects(new CodexPluginDriver().discoverCatalog({ accessToken }, context), {
+      name: "PluginDiscoveryError",
+      reason: "unavailable",
+    });
+  }
+  assert.deepEqual(sends, []);
 });
