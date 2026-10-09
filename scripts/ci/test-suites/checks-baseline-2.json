@@ -239,7 +239,7 @@
       "path": "tests/integration/native-admin-access.test.mjs",
       "expectedTests": [
         "native admin status requires an exact person/Agent runtime assignment and reports lifecycle availability",
-        "native admin disabled status still requires an exact person/Agent runtime assignment",
+        "disabled native admin status requires exact Agent administration without a runtime assignment",
         "native admin shared session configuration validates cookie scope and rejects keys",
         "native admin proxy strips browser credentials and preserves the Agent gateway base path"
       ]
