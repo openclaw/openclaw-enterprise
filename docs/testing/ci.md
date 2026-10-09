@@ -50,12 +50,12 @@ runtime startup lane derives the reviewed Codex seccomp profile in an owned k3d
 cluster and requires `OCC_TEST_CODEX_SECCOMP_PROFILE`; the second runs no Codex
 sandbox, so it needs no cluster.
 
-Full Integration uses the immutable event commit. Lanes require `main` except
-`k3d-model` and `openshell`, which accept exact protected-environment branch
-rules, and explicit `dev-up-k3d`, which uses no protected credentials. The main-only `provider-account` lane needs no per-run approval; other
-credentialed environments require approval. `helper-timeout` and standalone
-`logging-collector` have no environment gate. Missing inputs fail, and a targeted
-run proves only its selected lane.
+Full Integration uses immutable event commits. Lanes require `main` except
+`k3d-model`/`openshell` with exact protected-environment branch rules, and explicit
+credential-free `dev-up-k3d`. Main-only `provider-account` needs no per-run approval;
+other credentialed environments require approval. `helper-timeout` and standalone
+`logging-collector` have no environment gate. Missing inputs fail; targeted runs
+prove only their selected lane.
 
 The `postgres` lane owns migration compatibility; `postgres-application` owns the
 revision-worker, IAM barrier, metrics and auth-maintain tests; `postgres-auth` owns sign-in,
