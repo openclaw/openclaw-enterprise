@@ -350,6 +350,11 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
     secrets: Readonly<Record<string, SecretReference>>,
   ): Promise<Readonly<CredentialSource> | undefined>;
+  /** Releases a ready source's transferred material references without deleting the Secrets. */
+  clearCredentialSourceSecrets(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialSource> | undefined>;
   /** Moves a registering source to `ready` once the gateway confirms its copy. */
   markCredentialSourceReady(
     namespaceId: string,
@@ -1887,6 +1892,15 @@ function repositories(
         }
       }
       const saved = immutableCopy({ ...current, secrets: { ...secrets } });
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return immutableCopy(saved);
+    },
+    clearCredentialSourceSecrets: async (namespaceId, credentialSourceId) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.state !== "ready") {
+        return undefined;
+      }
+      const saved = immutableCopy({ ...current, secrets: {} });
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return immutableCopy(saved);
     },

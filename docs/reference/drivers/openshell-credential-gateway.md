@@ -144,8 +144,10 @@ registers:
 - **Provider.** Registration creates the provider with no credential value.
   The Credential Refresh Driver then calls `ConfigureProviderRefresh` with
   `client_id`, `scope`, and the source's secrets, and `RotateProviderCredential`
-  to mint the first token. `GetProviderRefreshStatus` supplies the source's
-  `status.refresh`, and `DeleteProviderRefresh` removes the material.
+  to mint the first token. OCC then clears the source's Secret references;
+  the Secret objects remain. OpenShell owns the current refresh material,
+  including issuer-rotated refresh tokens. `GetProviderRefreshStatus` supplies
+  the source's `status.refresh`, and `DeleteProviderRefresh` removes the material.
 - **Issuer trust.** The gateway, not the Sandbox, calls `token_url`. It must
   trust the issuer's TLS certificate and reach it through the gateway Pod's
   NetworkPolicy. The gateway image sets `SSL_CERT_FILE` to
@@ -161,7 +163,10 @@ Each Sandbox receives a stable placeholder for the token. The Sandbox
 supervisor picks up a re-minted token on its provider poll, every 10 seconds by
 default, and running processes then present it. Reconfiguring refresh material
 starts a new OpenShell authorization epoch, which revokes the placeholders of
-running Sandboxes.
+running Sandboxes. Use `rotate` to mint from OpenShell's current material. An
+update requires explicit Secret references to fresh reauthorization material;
+OCC never reloads the original Secret implicitly. See
+[update and recovery](../credential-sources.md#update-a-source).
 
 ## How sources map to OpenShell
 

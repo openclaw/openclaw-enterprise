@@ -1631,6 +1631,7 @@ test(
       [48, "preCodexPatSources"],
       [49, "preAgentCredentialSources"],
       [50, "preCredentialWithdrawalRequester"],
+      [51, "preCredentialRefreshSecretHandoff"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1890,6 +1891,7 @@ test(
       [48, "preCodexPatSources"],
       [49, "preAgentCredentialSources"],
       [50, "preCredentialWithdrawalRequester"],
+      [51, "preCredentialRefreshSecretHandoff"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1969,6 +1971,7 @@ test(
       [48, "preCodexPatSources"],
       [49, "preAgentCredentialSources"],
       [50, "preCredentialWithdrawalRequester"],
+      [51, "preCredentialRefreshSecretHandoff"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

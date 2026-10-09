@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: "2026-10-08"
-last_updated_session: claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY
+updated: "2026-10-09"
+last_updated_session: authoring-run/f7c45a46-6f14-42ea-acd8-7f8990a41d89
 ---
 
 # Credential source refresh Flow
@@ -11,7 +11,8 @@ last_updated_session: claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY
 A `refresh`-type credential source, such as `oauth2-client-credentials`, holds
 issuer material instead of a static value. The API registers it with the
 selected Credential Gateway, then asks the paired Credential Refresh Driver to
-store the material and mint the first token. Afterwards the gateway re-mints
+store the material and mint the first token. OCC then clears the source's
+Secret references without deleting the Secrets. Afterwards the gateway re-mints
 tokens before expiry without OCC, and the Agent keeps one stable placeholder.
 OCC calls the refresh role again only to update material, force a rotation,
 read status, or delete the source. This flow covers those calls; the
@@ -40,9 +41,10 @@ graph TD
   B -- "ready" --> C["<b>configureRefresh</b><br/>material, stable request ID"]
   C --> D["<b>rotate</b><br/>first mint"]
   D -- "not ready" --> X
-  D -- "ready" --> E["<b>Mark ready</b><br/>with audit"]
+  D -- "ready" --> E["<b>Commit handoff</b><br/>ready, clear references, audit"]
   E --> F["<b>Gateway re-mints</b><br/>before expiry, no OCC call"]
-  E --> G["<b>PATCH</b><br/>configure, then rotate"]
+  E --> G["<b>PATCH</b><br/>explicit fresh material"]
+  G --> Q["<b>Configure, then rotate</b><br/>clear references on success"]
   E --> H["<b>POST rotate</b><br/>forced mint"]
   E --> I["<b>GET</b><br/>status.refresh"]
   E --> J["<b>DELETE</b><br/>removeRefresh, then removeSource"]
@@ -80,13 +82,19 @@ the access token on the provider. A thrown call leaves the outcome unknown, and
 OCC keeps the record `deleting` after cleanup. A definite non-`ready` mint is
 terminal: OCC removes the refresh material and provider, deletes the record, and
 returns `503` with the Driver's failure code. Otherwise the second transaction
-marks the source `ready` with its audit event.
+marks the source `ready`, clears its Secret references through
+`clearCredentialSourceSecrets`, and appends its audit event atomically. The
+source response has `secrets: {}`. The Secret objects remain intact, but this
+source no longer keeps them from being deleted. A failed commit retains the
+`registering` record and its references for the existing deletion recovery path.
 
 ### 3. Background refresh
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:refreshStatus`
 
-OpenShell re-mints the token before it expires and writes it to the provider.
+OpenShell owns the current material after handoff, including any replacement
+refresh token returned by the issuer. It re-mints the token before it expires
+and writes it to the provider. OCC never reloads the initial material implicitly.
 The Sandbox proxy substitutes the current token for the stable placeholder on
 each request, so a running Harness needs no restart. OCC makes no call.
 `GET` on the source adds `refreshStatus` to the gateway status; OpenShell's
@@ -99,15 +107,21 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 `packages/occ/src/index.ts:updateCredentialSource`
 
-`PATCH` locks the source, reads its current or replacement Secrets, and checks
-the gateway status. For a `refresh` type it calls `configureRefresh` with a new
-request ID, then `rotate`, instead of the gateway's `updateSource`. A
-non-`ready` mint returns `503` before OCC replaces the Secret references, but
-OpenShell keeps the new material, and the next `GET` reports the failed mint.
-An update without `secrets` re-applies the recorded references. OpenShell
-starts a new authorization epoch on each reconfiguration, even one whose mint
-fails, which revokes the stable placeholders of running Sandboxes, so Agents
-need a redeploy.
+`PATCH` locks the source and requires explicit `secrets` with all required
+catalog fields. Omitted material fails before Secret reads or refresh effects.
+OCC authorizes and reads the supplied Secrets, checks gateway status, then calls
+`configureRefresh` with a new request ID followed by `rotate`. A successful mint
+clears the source's references through `clearCredentialSourceSecrets` in the
+transaction that appends the audit event; the Secret objects remain.
+
+A non-`ready` mint returns `503` without changing existing OCC references, but
+OpenShell keeps the new material and the next `GET` reports the failed mint. An
+uncertain response requires checking status; use `rotate` to mint from
+OpenShell's current material. A new reconfiguration requires newly authorized
+material because the submitted refresh token may already have been consumed.
+OpenShell starts a new authorization epoch on each reconfiguration, even one
+whose mint fails, which revokes the stable placeholders of running Sandboxes,
+so Agents need a redeploy.
 
 `packages/occ/src/index.ts:rotateCredentialSource`
 
@@ -129,7 +143,12 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
   `recoveryAction` explain the last mint without exposing a token.
 - `oauth_token_endpoint_unavailable` means the OpenShell gateway Pod could not
   reach `token_url`; check its NetworkPolicy and trust of the issuer's CA.
-- `reauthorize` follows a revoked refresh token; supply new material with `PATCH`.
+- `reauthorize` follows a revoked refresh token; supply new material with
+  explicit Secret references in `PATCH`. Use `rotate` to mint with existing
+  Backend material; an empty `PATCH` is rejected.
+- After successful handoff, source reads show `secrets: {}` and the original
+  Secret no longer lists this source as a consumer. Static sources retain their
+  references.
 - `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` proves minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
   a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
@@ -147,6 +166,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 10:38: Document Secret-reference handoff and explicit refresh reauthorization for the accompanying change. (authoring-run/f7c45a46-6f14-42ea-acd8-7f8990a41d89 - 1c6ac12fb)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)
 - 2026-10-08 11:46: Reading a source no longer needs its type in the current catalog. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 3ce93bfda)

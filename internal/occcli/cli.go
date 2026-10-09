@@ -562,7 +562,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 	var updateFile string
 	update := &cobra.Command{
 		Use:   "update ID",
-		Short: "Push current or replacement Secret values to the gateway copy",
+		Short: "Update static credentials or supply refresh reauthorization material",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, err := app.requiredNamespace()
@@ -591,7 +591,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values",
+		"JSON document with explicit secrets; required for refresh reauthorization, optional for static sources",
 	)
 
 	rotate := &cobra.Command{

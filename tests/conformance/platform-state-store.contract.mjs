@@ -2039,7 +2039,119 @@ async function verifyCredentialSourceContract(
     }
   });
 
-  // A registered source keeps its Secret inputs; deleting one would strand the gateway copy.
+  // Refresh custody is handed off with the ready transition. If its audit/commit fails, both
+  // the transition and reference release roll back so the unfinished source stays recoverable.
+  const bootstrapSecret = {
+    ...sourceSecret,
+    id: identifier("sec"),
+    name: "Refresh bootstrap " + randomUUID(),
+    backendRef: { ...sourceSecret.backendRef, name: "refresh-bootstrap", uid: randomUUID() },
+  };
+  const handoffSource = {
+    ...source,
+    id: identifier("cs"),
+    name: "Refresh handoff " + randomUUID(),
+    type: "oauth-refresh-token",
+    config: {},
+    secrets: {
+      refresh_token: { kind: "secret", namespaceId: sourceNamespace.id, id: bootstrapSecret.id },
+    },
+    state: "registering",
+  };
+  await store.transact(async (transaction) => {
+    await transaction.secrets.createSecret(bootstrapSecret);
+    await transaction.credentialSources.createCredentialSource(handoffSource);
+    assert.equal(
+      await transaction.credentialSources.clearCredentialSourceSecrets(
+        sourceNamespace.id,
+        handoffSource.id,
+      ),
+      undefined,
+      "Unfinished registration must retain its bootstrap references.",
+    );
+  });
+  const handedOff = { ...handoffSource, state: "ready", secrets: {} };
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      await transaction.credentialSources.markCredentialSourceReady(
+        sourceNamespace.id,
+        handoffSource.id,
+      );
+      assert.deepEqual(
+        await transaction.credentialSources.clearCredentialSourceSecrets(
+          sourceNamespace.id,
+          handoffSource.id,
+        ),
+        handedOff,
+      );
+      throw new Error("handoff audit failed");
+    }),
+    /handoff audit failed/,
+  );
+  await store.read(async (state) => {
+    assert.deepEqual(
+      await state.credentialSources.findCredentialSource(sourceNamespace.id, handoffSource.id),
+      handoffSource,
+    );
+    assert.deepEqual(
+      await state.secrets.listReferences(sourceNamespace.id, bootstrapSecret.id, 1),
+      { references: [{ kind: "credential_source", id: handoffSource.id }], truncated: false },
+    );
+  });
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.markCredentialSourceReady(
+      sourceNamespace.id,
+      handoffSource.id,
+    );
+    assert.equal(
+      await transaction.credentialSources.clearCredentialSourceSecrets(
+        accountNamespace.id,
+        handoffSource.id,
+      ),
+      undefined,
+      "A reference release cannot address another Namespace's source.",
+    );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.deepEqual(
+        await transaction.credentialSources.clearCredentialSourceSecrets(
+          sourceNamespace.id,
+          handoffSource.id,
+        ),
+        handedOff,
+      );
+    }
+  });
+  await store.transact(async (transaction) => {
+    assert.deepEqual(
+      await transaction.credentialSources.findCredentialSource(
+        sourceNamespace.id,
+        handoffSource.id,
+      ),
+      handedOff,
+    );
+    assert.deepEqual(
+      await transaction.secrets.findSecret(sourceNamespace.id, bootstrapSecret.id),
+      bootstrapSecret,
+      "Releasing the source reference preserves the user-owned Secret.",
+    );
+    assert.equal(
+      await transaction.secrets.hasReferences(sourceNamespace.id, bootstrapSecret.id),
+      false,
+    );
+    assert.equal(
+      await transaction.secrets.deleteSecret(sourceNamespace.id, bootstrapSecret.id),
+      true,
+    );
+    assert.equal(
+      await transaction.credentialSources.deleteCredentialSource(
+        sourceNamespace.id,
+        handoffSource.id,
+      ),
+      true,
+    );
+  });
+
+  // Static sources keep their Secret inputs; deleting one would strand the gateway copy.
   await store.transact(async (transaction) => {
     assert.equal(
       await transaction.secrets.hasReferences(sourceNamespace.id, sourceSecret.id),
