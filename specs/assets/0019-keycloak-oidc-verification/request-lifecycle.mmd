@@ -1,0 +1,33 @@
+sequenceDiagram
+    actor O as Operator / browser
+    participant L as Local Setup launcher
+    participant C as Owned Kubernetes cluster
+    participant A as OCE Console / API
+    participant K as Keycloak
+
+    O->>L: Opt in to Kubernetes Local Setup
+    L->>C: Helm pass 1: bootstrap OCE and routing CA
+    L->>C: Provision Keycloak, persistent realm, TLS and DNS
+    L->>K: Check discovery and client through HTTPS publication
+    L->>A: Sign in as administrator, read account ID
+    L->>C: Read and validate owned Envoy Service for exact egress
+    L->>C: Helm pass 2: enable OIDC and recovery-only password
+    L->>A: Reauthenticate for recovery, attach Alice's subject
+    Note over L,A: Attachment invalidates existing OCE sessions, do not retry it.
+    Note over L,A: On startup failure, attempt owned cleanup.
+    Note over L,A: If cleanup is incomplete, retain state for occ dev down.
+    L-->>O: Provide Console URL and browser setup instructions
+
+    O->>A: Start browser sign-in
+    A-->>O: Return authorization URL with state, PKCE and nonce
+    O->>K: Follow URL and authenticate as Alice
+    K-->>O: Redirect to OCE with authorization code
+    O->>A: Send code and state to callback
+    A->>A: Validate and consume browser-bound state
+    A->>K: Exchange code with PKCE and client authentication
+    K-->>A: Return tokens
+    A->>K: Fetch configured JWKS
+    K-->>A: Return signing keys
+    A->>A: Validate token and match attached identity
+    Note over A,K: Exchange/key failure or unattached identity: no OCE session.
+    A-->>O: Issue host-only OCE session (eight hours)
