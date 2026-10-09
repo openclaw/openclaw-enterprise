@@ -131,5 +131,31 @@ resulting source on a dedicated Codex Agent, and verify initial workspace files,
 an active deployment, a real model response, and a subsequent revision using
 the same source. Select `codex-plugin` with `catalogSource: hosted` to verify
 directory discovery. Selected runtime plugins remain unsupported; discovery
-does not prove plugin execution. The remaining qualification boundaries are in
-[external ChatGPT authentication](openshell.md#external-chatgpt-authentication-boundary).
+does not prove plugin execution. The remaining qualification boundaries are below.
+
+## Receiver fixtures and full-stack qualification
+
+`tests/integration/device-authorization-api.test.mjs` exercises real Fastify,
+OCC, IAM and credential-source storage through login, Agent creation/revision
+admission and plugin discovery. The external credential services and provider HTTP
+are simulated. It verifies session fencing, source grants, configuration discovery after
+session closure/expiry, and rejection of credential leakage. The Console OAuth
+browser case exercises those routes through the actual controls; Storybook is
+separate simulated UI evidence. Neither proves external token refresh or injection.
+
+`tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
+preparation path with Driver transport fixtures. It checks source matching,
+Harness-only placeholder/metadata delivery, and refusal before provisioning on
+invalid attachments. `tests/integration/codex-model-probe.test.mjs` runs the
+emitted launcher in Docker with a substituted Codex executable, checking the
+generated auth file at both the probe and app-server boundaries. Select its
+immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.
+
+The [external ChatGPT receiving contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication)
+does not establish OAuth injection or refresh through OpenShell. The bundled
+real-runtime suite uses an API-key source. Qualifying an OAuth source requires
+the external Token Service and paired gateway: verify native Codex startup,
+inference and hosted app/MCP requests, access-token rotation without a Harness
+restart, restart, and refusal after source withdrawal. Receiver fixtures alone
+cannot prove those provider and gateway behaviors or native account checks
+that require real access-token claims.

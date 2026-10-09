@@ -212,20 +212,14 @@ their ownership and replacement routes before removing stale policies, or
 recreate the disposable fixture. Reusing a Sandbox by name does not update its
 template.
 
-The Codex case now uses the production Driver path. The Agent Pod receives the
-app-server token verifier, provider-file paths, an OpenShell model-key
-placeholder, and a workspace-node bootstrap placeholder, but no raw credential.
-Its writable home and temporary state live below
+The Codex Harness's writable home and temporary state live below
 `/sandbox/.openclaw-runtime`, which is a revision-scoped subpath of the Agent
 PVC. Persistent workspace, node, session, and image state remains on separate
 exact subpaths mounted below `/sandbox/.openclaw-mounts`. Node state is addressed
 through a process-created `state` child of its real mount because atomic
 replacement rejects symlink parents and cannot tighten the root-owned mount
 root; bootstrap links the remaining runtime paths. The real test confirms that the Sandbox process
-identity can write the runtime home. The exposed route uses bearer
-passthrough: correct Gateway authentication upgrades, while missing and
-incorrect credentials fail. The real turn begins in the Gateway and executes in
-the OpenShell-owned Harness. The OpenShell lane also runs the protected local
+identity can write the runtime home. The OpenShell lane also runs the protected local
 first-Agent test with `--harness codex` twice, against its own Compose-plus-k3d
 stack and against its own Kubernetes-only stack.
 It checks that the Gateway uses the advertised WebSocket origin, maps its exact
@@ -270,30 +264,10 @@ OpenShell tools.
 
 ### External ChatGPT authentication boundary
 
-`tests/integration/device-authorization-api.test.mjs` exercises real Fastify,
-OCC, IAM and credential-source storage through login, Agent creation/revision
-admission and plugin discovery. The external Gateway contract and provider HTTP
-are simulated. It verifies session fencing, source grants, configuration discovery after
-session closure/expiry, and rejection of credential leakage. The Console OAuth
-browser case exercises those routes through the actual controls; Storybook is
-separate simulated UI evidence. Neither proves external token refresh or injection.
-
-`tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
-preparation path with Driver transport fixtures. It checks source matching,
-Harness-only placeholder/metadata delivery, and refusal before provisioning on
-invalid attachments. `tests/integration/codex-model-probe.test.mjs` runs the
-emitted launcher in Docker with a substituted Codex executable, checking the
-generated auth file at both the probe and app-server boundaries. Select its
-immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.
-
-The [external ChatGPT receiving contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication)
-does not establish OAuth injection or refresh through OpenShell. The bundled
-real-runtime suite uses an API-key source. Qualifying an OAuth source requires
-the external Token Service and paired gateway: verify native Codex startup,
-inference and hosted app/MCP requests, access-token rotation without a Harness
-restart, restart, and refusal after source withdrawal. Receiver fixtures alone
-cannot prove those provider and gateway behaviors or native account checks
-that require real access-token claims.
+See [receiver fixtures and full-stack qualification](openshell-oauth.md#receiver-fixtures-and-full-stack-qualification)
+for API, Console, Compute, and launcher coverage and the additional real-provider
+proof required for OAuth injection and refresh. These controlled fixtures do not
+establish real ChatGPT login or model execution.
 
 ### Development profile
 
@@ -326,7 +300,7 @@ This case proves development orchestration, the two real charts, Driver-owned
 operator resource reconciliation, Gateway Workspace creation, and the
 credential-source CLI and API path. The synthetic key proves no model
 authentication. It does not create an Agent or Sandbox; for the manual Agent
-walkthrough, see [Use a credential source on the local OpenShell profile](../guides/deploy/openshell-credential-sources.md). The
+walkthrough, see [Use a credential source on the local OpenShell profile](../guides/deploy/openshell-credential-sources.md).
 The real Sandbox Driver case is the Agent-level proof for the ordinary
 plugin-free dedicated Codex workflow.
 
