@@ -24,6 +24,7 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-startup-probe.test.mjs",
   "tests/integration/runtime-image-gateway-peer.test.mjs",
   "tests/integration/runtime-image-native-worker.test.mjs",
+  "tests/integration/sandbox-driver-startup.test.mjs",
 ]);
 
 export function validateContext(env, repo, workflow = publishWorkflow) {
