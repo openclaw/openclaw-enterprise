@@ -11,8 +11,9 @@ and authenticated account metadata through
 Select a Credential Gateway that implements device authorization for Codex, warm
 access-token lookup for configuration, and the external-auth attachment contract.
 Its paired Sandbox must inject live credentials for inference and hosted-app
-requests. The bundled OpenShell catalog currently provides API-key sources only;
-this integration does not supply the external OAuth service or injector.
+requests. The experimental OpenShell `codex-oauth` source requires the
+[custom gateway and supervisor](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
+It is not supported by the stock pinned OpenShell images.
 
 Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 The Console keeps the **Experimental** label and reports unavailable sign-in when

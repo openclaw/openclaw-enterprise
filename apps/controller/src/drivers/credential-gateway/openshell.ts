@@ -10,6 +10,9 @@ import type {
   CredentialSourceInput,
   CredentialSourceStatus,
   CredentialSourceType,
+  CredentialSourceToken,
+  CredentialSourceDeviceAuthorization,
+  CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
@@ -26,6 +29,16 @@ import {
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
 } from "../sandbox/openshell-gateway-client.ts";
+
+import {
+  CODEX_ACCESS_TOKEN_ENV,
+  CODEX_ACCOUNT_CONFIG,
+  CODEX_OAUTH_CLIENT_ID,
+  CODEX_OAUTH_TOKEN_URL,
+  codexAccountMetadata,
+  pollCodexDeviceAuthorization,
+  startCodexDeviceAuthorization,
+} from "./codex-device-authorization.ts";
 
 export interface OpenShellCredentialGatewayOptions {
   /** Absolute paths of the Harness binaries allowed to reach credentialed endpoints. */
@@ -53,8 +66,40 @@ interface OpenShellSourceType {
   profile(binaries: readonly string[]): Omit<OpenShellProviderProfile, "annotations">;
 }
 
-// TODO(credential-gateway next slice): add external and OAuth2 gateway-refresh source types.
+const CODEX_OAUTH_TYPE = "codex-oauth";
 const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
+  {
+    catalog: Object.freeze({
+      type: CODEX_OAUTH_TYPE,
+      config: Object.freeze([]),
+      secrets: Object.freeze([]),
+      rotation: "gateway",
+      deviceAuthorization: Object.freeze({ harnessId: "codex" }),
+      harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "chatgptAuthTokens" }),
+    }),
+    credentials: Object.freeze({}),
+    profile: (binaries: readonly string[]) => ({
+      id: "oce-codex-oauth",
+      displayName: "Codex OAuth (Experimental)",
+      category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
+      credentials: [
+        {
+          name: "access_token",
+          envVars: [CODEX_ACCESS_TOKEN_ENV],
+          required: true,
+          authStyle: "bearer",
+          headerName: "authorization",
+          refresh: { tokenUrl: CODEX_OAUTH_TOKEN_URL, refreshBeforeSeconds: 300 },
+        },
+      ],
+      endpoints: [
+        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/**" },
+        { host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" },
+      ],
+      binaries,
+      inferenceCapable: true,
+    }),
+  },
   {
     catalog: Object.freeze({
       type: "openai",
@@ -210,7 +255,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         );
       }
     }
-    return { state: "ready" };
+    return { state: input.type === CODEX_OAUTH_TYPE ? "pending" : "ready" };
   }
 
   /**
@@ -222,6 +267,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type);
+    if (input.type === CODEX_OAUTH_TYPE) {
+      throw new ScopeViolationError("Reconnect Codex OAuth by creating a new device-login source.");
+    }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const name = openShellProviderName(context.source.id);
@@ -243,9 +291,105 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return { state: "ready" };
   }
 
-  async rotateSource(_context: CredentialSourceContext): Promise<CredentialSourceStatus> {
-    // TODO(credential-gateway next slice): rotate gateway-refresh sources.
-    throw new ScopeViolationError("OpenShell credential source rotation is not supported yet.");
+  async startDeviceAuthorization(
+    context: CredentialSourceContext,
+  ): Promise<CredentialSourceDeviceAuthorization> {
+    await this.codexProvider(context);
+    return startCodexDeviceAuthorization(context.source.id, context.signal);
+  }
+
+  async pollDeviceAuthorization(
+    context: CredentialSourceContext,
+    privateState: string,
+  ): Promise<CredentialSourceDeviceAuthorizationResult> {
+    const provider = await this.codexProvider(context);
+    if (provider.config[CODEX_ACCOUNT_CONFIG]) {
+      return this.completeCodexConnection(context, provider);
+    }
+    const tokens = await pollCodexDeviceAuthorization(
+      context.source.id,
+      privateState,
+      context.signal,
+    );
+    if (!tokens) {
+      return { status: "pending" };
+    }
+    const client = this.client(context);
+    const workspace = openShellWorkspaceName(context.namespace);
+    const name = provider.name;
+    // Login material exists transiently in this Driver, never in the OCC login session.
+    // TODO(connection recovery): these provider writes are not atomic. Until connection
+    // completion is recoverable, an interrupted handoff may require a new device login.
+    await client.updateProviderCredentials(
+      workspace,
+      name,
+      {
+        [CODEX_ACCESS_TOKEN_ENV]: tokens.accessToken,
+      },
+      context.signal,
+      { [CODEX_ACCESS_TOKEN_ENV]: tokens.expirationTime },
+    );
+    // TODO(credential_refresh capability): move configure/rotate/status orchestration out
+    // of CredentialGatewayDriver when that capability lands. The PoC calls OpenShell
+    // directly; OpenShell owns scheduling and successor refresh tokens throughout.
+    await client.configureProviderRefresh(
+      workspace,
+      name,
+      CODEX_ACCESS_TOKEN_ENV,
+      {
+        client_id: CODEX_OAUTH_CLIENT_ID,
+        refresh_token: tokens.refreshToken,
+      },
+      tokens.expirationTime,
+      context.signal,
+    );
+    const current = await this.codexProvider(context);
+    const configured = await client.updateProviderConfig(
+      workspace,
+      name,
+      { [CODEX_ACCOUNT_CONFIG]: JSON.stringify(tokens.account) },
+      current.resourceVersion,
+      context.signal,
+    );
+    return this.completeCodexConnection(context, configured);
+  }
+
+  async withSourceToken<T>(
+    context: CredentialSourceContext,
+    use: (token: CredentialSourceToken) => Promise<T>,
+  ): Promise<T> {
+    const provider = await this.codexProvider(context);
+    const account = codexAccountMetadata(provider.config);
+    // Use the same Backend identity as provider creation. This authorized warm read
+    // never rotates credentials or impersonates the Sandbox supervisor.
+    const token = await this.client(context).resolveProviderCredential(
+      openShellWorkspaceName(context.namespace),
+      provider.name,
+      CODEX_ACCESS_TOKEN_ENV,
+      context.signal,
+    );
+    return use({
+      accessToken: token.value,
+      accountId: account.accountId,
+      ...(account.isFedramp === undefined ? {} : { isFedramp: account.isFedramp }),
+    });
+  }
+
+  async rotateSource(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
+    const provider = await this.codexProvider(context);
+    codexAccountMetadata(provider.config);
+    const status = await this.client(context).rotateProviderCredential(
+      openShellWorkspaceName(context.namespace),
+      provider.name,
+      CODEX_ACCESS_TOKEN_ENV,
+      context.signal,
+    );
+    return status.status === "refreshed"
+      ? { state: "ready" }
+      : {
+          state: "failed",
+          reason: status.failureCode ?? "OpenShell could not refresh the credential.",
+        };
   }
 
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
@@ -259,6 +403,33 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     if (!ownedBy(provider, context.source.id, context.source.type)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
+    }
+    if (context.source.type === CODEX_OAUTH_TYPE) {
+      if (!provider.config[CODEX_ACCOUNT_CONFIG]) {
+        return { state: "pending" };
+      }
+      const statuses = await this.client(context).getProviderRefreshStatus(
+        openShellWorkspaceName(context.namespace),
+        provider.name,
+        CODEX_ACCESS_TOKEN_ENV,
+        context.signal,
+      );
+      const status = statuses[0];
+      if (status?.status === "configured") {
+        return { state: "pending" };
+      }
+      if (
+        !status ||
+        status.status !== "refreshed" ||
+        status.failureCode ||
+        !status.expirationTime ||
+        Date.parse(status.expirationTime) <= Date.now()
+      ) {
+        return {
+          state: "failed",
+          reason: status?.failureCode ?? "Codex OAuth requires reconnecting.",
+        };
+      }
     }
     return { state: "ready" };
   }
@@ -304,7 +475,21 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           "The OpenShell provider for a bound credential source is unavailable.",
         );
       }
-      attachments.push(Object.freeze({ sourceId: source.id, ref: name }));
+      // Revisions reuse the provider's current credential; never reseed refresh material.
+      attachments.push(
+        Object.freeze({
+          sourceId: source.id,
+          ref: name,
+          ...(source.type === CODEX_OAUTH_TYPE
+            ? {
+                externalChatgptAuth: {
+                  ...codexAccountMetadata(provider.config),
+                  accessTokenPlaceholder: `openshell:resolve:env:${CODEX_ACCESS_TOKEN_ENV}`,
+                },
+              }
+            : {}),
+        }),
+      );
     }
     return Object.freeze(attachments);
   }
@@ -371,6 +556,67 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       state: state === "revoked" ? "revoked" : "pending",
       ...(status.reason === undefined ? {} : { reason: status.reason }),
     });
+  }
+
+  private async completeCodexConnection(
+    context: CredentialSourceContext,
+    provider: OpenShellProviderResponse,
+  ): Promise<CredentialSourceDeviceAuthorizationResult> {
+    codexAccountMetadata(provider.config);
+    const client = this.client(context);
+    const workspace = openShellWorkspaceName(context.namespace);
+    const statuses = await client.getProviderRefreshStatus(
+      workspace,
+      provider.name,
+      CODEX_ACCESS_TOKEN_ENV,
+      context.signal,
+    );
+    let status = statuses[0];
+    if (status?.status === "configured") {
+      // Initial mint establishes the stable managed handle. Retry uses only gateway-owned
+      // refresh material; a replaced refresh token is never seeded again from OCE.
+      status = await client.rotateProviderCredential(
+        workspace,
+        provider.name,
+        CODEX_ACCESS_TOKEN_ENV,
+        context.signal,
+      );
+    }
+    if (status?.status !== "refreshed") {
+      throw new OpenShellCredentialGatewayFailure(
+        "OpenShell could not establish managed Codex OAuth refresh. Connect again.",
+      );
+    }
+    await client.resolveProviderCredential(
+      workspace,
+      provider.name,
+      CODEX_ACCESS_TOKEN_ENV,
+      context.signal,
+    );
+    return { status: "ready" };
+  }
+
+  private async codexProvider(
+    context: CredentialSourceContext,
+  ): Promise<OpenShellProviderResponse> {
+    if (
+      context.source.type !== CODEX_OAUTH_TYPE ||
+      context.source.driverId !== this.id ||
+      context.source.namespaceId !== context.namespace.id
+    ) {
+      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
+    }
+    const provider = await this.client(context).getProvider(
+      openShellWorkspaceName(context.namespace),
+      openShellProviderName(context.source.id),
+      context.signal,
+    );
+    if (!provider || !ownedBy(provider, context.source.id, CODEX_OAUTH_TYPE)) {
+      throw new ScopeViolationError(
+        "The OpenShell provider is not owned by this Codex OAuth source.",
+      );
+    }
+    return provider;
   }
 
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {

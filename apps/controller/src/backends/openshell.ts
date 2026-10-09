@@ -72,6 +72,10 @@ export class OpenShellGateway {
     const configuration = this.configuration;
     return {
       endpoint: configuration.endpoint ?? serviceEndpoint(configuration, namespace),
+      // TODO(namespaced OpenShell identities): the OAuth PoC deliberately shares one
+      // installation platform-admin identity for provider writes and warm-token reads.
+      // Namespace selection changes routing, not identity; later identity provisioning
+      // belongs here, while OCC continues authorizing each source operation.
       ...(configuration.auth === undefined ? {} : { auth: configuration.auth }),
       ...(configuration.requestTimeoutMs === undefined
         ? {}

@@ -79,6 +79,11 @@ separate real Sandbox suite below.
 
 ## OpenShell Sandbox
 
+For initial workspace files, exercise ordinary Agent creation and deployment
+through real `ExecSandbox` and the native initializer. Verify submitted contents,
+completion-marker gating, retry after lost acknowledgement, and preservation of
+later edits on redeploy. A mocked exec result does not establish initialization.
+
 This suite needs the owned OpenShell CI recipe: a disposable K3s v1.36.4 k3d
 cluster, matched kubectl, the selected RuntimeClass bound to the cluster's
 `runc` handler, a successful RuntimeClass smoke Pod, Agent Sandbox
@@ -342,6 +347,12 @@ The CI bootstrap verifies the `v0.1.3-pre.2` source archive checksum, packages
 the chart from that tag, and imports gateway, sandbox runtime, and supervisor
 images published under the tag's commit SHA. It does not depend on prerelease
 GitHub Release assets or a semver-tagged chart.
+
+## Experimental OAuth credential proof
+
+Follow [Test experimental OpenShell OAuth](openshell-oauth.md) for the custom
+images, private-CA runtime trust, opt-in synthetic refresh lane, and separate
+real-provider verification. Stock OpenShell images do not implement this PoC.
 
 ## Related
 

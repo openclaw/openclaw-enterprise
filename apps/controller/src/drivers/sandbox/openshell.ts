@@ -46,6 +46,7 @@ import {
 } from "./openshell-gateway-client.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
+import { WORKSPACE_SETUP_RUNTIME } from "../compute/workspace-setup-runtime.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -1002,6 +1003,8 @@ function relocatedWorkspaceMountPath(mount: {
 function sandboxCommand(
   command: readonly string[],
   links: readonly OpenShellWorkspaceLink[],
+  loginMode: HarnessWorkloadRequirements["loginMode"],
+  workspaceSetup: HarnessWorkloadRequirements["workspaceSetup"],
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1020,10 +1023,92 @@ function sandboxCommand(
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
   return [
     ...command.slice(0, loaderIndex),
-    `${bootstrap}${loader}`,
+    `${bootstrap}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}${loader}`,
     ...command.slice(loaderIndex + 1),
   ];
 }
+
+// OpenShell can report its Sandbox ready before the Harness starts. The Driver
+// then sends setup privately over ExecSandbox stdin; the normal Harness verifier
+// checks the exact marker identity before any Agent code executes.
+const WORKSPACE_SETUP_WAIT = String.raw`{
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
+  if (!workspace || !path.isAbsolute(workspace)) throw new Error("WORKSPACE_SETUP_FAILED");
+  const deadline = Date.now() + 300000;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  while (!fs.existsSync(path.join(workspace, ".oce-workspace-setup.json"))) {
+    if (Date.now() >= deadline) throw new Error("WORKSPACE_SETUP_FAILED");
+    Atomics.wait(sleeper, 0, 0, 100);
+  }
+}
+`;
+
+// Remote execution can outlive a lost RPC response. Keep the lock across the
+// initializer process so a retry cannot race its writes; kernel locks also release
+// after a crash. Private document bytes travel only through stdin, never argv.
+const WORKSPACE_SETUP_EXEC = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+let lock;
+try {
+  const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
+  if (!workspace || !path.isAbsolute(workspace)) throw new Error();
+  lock = fs.openSync(path.join(workspace, ".oce-workspace-setup.lock"),
+    fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
+  const stat = fs.fstatSync(lock);
+  if (!stat.isFile() || stat.nlink !== 1) throw new Error();
+  const acquired = spawnSync("/usr/bin/flock", ["--exclusive", "--timeout", "20", "3"],
+    { stdio: ["ignore", "ignore", "ignore", lock], timeout: 25000 });
+  if (acquired.error || acquired.status !== 0) throw new Error();
+  const result = spawnSync(process.execPath, ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}], {
+    input: fs.readFileSync(0),
+    env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined },
+    stdio: ["pipe", "ignore", "ignore", lock], timeout: 250000,
+  });
+  if (result.error || result.status !== 0) throw new Error();
+} catch {
+  process.exitCode = 1;
+} finally {
+  if (lock !== undefined) fs.closeSync(lock);
+}
+`;
+
+// The supervisor supplies the identity-bound placeholder only when it launches the
+// workload. Keep that identity in the JWT alias so rotation preserves the binding
+// and withdrawal still revokes it. Account claims come from the trusted attachment.
+// TODO(upstream JWT placeholders): align this wrapper with the supported upstream
+// format. The local fork resolves this alias; stock pinned supervisors do not.
+const OPENSHELL_CHATGPT_AUTH_BOOTSTRAP = String.raw`{
+  const placeholder = process.env.CODEX_ACCESS_TOKEN;
+  const binding = typeof placeholder === "string"
+    ? /^openshell:resolve:env:(s[0-9a-f]{64}_CODEX_ACCESS_TOKEN)$/.exec(placeholder)
+    : null;
+  if (binding === null) {
+    throw new Error("Codex OAuth requires an OpenShell refresh-managed credential binding.");
+  }
+  const account = JSON.parse(process.env.OCE_CODEX_CHATGPT_ACCOUNT ?? "null");
+  if (!account || typeof account.accountId !== "string" || !account.accountId ||
+      typeof account.planType !== "string" || !account.planType) {
+    throw new Error("Codex OAuth account metadata is unavailable.");
+  }
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const claims = {
+    email: account.email,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: account.accountId,
+      chatgpt_plan_type: account.planType,
+      chatgpt_user_id: account.userId,
+      chatgpt_account_user_id: account.accountUserId,
+      chatgpt_account_is_fedramp: account.isFedramp ?? false,
+    },
+  };
+  process.env.CODEX_ACCESS_TOKEN = encode({ alg: "none", typ: "JWT" }) + "." +
+    encode(claims) + ".OPENSHELL-RESOLVE-ENV-" + binding[1];
+}
+`;
 
 function workspaceVolumeMounts(
   requirements: HarnessWorkloadRequirements,
@@ -1359,7 +1444,12 @@ function sandboxSpec(
       },
     },
     providers: sandboxProviders(options, requirements, runtimeProvider),
-    command: sandboxCommand(requirements.command, workspace.links),
+    command: sandboxCommand(
+      requirements.command,
+      workspace.links,
+      requirements.loginMode,
+      requirements.workspaceSetup,
+    ),
   };
 }
 
@@ -1990,6 +2080,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           // delay when OpenShell reports that an exposed Sandbox service is ready.
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
+        await this.initializeWorkspace(context, sandbox, client);
         return Object.freeze(sandbox);
       }
       existing = await client.getSandbox(selector, context.signal);
@@ -2024,7 +2115,82 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
+    await this.initializeWorkspace(context, sandbox, client);
     return Object.freeze(sandbox);
+  }
+
+  private async initializeWorkspace(
+    context: SandboxHarnessContext,
+    sandbox: SandboxResourceRef,
+    client: OpenShellGatewayClient,
+  ): Promise<void> {
+    const setup = context.requirements.workspaceSetup;
+    if (setup === undefined) {
+      return;
+    }
+    const workspace = workspaceName(context.namespace);
+    const current = await client.getSandbox(
+      { workspace, name: sandbox.resourceName },
+      context.signal,
+    );
+    // Supervisor readiness permits private exec; the Harness is still waiting for
+    // the completion marker. A later reconciliation handles a still-starting Pod.
+    if (current?.phase !== "SANDBOX_PHASE_READY" && current?.phase !== 2) {
+      return;
+    }
+    try {
+      const secret = await kubernetes(context).read({
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { namespace: sandbox.namespaceName, name: setup.secretKeyRef.name },
+      });
+      const metadata = asRecord(secret?.metadata);
+      const labels = asRecord(metadata?.labels);
+      const encoded = asRecord(asRecord(secret)?.data)?.[setup.secretKeyRef.key];
+      if (
+        metadata?.namespace !== sandbox.namespaceName ||
+        labels?.[OPENSHELL_NAMESPACE_LABEL] !== context.revision.namespaceId ||
+        labels?.["openclaw.dev/agent"] !== context.revision.agentId ||
+        typeof encoded !== "string" ||
+        encoded.length > 540_000
+      ) {
+        throw new Error();
+      }
+      const value = Buffer.from(encoded, "base64").toString("utf8");
+      const payload = asRecord(JSON.parse(value));
+      if (
+        Buffer.byteLength(value, "utf8") > 400_000 ||
+        payload?.id !== setup.id ||
+        payload.namespaceId !== context.revision.namespaceId ||
+        payload.agentId !== context.revision.agentId ||
+        payload.defaultsId !== setup.defaultsId
+      ) {
+        throw new Error();
+      }
+      const exit = await client.execSandbox(
+        {
+          workspace,
+          sandbox: sandbox.resourceName,
+          command: ["/usr/local/bin/node", "-e", WORKSPACE_SETUP_EXEC],
+          environment: {
+            HOME: OPENSHELL_HOME,
+            OPENCLAW_STATE_DIR: `${OPENSHELL_HOME}/.openclaw`,
+            OPENCLAW_WORKSPACE_DIR: sandboxDataMount(this.options, context.requirements).mount_path,
+            OPENCLAW_EXECUTABLE: "/app/openclaw.mjs",
+          },
+          stdin: value,
+          timeoutSeconds: 300,
+        },
+        context.signal,
+      );
+      if (exit !== 0) {
+        throw new Error();
+      }
+    } catch {
+      context.signal.throwIfAborted();
+      // Neither API/parser diagnostics nor remote output may disclose initial files.
+      throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
+    }
   }
 
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {

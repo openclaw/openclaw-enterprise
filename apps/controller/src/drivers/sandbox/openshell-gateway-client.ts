@@ -17,7 +17,13 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Client, ClientUnaryCall, Metadata, ServiceClientConstructor } from "@grpc/grpc-js";
+import type {
+  Client,
+  ClientReadableStream,
+  ClientUnaryCall,
+  Metadata,
+  ServiceClientConstructor,
+} from "@grpc/grpc-js";
 import type { PackageDefinition } from "@grpc/proto-loader";
 
 export {
@@ -57,6 +63,16 @@ export interface OpenShellSandboxCreateRequest {
 export interface OpenShellSandboxDeleteRequest {
   readonly name: string;
   readonly workspace: string;
+}
+
+export interface OpenShellSandboxExecRequest {
+  readonly workspace: string;
+  readonly sandbox: string;
+  readonly command: readonly string[];
+  readonly environment: Readonly<Record<string, string>>;
+  /** Private initialization material travels only on stdin, never in command arguments. */
+  readonly stdin: string;
+  readonly timeoutSeconds: number;
 }
 
 export interface OpenShellServiceRequest {
@@ -112,6 +128,10 @@ export interface OpenShellProviderProfile {
     readonly required: boolean;
     readonly authStyle: string;
     readonly headerName: string;
+    readonly refresh?: {
+      readonly tokenUrl: string;
+      readonly refreshBeforeSeconds: number;
+    };
   }[];
   readonly files?: readonly {
     readonly path: string;
@@ -148,6 +168,12 @@ export interface OpenShellProviderResponse {
   readonly labels: Readonly<Record<string, string>>;
   readonly config: Readonly<Record<string, string>>;
   readonly resourceVersion: string;
+}
+
+export interface OpenShellProviderRefreshStatus {
+  readonly status: string;
+  readonly expirationTime?: string;
+  readonly failureCode?: string;
 }
 
 export interface OpenShellSandboxProviderStatus {
@@ -235,6 +261,8 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     signal: AbortSignal,
   ): Promise<OpenShellServiceResponse | undefined>;
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
+  /** Discards process output and returns its exit code only after the stream completes. */
+  execSandbox(request: OpenShellSandboxExecRequest, signal: AbortSignal): Promise<number>;
   getProviderProfile(
     workspace: string,
     id: string,
@@ -282,6 +310,33 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     expectedResourceVersion: string,
     signal: AbortSignal,
   ): Promise<OpenShellProviderResponse>;
+  configureProviderRefresh(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    material: Readonly<Record<string, string>>,
+    expirationTime: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderRefreshStatus>;
+  rotateProviderCredential(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderRefreshStatus>;
+  getProviderRefreshStatus(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellProviderRefreshStatus[]>;
+  /** Returns one authorized warm credential; never triggers refresh. */
+  resolveProviderCredential(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly value: string; readonly expirationTime?: string }>;
   /** Undefined when the Sandbox no longer exists, so nothing remains to revoke. */
   detachSandboxProvider(
     workspace: string,
@@ -300,6 +355,10 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
 }
 
 type OpenShellMethod =
+  | "ConfigureProviderRefresh"
+  | "RotateProviderCredential"
+  | "GetProviderRefreshStatus"
+  | "ResolveProviderCredential"
   | "Health"
   | "GetWorkspace"
   | "CreateWorkspace"
@@ -328,12 +387,19 @@ type OpenShellUnaryMethod = (
   callback: (error: Error | null, response?: RecordValue) => void,
 ) => ClientUnaryCall;
 
-type OpenShellGrpcClient = Client & Record<OpenShellMethod, OpenShellUnaryMethod>;
+type OpenShellGrpcClient = Client &
+  Record<OpenShellMethod, OpenShellUnaryMethod> & {
+    ExecSandbox(
+      request: RecordValue,
+      metadata: Metadata,
+      options: { deadline: Date },
+    ): ClientReadableStream<RecordValue>;
+  };
 
 class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
   readonly grpcStatus: number | undefined;
 
-  constructor(method: OpenShellMethod, error: unknown) {
+  constructor(method: OpenShellMethod | "ExecSandbox", error: unknown) {
     const grpcStatus = rawStatusCode(error);
     const detail =
       method === "CreateSandbox"
@@ -440,6 +506,19 @@ function providerResponse(value: unknown, operation: string): OpenShellProviderR
   });
 }
 
+function providerRefreshStatus(value: unknown): OpenShellProviderRefreshStatus {
+  const record = asRecord(value);
+  if (!isNonEmptyString(record?.status)) {
+    throw new OpenShellGatewayFailure("OpenShell returned no credential refresh status.");
+  }
+  const expirationTime = timestampText(record.expiration_time);
+  return Object.freeze({
+    status: record.status,
+    ...(expirationTime === null ? {} : { expirationTime }),
+    ...(isNonEmptyString(record.failure_code) ? { failureCode: record.failure_code } : {}),
+  });
+}
+
 function profileMessage(profile: OpenShellProviderProfile): RecordValue {
   return {
     id: profile.id,
@@ -451,6 +530,19 @@ function profileMessage(profile: OpenShellProviderProfile): RecordValue {
       required: credential.required,
       auth_style: credential.authStyle,
       header_name: credential.headerName,
+      ...(credential.refresh === undefined
+        ? {}
+        : {
+            refresh: {
+              strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+              token_url: credential.refresh.tokenUrl,
+              refresh_before: { seconds: credential.refresh.refreshBeforeSeconds, nanos: 0 },
+              material: [
+                { name: "client_id", required: true, secret: false },
+                { name: "refresh_token", required: true, secret: true },
+              ],
+            },
+          }),
     })),
     files: (profile.files ?? []).map((file) => ({
       path: file.path,
@@ -753,6 +845,100 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (status !== "SERVICE_STATUS_HEALTHY" && status !== 1) {
       throw new OpenShellGatewayFailure("OpenShell gateway is not healthy.");
     }
+  }
+
+  async execSandbox(request: OpenShellSandboxExecRequest, signal: AbortSignal): Promise<number> {
+    const stdin = Buffer.from(request.stdin, "utf8");
+    if (
+      stdin.length > 400_000 ||
+      request.command.length === 0 ||
+      request.command.length > 1024 ||
+      request.command.some(
+        (argument) => argument.includes("\0") || Buffer.byteLength(argument) > 32_768,
+      ) ||
+      Buffer.byteLength(JSON.stringify([request.command, request.environment])) > 1_000_000 ||
+      !Number.isSafeInteger(request.timeoutSeconds) ||
+      request.timeoutSeconds < 1 ||
+      request.timeoutSeconds > 300
+    ) {
+      throw new OpenShellGatewayFailure(
+        "OpenShell workspace initialization exceeds execution limits.",
+      );
+    }
+    const message = {
+      workspace_scope: { workspace: nonempty(request.workspace, "OpenShell Workspace name") },
+      sandbox: nonempty(request.sandbox, "OpenShell Sandbox name"),
+      command: [...request.command],
+      environment: { ...request.environment },
+      stdin,
+      execution_timeout: { seconds: request.timeoutSeconds, nanos: 0 },
+      tty: false,
+      no_login_shell: true,
+    };
+    signal.throwIfAborted();
+    const { grpc, client } = await this.ensureClient();
+    signal.throwIfAborted();
+    const headers = await metadata(grpc, this.options.auth);
+    signal.throwIfAborted();
+    return new Promise<number>((resolve, reject) => {
+      let call: ClientReadableStream<RecordValue> | undefined;
+      let exitCode: number | undefined;
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        if (error !== undefined) {
+          reject(error);
+        } else if (exitCode === undefined) {
+          reject(new OpenShellGatewayFailure("OpenShell execution ended without an exit status."));
+        } else {
+          resolve(exitCode);
+        }
+      };
+      const abort = () => {
+        finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: grpc.status.CANCELLED }));
+        call?.cancel();
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      try {
+        call = client.ExecSandbox(message, headers, {
+          deadline: deadline((request.timeoutSeconds + 5) * 1000),
+        });
+        call.on("data", (event: unknown) => {
+          if (settled) {
+            return;
+          }
+          const exit = asRecord(asRecord(event)?.exit);
+          if (exit === undefined) {
+            // stdout/stderr can contain private documents; never retain or report them.
+            return;
+          }
+          const value = exit.exit_code ?? 0;
+          if (exitCode !== undefined || typeof value !== "number" || !Number.isInteger(value)) {
+            finish(
+              new OpenShellGatewayFailure("OpenShell execution returned an invalid exit status."),
+            );
+            call?.cancel();
+            return;
+          }
+          exitCode = value;
+        });
+        call.on("error", (error: unknown) => {
+          finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+        });
+        call.on("end", () => finish());
+      } catch (error) {
+        finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+        call?.cancel();
+      }
+    });
   }
 
   async getWorkspace(
@@ -1289,6 +1475,96 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return providerResponse(response.provider, "UpdateProvider");
   }
 
+  async configureProviderRefresh(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    material: Readonly<Record<string, string>>,
+    expirationTime: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderRefreshStatus> {
+    const response = await this.unary(
+      "ConfigureProviderRefresh",
+      {
+        workspace_scope: { workspace },
+        provider,
+        credential_key: credentialKey,
+        strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+        material: { ...material },
+        secret_material_keys: ["refresh_token"],
+        expiration_time: timestampMessage(expirationTime),
+        request_id: randomUUID(),
+      },
+      signal,
+    );
+    return providerRefreshStatus(response.status);
+  }
+
+  async rotateProviderCredential(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderRefreshStatus> {
+    const response = await this.unary(
+      "RotateProviderCredential",
+      {
+        workspace_scope: { workspace },
+        provider,
+        credential_key: credentialKey,
+        request_id: randomUUID(),
+      },
+      signal,
+    );
+    return providerRefreshStatus(response.status);
+  }
+
+  async getProviderRefreshStatus(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellProviderRefreshStatus[]> {
+    const response = await this.unary(
+      "GetProviderRefreshStatus",
+      {
+        workspace_scope: { workspace },
+        provider,
+        credential_key: credentialKey,
+      },
+      signal,
+    );
+    return (Array.isArray(response.credentials) ? response.credentials : []).map(
+      providerRefreshStatus,
+    );
+  }
+
+  async resolveProviderCredential(
+    workspace: string,
+    provider: string,
+    credentialKey: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly value: string; readonly expirationTime?: string }> {
+    // TODO(upstream operator credential read): this RPC is the local fork's contract.
+    // Adapt its wire mapping and proto here when upstream lands; keep withSourceToken
+    // a stable-provider warm read using the existing Backend identity, without refresh.
+    const response = await this.unary(
+      "ResolveProviderCredential",
+      {
+        workspace_scope: { workspace },
+        name: provider,
+        credential_key: credentialKey,
+      },
+      signal,
+    );
+    const value = nonempty(response.value, "OpenShell resolved credential");
+    const expirationTime = timestampText(response.expiration_time);
+    if (expirationTime !== null && Date.parse(expirationTime) <= Date.now()) {
+      throw new OpenShellGatewayFailure("The OpenShell credential has expired.");
+    }
+    return Object.freeze({ value, ...(expirationTime === null ? {} : { expirationTime }) });
+  }
+
   async detachSandboxProvider(
     workspace: string,
     sandbox: string,
@@ -1390,7 +1666,17 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             if (error !== null) {
               const details = asRecord(error)?.details;
               const code = statusCode(error);
+              // Refresh and plaintext-read errors must not expose credential backend messages.
               if (
+                [
+                  "ResolveProviderCredential",
+                  "ConfigureProviderRefresh",
+                  "RotateProviderCredential",
+                  "GetProviderRefreshStatus",
+                ].includes(method)
+              ) {
+                reject(new OpenShellGatewayRequestFailure(method, error));
+              } else if (
                 code === grpc.status.RESOURCE_EXHAUSTED &&
                 typeof details === "string" &&
                 details.startsWith(ADMISSION_LIMIT_DETAILS)

@@ -9,8 +9,10 @@ syntax = "proto3";
 package openshell.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
 
 service OpenShell {
+  rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
@@ -386,4 +388,70 @@ message SandboxLogLine {
   string source = 6;
   // Structured key-value fields from the tracing event (e.g. dst_host, action).
   map<string, string> fields = 7;
+}
+
+
+message ExecSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 12;
+  reserved 5;
+  reserved "timeout_seconds";
+  // Canonical sandbox name.
+  string sandbox = 1;
+  // Command and arguments.
+  repeated string command = 2;
+
+  // Optional working directory.
+  string workdir = 3;
+
+  // Optional environment overrides.
+  map<string, string> environment = 4;
+
+  // Optional execution timeout. Absence means no timeout.
+  google.protobuf.Duration execution_timeout = 105;
+
+  // Optional stdin payload passed to the command.
+  bytes stdin = 6;
+
+  // Request a pseudo-terminal for the remote command.
+  bool tty = 7;
+
+  // Initial terminal columns (used when tty=true, 0 = use default).
+  uint32 cols = 8;
+
+  // Initial terminal rows (used when tty=true, 0 = use default).
+  uint32 rows = 9;
+
+  // Skip sourcing shell login/profile startup files before running the command.
+  // When false (the default), the command runs through a login shell
+  // (`bash -lc`) so user startup files (.bash_profile/.profile, and .bashrc if
+  // sourced by them) are applied. When true, the command runs without those
+  // files (`bash -c`), for automation that needs predictable startup behavior.
+  bool no_login_shell = 10;
+
+  // Optional nonzero UUID for durable launch admission. Also applies to the
+  // initial ExecSandboxInteractive start message. Duplicates never relaunch,
+  // reattach, or replay output/stdin. Unconfirmed executions remain fenced;
+  // confirmed terminal executions retain the fence for 24 hours.
+  string request_id = 11;
+}
+
+message ExecSandboxStdout {
+  bytes data = 1;
+}
+
+message ExecSandboxStderr {
+  bytes data = 1;
+}
+
+message ExecSandboxExit {
+  int32 exit_code = 1;
+}
+
+message ExecSandboxEvent {
+  oneof payload {
+    ExecSandboxStdout stdout = 1;
+    ExecSandboxStderr stderr = 2;
+    ExecSandboxExit exit = 3;
+  }
 }

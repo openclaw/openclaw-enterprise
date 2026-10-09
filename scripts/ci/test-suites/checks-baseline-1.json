@@ -24,6 +24,7 @@
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
+    "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
@@ -38,9 +39,10 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/conformance/test-files.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
-    "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-oauth-wire.test.mjs",
+    "tests/conformance/openshell-codex-device.test.mjs",
     "tests/integration/bootstrap-volume.test.mjs",
     "tests/integration/secret-driver-startup.test.mjs",
     "tests/conformance/kubernetes-configuration.test.mjs",
@@ -169,6 +171,12 @@
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
     },
     {
+      "path": "tests/conformance/openshell-oauth-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-codex-device.test.mjs"
+    },
+    {
       "path": "tests/conformance/platform-state-memory.test.mjs"
     },
     {
@@ -250,12 +258,6 @@
       "path": "tests/integration/production-image-upgrade.test.mjs"
     },
     {
-      "path": "tests/integration/sandbox-driver-startup.test.mjs",
-      "expectedTests": [
-        "OpenShell reconciles renewed workspace-node setup into its revision provider"
-      ]
-    },
-    {
       "path": "tests/integration/secret-api.test.mjs"
     },
     {
@@ -263,6 +265,9 @@
     },
     {
       "path": "tests/integration/device-authorization-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/openshell-device-authorization-api.test.mjs"
     },
     {
       "path": "tests/integration/runtime-credentials-api.test.mjs"

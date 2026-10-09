@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-07
+updated: 2026-10-08
 last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
@@ -51,7 +51,7 @@ graph TD
   I -- "ready" --> J["<b>Compute receives source</b><br/>Attachment handoff"]
   J --> P{"<b>Source login mode</b>"}
   P -- "api_key" --> Q["<b>Sandbox provisions Harness</b><br/>API-key placeholder"]
-  P -. "chatgptAuthTokens: external Driver required" .-> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
+  P -- "chatgptAuthTokens: custom OpenShell" --> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
   T --> U["<b>Codex entrypoint</b><br/>Ephemeral external-mode auth.json"]
   U --> V["<b>Native model probe</b><br/>Then app-server startup"]
   E --> K["<b>DELETE</b><br/>refused while referenced"]
@@ -133,10 +133,22 @@ opaque login handle and exact source/actor scope. Ready returns the source
 reference for the Agent binding. Failed and abandoned sources remain visible for
 explicit cleanup; closing a login does not revoke a source.
 
+For the experimental OpenShell `codex-oauth` type,
+`apps/controller/src/drivers/credential-gateway/codex-device-authorization.ts`
+performs the device exchange inside the Driver. Its caller in
+`apps/controller/src/drivers/credential-gateway/openshell.ts:pollDeviceAuthorization`
+hands refresh material to OpenShell, persists trusted account metadata, and
+confirms a warm token before returning ready. Later revisions only read and
+attach the existing provider; they never reseed its refresh token.
+The [WIP boundaries](../reference/drivers/openshell-credential-gateway.md#wip-boundaries)
+identify the temporary upstream API dependency and connection-recovery gaps.
+
 For plugin configuration, OCC authorizes exact source use and invokes
 `withSourceToken`. The callback rechecks current authority before passing the warm
 access token and trusted account identity to the Plugin Driver. It never asks
-Codex to refresh. Saved-Agent discovery additionally rechecks the saved source
+Codex to refresh. OpenShell's `withSourceToken` uses the custom gateway's
+admin-authorized `ResolveProviderCredential` RPC through the same Backend identity
+used to create providers. Saved-Agent discovery additionally rechecks the saved source
 and Agent principal's grant, so it works independently of the login-session lifetime.
 
 ### 4. Bind the source to an Agent
@@ -189,13 +201,14 @@ Harness requirements. The native entrypoint in
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`
 writes an ephemeral `auth.json` in external-token mode before its existing
 native model probe and app-server startup. Native Codex receives no refresh
-token and does not own refresh in this mode. The access-token placeholder is
-preserved verbatim for the paired Sandbox's injector.
+token and does not own refresh in this mode. OpenShell's `sandboxCommand`
+wraps the supervisor-issued stable placeholder in a JWT-shaped alias with the
+trusted account claims. The custom injector resolves that same credential
+identity across ordinary token rotations.
 
-This receiving path depends on a Driver and external service providing the
-OAuth source, refresh, and injection. The bundled OpenShell catalog still
-provides only API-key authentication. Legacy runtime-owned OAuth bindings are
-unsupported; no stored refresh bundle is imported from an Agent.
+This PoC requires the custom OpenShell credential-read and JWT-alias changes;
+the stock pinned gateway does not provide them. Legacy runtime-owned OAuth
+bindings are unsupported; no stored refresh bundle is imported from an Agent.
 
 ### 7. Delete the source
 
@@ -325,6 +338,8 @@ than re-attach the source.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 12:47: Trace the experimental OpenShell device-login, warm-read, and JWT-placeholder integration in the accompanying local change. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - ece639c78765727a67753639f6ab225a243e064d)
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

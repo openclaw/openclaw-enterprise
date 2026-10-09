@@ -939,6 +939,7 @@
               "testing/service-accounts",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-oauth",
               "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",
               "flows/agent-repository-credentials",

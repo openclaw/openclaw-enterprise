@@ -1,0 +1,24 @@
+{
+  "env": {
+    "OCE_OPENSHELL_OAUTH_REAL": "1"
+  },
+  "requiredEnv": [
+    "OCE_OPENSHELL_OAUTH_GATEWAY_ENDPOINT",
+    "OCE_OPENSHELL_OAUTH_CA_FILE",
+    "OCE_OPENSHELL_OAUTH_OPERATOR_TOKEN_FILE",
+    "OCE_OPENSHELL_OAUTH_DENIED_TOKEN_FILE",
+    "OCE_OPENSHELL_OAUTH_TEST_TOKEN_URL",
+    "OCE_OPENSHELL_OAUTH_KUBECONFIG",
+    "OCE_OPENSHELL_OAUTH_KUBERNETES_CONTEXT",
+    "OCE_OPENSHELL_OAUTH_WORKSPACE_CHART"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/openshell-oauth-credentials-real.test.mjs",
+      "expectedTests": [
+        "OpenShell owns rotating refresh material and permits only scoped operator warm reads"
+      ]
+    }
+  ]
+}

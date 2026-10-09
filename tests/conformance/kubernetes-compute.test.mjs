@@ -8165,6 +8165,16 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     },
   });
   const { driver, revision, namespace, core } = fixture;
+  const context = {
+    ...authContext(revision),
+    workspaceSetup: {
+      id: "provider-workspace-setup",
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      files: { "USER.md": "private provider workspace profile" },
+      completed: false,
+    },
+  };
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const gatewayOwnership = { namespaceId: tenant.id, agentId: revision.agentId };
@@ -8348,7 +8358,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   // The Agent Gateway must be available to mint node setup material. Its first
   // fail-closed template cannot justify creating the provider-owned Harness.
   fixture.setObservation({ items: [] });
-  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+  assert.deepEqual(await driver.prepareRevision(revision, context), {
     ...expected,
     ready: false,
   });
@@ -8374,7 +8384,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   };
   save(bootstrapGateway);
   fixture.setObservation({ items: [] });
-  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+  assert.deepEqual(await driver.prepareRevision(revision, context), {
     ...expected,
     ready: false,
   });
@@ -8391,7 +8401,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     [[fixture.pod("ready")], true],
   ]) {
     fixture.setObservation({ items });
-    assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    assert.deepEqual(await driver.prepareRevision(revision, context), {
       ...expected,
       ready,
     });
@@ -8494,21 +8504,26 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   );
 
   fixture.setObservation({ items: [fixture.pod("ready"), null] });
-  await assert.rejects(
-    driver.prepareRevision(revision, authContext(revision)),
-    /invalid or incomplete/,
-  );
+  await assert.rejects(driver.prepareRevision(revision, context), /invalid or incomplete/);
   assert.deepEqual(hooks.slice(-2), ["start", "stop"]);
   const writesBeforeActivation = writes.length;
-  await assert.rejects(
-    driver.activateRevision(revision, authContext(revision)),
-    /invalid or incomplete/,
-  );
+  await assert.rejects(driver.activateRevision(revision, context), /invalid or incomplete/);
   assert.equal(writes.length, writesBeforeActivation);
 
   fixture.setObservation({ items: [fixture.pod("ready")] });
-  await driver.activateRevision(revision, authContext(revision));
+  await driver.activateRevision(revision, context);
   assert.equal(endpoints.length, 6);
+  const privateSetup = {
+    id: context.workspaceSetup.id,
+    secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
+  };
+  assert.deepEqual(provisions[0].requirements.workspaceSetup, privateSetup);
+  assert.deepEqual(
+    endpoints.at(-1).requirements.workspaceSetup,
+    privateSetup,
+    "activation retains the same private workspace setup identity as preparation",
+  );
+  assert.equal(JSON.stringify(endpoints).includes(context.workspaceSetup.files["USER.md"]), false);
   assert.equal(
     objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
@@ -11369,7 +11384,7 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
   revision.sandboxDriverId = sandboxDriver.id;
   revision.harnessAuth = snapshot;
   context.harnessAuth = { ...snapshot, source };
-  delete context.workspaceSetup;
+  // Keep the Console's normal workspace initialization in this source-backed path.
   // This admitted source has no model Secret available to Compute. The only
   // credential material supplied by the selected gateway is an opaque placeholder.
   objects.delete(`Secret:${namespace}:occ-model-key`);
@@ -11385,6 +11400,15 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
   assert.equal(environment.CODEX_ACCESS_TOKEN, placeholder);
   assert.deepEqual(JSON.parse(environment.OCE_CODEX_CHATGPT_ACCOUNT), account);
   assert.deepEqual(requirements.credentialAttachments, [attachment]);
+  assert.deepEqual(requirements.workspaceSetup, {
+    id: context.workspaceSetup.id,
+    secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
+  });
+  assert.equal(
+    JSON.stringify(requirements).includes(context.workspaceSetup.files["AGENTS.md"]),
+    false,
+    "Sandbox requirements carry only private delivery identity, never the workspace documents",
+  );
   assert.equal(
     requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"),
     false,
@@ -11488,9 +11512,22 @@ for (const embedded of [true, false]) {
       assert.equal(containerProgram(gatewayPod.containers[0]).includes(setup.id), false);
     }
     if (!embedded) {
+      const requirements = driver.harnessRequirementsFromDeployment(
+        harness,
+        "api_key",
+        [],
+        [],
+        setup,
+      );
+      assert.deepEqual(requirements.workspaceSetup, {
+        id: setup.id,
+        secretKeyRef: { name: secret.metadata.name, key: "setup.json" },
+      });
+      assert.equal(JSON.stringify(requirements).includes(setup.files["AGENTS.md"]), false);
       assert.throws(
         () => driver.harnessRequirementsFromDeployment(harness, "api_key"),
-        /cannot deliver workspace initialization/,
+        /requires its exact private setup delivery/,
+        "an initializing workload cannot silently lose its setup identity at the Sandbox boundary",
       );
     }
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");

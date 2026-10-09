@@ -110,6 +110,34 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   assert.equal(existsSync(join(f.root, "outside", "USER.md")), false);
 });
 
+test("workspace completion verification uses the Sandbox runtime path and retains edited files", (t) => {
+  const f = fixture(t);
+  const sandboxWorkspace = join(f.root, "sandbox-workspace");
+  mkdirSync(sandboxWorkspace);
+  // A prior successful initializer left this exact identity marker. Its workspace is
+  // now mounted at the Sandbox path rather than Compute's native path.
+  writeFileSync(join(sandboxWorkspace, ".oce-workspace-setup.json"), JSON.stringify(identity));
+  writeFileSync(join(sandboxWorkspace, "USER.md"), "edited after initialization");
+  const verify = workspaceSetupVerifier(identity, { environment: "OPENCLAW_WORKSPACE_DIR" });
+  const verified = f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace });
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.equal(
+    readFileSync(join(sandboxWorkspace, "USER.md"), "utf8"),
+    "edited after initialization",
+  );
+  assert.equal(
+    existsSync(f.workspace),
+    false,
+    "verification must not initialize the old mount path",
+  );
+  failed(f.execute(verify, ""));
+  writeFileSync(
+    join(sandboxWorkspace, ".oce-workspace-setup.json"),
+    JSON.stringify({ ...identity, agentId: "another-agent" }),
+  );
+  failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }));
+});
+
 const native = {
   skip:
     executable === undefined && image === undefined

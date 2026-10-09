@@ -3027,6 +3027,7 @@ if (loginMode === "chatgptAuthTokens") {
     if (!account || !nonempty(account.accountId) || !nonempty(account.planType) ||
         (account.email !== undefined && !nonempty(account.email)) ||
         (account.userId !== undefined && !nonempty(account.userId)) ||
+        (account.accountUserId !== undefined && !nonempty(account.accountUserId)) ||
         (account.isFedramp !== undefined && typeof account.isFedramp !== "boolean")) {
       throw new Error("Invalid external account metadata.");
     }

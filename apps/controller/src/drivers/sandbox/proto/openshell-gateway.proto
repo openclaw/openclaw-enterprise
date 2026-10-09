@@ -1,19 +1,29 @@
 // Minimal OpenShell v0.1.3-pre.2 gateway surface used by OpenClaw Enterprise.
+// The OAuth PoC extends this binding with upstream refresh RPCs and the
+// fork-only operator credential read below.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only
 // sandbox log read. Field numbers and wire
-// types match the OpenShell public protos so grpc-js can interoperate with the
-// real gateway. Messages from the upstream datamodel and sandbox packages are
+// types match the selected gateway so grpc-js can interoperate with it.
+// Messages from the upstream datamodel and sandbox packages are
 // declared here; package names do not affect their wire encoding.
 syntax = "proto3";
 
 package openshell.v1;
 
 import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 service OpenShell {
+  rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
+  rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest) returns (ConfigureProviderRefreshResponse);
+  rpc RotateProviderCredential(RotateProviderCredentialRequest) returns (RotateProviderCredentialResponse);
+  rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest) returns (GetProviderRefreshStatusResponse);
+  // TODO(upstream operator credential read): replace this fork contract and its
+  // request/response below once the upstream API lands; ordinary reads stay redacted.
+  rpc ResolveProviderCredential(ResolveProviderCredentialRequest) returns (ResolveProviderCredentialResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
@@ -42,6 +52,32 @@ service OpenShell {
       returns (UpdateProviderProfilesResponse);
   rpc DeleteProviderProfile(DeleteProviderProfileRequest)
       returns (DeleteProviderProfileResponse);
+}
+
+message ExecSandboxRequest {
+  string sandbox = 1;
+  repeated string command = 2;
+  string workdir = 3;
+  map<string, string> environment = 4;
+  bytes stdin = 6;
+  bool tty = 7;
+  uint32 cols = 8;
+  uint32 rows = 9;
+  bool no_login_shell = 10;
+  string request_id = 11;
+  WorkspaceSelector workspace_scope = 12;
+  google.protobuf.Duration execution_timeout = 105;
+}
+
+message ExecSandboxStdout { bytes data = 1; }
+message ExecSandboxStderr { bytes data = 1; }
+message ExecSandboxExit { int32 exit_code = 1; }
+message ExecSandboxEvent {
+  oneof payload {
+    ExecSandboxStdout stdout = 1;
+    ExecSandboxStderr stderr = 2;
+    ExecSandboxExit exit = 3;
+  }
 }
 
 message HealthRequest {}
@@ -442,6 +478,7 @@ message ProviderProfileCredential {
   bool required = 4;
   string auth_style = 5;
   string header_name = 6;
+  ProviderCredentialRefresh refresh = 8;
 }
 
 message ProviderProfile {
@@ -602,4 +639,76 @@ message SandboxLogLine {
   string message = 5;
   string source = 6;
   map<string, string> fields = 7;
+}
+
+// Local OAuth PoC: refresh is gateway-owned; plaintext reads require separate authorization.
+enum ProviderCredentialRefreshStrategy {
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_STATIC = 1;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_EXTERNAL = 2;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN = 3;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS = 4;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT = 5;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_AWS_STS_ASSUME_ROLE = 6;
+}
+message ProviderCredentialRefreshMaterial {
+  string name = 1;
+  string description = 2;
+  bool required = 3;
+  bool secret = 4;
+}
+message ProviderCredentialRefresh {
+  ProviderCredentialRefreshStrategy strategy = 1;
+  string token_url = 2;
+  repeated string scopes = 3;
+  repeated ProviderCredentialRefreshMaterial material = 6;
+  google.protobuf.Duration refresh_before = 104;
+  google.protobuf.Duration max_lifetime = 105;
+}
+message ProviderCredentialRefreshStatus {
+  string provider = 1;
+  string provider_id = 2;
+  string credential_key = 3;
+  ProviderCredentialRefreshStrategy strategy = 4;
+  string status = 5;
+  string last_error = 9;
+  string failure_code = 11;
+  string provider_error_subtype = 12;
+  google.protobuf.Timestamp expiration_time = 106;
+  google.protobuf.Timestamp next_refresh_time = 107;
+  google.protobuf.Timestamp last_refresh_time = 108;
+  google.protobuf.Timestamp last_error_time = 113;
+}
+message ConfigureProviderRefreshRequest {
+  string provider = 1;
+  string credential_key = 2;
+  ProviderCredentialRefreshStrategy strategy = 3;
+  map<string, string> material = 4;
+  repeated string secret_material_keys = 5;
+  WorkspaceSelector workspace_scope = 7;
+  string request_id = 8;
+  google.protobuf.Timestamp expiration_time = 106;
+}
+message ConfigureProviderRefreshResponse { ProviderCredentialRefreshStatus status = 1; }
+message RotateProviderCredentialRequest {
+  string provider = 1;
+  string credential_key = 2;
+  WorkspaceSelector workspace_scope = 3;
+  string request_id = 4;
+}
+message RotateProviderCredentialResponse { ProviderCredentialRefreshStatus status = 1; }
+message GetProviderRefreshStatusRequest {
+  string provider = 1;
+  string credential_key = 2;
+  WorkspaceSelector workspace_scope = 3;
+}
+message GetProviderRefreshStatusResponse { repeated ProviderCredentialRefreshStatus credentials = 1; }
+message ResolveProviderCredentialRequest {
+  WorkspaceSelector workspace_scope = 1;
+  string name = 2;
+  string credential_key = 3;
+}
+message ResolveProviderCredentialResponse {
+  string value = 1;
+  google.protobuf.Timestamp expiration_time = 2;
 }

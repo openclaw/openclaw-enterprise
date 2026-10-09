@@ -995,6 +995,13 @@ export interface HarnessWorkloadRequirements {
   /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
   readonly workloadIdentity?: SandboxWorkloadIdentity;
   readonly workspaceMounts: readonly SandboxWorkspaceMount[];
+  /** Initialize the mounted workspace privately before starting the Harness; never copy file contents here. */
+  readonly workspaceSetup?: {
+    readonly id: string;
+    readonly defaultsId?: string;
+    /** Agent-owned, same-Namespace setup delivery; the Sandbox consumes only this exact key. */
+    readonly secretKeyRef: { readonly name: string; readonly key: string };
+  };
   readonly environment: readonly SandboxEnvironmentVariable[];
   readonly files: readonly SandboxWorkloadFile[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
@@ -1249,6 +1256,8 @@ export interface ExternalChatgptAuth {
   readonly accountId: string;
   readonly planType: string;
   readonly userId?: string;
+  /** Membership identity from the access token, distinct from the global user ID. */
+  readonly accountUserId?: string;
   readonly email?: string;
   readonly isFedramp?: boolean;
 }

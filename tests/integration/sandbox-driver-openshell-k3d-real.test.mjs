@@ -2127,6 +2127,11 @@ async function prepareProductionInstallation(
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
+    // Console creation includes initial files. Keep this normal setup path in the
+    // real Sandbox proof so credential-only fixtures cannot hide delivery gaps.
+    ...(harnessId === "codex"
+      ? { initialWorkspaceFiles: { "AGENTS.md": "# Initialized OpenShell workspace\n" } }
+      : {}),
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.error));
 
@@ -2203,6 +2208,14 @@ async function prepareProductionInstallation(
   });
 
   const sandbox = await waitForSandbox(placement, deployed.data);
+  if (harnessId === "codex") {
+    const initialFile = await request(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`,
+    );
+    assert.equal(initialFile.status, 200, JSON.stringify(initialFile.error));
+    assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
+  }
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
   process.stderr.write(
     "OpenShell integration: provider Harness ready; checking ownership and mounts.\n",

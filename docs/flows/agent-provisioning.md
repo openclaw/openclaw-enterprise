@@ -95,11 +95,14 @@ an operator must declare a compatible custom image in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
 `packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
 Admission does not prove that the
-Driver can deliver every workload requirement. The current Sandbox handoff
-rejects workspace initialization, and stock OpenShell rejects Secret-backed
-environment projection. These requirements remain enforced; the
+Driver can deliver every workload requirement. For private workspace
+initialization, Sandbox receives the setup identity and exact Secret reference
+in `HarnessWorkloadRequirements.workspaceSetup`. OpenShell runs the initializer
+through `ExecSandbox` before Harness startup; see
+[workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
+Stock OpenShell still rejects Secret-backed environment projection. The
 [OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-describes the upstream delivery limits and verification-only path.
+describes the remaining upstream delivery limits and verification-only path.
 
 ### 5. Failures preserve useful outputs
 

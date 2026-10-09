@@ -59,11 +59,12 @@ A `CredentialSourceType` declares:
 The `chatgptAuthTokens` mode receives externally managed ChatGPT authentication
 through a credential source. It is a receiving contract for a Credential
 Gateway and paired Sandbox that already provide OAuth token injection. The
-bundled OpenShell catalog does not yet offer this source type.
+experimental OpenShell `codex-oauth` type requires the custom gateway and supervisor
+described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
-`accountId`, `planType`, and optional `userId`, `email`, and `isFedramp`. The
+`accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The
 trusted Driver supplies account metadata from the authenticated connection;
 these fields are not caller-selected Agent configuration. The placeholder must
 be the exact value recognized by the egress injector. Real access tokens,

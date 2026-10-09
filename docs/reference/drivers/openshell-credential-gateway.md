@@ -63,12 +63,57 @@ Sandboxes and reads attachment status. Allow both to reach the gateway.
 
 ## Source-type catalog
 
-| Type     | Secret fields        | Config fields | Rotation | Harness authentication |
-| -------- | -------------------- | ------------- | -------- | ---------------------- |
-| `openai` | `api_key` (required) | None          | `none`   | `openai` / `api_key`   |
+| Type                         | Secret fields        | Config fields | Rotation  | Harness authentication         |
+| ---------------------------- | -------------------- | ------------- | --------- | ------------------------------ |
+| `openai`                     | `api_key` (required) | None          | `none`    | `openai` / `api_key`           |
+| `codex-oauth` (Experimental) | None; device login   | None          | `gateway` | `openai` / `chatgptAuthTokens` |
 
 Other OpenShell provider types are not in the catalog, so registration rejects
 them.
+
+### Experimental Codex OAuth PoC
+
+The `codex-oauth` type requires a custom OpenShell gateway exposing
+`ResolveProviderCredential` and a matching supervisor supporting identity-bound
+JWT placeholder aliases. The stock pinned images do not provide this integration.
+The PoC deliberately uses the same installation-wide OpenShell Platform Admin
+identity for provider creation and warm-token reads. This is the Backend's
+service identity, not the Console user's session. It needs provider management
+permissions and `provider:credentials:read` when scope enforcement is enabled.
+OCC still authorizes each user's exact Namespace/source operation. Separate
+namespace-scoped OpenShell identities are deferred; no separate reader service
+or supervisor impersonation is needed.
+
+Device login stores refresh material in OpenShell and retains only an opaque
+login session in OCC. OpenShell owns subsequent refresh. `withSourceToken` reads
+the current access token for plugin discovery; it never refreshes or returns
+credentials to the Console. Deployment and later revisions attach the same
+source and receive account metadata plus a placeholder, never refresh material.
+
+The Sandbox wraps its issued placeholder as a JWT without changing its provider
+identity. Revocation, endpoint binding, and expiry remain enforced by OpenShell.
+Selected runtime plugins remain unsupported by the current Sandbox Driver;
+directory discovery does not establish hosted-plugin execution support.
+See [OAuth storage](kubernetes-compute/codex-oauth-storage.md).
+
+#### WIP boundaries
+
+- **Operator token read.** The fork's RPC name, wire fields, and permission scope
+  are provisional. Adapt `GrpcOpenShellGatewayClient.resolveProviderCredential`
+  and its proto to the upstream API once available. Keep `withSourceToken` a
+  warm read by stable provider identity; it must not refresh or expose tokens to
+  the browser.
+- **Refresh controls.** The PoC calls OpenShell configure/rotate/status RPCs from
+  `OpenShellCredentialGatewayDriver`. Move that orchestration to the proposed
+  `credential_refresh` capability when implemented. Scheduling, refresh material,
+  and successor-token persistence already belong to OpenShell.
+- **JWT placeholders.** The Sandbox's wrapper depends on the fork's alias
+  resolver. Align that wrapper with upstream support without changing the
+  Harness's `chatgptAuthTokens` contract or weakening provider identity checks.
+- **Connection recovery and metadata.** Initial credentials, refresh configuration,
+  and account metadata use separate writes. An interrupted handoff may require
+  reconnecting. Account metadata is a login-time snapshot; token refresh does
+  not update it. Reconnect and deploy a new revision to pick up account changes.
 
 ## How sources map to OpenShell
 
@@ -164,11 +209,10 @@ revision:
 
 ## Limits
 
-- `rotateSource` fails with "not supported yet": the `openai` type is static,
-  with nothing for the gateway to refresh. A running Agent uses an updated key
-  only after its next deployment.
-- Only the `openai` API-key type exists. ChatGPT-account sign-in and other
-  OpenShell source types remain unavailable.
+- The `openai` type is static, with nothing for the gateway to refresh. A running
+  Agent uses an updated key only after its next deployment.
+- Codex OAuth requires the custom PoC gateway and supervisor described above;
+  other source types remain unavailable.
 - Only one OpenShell Backend can be configured.
 
 ## Verification

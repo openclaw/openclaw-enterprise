@@ -4668,6 +4668,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         workspaceSetup,
         repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
         nativeRuntime,
+        undefined,
+        sandboxDriver?.provisionHarness !== undefined,
       );
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
@@ -4732,6 +4734,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           harnessAuth.loginMode,
           attachments,
           this.sandboxWorkloadFiles(pluginRuntime),
+          workspaceSetup,
         );
         const requirements = {
           ...renderedRequirements,
@@ -5198,6 +5201,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         workspaceSetup,
         repositoryMaterial,
         nativeRuntime,
+        undefined,
+        sandboxDriver?.provisionHarness !== undefined,
       );
     let providerEndpoint: SandboxHarnessEndpoint | undefined;
     if (sandboxDriver?.provisionHarness === undefined) {
@@ -5262,6 +5267,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         harnessAuth.loginMode,
         [],
         this.sandboxWorkloadFiles(pluginRuntime),
+        workspaceSetup,
       );
       if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
         throw new Error("The exact AgentRevision workload is not ready.");
@@ -7889,6 +7895,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "accountId",
             "planType",
             "userId",
+            "accountUserId",
             "email",
             "isFedramp",
           ].includes(key),
@@ -7897,6 +7904,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !text(record.accountId) ||
       !text(record.planType) ||
       (record.userId !== undefined && !text(record.userId)) ||
+      (record.accountUserId !== undefined && !text(record.accountUserId)) ||
       (record.email !== undefined && !text(record.email)) ||
       (record.isFedramp !== undefined && typeof record.isFedramp !== "boolean")
     ) {
@@ -7917,6 +7925,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     loginMode: HarnessWorkloadRequirements["loginMode"],
     credentialAttachments: readonly CredentialSourceAttachment[] = [],
     files: readonly SandboxWorkloadFile[] = [],
+    workspaceSetup?: WorkspaceSetup,
   ): HarnessWorkloadRequirements {
     const template = asRecord(deployment.spec?.template);
     const metadata = asRecord(template?.metadata);
@@ -7936,12 +7945,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (command.some((entry) => typeof entry !== "string") || command.length === 0) {
       throw new ConfigurationFailure("Dedicated Harness command must be explicit.");
     }
+    const initializer = Array.isArray(spec?.initContainers)
+      ? spec.initContainers.find((item) => asRecord(item)?.name === "initialize-workspace")
+      : undefined;
+    const setupVolume = Array.isArray(spec?.volumes)
+      ? spec.volumes.find((item) => asRecord(item)?.name === "workspace-setup")
+      : undefined;
     if (
-      Array.isArray(spec?.initContainers) &&
-      spec.initContainers.some((item) => asRecord(item)?.name === "initialize-workspace")
+      (workspaceSetup === undefined && (initializer !== undefined || setupVolume !== undefined)) ||
+      (workspaceSetup !== undefined &&
+        (initializer === undefined ||
+          asRecord(asRecord(setupVolume)?.secret)?.secretName !==
+            this.workspaceSetupSecretName(workspaceSetup.agentId)))
     ) {
       throw new ConfigurationFailure(
-        "Sandbox Harness requirements cannot deliver workspace initialization.",
+        "Sandbox workspace initialization requires its exact private setup delivery.",
       );
     }
     const fileEnvironment = new Set(files.map((file) => file.environmentVariable));
@@ -7979,6 +7997,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
       command: command as readonly string[],
       ...(workloadIdentity === undefined ? {} : { workloadIdentity }),
       workspaceMounts,
+      ...(workspaceSetup === undefined
+        ? {}
+        : {
+            workspaceSetup: {
+              id: workspaceSetup.id,
+              ...(workspaceSetup.defaultsId === undefined
+                ? {}
+                : { defaultsId: workspaceSetup.defaultsId }),
+              secretKeyRef: {
+                name: this.workspaceSetupSecretName(workspaceSetup.agentId),
+                key: "setup.json",
+              },
+            },
+          }),
       environment,
       files: Object.freeze([...files]),
       credentialAttachments: Object.freeze([...credentialAttachments]),
@@ -8580,8 +8612,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     container.args = nodeProgramArguments(
       (workspaceSetup === undefined
         ? ""
-        : workspaceSetupVerifier(workspaceSetup, "/home/node/workspace")) +
-        AGENT_WITH_NODE_ENTRYPOINT,
+        : workspaceSetupVerifier(
+            workspaceSetup,
+            this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
+              ? "/home/node/workspace"
+              : { environment: "OPENCLAW_WORKSPACE_DIR" },
+          )) + AGENT_WITH_NODE_ENTRYPOINT,
     );
   }
 
@@ -11609,7 +11645,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryMaterial?: ResolvedRepositoryMaterialSpec,
     nativeRuntime?: NativeRuntimeSnapshot,
     providerEndpoint?: SandboxHarnessEndpoint,
+    useRuntimeWorkspace = false,
   ): ManagedKubernetesObject {
+    const harnessSetupWorkspace = useRuntimeWorkspace
+      ? { environment: "OPENCLAW_WORKSPACE_DIR" as const }
+      : "/home/node/workspace";
     if (nativeRuntime !== undefined && (embedded || role !== "agent")) {
       throw new ConfigurationFailure(
         "Dedicated OpenClaw runtime requires a dedicated Harness workload.",
@@ -12274,7 +12314,7 @@ for (const path of ${JSON.stringify(
                               workspaceSetup,
                               role === "gateway"
                                 ? required(configuration?.workspace, "Initial workspace directory")
-                                : "/home/node/workspace",
+                                : harnessSetupWorkspace,
                             )) +
                           (role === "gateway"
                             ? GATEWAY_RUNTIME_ENTRYPOINT
