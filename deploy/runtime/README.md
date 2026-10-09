@@ -65,8 +65,8 @@ package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive, as four layers
-of similar size (the Codex platform binary, the rest of its package, `dist`, and
-the remainder) so a cached build downloads them in parallel. Its pinned
+(the Codex platform binary, the rest of its package, `dist`, and the remainder)
+so a cached build downloads them in parallel. Its pinned
 `node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
 Python, and process utilities. Build compilers stay in the full Bookworm stages.
 The repository credential client stage needs only Node and pnpm, so it builds on the
