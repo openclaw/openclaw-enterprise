@@ -118,20 +118,20 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` advances the request generation and requests `GET /api/auth/session`.
-First loads show loading. Return navigation and Refresh can restore one of at most
-16 document-local views keyed by route, Namespace, and session owner while reads
-run. Password fields and their derived discovery state clear before retention.
+`loadPage` advances request generation and requests `GET /api/auth/session`.
+First loads show loading. Return navigation and Refresh can restore up to
+16 document-local views keyed by route, Namespace, and session owner during reads.
+Password fields and derived discovery state clear before retention.
 Controls stay inert until admission succeeds; navigation remains available.
 
-Completed views retain their DOM, handlers, and draft capture callbacks. On return,
+Completed views retain DOM, handlers, and draft capture callbacks. On return,
 `loadPage` rereads their GET dependencies and compares outcomes and user identity.
-`readSuccess` records response data; `readFailure` records HTTP error status and
-code, excluding per-attempt request IDs. Unchanged outcomes reactivate the view;
-recovery or a changed failure rebuilds it, as does a first readable Namespace
-for a view retained without a selection. A remembered tab-local `403` remains
-denied without another audited request; its owning panel's Retry clears that
-memory. Page/session admission still runs before reuse.
+`readSuccess` records data; `readFailure` records HTTP status and code, excluding
+request IDs. Unchanged outcomes reactivate the view;
+recovery, changed failures, or the first readable Namespace for a view without
+a selection rebuild it. A remembered tab-local `403` remains denied without
+another audited request; its panel's Retry clears it. Page/session admission
+still runs before reuse.
 Pending reads, transport or malformed-response failures, expired sessions,
 password input, and mutations prevent reuse. Live GETs with `revalidate: false`
 are excluded from dependency replay. Read-only catalog and diagnostic POSTs do
