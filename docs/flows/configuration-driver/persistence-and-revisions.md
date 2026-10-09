@@ -88,7 +88,7 @@ When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged. Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
-`requireOpenClawRoster`, then dedicated OpenClaw's `main` Agent rules) and, through optional
+`requireOpenClawRoster`, then the dedicated OpenClaw and Codex `main` Agent rules) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
 a setting every preparation would refuse with `409`, naming the setting and never
 its value, before a revision exists. OCC freezes

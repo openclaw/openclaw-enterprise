@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-10
-last_updated_session: authoring-run/f9b46af2-6bd4-4636-b675-dd9bea82a566
+last_updated_session: authoring-run/794085ff-b0bd-422e-8fe7-6b6e9846ca0f
 ---
 
 # Agent runtime logs flow
@@ -85,7 +85,8 @@ two-cluster profile reads dedicated Gateways in its control target and Harnesses
 in its execution target. It lists Events by
 `involvedObject.uid`, keeps only that Pod's Events, drops the scheduler's
 `FailedScheduling` retry after a lost PVC update race once the Pod has a node,
-caps them at 100 and takes each
+follows Event-list continuation under the same five-second deadline, retains
+the newest 100 eligible Events across all pages, and takes each
 Event's `container` from `involvedObject.fieldPath` (`spec.containers{name}` or
 the init or ephemeral form; `null` for Pod-level Events such as `Scheduled`). A log
 read passes `{ source, events: false }`, so it lists only that source's Pods and
@@ -246,6 +247,10 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 02:50: Preserve Event pagination and current termination when merging main; retain both regression groups and histories. (authoring-run/794085ff-b0bd-422e-8fe7-6b6e9846ca0f - 880b645f5e5fb5c99c6046c1eac6ca81211be584)
+
+- 2026-10-10 00:33: Read Pod Event continuation pages before returning the newest 100 diagnostics. (authoring-run-9eade0ab-4aa4-4b21-9faa-e7478c6a8983 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
 - 2026-10-10 02:35: Preserve current termination projection and both flow histories when merging main timestamp parsing changes. (authoring-run/f9b46af2-6bd4-4636-b675-dd9bea82a566 - db4ccbdea96a752cd99a66cf4cf02c195f5fe3ba)
 

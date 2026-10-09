@@ -479,6 +479,10 @@
                     "label": "OIDC Sign-in"
                   },
                   {
+                    "page": "guides/deploy/oidc-keycloak",
+                    "label": "Keycloak Sign-in"
+                  },
+                  {
                     "page": "guides/deploy/local-k3d-image-upgrade",
                     "label": "Local k3d Upgrades"
                   },

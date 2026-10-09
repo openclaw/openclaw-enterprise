@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-06
-last_updated_session: authoring-run/a45c48cd-bde3-41b1-8e3d-57bf774df237
+updated: 2026-10-10
+last_updated_session: authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240
 ---
 
 # Agent Presets flow
@@ -117,6 +117,12 @@ the new Namespace. Disabling defaults leaves persisted copies alone.
 
 ### 2. Admit and store a template
 
+`apps/controller/src/index.ts:createFastifyApp` gives Preset POST/PATCH a bounded
+transport budget for 1 MiB templates, JSON escapes and the envelope. Explicit
+overrides remain authoritative. Development/production composition uses route
+defaults; transport overflow returns 413 before normal template, IAM and Driver
+admission.
+
 `packages/occ/src/index.ts:OpenClawController.createPreset`
 
 [`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
@@ -227,22 +233,17 @@ variables remain confined to the credential field. User-edited workspace bytes
 follow the existing private workspace setup path in both regular and provisioning
 creation. The form keeps Secret bindings internally and exposes channel-specific
 Secret controls rather than a raw bindings editor.
-Selected model Secret metadata and references survive draft navigation; raw
-passwords do not. Provider or authentication-method changes clear the selection.
-For an existing selection or a Secret reference already bound in the Preset,
-Save uses the reference without creating another Secret. Ordinary creation grants
-the new Agent's service principal exact Secret `operate` access and retains the
-reference through Agent-conflict and grant retries. The caller needs permission to
-manage the grant; if it fails, the saved Agent remains and the form offers a retry.
-Provisioning derives the grant from `harnessAuth.source`.
-For a password input, Save first creates a same-Namespace Secret, clears the
-credential input, and retains the returned reference. It then creates a
-Configuration and an Agent that refers to the Configuration and Secret, and
-grants the Agent access. Dedicated provisioning uses the existing provisioning
-flow after Secret creation. Password bytes are sent only to the Secret creation
-endpoint, never as Agent or Configuration fields. Each server
-request owns full schema, native credential, and authorization admission before
-its persistence boundary; browser validation is not that boundary.
+Model Secret references survive draft navigation; passwords do not. Provider or
+authentication-method changes clear the selection. Existing or Preset-bound
+references are reused. Ordinary creation grants the Agent service principal
+exact Secret `operate` access; Agent-conflict and grant retries retain the
+reference. The caller needs grant-management permission. A failed grant keeps
+the saved Agent and offers retry. Provisioning derives it from `harnessAuth.source`.
+Password inputs first create a same-Namespace Secret, clear the input, and
+retain the reference. Save then creates Configuration and Agent resources and
+grants access; dedicated provisioning follows its existing flow. Password bytes
+reach only Secret creation. Each API request performs schema, native credential
+and authorization admission before persistence.
 
 If Secret creation fails, the masked input remains for correction or retry.
 If a later save fails, its saved Secret reference is reused.
@@ -291,6 +292,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-10 02:23: Admit contract-sized Preset writes at the HTTP boundary; template limits and mutation checks remain unchanged. (authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 
 - 2026-10-06 22:22: Locate Preset file loading in its adjacent composition module; initialization remains unchanged. (authoring-run/a45c48cd-bde3-41b1-8e3d-57bf774df237 - 17e10b6d34cc2c805b3910fddfef191d3dd1b3f8)
 - 2026-10-05 05:30: Only the API logs Preset warnings.

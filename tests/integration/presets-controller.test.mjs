@@ -183,6 +183,75 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   );
 });
 
+test("Preset HTTP writes preserve all four full-size initial workspace files", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Workspace Preset", { ready: true });
+  const content = ("# Workspace guidance\n" + "Routine fixture instructions.\n".repeat(600)).slice(
+    0,
+    16 * 1024,
+  );
+  const template = {
+    agent: {
+      initialWorkspaceFiles: Object.fromEntries(
+        ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => [name, content]),
+      ),
+    },
+  };
+  const path = collection(namespace.id);
+  const created = await createPreset(fixture, namespace.id, "Full workspace", template);
+  assert.deepEqual((await fixture.request("GET", `${path}/${created.id}`)).data.template, template);
+  const replacement = await createPreset(fixture, namespace.id, "Replacement", {});
+  const updated = await fixture.request("PATCH", `${path}/${replacement.id}`, {
+    body: { template },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(
+    (await fixture.request("GET", `${path}/${replacement.id}`)).data.template,
+    template,
+  );
+});
+
+test("Preset transport admits the template JSON limit and escaped strings, while admission still rejects larger templates", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Preset JSON budget", { ready: true });
+  const template = { variables: { guidance: { type: "string", default: "" } } };
+  const overhead = Buffer.byteLength(JSON.stringify(template));
+  template.variables.guidance.default = "Routine guidance. "
+    .repeat(60_000)
+    .slice(0, 1024 * 1024 - overhead);
+  assert.equal(Buffer.byteLength(JSON.stringify(template)), 1024 * 1024);
+  const path = collection(namespace.id);
+  const accepted = await createPreset(fixture, namespace.id, "JSON boundary", template);
+  assert.deepEqual(
+    (await fixture.request("GET", `${path}/${accepted.id}`)).data.template,
+    template,
+  );
+
+  // JSON permits Unicode escapes for ordinary string characters, without changing the template.
+  const encoded = JSON.stringify({ name: "Escaped JSON", template }).replace(
+    /[A-Za-z .]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  const escaped = await fetch(fixture.origin + path, {
+    method: "POST",
+    headers: { ...authenticatedHeaders(fixture.session), "content-type": "application/json" },
+    body: encoded,
+  });
+  assert.equal(escaped.status, 201, await escaped.text());
+
+  const oversized = structuredClone(template);
+  oversized.variables.guidance.default += "x";
+  const rejected = await fixture.request("PATCH", `${path}/${accepted.id}`, {
+    body: { template: oversized },
+  });
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  assert.match(rejected.body.error.message, /JSON exceeds maximum size of 1 MiB/);
+  assert.deepEqual(
+    (await fixture.request("GET", `${path}/${accepted.id}`)).data.template,
+    template,
+  );
+});
+
 test("Preset variables create independent ordinary Agent drafts that survive template replacement and deletion", async (t) => {
   const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
   const fixture = await createFixture(t);

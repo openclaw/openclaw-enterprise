@@ -70,7 +70,7 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain

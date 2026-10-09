@@ -97,7 +97,9 @@ implicitly; `namespaceId` remains their exact tenant boundary.
 
 The active runtime does not expose environment variables for these settings:
 
-- Maximum HTTP request body: `64 KiB`.
+- General HTTP request body limit: `64 KiB`. [Agent creation](../agents.md),
+  [workspace writes](../agents.md#workspace-files) and [Preset writes](../presets.md)
+  use their operation-specific budgets.
 - Maximum nested JSON configuration depth: `24`; prototype-mutating property
   names are rejected.
 - Resource display names: `1` through `200` characters, without outer whitespace
@@ -121,5 +123,6 @@ The active runtime does not expose environment variables for these settings:
   unavailable.
 
 An embedded caller can set `ControllerAppOptions.maxBodyBytes` to a positive
-integer, but the supported development compositions fix it at `64 * 1024` and
-offer no environment override.
+integer for the general limit and Agent/Preset write overrides. Standard
+development composition uses the factory defaults and offers no environment
+override; workspace writes retain their fixed operation budget.

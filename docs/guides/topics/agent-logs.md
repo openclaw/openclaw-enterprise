@@ -188,7 +188,7 @@ A page never silently skips output; it labels each gap:
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
-line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
+line, 512 KiB per response, the newest 100 Events per Pod, 10 seconds overall. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),

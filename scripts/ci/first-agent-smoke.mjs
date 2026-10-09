@@ -40,7 +40,7 @@ const registry = "127.0.0.1:5000";
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
-  "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584";
+  "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
 // Agent NetworkPolicies allow model egress only to public addresses on TCP/443,
 // and OpenClaw refuses provider addresses in private or special-use ranges. The
 // stand-in provider therefore uses a globally routable address, reachable only

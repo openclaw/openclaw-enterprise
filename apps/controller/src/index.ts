@@ -17,6 +17,7 @@ import {
   PluginDriverIdentitySchema,
   PluginToolDefaultsSchema,
   PluginToolPolicySchema,
+  PRESET_JSON_MAX_BYTES,
   SecretResponse,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
@@ -218,6 +219,8 @@ const resourceHandlers: ResourceHandlers = {
 const DEFAULT_BODY_LIMIT = 64 * 1024;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
+// A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
+const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
@@ -3804,7 +3807,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : {}),
+            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+              : {}),
         schema,
         onRequest: async (request) => admit(request, operation),
         preValidation: async (request) => {
