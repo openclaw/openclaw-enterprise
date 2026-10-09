@@ -374,7 +374,7 @@ For dedicated Codex coverage, a model override must support Codex custom tools.
 | `OCC_TEST_DATABASE_URL`                     | Migrated disposable loopback database named `openclaw_k8s_*`; the ordinary development database fails.                                                                                                     |
 | `OPENAI_API_KEY`                            | Existing authorized provider credential for real embedded and dedicated model turns.                                                                                                                       |
 | `OCC_TEST_OPENAI_MODEL`                     | Authorized provider model; defaults to `gpt-6-astra`.                                                                                                                                                      |
-| `OCC_TEST_CODEX_OPENAI_BASE_URL`            | Optional HTTPS Responses endpoint for dedicated Codex API-key tests; applied through `runtime.codexOpenaiBaseUrl`. Keep the native Codex provider at its fail-closed loopback URL.                         |
+| `OCC_TEST_CODEX_OPENAI_BASE_URL`            | Optional HTTPS Responses endpoint for dedicated Codex API-key tests; applied through `runtime.codexModelBaseUrl`. Keep the native Codex provider at its fail-closed loopback URL.                          |
 
 The separate
 [`harness-topology-k3d-routing-real.test.mjs`](../../tests/integration/harness-topology-k3d-routing-real.test.mjs)

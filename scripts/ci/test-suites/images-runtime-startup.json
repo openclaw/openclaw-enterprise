@@ -21,7 +21,8 @@
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
         "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed",
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image validates the configuration dedicated native OpenClaw renders"
+        "runtime image validates the configuration dedicated native OpenClaw renders",
+        "runtime image spawns custom-provider subagents with intact native model IDs"
       ]
     },
     {

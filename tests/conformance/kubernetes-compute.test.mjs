@@ -28,6 +28,7 @@ import {
   ActivationPendingError,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import {
   currentComputeAbortSignal,
@@ -913,7 +914,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        ...(modelEndpoint === undefined ? {} : { codexOpenaiBaseUrl: modelEndpoint }),
+        ...(modelEndpoint === undefined ? {} : { codexModelBaseUrl: modelEndpoint }),
       },
       // The API server proxy can reach private status, so activation reads the
       // node OpenClaw applied.
@@ -1271,11 +1272,14 @@ test("custom Codex endpoints compile explicit providers without changing the adm
     const primary = `${sourceProvider}/vendor/organization/model`;
     const fallback = `${sourceProvider}/codex/native`;
     const plain = `${sourceProvider}/plain-model`;
+    const child = `${sourceProvider}/vendor/organization/child`;
+    const childFallback = `${sourceProvider}/codex/child-fallback`;
+    const childSelection = { primary: child, fallbacks: [childFallback, "primary"] };
     const settings = {
       model: { primary, fallbacks: [fallback, plain] },
       models: {
         [primary]: { agentRuntime: { id: "codex" }, alias: "primary" },
-        [fallback]: { agentRuntime: { id: "codex" } },
+        [fallback]: { agentRuntime: { id: "codex" }, alias: sourceProvider },
         [plain]: { agentRuntime: { id: "codex" } },
         [`${sourceProvider}/*`]: { agentRuntime: { id: "codex" } },
       },
@@ -1283,12 +1287,27 @@ test("custom Codex endpoints compile explicit providers without changing the adm
     fixture.revision.configuration = admitLoggingConfiguration(
       {
         ...fixture.revision.configuration,
+        // OpenAI-prefixed native selections require the explicit Codex WebSocket bridge.
+        plugins: createHarnessConfiguration("codex", "vendor/organization/model").plugins,
         agents: {
           defaults: {
             ...structuredClone(settings),
             model: sourceProvider === "openai" ? primary : structuredClone(settings.model),
+            subagents: {
+              model: sourceProvider === "codex" ? child : structuredClone(childSelection),
+            },
           },
-          entries: { main: structuredClone(settings) },
+          entries: {
+            main: {
+              ...structuredClone(settings),
+              subagents: {
+                model: sourceProvider === "codex" ? structuredClone(childSelection) : child,
+              },
+            },
+            alias: { subagents: { model: "primary" } },
+            providerAlias: { subagents: { model: sourceProvider } },
+            inherited: {},
+          },
         },
         models: {
           providers: {
@@ -1309,6 +1328,7 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       "info",
     );
     const admitted = structuredClone(fixture.revision.configuration);
+    assert.equal(resolveConfiguredHarnessId(admitted), "codex");
     await fixture.prepare();
     const snapshot = [...fixture.objects.values()].find(
       (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
@@ -1325,6 +1345,22 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       sourceProvider === "openai" ? expectedSelection.primary : expectedSelection,
     );
     assert.deepEqual(rendered.agents.entries.main.model, expectedSelection);
+    const expectedChild = `${qualified}vendor/organization/child`;
+    const expectedChildSelection = {
+      primary: expectedChild,
+      fallbacks: [`${qualified}codex/child-fallback`, "primary"],
+    };
+    assert.deepEqual(
+      rendered.agents.defaults.subagents.model,
+      sourceProvider === "codex" ? expectedChild : expectedChildSelection,
+    );
+    assert.deepEqual(
+      rendered.agents.entries.main.subagents.model,
+      sourceProvider === "codex" ? expectedChildSelection : expectedChild,
+    );
+    assert.equal(rendered.agents.entries.alias.subagents.model, "primary");
+    assert.equal(rendered.agents.entries.providerAlias.subagents.model, sourceProvider);
+    assert.equal(rendered.agents.entries.inherited.subagents, undefined);
     for (const actual of [rendered.agents.defaults, rendered.agents.entries.main]) {
       assert.deepEqual(Object.keys(actual.models), [
         `${qualified}vendor/organization/model`,
@@ -1334,15 +1370,24 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       ]);
       assert.equal(actual.models[`${qualified}vendor/organization/model`].alias, "primary");
     }
-    assert.deepEqual(rendered.models.providers.codex.models, [
-      {
-        id: "openai-compatible/vendor/organization/model",
-        name: "Primary model",
-        contextWindow: 32000,
-      },
-      { id: "openai-compatible/codex/native", name: "Fallback model" },
-      { id: "openai-compatible/plain-model", name: "Plain model" },
-    ]);
+    const byModelId = (left, right) => left.id.localeCompare(right.id);
+    assert.deepEqual(
+      rendered.models.providers.codex.models.toSorted(byModelId),
+      [
+        {
+          id: "openai-compatible/vendor/organization/model",
+          name: "Primary model",
+          contextWindow: 32000,
+        },
+        { id: "openai-compatible/codex/native", name: "Fallback model" },
+        { id: "openai-compatible/plain-model", name: "Plain model" },
+        {
+          id: "openai-compatible/vendor/organization/child",
+          name: "vendor/organization/child",
+        },
+        { id: "openai-compatible/codex/child-fallback", name: "codex/child-fallback" },
+      ].toSorted(byModelId),
+    );
     assert.deepEqual(fixture.revision.configuration, admitted);
     const runtime = [...fixture.objects.values()].find(
       (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
@@ -4307,7 +4352,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
 
 test("the canonical Kubernetes runtime validates the dedicated Codex model endpoint", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
-  for (const codexOpenaiBaseUrl of [
+  for (const codexModelBaseUrl of [
     "https://models.example.test/v1",
     "https://models.example.test/api/v1/",
     "https://API.OpenAI.com:443/v1/",
@@ -4321,10 +4366,10 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://models.example.test./v1",
   ]) {
     assert.doesNotThrow(() =>
-      createKubernetesComputeDriver(options({ runtime: { ...runtime, codexOpenaiBaseUrl } })),
+      createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
     );
   }
-  for (const codexOpenaiBaseUrl of [
+  for (const codexModelBaseUrl of [
     "not-a-url",
     "http://models.example.test/v1",
     syntheticCredentialUrl({
@@ -4348,7 +4393,7 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://models.example.test/v1#fragment",
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexOpenaiBaseUrl } })),
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
       /Codex model endpoint/,
     );
   }

@@ -188,14 +188,14 @@ in one AgentRevision Sandbox. Stopping a hosted session releases its slot; saved
 history does not consume capacity. OpenClaw does not yet retire idle paired-node
 workers, so size the limit against the Agent workload's CPU and memory limits.
 
-For dedicated Codex `api_key` authentication, `runtime.codexOpenaiBaseUrl` selects
-an HTTPS streaming Responses endpoint ending in `/v1` (including `/api/v1`).
-Hostname/path wildcards, port `0`, credentials, queries, and fragments are rejected. Omission retains
-OpenAI's default; bound OpenShell sources select their own endpoint. OAuth,
-account logins, and OpenClaw ignore this option. Only the Harness receives the
-model key. Private Gateway configuration qualifies native IDs without changing
-their namespaces or admitted Configuration; its provider uses authenticated
-app-server transport and fail-closed HTTP. See [Harness execution](../harness-execution.md).
+For dedicated Codex `api_key` authentication, `runtime.codexModelBaseUrl` selects
+an HTTPS OpenAI-compatible streaming Responses endpoint ending in `/v1` (including `/api/v1`).
+Rejects hostname/path wildcards, port `0`, credentials, queries, and fragments.
+Omission retains OpenAI's default; OpenShell sources select their own endpoint.
+OAuth, account logins, and OpenClaw ignore this option. Only the Harness receives
+the key. Private Gateway configuration qualifies parent and subagent selections
+(strings or primary/fallback objects), preserving native IDs and admitted values.
+Transport uses the authenticated app server and fail-closed HTTP. See [Harness execution](../harness-execution.md).
 
 ### Authentication
 

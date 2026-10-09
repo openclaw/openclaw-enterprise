@@ -382,7 +382,8 @@ export interface KubernetesComputeDriverOptions {
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
     readonly codexSeccompProfile?: string;
-    readonly codexOpenaiBaseUrl?: string;
+    /** HTTPS OpenAI-compatible Responses endpoint for dedicated Codex API-key auth. */
+    readonly codexModelBaseUrl?: string;
     readonly channels?: {
       readonly proxyUrl: string;
       readonly managedProxy?: KubernetesWorkloadPeer & {
@@ -2133,7 +2134,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           nodeSelector: { type: "object", additionalProperties: { type: "string" } },
           gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
           codexSeccompProfile: { type: "string", minLength: 1 },
-          codexOpenaiBaseUrl: { type: "string", minLength: 1 },
+          codexModelBaseUrl: { type: "string", minLength: 1 },
           channels: {
             type: "object",
             required: ["proxyUrl"],
@@ -2386,8 +2387,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
       if (
-        options.runtime.codexOpenaiBaseUrl !== undefined &&
-        normalizeOpenAiBaseUrl(options.runtime.codexOpenaiBaseUrl) === undefined
+        options.runtime.codexModelBaseUrl !== undefined &&
+        normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl) === undefined
       ) {
         throw new ConfigurationFailure(
           "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.",
@@ -10412,7 +10413,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.mode === "dedicated" &&
       revision.harnessAuth?.method === "api_key"
     ) {
-      openaiBaseUrl = this.options.runtime?.codexOpenaiBaseUrl;
+      openaiBaseUrl = this.options.runtime?.codexModelBaseUrl;
     }
     if (openaiBaseUrl !== undefined) {
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);

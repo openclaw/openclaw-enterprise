@@ -38,6 +38,10 @@ export function codexGatewayModelConfiguration(
     return `codex/${endpoint.modelProvider}/${id}`;
   };
   const select = (reference: string): string => {
+    // Subagent aliases remain native aliases, even when named like the source provider.
+    if (!reference.includes("/")) {
+      return reference;
+    }
     selections.add(reference);
     return qualify(reference);
   };
@@ -45,15 +49,20 @@ export function codexGatewayModelConfiguration(
     if (settings === undefined) {
       continue;
     }
-    if (typeof settings.model === "string") {
-      settings.model = select(settings.model);
-    } else {
-      const selection = asRecord(settings.model);
-      if (typeof selection?.primary === "string") {
-        selection.primary = select(selection.primary);
+    for (const scope of [settings, asRecord(settings.subagents)]) {
+      if (scope === undefined) {
+        continue;
       }
-      if (Array.isArray(selection?.fallbacks)) {
-        selection.fallbacks = selection.fallbacks.map((reference) => select(reference));
+      if (typeof scope.model === "string") {
+        scope.model = select(scope.model);
+      } else {
+        const selection = asRecord(scope.model);
+        if (typeof selection?.primary === "string") {
+          selection.primary = select(selection.primary);
+        }
+        if (Array.isArray(selection?.fallbacks)) {
+          selection.fallbacks = selection.fallbacks.map((reference) => select(reference));
+        }
       }
     }
     const policies = asRecord(settings.models);

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-08
-last_updated_session: authoring-run/02228d02-e16c-4a55-9a43-16b9efb35ebe
+updated: 2026-10-09
+last_updated_session: agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110
 ---
 
 # Harness Execution Topology Flow
@@ -171,27 +171,25 @@ its stop after one claim lease, then two, four, and so on. Failed preparation or
 preparing/activating that predecessor clears its stop record. A newer exclusive revision supersedes old reconciliation and
 maintenance, with no automatic rollback; see
 [production revision stages](../reference/drivers/compute.md#production-revision-stages).
-For dedicated Codex API-key authentication, Kubernetes Compute selects the
-bound credential source's endpoint first, then its optional
-`runtime.codexOpenaiBaseUrl`. `pluginRuntimeSnapshot` in
-`apps/controller/src/drivers/compute/kubernetes/index.ts` passes that endpoint to
-`pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`.
-The generated Codex config and manifest select HTTPS Responses streaming for an
-explicit compatible endpoint. `probeCodexAuthentication` in
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts` carries
-that endpoint through CLI overrides because its probe ignores user configuration.
-Account login modes and other Harnesses retain their existing endpoints; model
-credentials remain exclusively in the Harness Pod.
-Compute normalizes both endpoint sources with
-`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl`.
+For dedicated Codex API-key auth, `pluginRuntimeSnapshot` in
+`apps/controller/src/drivers/compute/kubernetes/index.ts` selects the bound source
+endpoint before `runtime.codexModelBaseUrl`.
+`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` normalizes both sources.
+`pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
+writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
+passes it through CLI overrides because the probe ignores user configuration.
+Account login modes and other Harnesses keep their endpoints; only the Harness holds model credentials.
+
 For custom endpoints, `gatewayConfigurationDocument` calls
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
-to clone the admitted document and qualify model references, policy keys, and
-catalog IDs in the private Gateway ConfigMap. Full refs match declared selections;
-native IDs, including a `codex/` prefix, remain intact. The manifest and
-`config.toml` carry the endpoint/provider pair. OpenClaw separates the explicit
-provider once for thread start, resume, and turns; the Harness probe keeps the
-native ID. The admitted Configuration is unchanged.
+to clone the admitted document. It qualifies parent and `subagents.model` selectors
+under defaults and Agent entries, including primary/fallback objects, plus policy
+keys and catalog IDs. Subagent-only selections enter the projected catalog; aliases
+and omitted selectors retain their meaning. Full declared refs preserve native ID
+namespaces, including `codex/`. OpenClaw separates the explicit provider for thread
+start, resume, and turns; the Harness probe keeps the native ID. The admitted
+Configuration remains unchanged.
 
 Dedicated Codex and dedicated OpenClaw must complete a bounded native
 authentication/model probe before their Harness becomes ready.
@@ -313,6 +311,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 17:35: Qualify explicit subagent selectors; rename the Codex endpoint option. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - f9126efaada11f8cc18931aa8327f7e16cae59b6)
 
 - 2026-10-08 04:40: Reconciled dedicated endpoint flow with current native callback routing. (authoring-run/02228d02-e16c-4a55-9a43-16b9efb35ebe - 31b1b6a9ab59f219d0fbe3d44b1550f8c8f2fe4a)
 
