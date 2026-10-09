@@ -51,8 +51,9 @@ A `CredentialSourceType` declares:
   are supplied as OCC Secret references.
 - `rotation`: `none`, `external`, or `refresh`. A `refresh` type stores no
   static value. The [Credential Refresh Driver](credential-refresh.md) on the
-  same Backend mints and refreshes its tokens. Secret-backed types accept material
-  updates; device-authorized types require a new login source instead.
+  same Backend mints and refreshes its tokens; OCC calls that Driver to change
+  their material. Secret-backed types accept updates; device-authorized types
+  require a new login source instead.
 - `deviceAuthorization`: optional `{ harnessId }` declaring device login for this
   source type. The login path requires one matching type with no required user
   config or Secret inputs.

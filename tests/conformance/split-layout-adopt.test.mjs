@@ -1092,14 +1092,11 @@ test("discovery tolerates an unavailable API group but not a missing core kind",
   await assert.rejects(applyAdoption(cluster.kubectl, { archive, ...fast }), AdoptError);
 });
 
-test("a second tenant adopted later keeps the OCC replicas recorded before the first stop", async (t) => {
-  const archive = await withArchive(t);
-  const cluster = releasedInstallation();
-  const { kubectl, put, get } = cluster;
-  await applyAdoption(kubectl, { archive, namespaceIds: [id], ...fast });
-  // A second split-layout tenant with nothing to move, planned after OCC is already stopped.
-  const other = "ns_22222222-2222-4222-8222-222222222222";
-  const otherStorage = storageNamespaceName(other);
+// A second split-layout tenant with nothing to move.
+const other = "ns_22222222-2222-4222-8222-222222222222";
+const otherStorage = storageNamespaceName(other);
+
+function addSecondTenant(put) {
   const otherOwned = {
     labels: {
       "app.kubernetes.io/managed-by": "openclaw-enterprise",
@@ -1129,6 +1126,15 @@ test("a second tenant adopted later keeps the OCC replicas recorded before the f
       subjects: [{ kind: "ServiceAccount", name: account }],
     });
   }
+}
+
+test("a second tenant adopted later keeps the OCC replicas recorded before the first stop", async (t) => {
+  const archive = await withArchive(t);
+  const cluster = releasedInstallation();
+  const { kubectl, put, get } = cluster;
+  await applyAdoption(kubectl, { archive, namespaceIds: [id], ...fast });
+  // Planned after OCC is already stopped.
+  addSecondTenant(put);
   await applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast });
   const journal = JSON.parse(
     get("namespaces", undefined, otherStorage).metadata.annotations[JOURNAL_ANNOTATION],
@@ -1149,6 +1155,40 @@ test("a second tenant adopted later keeps the OCC replicas recorded before the f
   assert.equal(
     get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker").spec.replicas,
     1,
+  );
+});
+
+test("apply refuses to adopt more tenants once the controller runs other images", async (t) => {
+  const archive = await withArchive(t);
+  const cluster = releasedInstallation();
+  const { kubectl, put, get } = cluster;
+  await applyAdoption(kubectl, { archive, namespaceIds: [id], ...fast });
+  // The control plane is upgraded before every tenant was adopted.
+  for (const component of ["api", "worker"]) {
+    const deployment = get(
+      "deployments.apps",
+      "openclaw-system",
+      `openclaw-enterprise-${component}`,
+    );
+    deployment.spec.template.spec.containers[0].image = "controller@sha256:current";
+    deployment.spec.replicas = 1;
+    deployment.status = { replicas: 1, availableReplicas: 1 };
+  }
+  addSecondTenant(put);
+  await assert.rejects(
+    applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast }),
+    /openclaw-enterprise-api runs other images than apply recorded; roll the controller back/,
+  );
+  // The new release keeps serving and the second tenant is untouched.
+  for (const component of ["api", "worker"]) {
+    assert.equal(
+      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`).spec.replicas,
+      1,
+    );
+  }
+  assert.equal(
+    get("namespaces", undefined, otherStorage).metadata.annotations?.[JOURNAL_ANNOTATION],
+    undefined,
   );
 });
 

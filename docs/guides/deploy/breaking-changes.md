@@ -10,6 +10,32 @@ you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-09: released Gateways need an agent database migration
+
+**What breaks.** Gateways deployed by the 2026-09-28 release keep their chat
+state in an OpenClaw agent database at schema 23. Runtimes since #587
+(2026-09-29) use schema 24, and OpenClaw refuses the older database until
+`openclaw doctor --fix` migrates it. Deployed again on such a runtime, the
+Gateway exits and restarts into the same refusal. Since #1986 the Gateway runs
+that migration itself before OpenClaw starts; see
+[Gateway storage](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+
+**Who is affected.** Installations upgraded from the 2026-09-28 release whose
+Agents are deployed again by a controller before #1986. Gateways without chat
+state are not affected.
+
+**How to tell.** The Gateway log shows
+`uses schema version 23; stop active agents and run openclaw doctor --fix`.
+
+**Steps.** Upgrade the controller to #1986 or later, then deploy the Agent
+again (`occ agent deploy <id>`). With an older controller, scale the Gateway
+Deployment to zero, run
+`OPENCLAW_CONFIG_READONLY=1 openclaw doctor --fix --non-interactive` once in a
+Pod with the Gateway's template and `sleep` as its command, delete that Pod,
+and scale the Deployment back. Doctor logs `v23 -> v24`. Without
+`OPENCLAW_CONFIG_READONLY=1` it may end with a read-only file system error and
+exit code `1`; the migration still applies.
+
 ## 2026-10-09: Dedicated Codex deployment requires the main Agent
 
 **What breaks.** Since #1972, Kubernetes Compute applies dedicated OpenClaw's

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-05
-last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-10-08
+last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
 ---
 
 # Container publication flow
@@ -92,9 +92,10 @@ source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive,
-uses its stock Codex 0.160.0 dependency/lockfile selection, and applies the temporary
+applies the stock Codex 0.163.0-alpha.1 dependency pin before extracting frozen
+installation inputs, and applies the temporary
 OpenClaw read-only-paths compatibility patch and the `connect --ephemeral`
-expired-setup patch. The build verifies both patch hashes and records them in
+expired-setup patch. The build verifies all three patch hashes and records them in
 runtime provenance. The OpenClaw bridge forwards the bound
 Agent's stock network settings without modifying the Codex binary. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
@@ -239,6 +240,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-08 13:36: Pin the shared stock Codex dependency to 0.163.0-alpha.1 before frozen installation and record its dependency patch alongside the existing bridge patches. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - ae695e7f2b0c7bcd2416ed8146baeecb765ae233)
 
 - 2026-10-05 12:10: Update the OpenClaw pin, workspace templates, and Codex sandbox qualification to 0.160.0. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - dd344a97)
 

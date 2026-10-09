@@ -185,6 +185,10 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "reference/credential-sources/withdrawal",
+                    "label": "Credential Withdrawal"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }

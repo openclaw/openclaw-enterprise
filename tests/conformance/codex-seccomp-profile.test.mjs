@@ -38,7 +38,9 @@ async function writeJson(path, value) {
 }
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
-  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.160.0" });
+  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, {
+    codexVersion: "0.163.0-alpha.1",
+  });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
   assert.deepEqual(profile.architectures, runtimeDefaultBaseline.architectures);
@@ -160,7 +162,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.160.0",
+      "0.163.0-alpha.1",
       "--out",
       profilePath,
       "--provenance-out",
@@ -178,7 +180,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.160.0");
+  assert.equal(provenance.codexVersion, "0.163.0-alpha.1");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -191,7 +193,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.160.0",
+      "0.163.0-alpha.1",
       "--out",
       profilePath,
       "--provenance-out",
@@ -632,7 +634,7 @@ async function runGeneratedProbe(args, root, mode) {
   const shellArgs = args.slice(args.indexOf("--") + 2);
   assert.equal(shellArgs[0], "-c");
   assert.equal(shellArgs[2], "codex-sandbox-probe");
-  assert.equal(shellArgs[3], "0.160.0");
+  assert.equal(shellArgs[3], "0.163.0-alpha.1");
   assert.match(shellArgs[4], /^[a-f0-9]{32}$/);
   assert.equal(shellArgs.length, 5);
   assert.equal(
@@ -652,7 +654,7 @@ async function runGeneratedProbe(args, root, mode) {
     codex,
     `#!/bin/sh
 if [ "$1" = --version ]; then
-  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.160.0'; fi
+  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.163.0-alpha.1'; fi
   exit 0
 fi
 # Validate the real command's sandbox arguments, independently of its shell layout.

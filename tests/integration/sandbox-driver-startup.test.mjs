@@ -2708,6 +2708,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["[::1]:65536", false],
     ["gateway.example.test?x:8080", false],
     ["user@gateway.example.test:8080", false],
+    // An empty userinfo hides a colon before the host.
+    [":@gateway.example.test:8080", false],
     ["http://gateway.example.test", true],
     ["http://gateway.example.test:8080", true],
     ["http://[::1]:8080", true],
@@ -2715,6 +2717,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["http://gateway.example.test:65536", false],
     ["http://1.2.3.999:8080", false],
     ["http://gate%way.example.test:8080", false],
+    // An origin carries no path.
+    ["http://gateway.example.test:8080/grpc", false],
     ["https://gateway.example.test", true],
     ["https://gateway.example.test:8443", true],
     ["https://[::1]:8443", true],
