@@ -207,10 +207,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const withOtherSource = await fixture.request("PATCH", agentPath, {
     body: {
       configurationId: edited.configurationId,
-      credentialSources: [
-        { sourceId: originalAuth.sourceId },
-        { sourceId: otherSource.id },
-      ],
+      credentialSources: [{ sourceId: originalAuth.sourceId }, { sourceId: otherSource.id }],
     },
   });
   assert.equal(withOtherSource.status, 200, JSON.stringify(withOtherSource.body));

@@ -11093,8 +11093,6 @@ test(
     );
     assert.equal(await mode(`${root}/.workspace.kubelet-created/held`), 0o555);
     await rm(`${root}/.workspace.kubelet-created`, { recursive: true });
-
-
   },
 );
 
