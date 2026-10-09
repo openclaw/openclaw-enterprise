@@ -2160,7 +2160,7 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     assert.deepEqual(Object.keys(row), ["lane", "title", "profile", "timeout", "runner"]);
     // NetworkPolicy proofs need the bridge netfilter support of this kernel.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
-    if (netfilter) {
+    if (netfilter && row.lane !== "k3d-fixture-state") {
       assert.equal(row.runner, "ubuntu-22.04", row.lane);
     } else {
       assert.ok(selfHostedLabels.includes(row.runner), `${row.lane} runner ${row.runner}`);

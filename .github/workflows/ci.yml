@@ -132,7 +132,7 @@ jobs:
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
-              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
