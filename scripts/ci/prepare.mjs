@@ -1109,6 +1109,10 @@ async function ensureK3dCluster(statePath, state) {
       "1",
       "--agents",
       crossNodePluginStatus ? "1" : "0",
+      // Demo only: the negative control for the NetworkPolicy enforcement proof.
+      ...(state.lane === "k3d-fixture-state"
+        ? ["--k3s-arg", "--disable-network-policy@server:*"]
+        : []),
       ...(sharedStorage ? ["--volume", `${sharedStorage}:/var/lib/rancher/k3s/storage@all`] : []),
       "--api-port",
       `127.0.0.1:${apiPort}`,
