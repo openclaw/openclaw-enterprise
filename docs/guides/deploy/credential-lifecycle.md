@@ -97,8 +97,8 @@ inactive history alone does not retain the source indefinitely.
 Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
 Credential Refresh Driver for device login, a paired Credential Gateway for
 access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
-the [custom gateway and supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc);
-the stock pinned images do not support this flow. There is no installation opt-in flag.
+the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc);
+the repository's default pinned images do not support this flow. There is no installation opt-in flag.
 
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.

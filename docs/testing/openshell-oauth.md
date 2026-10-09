@@ -1,18 +1,20 @@
 # Test experimental OpenShell OAuth
 
 Verify the [experimental Codex OAuth source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc)
-with a custom OpenShell gateway and dedicated Codex. Use an owned, disposable
+with an upstream OpenShell gateway, an alias-enabled supervisor, and dedicated Codex. Use an owned, disposable
 environment; this procedure does not establish production support.
 
 ## Prepare the custom images and trust
 
 Use an OpenShell gateway implementing upstream `GetProviderCredentials`, added
-in revision `4c1b16a4a104581fb0afe8675feff34f00cc2ca8`. Full Harness proof also needs
-matching JWT-placeholder alias support in the gateway and supervisor. Build the
-matching static sandbox launcher and select both Helm charts. The
+in revision `4c1b16a4a104581fb0afe8675feff34f00cc2ca8`. The official gateway image
+for that revision supplies this RPC. Full Harness proof also needs a supervisor
+with [JWT-placeholder alias support](https://github.com/stevenlee-oai/OpenShell/pull/1)
+and its matching static sandbox launcher. Select the gateway and Workspace Helm
+charts for the chosen gateway revision. The
 [development launcher](openshell.md#start-a-reusable-development-environment)
 still imports its stock OpenShell image pins: selecting local charts alone does
-not select custom binaries. Import the selected images into the owned cluster and
+not select those binaries. Import the selected images into the owned cluster and
 set their immutable references through `gateway.image`, `supervisor.image`, and
 `sandboxRuntime.image` before verification.
 

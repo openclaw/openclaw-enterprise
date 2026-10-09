@@ -126,9 +126,11 @@ them.
 ### Experimental Codex OAuth PoC
 
 The `codex-oauth` type requires OpenShell's upstream `GetProviderCredentials`
-RPC and matching gateway/supervisor support for identity-bound JWT placeholder aliases.
-Select `credential_refresh` on this Backend to offer the source. The stock pinned
-images do not provide this complete integration. See
+RPC, a supervisor with identity-bound JWT placeholder alias support, and its
+matching static sandbox launcher. The gateway can use the upstream image; the
+supervisor resolves the JWT aliases. Select `credential_refresh` on this Backend
+to offer the source. The repository's default pinned images do not provide this
+complete integration. See
 [OAuth test setup](../../testing/openshell-oauth.md) for revision and image selection.
 
 The Backend retains ordinary authentication for Workspace, provider, refresh,
@@ -154,7 +156,7 @@ plugins remain unsupported; directory discovery does not prove execution. See
 
 #### WIP boundaries
 
-- **JWT placeholders.** The Sandbox wrapper requires the fork's alias resolver.
+- **JWT placeholders.** The Sandbox wrapper requires the supervisor's forked alias resolver.
   Align with upstream support while preserving provider identity and the
   Harness's `chatgptAuthTokens` contract.
 - **Connection recovery and metadata.** Grant configuration and account metadata

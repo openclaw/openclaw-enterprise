@@ -345,9 +345,10 @@ GitHub Release assets or a semver-tagged chart.
 
 ## Experimental OAuth credential proof
 
-Follow [Test experimental OpenShell OAuth](openshell-oauth.md) for the custom
-images, private-CA runtime trust, opt-in synthetic refresh lane, and separate
-real-provider verification. Stock OpenShell images do not implement this PoC.
+Follow [Test experimental OpenShell OAuth](openshell-oauth.md) for gateway and
+runtime image selection, private-CA runtime trust, the opt-in synthetic refresh
+lane, and separate real-provider verification. The repository's default pinned
+OpenShell images do not provide the complete flow.
 
 ## Related
 
