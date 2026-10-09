@@ -1,14 +1,14 @@
 ---
 created: "2026-09-23"
 updated: "2026-10-09"
-last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves new Slack token Secrets from the channel setup modal through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. Model authentication discovers models from an entered API key or service account token, then saves the credential as a Secret before provisioning. Presets retain their existing Secret binding. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
+Console saves entered Slack and model credentials through the Secrets API, then submits inline Configuration and Secret references for provisioning. Presets retain existing bindings. OCC queues work without placeholder resources. The worker creates Configuration and Agent, grants exact Secret access, prepares trusted-proxy runtime credentials, and admits the first deployment.
 
 This flow ends at deployment submission. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own activation, runtime failures and later deployments.
 
@@ -94,15 +94,13 @@ with all required containment facets. The pinned runtime lacks that support;
 an operator must declare a compatible custom image in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
 `packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
-Admission does not prove that the
-Driver can deliver every workload requirement. For private workspace
-initialization, Sandbox receives the setup identity and exact Secret reference
-in `HarnessWorkloadRequirements.workspaceSetup`. OpenShell runs the initializer
-through `ExecSandbox` before Harness startup; see
-[workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
-Stock OpenShell still rejects Secret-backed environment projection. The
+Admission does not prove workload delivery. Sandbox receives private setup
+identity and the exact Secret reference through `HarnessWorkloadRequirements.workspaceSetup`;
+OpenShell executes initialization through `ExecSandbox` before Harness startup.
+See [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
+Stock OpenShell rejects Secret-backed environment projection; the
 [OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-describes the remaining upstream delivery limits and verification-only path.
+covers remaining limits and verification-only support.
 
 ### 5. Failures preserve useful outputs
 
@@ -135,6 +133,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 13:59: Keep OpenShell initialization and current provisioning limits within the flow budget. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - a9298d2ed)
 
 - 2026-10-09 12:00: A Configuration create still absent 90 seconds after it began is resent. (fix-911)
 - 2026-10-08 14:00: Missing or `runtime` Harness authentication is a named `400`, not a generic `404`. (fix-821-824)
