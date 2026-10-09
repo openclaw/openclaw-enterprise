@@ -35,7 +35,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.    |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
-| `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for a private gateway CA.                                                                      | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
+| `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
 
 For Helm, prefer `slackProxy.enabled` over an external
 `api.channelDirectoryProxyUrl`; the
@@ -90,7 +90,7 @@ key or CA bundle for native file access.
 
 With Helm routing enabled and no `gatewayRouting.issuerRef.name`, cert-manager
 bootstraps a private CA and issues Envoy's certificate. The chart projects only
-the generated root Secret's public `tls.crt` into the API and sets
+the generated root Secret's public `tls.crt` into API and worker Pods and sets
 `NODE_EXTRA_CA_CERTS`; the CA signing key is never mounted into OCC. An explicit
 issuer selects operator-managed issuance instead. Its optional `caSecretName`
 and `caSecretKey` must be supplied together when additional CA trust is needed.
@@ -188,24 +188,9 @@ domain that is not a DNS name.
 
 ### OIDC sign-in
 
-These optional variables also apply to the API only, with the same guarded profile and
-recovery user; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
-
-| Variable                                                     | Helm value                                          | Behavior                                                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `OCC_AUTH_OIDC_ISSUER`                                       | `auth.oidc.issuer`                                  | The exact `iss`; with the client ID it determines the provider instance.                    |
-| `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `_TOKEN_URL`, `_JWKS_URL` | `auth.oidc.authorizationUrl`, `tokenUrl`, `jwksUrl` | `https:` on 443 on the issuer's DNS host, no userinfo, query or fragment. Never discovered. |
-| `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                             | Read from the dedicated `auth.oidc.secretName` Secret. All required values or none.         |
-| `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
-| `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
-
-With `auth.oidc.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except link-local `169.254.0.0/16`. The port is the destination Pod's
-port; an IdP inside the cluster on another target port needs
-[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
-a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
-with OIDC, or an HTTP base URL.
+[OIDC controller settings](oidc.md) defines the provider URLs, client credentials,
+API egress and optional private CA trust. These API-only settings require the
+same guarded sign-in profile and recovery user as GitHub and Google.
 
 ### Production Installation bootstrap environment
 

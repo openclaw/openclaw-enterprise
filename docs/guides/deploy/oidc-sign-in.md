@@ -24,8 +24,9 @@ together with GitHub and Google. One issuer is supported per Installation.
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
   443 from one DNS host name, and signs ID tokens with RS256 keys of at least 2,048 bits.
 - API Pod HTTPS egress to that host. Browsers, not the API, visit the authorization URL.
-- A certificate the API trusts. The API uses Node's default CA store; for a private CA,
-  add `NODE_EXTRA_CA_CERTS` to the API Pod.
+- A certificate the API and users' browsers trust. Publicly trusted certificates need
+  no extra chart configuration. For a private IdP CA, use the
+  [CA Secret settings](#trust-a-private-idp-ca) below; browser trust is managed separately.
 
 ## Register the client
 
@@ -123,7 +124,7 @@ spec:
 ```
 
 The API reads these variables; see
-[production settings](../../reference/settings/production.md#oidc-sign-in):
+[production settings](../../reference/settings/oidc.md):
 
 | Variable                                                     | Source                                                    |
 | ------------------------------------------------------------ | --------------------------------------------------------- |
@@ -141,6 +142,79 @@ Enable it with the same stopped maintenance as
 anyone who can reach the Console can read the label and the IdP's authorization URL, as
 they could by starting a sign-in; neither is secret, but choose a label you are content to
 publish.
+
+## Trust a private IdP CA
+
+Create a Secret in the OCE namespace, distinct from the OIDC client credential
+Secret, containing only approved CA certificates in PEM format. Do not
+include private keys or leaf certificates:
+
+```bash
+kubectl -n openclaw-system create secret generic occ-oidc-ca-v1 \
+  --from-file=ca.pem=/secure/occ/idp-ca-bundle.pem
+```
+
+First select the database's existing approved CA roots through
+`database.caSecretName`. The application database URL must use
+`sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem` (adjust the path
+to `database.caMountPath` and `database.caKey`). A mounted CA without this URL
+selection is refused before the API starts. See the
+[database trust prerequisite](../../reference/settings/oidc.md) for accepted configuration.
+
+Add these values alongside the enabled OIDC configuration:
+
+```yaml
+auth:
+  oidc:
+    caSecretName: occ-oidc-ca-v1
+    caSecretKey: ca.pem
+```
+
+Before upgrading, follow the existing
+[stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in):
+close ingress, stop independent identity, bootstrap and policy/provisioning writers,
+pause automatic restarts, and drain admitted requests. Retain one serving controller.
+After the upgrade, verify recovery sign-in, IdP sign-in and Gateway access through
+restricted access before reopening ingress; keep ingress closed on failure.
+
+Set both values or neither. Clear both when disabling OIDC. The API's
+`assemble-api-ca` init container validates this bundle and any selected Gateway
+CA bundle, then combines them. Each input must contain only PEM CA certificates
+and be no larger than 1 MiB. A missing Secret or key prevents startup; empty,
+malformed, non-CA or private-key content fails initialization. Before enabling
+this setting, check that any existing Gateway bundle also meets these requirements.
+For missing Secrets, inspect Pod events. For initialization errors, run:
+
+```bash
+kubectl -n openclaw-system logs deployment/openclaw-enterprise-api -c assemble-api-ca
+```
+
+This extends public trust **process-wide in the API** for clients that use
+Node's default trust. The chart does not add IdP roots to workers, Jobs,
+or Agent Pods. It preserves the Gateway CA selected by the chart, including an
+external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replace
+`NODE_EXTRA_CA_CERTS` separately. URL, port, hostname, certificate and token checks
+still apply. See the [trust contract](../../reference/settings/oidc.md).
+
+For rotation, use the same
+[stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in)
+before changing trust or replacing the Pod. Create a new versioned Secret and
+change `caSecretName`; the changed Pod template replaces the API Pod. If you
+update the contents of the IdP Secret or a combined Gateway CA Secret, explicitly
+replace the API Pod:
+
+```bash
+kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
+kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api
+```
+
+Through restricted access, verify recovery sign-in, IdP sign-in and Gateway access
+before reopening ingress, retaining one serving controller. Replacing the single
+API replica interrupts service until it is ready. A Secret update alone does not
+refresh the assembled bundle or Node's startup trust; restarting only the API
+container keeps the init container's previous snapshot. Include old and new CA certificates together during an overlap,
+then remove the old CA and replace the Pod again. Ordinary leaf renewal under the
+same CA needs no restart.
 
 ## Find a person's subject
 
@@ -209,4 +283,4 @@ afterwards. To add someone who should sign in only through the IdP, follow
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
 - [Google sign-in](google-sign-in.md)
 - [Sign-in maintenance](auth-maintenance.md)
-- [Production settings](../../reference/settings/production.md#oidc-sign-in)
+- [Production settings](../../reference/settings/oidc.md)

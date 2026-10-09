@@ -106,6 +106,7 @@ defaults, precedence, and security requirements.
 
 - [Development controller settings](settings/development.md) owns development inputs, optional controller environment, and fixed development security settings.
 - [Production controller settings](settings/production.md) owns production API inputs, Installation bootstrap output, and Helm log collection.
+- [OIDC controller settings](settings/oidc.md) owns generic provider configuration, API egress and private CA trust.
 - [Worker, Compose, and PostgreSQL settings](settings/operations.md) owns worker environment, local services, storage, and migration tooling.
 - [Programmatic settings](settings/programmatic.md) owns TypeScript constructor options for controller composition, Drivers, and the durable queue.
 

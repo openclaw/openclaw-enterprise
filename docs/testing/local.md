@@ -136,6 +136,21 @@ commit. Run the [GitHub PostgreSQL and browser proof](postgresql.md#github-human
 for that path. Keep provider discovery failure and callback-error recovery
 separate from successful provider authentication when reporting Console results.
 
+`node --test tests/integration/oidc-ca-trust.test.mjs` needs prepared Helm, yq and
+OpenSSL (`OCC_HELM_BIN` can select Helm). It executes the rendered CA assembly
+command with materialized Secret items and mount paths, then exercises the actual
+OIDC callback's token/JWKS transport against loopback HTTPS servers in fresh Node
+processes. It checks Gateway HTTPS trust, retained Node public roots, rejected
+unrelated CAs and hostnames, invalid bundles and CA replacement. The rendered API
+preload also gates the real production PostgreSQL pool: loopback TLS accepts the
+selected database CA and rejects an IdP-only CA for password and workload-identity
+configuration, without requesting a token. Invalid configuration stops before the
+entrypoint and emits no credential-bearing URL. This proves TLS, not PostgreSQL
+authentication, SQL or Azure token acquisition. The State fixture
+stops at identity lookup: this proves no PostgreSQL session commit, live IdP,
+browser trust, Kubernetes mount enforcement or installed deployment. Run those
+proofs separately in the authorized production qualification environment.
+
 ## Packaged-driver integration
 
 `tests/integration/driver-plugin-installation.test.mjs` installs scoped,

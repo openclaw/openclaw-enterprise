@@ -595,7 +595,8 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
-              "guides/deploy/production-tui"
+              "guides/deploy/production-tui",
+              "reference/settings/oidc"
             ]
           },
           {
