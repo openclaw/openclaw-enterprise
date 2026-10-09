@@ -1,0 +1,101 @@
+name: k3d API probe (demo, do not merge)
+
+# Demo only: runs the k3d Fixture and Configuration lane many times on the
+# blacksmith 32vcpu runner and records when the k3d API stops answering, at
+# three hops (host port, serverlb, server-0), with K3s and serverlb logs.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.16.0
+
+jobs:
+  probe:
+    name: probe ${{ matrix.copy }}
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Start API watcher
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/probe"
+          mkdir -p "$out"
+          cat > "$out/watch.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -u
+          out=$1
+          docker events --format '{{.TimeNano}} {{.Type}} {{.Action}} {{.Actor.Attributes.name}}' > "$out/events.log" 2>&1 &
+          server=""
+          for _ in $(seq 1 900); do
+            server=$(docker ps --format '{{.Names}}' | grep -E '^k3d-.*-server-0$' | head -n 1)
+            [ -n "$server" ] && break
+            sleep 1
+          done
+          [ -z "$server" ] && { echo "no server container" > "$out/watch.err"; exit 0; }
+          cluster=${server%-server-0}
+          docker logs -f --timestamps "$server" > "$out/server.log" 2>&1 &
+          for _ in $(seq 1 120); do
+            docker inspect "$cluster-serverlb" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker logs -f --timestamps "$cluster-serverlb" > "$out/serverlb.log" 2>&1 &
+          port=""
+          for _ in $(seq 1 300); do
+            port=$(docker port "$cluster-serverlb" 6443/tcp 2>/dev/null | head -n 1 | sed 's/.*://')
+            [ -n "$port" ] && break
+            sleep 1
+          done
+          ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null; }
+          sip=$(ip_of "$server"); lbip=$(ip_of "$cluster-serverlb")
+          echo "server=$server port=$port server_ip=$sip lb_ip=$lbip" > "$out/targets.txt"
+          probe() { curl -sk -o /dev/null -w '%{http_code}' --max-time 2 "https://$1/readyz" 2>/dev/null; echo "/$?"; }
+          prev=""
+          while true; do
+            h=$(probe "127.0.0.1:$port"); l=$(probe "$lbip:6443"); s=$(probe "$sip:6443")
+            state="host=$h lb=$l server=$s"
+            if [ "$state" != "$prev" ]; then
+              echo "$(date -u +%H:%M:%S.%3N) $state" >> "$out/transitions.log"
+              prev=$state
+            fi
+            sleep 0.2
+          done
+          EOF
+          chmod +x "$out/watch.sh"
+          nohup "$out/watch.sh" "$out" > "$out/watch.out" 2>&1 &
+          echo $! > "$out/watch.pid"
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: k3d-fixture-configuration
+          profile: k3d
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: probe-${{ matrix.copy }}
+          static-checks: "false"
+      - name: Report API watcher
+        if: always()
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/probe"
+          cat "$out/targets.txt" "$out/watch.err" 2>/dev/null || true
+          echo "=== transitions"
+          cat "$out/transitions.log" 2>/dev/null || true
+          echo "=== docker events (no exec)"
+          grep -v -E ' exec_(create|start|die)' "$out/events.log" 2>/dev/null | grep -E ' (die|kill|stop|restart|oom|start|destroy|disconnect|connect) ' | tail -n 80 || true
+          echo "=== server log errors and warnings"
+          grep -E ' E[0-9]{4} | W[0-9]{4} |level=(error|fatal|warning)|panic|Shutting|signal|leader|apiserver exited|Starting k3s' "$out/server.log" 2>/dev/null | grep -v -i -E 'token|password|secret' | tail -n 200 || true
+          echo "=== serverlb log"
+          grep -i -E 'error|warn|upstream|reload|signal|exit' "$out/serverlb.log" 2>/dev/null | tail -n 60 || true
+          echo "=== kernel"
+          sudo dmesg -T 2>/dev/null | grep -i -E 'oom|conntrack|nf_|killed|segfault|link|veth|br-' | tail -n 60 || true
+          echo "=== server.log size $(wc -l < "$out/server.log" 2>/dev/null)"
+          kill "$(cat "$out/watch.pid")" 2>/dev/null || true
