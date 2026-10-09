@@ -121,14 +121,15 @@ The CLI creates one k3d cluster, then:
    PostgreSQL images;
 3. installs PostgreSQL, one central OpenShell Gateway and OCE in `oce-system`;
 4. exposes a labeled proxy through a loopback-only k3d port map;
-5. waits for the bootstrap Namespace and OpenShell Workspace; and
+5. waits for the bootstrap Namespace and OpenShell Workspace to become ready; and
 6. writes kubeconfig and the administrator service key to private state.
 
 Agent Sandbox runs in `agent-sandbox-system`; OCC creates tenant Workspaces,
 Sandbox resources and Agent Pods in separate OCC-owned `oce-*` Namespaces.
 
-If Agent Sandbox rollout fails, startup captures bounded operational metadata
-before rollback: controller-owned status, image identities and Warning reasons.
+If Agent Sandbox rollout fails, startup attempts to write bounded operational
+metadata to error output before rollback: controller-owned status, image
+identities and Warning reasons.
 Messages, environment values and controller logs are excluded. Capture failures
 are marked; the original rollout error and cleanup remain unchanged. This does
 not diagnose or repair the underlying failure.

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-06
-last_updated_session: authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e
+updated: 2026-10-09
+last_updated_session: authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -120,6 +120,20 @@ profiles verify the pinned source archive, package its charts, and import
 digest-pinned Gateway, Sandbox, and supervisor images. Kubernetes-only startup
 also builds or selects the OCE controller and Agent runtime, then imports them
 with PostgreSQL and resolves every in-cluster digest.
+
+If Agent Sandbox rollout fails, `prepareOpenShell` calls
+`internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
+once before returning the original error; normal rollback then follows. Capture
+selects the fixed controller Deployment, owner-UID-linked ReplicaSets and Pods,
+and their Warning reasons. Messages, environment values, full labels and logs
+are excluded. Unavailable, malformed and oversized results are marked.
+
+The subprocess phase has a fresh 15-second context, three-second request/command
+timeouts, 256 KiB per-command output and a 32 KiB final record limit. Direct
+commands are awaited; 200 ms pipe-drain bounds do not terminate arbitrary
+descendants. Writing the record to error output is best effort: writer failure
+is ignored, and writer latency and durability are outside that subprocess
+budget. Capture does not retry rollout or identify the underlying Pod cause.
 
 After Helm installs OpenShell, the development launcher reads the exact Gateway
 Service ClusterIP. It writes `network.providerHarness` with that address, the
@@ -365,6 +379,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 
