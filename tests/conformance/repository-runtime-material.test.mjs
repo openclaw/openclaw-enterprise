@@ -1415,16 +1415,24 @@ test("Kubernetes projects the repository client into native exec paths without c
   assert.deepEqual(f.revision.configuration, original);
 });
 
-test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async () => {
-  const f = await fixture();
-  const original = structuredClone(f.revision.configuration);
-  deepFreeze(f.revision.configuration);
-  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
-    ...original,
-    tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
-  });
-  assert.deepEqual(f.revision.configuration, original);
+test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async (t) => {
+  // OpenClaw drops an empty agents.list beside an implicit empty roster, so it passes through.
+  for (const list of [undefined, []]) {
+    await t.test(list === undefined ? "no list" : "empty list", async () => {
+      const f = await fixture();
+      if (list !== undefined) {
+        f.revision.configuration.agents.list = list;
+      }
+      const original = structuredClone(f.revision.configuration);
+      deepFreeze(f.revision.configuration);
+      await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...original,
+        tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
+      });
+      assert.deepEqual(f.revision.configuration, original);
+    });
+  }
 });
 
 test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
@@ -1446,6 +1454,8 @@ test("Kubernetes preserves native configuration bytes without repository binding
 });
 
 test("Kubernetes rejects malformed repository exec configuration before any API access", async (t) => {
+  const rosterRefusal =
+    'The OpenClaw Gateway rejects agents.list, agents.entries default markers, an agents.ownership other than "explicit", a multi-Agent roster without it, and an explicit one without entries.';
   const malformed = [
     ["tools null", { tools: null }, "Repository credentials require tools to be an object."],
     ["tools array", { tools: [] }, "Repository credentials require tools to be an object."],
@@ -1481,15 +1491,14 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
     ],
     ["agents null", { agents: null }, "Repository credentials require agents to be an object."],
     ["agents array", { agents: [] }, "Repository credentials require agents to be an object."],
+    // The projection leaves agents.list to the roster refusal: the Gateway rejects every list.
+    ["agent list object", { agents: { list: {} } }, rosterRefusal],
+    ["agent list null", { agents: { list: null } }, rosterRefusal],
+    ["agent list entry null", { agents: { list: [null] } }, rosterRefusal],
     [
-      "agent list object",
-      { agents: { list: {} } },
-      "Repository credentials require agents.list to be an array.",
-    ],
-    [
-      "agent list null",
-      { agents: { list: null } },
-      "Repository credentials require agents.list to be an array.",
+      "agent list prefix nonstring",
+      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
+      rosterRefusal,
     ],
     [
       "agent entries null",
@@ -1517,44 +1526,34 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
       "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
     [
-      "agent null",
-      { agents: { list: [null] } },
-      "Repository credentials require agents.list entry to be an object.",
-    ],
-    [
-      "agent array",
-      { agents: { list: [[]] } },
-      "Repository credentials require agents.list entry to be an object.",
+      "agent entry array",
+      { agents: { entries: { main: [] } } },
+      "Repository credentials require agents.entries entry to be an object.",
     ],
     [
       "agent tools null",
-      { agents: { list: [{ id: "main", tools: null }] } },
-      "Repository credentials require agents.list entry.tools to be an object.",
+      { agents: { entries: { main: { tools: null } } } },
+      "Repository credentials require agents.entries entry.tools to be an object.",
     ],
     [
       "agent tools array",
-      { agents: { list: [{ id: "main", tools: [] }] } },
-      "Repository credentials require agents.list entry.tools to be an object.",
+      { agents: { entries: { main: { tools: [] } } } },
+      "Repository credentials require agents.entries entry.tools to be an object.",
     ],
     [
       "agent exec null",
-      { agents: { list: [{ id: "main", tools: { exec: null } }] } },
-      "Repository credentials require agents.list entry.tools.exec to be an object.",
+      { agents: { entries: { main: { tools: { exec: null } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
     ],
     [
       "agent exec array",
-      { agents: { list: [{ id: "main", tools: { exec: [] } }] } },
-      "Repository credentials require agents.list entry.tools.exec to be an object.",
+      { agents: { entries: { main: { tools: { exec: [] } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
     ],
     [
       "agent prefix scalar",
-      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: "/agent/bin" } } }] } },
-      "Repository credentials require agents.list entry.tools.exec.pathPrepend to be an array of strings.",
-    ],
-    [
-      "agent prefix nonstring",
-      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
-      "Repository credentials require agents.list entry.tools.exec.pathPrepend to be an array of strings.",
+      { agents: { entries: { main: { tools: { exec: { pathPrepend: "/agent/bin" } } } } } },
+      "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
   ];
   for (const [name, configuration, message] of malformed) {

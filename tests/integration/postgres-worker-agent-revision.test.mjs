@@ -27,6 +27,7 @@ import {
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   assertFailedDeployment,
   runPreparationFailureCase,
@@ -3002,20 +3003,7 @@ test(
       { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
     );
     await fixture.work(active, "succeeded");
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: owner.harnessAuth.sourceId,
-    };
-    const withdrawalWork = async () =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key, state FROM occ.controller_work
-           WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-           ORDER BY created_at`,
-          [active.id],
-        )
-      ).rows;
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
     const requested = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
       request,
@@ -3023,18 +3011,12 @@ test(
     assert.equal(requested.withdrawalInProgress, true);
     const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
     assert.equal((await read()).withdrawalInProgress, true);
-    const [first] = await withdrawalWork();
-    await fixture.work(
-      { id: active.id, idempotencyKey: first.idempotency_key },
-      "failed_permanent",
-    );
+    const [first] = await withdrawalAttempts(fixture, active);
+    await fixture.work(first, "failed_permanent");
 
     // Exhausting attempts leaves the withdrawal pending, and the row says why. Nothing retries
     // it (this revision has no maintenance), so the read must not suggest an attempt is coming.
-    const exhausted = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
+    const exhausted = await read();
     assert.equal(exhausted.state, "pending");
     assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
     assert.ok(exhausted.lastAttemptAt);
@@ -3051,14 +3033,11 @@ test(
     // With no attempt outstanding, a replay queues another one, which can then succeed.
     revoke = true;
     await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
-    const work = await withdrawalWork();
+    const work = await withdrawalAttempts(fixture, active);
     assert.equal(work.length, 2);
     assert.equal((await read()).withdrawalInProgress, true);
-    await fixture.work({ id: active.id, idempotencyKey: work[1].idempotency_key }, "succeeded");
-    const revoked = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
+    await fixture.work(work[1], "succeeded");
+    const revoked = await read();
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
     assert.equal(revoked.withdrawalInProgress, false);
@@ -3074,22 +3053,16 @@ test(
       agent: { auth: "credential_source" },
     });
     let calls = 0;
-    let reachLastAttempt;
-    const lastAttempt = new Promise((resolve) => {
-      reachLastAttempt = resolve;
-    });
-    let releaseLastAttempt;
-    const lastAttemptReleased = new Promise((resolve) => {
-      releaseLastAttempt = resolve;
-    });
+    const lastAttempt = Promise.withResolvers();
+    const lastAttemptReleased = Promise.withResolvers();
     await fixture.start(
       {
         ...fixture.compute,
         async withdrawCredentialSource(_revision, source) {
           // The last attempt stays pending, so the worker fails the work permanently.
           if (++calls === 2) {
-            reachLastAttempt();
-            await lastAttemptReleased;
+            lastAttempt.resolve();
+            await lastAttemptReleased.promise;
           }
           return { sourceId: source.id, state: "pending" };
         },
@@ -3098,86 +3071,52 @@ test(
     );
     await fixture.work(active, "succeeded");
     const sourceId = owner.harnessAuth.sourceId;
-    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: sourceId,
-    });
-    const work = await fixture.observerPool.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, sourceId),
     );
-    assert.equal(work.rowCount, 1);
-    const withdrawal = { id: active.id, idempotencyKey: work.rows[0].idempotency_key };
+    const work = await withdrawalAttempts(fixture, active);
+    assert.equal(work.length, 1);
+    const [withdrawal] = work;
 
     // A withdrawal request locks the Namespace, then the Agent, then the withdrawal row. Hold
     // the Namespace until the worker's final pass waits on it; that pass must not hold the
     // withdrawal row or the Agent yet, or the two transactions deadlock.
-    let admission;
-    let released = false;
-    let failed = false;
     try {
-      await lastAttempt;
-      admission = await fixture.observerPool.connect();
-      await admission.query("BEGIN");
-      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
-      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
-        fixture.namespace.id,
-      ]);
-      releaseLastAttempt();
-      // The worker has one connection, and its next transaction is the final pass's.
-      await waitFor("the worker's real wait on the Namespace lock", async () => {
-        const waiting = await fixture.observerPool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [admissionBackend.rows[0].pid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
-      await assert.doesNotReject(
-        admission.query(
+      await lastAttempt.promise;
+      await withNamespaceLockHeld(fixture.observerPool, fixture.namespace.id, async (lock) => {
+        lastAttemptReleased.resolve();
+        // The worker has one connection, and its next transaction is the final pass's.
+        await lock.waitForBlocked("the worker's real wait on the Namespace lock");
+        await lock.assertNotHeld(
           `SELECT state FROM occ.credential_withdrawals
            WHERE namespace_id = $1 AND revision_id = $2 AND credential_source_id = $3
            FOR UPDATE NOWAIT`,
           [fixture.namespace.id, active.id, sourceId],
-        ),
-        "a worker waiting for the Namespace must not already hold the withdrawal row",
-      );
-      await assert.doesNotReject(
-        admission.query(
+          "a worker waiting for the Namespace must not already hold the withdrawal row",
+        );
+        await lock.assertNotHeld(
           "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
           [fixture.namespace.id, owner.id],
-        ),
-        "a worker waiting for the Namespace must not already hold the Agent",
-      );
-      await admission.query("ROLLBACK");
-      released = true;
+          "a worker waiting for the Namespace must not already hold the Agent",
+        );
+      });
       await fixture.work(withdrawal, "failed_permanent");
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
-      releaseLastAttempt();
-      if (admission !== undefined) {
-        if (!released) {
-          await admission.query("ROLLBACK").catch(() => {});
-        }
-        // Discard the connection after a failure instead of returning it to the pool.
-        admission.release(failed);
-      }
+      lastAttemptReleased.resolve();
     }
-    const recorded = await fixture.state.read((view) =>
-      view.credentialSources.findCredentialWithdrawal(fixture.namespace.id, active.id, sourceId),
-    );
+    const recorded = await findWithdrawal(fixture, active, sourceId);
     assert.equal(recorded.state, "pending");
     assert.equal(recorded.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
   },
 );
 
-revisionTest(
+test(
   "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
-  async (fixture) => {
+  requiresPostgres,
+  async (context) => {
+    // Two attempts, so the withdrawal runs out after one retry backoff of at most 1 s.
+    const fixture = await setup(context, { maxAttempts: 2 });
     const { owner, candidate: active } = await fixture.admitInitialRevision(
       "withdraw-maintenance",
       { agent: { auth: "credential_source" } },
@@ -3202,25 +3141,7 @@ revisionTest(
     const deployments = prepared.length;
     const sourceId = owner.harnessAuth.sourceId;
 
-    // A pending withdrawal with no attempt outstanding, as exhausted attempts leave it.
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: sourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
-    const runMaintenance = async () => {
-      const due = await fixture.advanceMaintenance(active);
-      assert.equal(due.rowCount, 1);
-      const pass = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
-      await fixture.work(pass, "succeeded");
-      return pass;
-    };
+    await recordPendingWithdrawal(fixture, owner, active, sourceId);
     const queuedWork = async (pattern) =>
       (
         await fixture.observerPool.query(
@@ -3231,34 +3152,23 @@ revisionTest(
       ).rows;
 
     // Maintenance never re-attaches the source; it queues a withdrawal attempt and keeps going.
-    const first = await runMaintenance();
-    const withdrawal = await fixture.observerPool.query(
-      `SELECT idempotency_key, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
-    );
-    assert.equal(withdrawal.rowCount, 1);
-    assert.equal(withdrawal.rows[0].actor_id, fixture.actor.id);
-    // Five pending attempts back off 1+2+4+8 s times jitter, which can exceed the default wait.
-    await fixture.work(
-      { id: active.id, idempotencyKey: withdrawal.rows[0].idempotency_key },
-      "failed_permanent",
-      30_000,
-    );
+    const first = await runMaintenancePass(fixture, active);
+    const withdrawal = await withdrawalAttempts(fixture, active);
+    assert.equal(withdrawal.length, 1);
+    assert.equal(withdrawal[0].actorId, fixture.actor.id);
+    await fixture.work(withdrawal[0], "failed_permanent");
     const [next] = await queuedWork(`agent_revision:${active.id}:maintenance:%`);
     assert.notEqual(next.idempotency_key, first.idempotencyKey);
     assert.equal(prepared.length, deployments);
 
     // The next pass queues another attempt, which is revoked; after that maintenance stops.
     revoke = true;
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     await waitFor("the withdrawal to be revoked", async () => {
-      const found = await fixture.state.read((view) =>
-        view.credentialSources.findCredentialWithdrawal(fixture.namespace.id, active.id, sourceId),
-      );
+      const found = await findWithdrawal(fixture, active, sourceId);
       return found.state === "revoked" ? found : undefined;
     });
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     assert.deepEqual(await queuedWork(`agent_revision:${active.id}:%`), []);
     assert.equal(prepared.length, deployments);
   },
@@ -3272,11 +3182,7 @@ revisionTest(
       { agent: { auth: "credential_source" } },
     );
     const sourceId = owner.harnessAuth.sourceId;
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: sourceId,
-    };
+    const request = withdrawalRequest(fixture, owner, sourceId);
     const prepared = [];
     const withdrawn = [];
     const events = [];
@@ -3324,13 +3230,7 @@ revisionTest(
     await waitFor(
       "the withdrawal to be revoked",
       async () => {
-        const found = await fixture.state.read((view) =>
-          view.credentialSources.findCredentialWithdrawal(
-            fixture.namespace.id,
-            active.id,
-            sourceId,
-          ),
-        );
+        const found = await findWithdrawal(fixture, active, sourceId);
         return found?.state === "revoked" ? found : undefined;
       },
       30_000,
@@ -3385,11 +3285,10 @@ revisionTest(
             // Withdraw both non-model sources while this deployment must still be retried. The
             // second request queues no work while the first attempt is outstanding.
             for (const credentialSourceId of [first, second]) {
-              await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-                namespaceId: fixture.namespace.id,
-                agentId: owner.id,
-                credentialSourceId,
-              });
+              await fixture.controller.withdrawAgentCredentialSource(
+                fixture.actor.id,
+                withdrawalRequest(fixture, owner, credentialSourceId),
+              );
             }
             throw new Error("activation interrupted");
           }
@@ -3473,28 +3372,13 @@ revisionTest(
 
     // The next deployment was admitted with the source; the withdrawal arrives before it runs.
     const second = await fixture.revision(owner, 2);
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: tool,
-    };
+    const request = withdrawalRequest(fixture, owner, tool);
     const requested = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
       request,
     );
     assert.equal(requested.revisionId, first.id);
-    const recorded = () =>
-      fixture.state.read((view) =>
-        Promise.all(
-          [first, second].map((revision) =>
-            view.credentialSources.findCredentialWithdrawal(
-              fixture.namespace.id,
-              revision.id,
-              tool,
-            ),
-          ),
-        ),
-      );
+    const recorded = () => findWithdrawals(fixture, [first, second], tool);
     assert.deepEqual(
       (await recorded()).map((withdrawal) => withdrawal?.state),
       ["pending", "pending"],
@@ -3577,28 +3461,12 @@ revisionTest(
     await fixture.state.transact((unit) =>
       unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, second.id, third.id),
     );
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: tool,
-    };
     const requested = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
-      request,
+      withdrawalRequest(fixture, owner, tool),
     );
     assert.equal(requested.revisionId, third.id);
-    const recorded = () =>
-      fixture.state.read((view) =>
-        Promise.all(
-          [first, second, third].map((revision) =>
-            view.credentialSources.findCredentialWithdrawal(
-              fixture.namespace.id,
-              revision.id,
-              tool,
-            ),
-          ),
-        ),
-      );
+    const recorded = () => findWithdrawals(fixture, [first, second, third], tool);
     // The second deployment's activation retired the first, so only the second gets a row.
     assert.deepEqual(
       (await recorded()).map((withdrawal) => withdrawal?.state),
@@ -3639,15 +3507,90 @@ async function admitHeldRevision(fixture, owner, number) {
   return revision;
 }
 
-function withdrawalWorkFor(fixture, revision) {
-  return fixture.observerPool
-    .query(
-      `SELECT idempotency_key, state FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-       ORDER BY created_at`,
-      [revision.id],
-    )
-    .then(({ rows }) => rows);
+// The withdrawal request API's target: one of the Agent's credential sources.
+function withdrawalRequest(fixture, owner, credentialSourceId) {
+  return { namespaceId: fixture.namespace.id, agentId: owner.id, credentialSourceId };
+}
+
+// The revision's withdrawal work rows, oldest first, each ready for fixture.work. Each row is
+// one queued withdrawal; the worker may run it up to maxAttempts times (its attempt_count).
+async function withdrawalAttempts(fixture, revision) {
+  const { rows } = await fixture.observerPool.query(
+    `SELECT idempotency_key, actor_id, state FROM occ.controller_work
+     WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
+     ORDER BY created_at`,
+    [revision.id],
+  );
+  return rows.map(({ idempotency_key: idempotencyKey, actor_id: actorId, state }) => ({
+    id: revision.id,
+    idempotencyKey,
+    actorId,
+    state,
+  }));
+}
+
+// Each revision's withdrawal of the source (or undefined), read in one State view.
+function findWithdrawals(fixture, revisions, credentialSourceId) {
+  return fixture.state.read((view) =>
+    Promise.all(
+      revisions.map((revision) =>
+        view.credentialSources.findCredentialWithdrawal(
+          fixture.namespace.id,
+          revision.id,
+          credentialSourceId,
+        ),
+      ),
+    ),
+  );
+}
+
+// The revision's withdrawal of the source, or undefined.
+async function findWithdrawal(fixture, revision, credentialSourceId) {
+  const [withdrawal] = await findWithdrawals(fixture, [revision], credentialSourceId);
+  return withdrawal;
+}
+
+// A pending withdrawal with no attempt outstanding, as exhausted attempts leave it.
+function recordPendingWithdrawal(fixture, owner, revision, credentialSourceId) {
+  return fixture.state.transact((unit) =>
+    unit.credentialSources.requestCredentialWithdrawal({
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      revisionId: revision.id,
+      credentialSourceId,
+      state: "pending",
+      requestedBy: fixture.actor.id,
+      requestedAt: new Date().toISOString(),
+    }),
+  );
+}
+
+// Makes the revision's one queued maintenance pass due and waits for it to succeed.
+async function runMaintenancePass(fixture, revision, message) {
+  const due = await fixture.advanceMaintenance(revision);
+  assert.equal(due.rowCount, 1, message);
+  const pass = { id: revision.id, idempotencyKey: due.rows[0].idempotency_key };
+  await fixture.work(pass, "succeeded");
+  return pass;
+}
+
+// Offboards an operator: it keeps its identity but loses every access binding.
+function removeAccessBindings(fixture, subjectId) {
+  return fixture.observerPool.query(
+    `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
+    [subjectId],
+  );
+}
+
+// Removes the Agent principal's exact grant on one credential source.
+async function removeSourceGrant(fixture, owner, credentialSourceId) {
+  const removed = await fixture.observerPool.query(
+    `DELETE FROM occ.iam_access_bindings
+     WHERE identity_subject_id = $1 AND resource_kind = 'credential_source'
+       AND resource_id = $2`,
+    [owner.servicePrincipalId, credentialSourceId],
+  );
+  assert.equal(removed.rowCount, 1);
 }
 
 test(
@@ -3687,11 +3630,7 @@ test(
     await fixture.state.transact((unit) =>
       unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, second.id, third.id),
     );
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: tool,
-    };
+    const request = withdrawalRequest(fixture, owner, tool);
     const requested = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
       request,
@@ -3700,14 +3639,10 @@ test(
     assert.equal(requested.withdrawalInProgress, true);
     const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
     await fixture.start(compute, options);
-    const [secondAttempt] = await withdrawalWorkFor(fixture, second);
-    await fixture.work(
-      { id: second.id, idempotencyKey: secondAttempt.idempotency_key },
-      "failed_permanent",
-      30_000,
-    );
-    const [thirdAttempt] = await withdrawalWorkFor(fixture, third);
-    await fixture.work({ id: third.id, idempotencyKey: thirdAttempt.idempotency_key }, "succeeded");
+    const [secondAttempt] = await withdrawalAttempts(fixture, second);
+    await fixture.work(secondAttempt, "failed_permanent", 30_000);
+    const [thirdAttempt] = await withdrawalAttempts(fixture, third);
+    await fixture.work(thirdAttempt, "succeeded");
 
     // The active revision's withdrawal is revoked, but the second revision still runs with the
     // source and nothing will retry it, so the read says so instead of `revoked`.
@@ -3726,9 +3661,9 @@ test(
     assert.equal(replayed.revisionId, second.id);
     assert.equal(replayed.state, "pending");
     assert.equal(replayed.withdrawalInProgress, true);
-    assert.equal((await withdrawalWorkFor(fixture, third)).length, 1);
-    const retried = (await withdrawalWorkFor(fixture, second)).at(-1);
-    await fixture.work({ id: second.id, idempotencyKey: retried.idempotency_key }, "succeeded");
+    assert.equal((await withdrawalAttempts(fixture, third)).length, 1);
+    const retried = (await withdrawalAttempts(fixture, second)).at(-1);
+    await fixture.work(retried, "succeeded");
     await fixture.stop();
     const revoked = await read();
     assert.equal(revoked.revisionId, third.id);
@@ -3767,64 +3702,39 @@ for (const harness of [false, true]) {
       await fixture.work(first, "succeeded");
       await fixture.stop();
       second = await admitHeldRevision(fixture, owner, 2);
-      const request = {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: sourceId,
-      };
+      const request = withdrawalRequest(fixture, owner, sourceId);
+      const read = () =>
+        fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
       await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
       await fixture.start(compute, options);
-      const [attempt] = await withdrawalWorkFor(fixture, second);
-      await fixture.work(
-        { id: second.id, idempotencyKey: attempt.idempotency_key },
-        "failed_permanent",
-        30_000,
-      );
+      const [attempt] = await withdrawalAttempts(fixture, second);
+      await fixture.work(attempt, "failed_permanent", 30_000);
       await waitFor("the active revision's withdrawal to be revoked", async () => {
-        const [work] = await withdrawalWorkFor(fixture, first);
+        const [work] = await withdrawalAttempts(fixture, first);
         return work?.state === "succeeded" ? work : undefined;
       });
-      const exhausted = await fixture.controller.readAgentCredentialWithdrawal(
-        fixture.actor.id,
-        request,
-      );
+      const exhausted = await read();
       assert.equal(exhausted.revisionId, second.id);
       assert.equal(exhausted.state, "pending");
       assert.equal(exhausted.withdrawalInProgress, false);
 
-      const runMaintenance = async () => {
-        const due = await fixture.advanceMaintenance(first);
-        assert.equal(due.rowCount, 1, "the active revision's maintenance chain must continue");
-        await fixture.work(
-          { id: first.id, idempotencyKey: due.rows[0].idempotency_key },
-          "succeeded",
-        );
-      };
+      const runMaintenance = () =>
+        runMaintenancePass(fixture, first, "the active revision's maintenance chain must continue");
       // The next maintenance pass of the active revision queues the successor's attempt again.
       revoke = true;
       await runMaintenance();
-      const work = await withdrawalWorkFor(fixture, second);
+      const work = await withdrawalAttempts(fixture, second);
       assert.equal(work.length, 2, "maintenance must queue the successor's withdrawal again");
-      assert.equal((await withdrawalWorkFor(fixture, first)).length, 1);
-      await fixture.work({ id: second.id, idempotencyKey: work[1].idempotency_key }, "succeeded");
-      const revoked = await fixture.controller.readAgentCredentialWithdrawal(
-        fixture.actor.id,
-        request,
-      );
+      assert.equal((await withdrawalAttempts(fixture, first)).length, 1);
+      await fixture.work(work[1], "succeeded");
+      const revoked = await read();
       assert.equal(revoked.revisionId, first.id);
       assert.equal(revoked.state, "revoked");
 
       // Revoked everywhere: nothing is queued again. A Harness-withdrawn revision's maintenance
       // then ends; a tool withdrawal leaves it running.
-      if (!harness) {
-        await runMaintenance();
-      } else {
-        const due = await fixture.advanceMaintenance(first);
-        assert.equal(due.rowCount, 1);
-        await fixture.work(
-          { id: first.id, idempotencyKey: due.rows[0].idempotency_key },
-          "succeeded",
-        );
+      await runMaintenance();
+      if (harness) {
         assert.equal(
           (await fixture.advanceMaintenance(first)).rowCount,
           0,
@@ -3832,8 +3742,8 @@ for (const harness of [false, true]) {
         );
       }
       await fixture.stop();
-      assert.equal((await withdrawalWorkFor(fixture, second)).length, 2);
-      assert.equal((await withdrawalWorkFor(fixture, first)).length, 1);
+      assert.equal((await withdrawalAttempts(fixture, second)).length, 2);
+      assert.equal((await withdrawalAttempts(fixture, first)).length, 1);
     },
   );
 }
@@ -3896,23 +3806,13 @@ for (const successor of [false, true]) {
       // so each attempt of that request is denied.
       const requester = `withdraw-denied-requester-${randomUUID()}`;
       await fixture.copyActorGrants(requester);
-      const request = {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: sourceId,
-      };
+      const request = withdrawalRequest(fixture, owner, sourceId);
       await fixture.controller.withdrawAgentCredentialSource(requester, request);
-      await fixture.observerPool.query(
-        `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-        [requester],
-      );
+      await removeAccessBindings(fixture, requester);
       await fixture.start(compute, options);
       for (const revision of withdrawing) {
-        const [attempt] = await withdrawalWorkFor(fixture, revision);
-        await fixture.work(
-          { id: revision.id, idempotencyKey: attempt.idempotency_key },
-          "failed_permanent",
-        );
+        const [attempt] = await withdrawalAttempts(fixture, revision);
+        await fixture.work(attempt, "failed_permanent");
       }
       const denials = async () =>
         (
@@ -3924,17 +3824,11 @@ for (const successor of [false, true]) {
           )
         ).rows[0].count;
       assert.equal(await denials(), withdrawing.length);
-      const runMaintenance = async () => {
-        const due = await fixture.advanceMaintenance(first);
-        assert.equal(due.rowCount, 1, "the active revision's maintenance chain must continue");
-        await fixture.work(
-          { id: first.id, idempotencyKey: due.rows[0].idempotency_key },
-          "succeeded",
-        );
-      };
+      const runMaintenance = () =>
+        runMaintenancePass(fixture, first, "the active revision's maintenance chain must continue");
       const attemptCounts = () =>
         Promise.all(
-          withdrawing.map(async (revision) => (await withdrawalWorkFor(fixture, revision)).length),
+          withdrawing.map(async (revision) => (await withdrawalAttempts(fixture, revision)).length),
         );
       const read = () =>
         fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
@@ -3968,12 +3862,8 @@ for (const successor of [false, true]) {
       assert.equal(replayed.withdrawalInProgress, true);
       const exhaustAttempts = async () => {
         for (const revision of withdrawing) {
-          const latest = (await withdrawalWorkFor(fixture, revision)).at(-1);
-          await fixture.work(
-            { id: revision.id, idempotencyKey: latest.idempotency_key },
-            "failed_permanent",
-            30_000,
-          );
+          const latest = (await withdrawalAttempts(fixture, revision)).at(-1);
+          await fixture.work(latest, "failed_permanent", 30_000);
         }
       };
       await exhaustAttempts();
@@ -3999,11 +3889,8 @@ for (const successor of [false, true]) {
         withdrawing.map(() => 4),
       );
       for (const revision of withdrawing) {
-        const recovered = (await withdrawalWorkFor(fixture, revision)).at(-1);
-        await fixture.work(
-          { id: revision.id, idempotencyKey: recovered.idempotency_key },
-          "succeeded",
-        );
+        const recovered = (await withdrawalAttempts(fixture, revision)).at(-1);
+        await fixture.work(recovered, "succeeded");
       }
       await fixture.stop();
       const revoked = await read();
@@ -4040,11 +3927,7 @@ revisionTest(
     await fixture.stop();
 
     const second = await fixture.revision(owner, 2);
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: sourceId,
-    };
+    const request = withdrawalRequest(fixture, owner, sourceId);
     await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
     await fixture.start(compute, { transformDrivers: withCredentialGateway });
     // The successor never re-attaches the model source, so its deployment cannot succeed.
@@ -4052,17 +3935,7 @@ revisionTest(
     await waitFor(
       "both withdrawals to be revoked",
       async () => {
-        const found = await fixture.state.read((view) =>
-          Promise.all(
-            [first, second].map((revision) =>
-              view.credentialSources.findCredentialWithdrawal(
-                fixture.namespace.id,
-                revision.id,
-                sourceId,
-              ),
-            ),
-          ),
-        );
+        const found = await findWithdrawals(fixture, [first, second], sourceId);
         return found.every((withdrawal) => withdrawal?.state === "revoked") ? found : undefined;
       },
       30_000,
@@ -4107,11 +3980,8 @@ revisionTest(
     // A second operator requests the withdrawal and is offboarded before the worker runs it.
     const requester = `withdraw-requester-${randomUUID()}`;
     await fixture.copyActorGrants(requester);
-    const request = {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: owner.harnessAuth.sourceId,
-    };
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
     await fixture.controller.withdrawAgentCredentialSource(requester, request);
     // While that attempt is outstanding, a replay neither queues another nor takes it over.
     const pendingReplay = await fixture.controller.withdrawAgentCredentialSource(
@@ -4119,30 +3989,17 @@ revisionTest(
       request,
     );
     assert.equal(pendingReplay.requestedBy, requester);
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [requester],
-    );
-    const work = await fixture.observerPool.query(
-      `SELECT idempotency_key, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
-    );
-    assert.equal(work.rowCount, 1);
-    assert.equal(work.rows[0].actor_id, requester);
+    await removeAccessBindings(fixture, requester);
+    const work = await withdrawalAttempts(fixture, active);
+    assert.equal(work.length, 1);
+    assert.equal(work[0].actorId, requester);
 
     await startWorker();
-    const failed = await fixture.work(
-      { id: active.id, idempotencyKey: work.rows[0].idempotency_key },
-      "failed_permanent",
-    );
+    const failed = await fixture.work(work[0], "failed_permanent");
     // A denial is final on the first attempt and never reaches the gateway.
     assert.equal(failed.attempt_count, 1);
     assert.deepEqual(withdrawn, []);
-    const recorded = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
+    const recorded = await read();
     assert.equal(recorded.state, "pending");
     assert.equal(recorded.requestedBy, requester);
     assert.equal(recorded.lastReason, "AUTHORIZATION_DENIED");
@@ -4173,23 +4030,15 @@ revisionTest(
     assert.equal(replayed.requestedBy, fixture.actor.id);
     assert.equal(replayed.requestedAt, recorded.requestedAt);
     assert.equal(replayed.withdrawalInProgress, true);
-    const retry = await fixture.observerPool.query(
-      `SELECT idempotency_key, actor_id FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn' AND state = 'queued'`,
-      [active.id],
+    const retry = (await withdrawalAttempts(fixture, active)).filter(
+      ({ state }) => state === "queued",
     );
-    assert.equal(retry.rowCount, 1);
-    assert.equal(retry.rows[0].actor_id, fixture.actor.id);
+    assert.equal(retry.length, 1);
+    assert.equal(retry[0].actorId, fixture.actor.id);
     await startWorker();
-    await fixture.work(
-      { id: active.id, idempotencyKey: retry.rows[0].idempotency_key },
-      "succeeded",
-    );
+    await fixture.work(retry[0], "succeeded");
     assert.deepEqual(withdrawn, [[active.id, owner.harnessAuth.sourceId]]);
-    const revoked = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
+    const revoked = await read();
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.requestedBy, fixture.actor.id);
     const revocations = await fixture.observerPool.query(
@@ -4211,13 +4060,8 @@ revisionTest(
       assert.equal(final.requestedBy, fixture.actor.id);
       assert.equal(final.withdrawalInProgress, false);
     }
-    const attempts = await fixture.observerPool.query(
-      `SELECT count(*)::int AS count FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
-    );
     // Only the denied attempt and the replay that completed it.
-    assert.equal(attempts.rows[0].count, 2);
+    assert.equal((await withdrawalAttempts(fixture, active)).length, 2);
   },
 );
 
@@ -4236,11 +4080,6 @@ revisionTest(
       fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
     // A second operator with the actor's grants, offboarded after requesting a withdrawal.
     const offboarded = `withdraw-offboarded-${randomUUID()}`;
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_identities (id, kind, issuer, subject)
-       SELECT $1, kind, issuer, $1 FROM occ.iam_identities WHERE id = $2`,
-      [offboarded, fixture.actor.id],
-    );
     const owners = [];
     for (const label of ["claim-by-offboarded", "claim-by-authorized"]) {
       const owner = await fixture.agent(label, { auth: "credential_source", nonModelSources: 2 });
@@ -4251,14 +4090,8 @@ revisionTest(
       await fixture.work(active, "succeeded");
     }
     await fixture.stop();
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_access_bindings
-         (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-       SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
-              resource_kind, resource_id
-       FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
-      [offboarded, fixture.actor.id],
-    );
+    // Copy the grants only now, so they include the actor's grants on both new Agents.
+    await fixture.copyActorGrants(offboarded);
     // Each Agent gets one withdrawal per requester on one revision-scoped claim. The first
     // request owns the claim: the offboarded operator's for one Agent, the actor's for the other.
     const expectations = [];
@@ -4275,41 +4108,29 @@ revisionTest(
               [offboarded, second],
             ];
       for (const [requester, credentialSourceId] of order) {
-        await fixture.controller.withdrawAgentCredentialSource(requester, {
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          credentialSourceId,
-        });
+        await fixture.controller.withdrawAgentCredentialSource(
+          requester,
+          withdrawalRequest(fixture, owner, credentialSourceId),
+        );
       }
-      const work = await fixture.observerPool.query(
-        `SELECT idempotency_key, actor_id FROM occ.controller_work
-         WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-        [active.id],
-      );
-      assert.equal(work.rowCount, 1, "both requests share one revision-scoped claim");
-      assert.equal(work.rows[0].actor_id, order[0][0]);
+      const work = await withdrawalAttempts(fixture, active);
+      assert.equal(work.length, 1, "both requests share one revision-scoped claim");
+      assert.equal(work[0].actorId, order[0][0]);
       const allowed = order.find(([requester]) => requester === fixture.actor.id)[1];
       const deniedSource = order.find(([requester]) => requester === offboarded)[1];
-      expectations.push({ owner, active, work: work.rows[0], allowed, deniedSource });
+      expectations.push({ owner, active, work: work[0], allowed, deniedSource });
     }
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [offboarded],
-    );
+    await removeAccessBindings(fixture, offboarded);
 
     await startWorker();
-    for (const { owner, active, work, allowed, deniedSource } of expectations) {
+    for (const { owner, work, allowed, deniedSource } of expectations) {
       // The denied requester fails the claim, but only after the authorized one was revoked.
-      await fixture.work(
-        { id: active.id, idempotencyKey: work.idempotency_key },
-        "failed_permanent",
-      );
+      await fixture.work(work, "failed_permanent");
       const read = (credentialSourceId) =>
-        fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, {
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          credentialSourceId,
-        });
+        fixture.controller.readAgentCredentialWithdrawal(
+          fixture.actor.id,
+          withdrawalRequest(fixture, owner, credentialSourceId),
+        );
       assert.equal((await read(allowed)).state, "revoked");
       const denied = await read(deniedSource);
       assert.equal(denied.state, "pending");
@@ -4385,26 +4206,20 @@ revisionTest(
 
     const withdraw = async (owner, revision, credentialSourceIds) => {
       for (const credentialSourceId of credentialSourceIds) {
-        await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          credentialSourceId,
-        });
+        await fixture.controller.withdrawAgentCredentialSource(
+          fixture.actor.id,
+          withdrawalRequest(fixture, owner, credentialSourceId),
+        );
       }
-      const work = await fixture.observerPool.query(
-        `SELECT idempotency_key FROM occ.controller_work
-         WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-        [revision.id],
-      );
-      assert.equal(work.rowCount, 1);
-      return { id: revision.id, idempotencyKey: work.rows[0].idempotency_key };
+      const work = await withdrawalAttempts(fixture, revision);
+      assert.equal(work.length, 1);
+      return work[0];
     };
     const read = (owner, credentialSourceId) =>
-      fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId,
-      });
+      fixture.controller.readAgentCredentialWithdrawal(
+        fixture.actor.id,
+        withdrawalRequest(fixture, owner, credentialSourceId),
+      );
 
     // The first source is revoked (reported absent) before the second one fails. The retry
     // withdraws only the unconfirmed source and leaves the confirmed revocation alone.
@@ -4476,92 +4291,45 @@ revisionTest(
 
     // A pending tool-source withdrawal with no attempt outstanding, as an outage that
     // exhausted every attempt leaves it.
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: toolSourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
-    const runMaintenance = async () => {
-      const due = await fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp()
-         WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2
-         RETURNING idempotency_key`,
-        [active.id, `agent_revision:${active.id}:maintenance:%`],
-      );
-      assert.equal(due.rowCount, 1);
-      await fixture.work(
-        { id: active.id, idempotencyKey: due.rows[0].idempotency_key },
-        "succeeded",
-      );
-    };
-    const withdrawalWork = async () =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key, state FROM occ.controller_work
-           WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-           ORDER BY created_at`,
-          [active.id],
-        )
-      ).rows;
+    await recordPendingWithdrawal(fixture, owner, active, toolSourceId);
+    const runMaintenance = () => runMaintenancePass(fixture, active);
 
     // Maintenance queues a withdrawal attempt and still repairs the revision, without the tool.
     await runMaintenance();
-    const [queued] = await withdrawalWork();
+    const [queued] = await withdrawalAttempts(fixture, active);
     assert.ok(queued, "maintenance must queue the pending withdrawal again");
     assert.deepEqual(dispatched.at(-1), [remainingToolSourceId]);
 
     // After the gateway recovers, that attempt revokes the source and the chain continues.
     revoke = true;
-    await fixture.work({ id: active.id, idempotencyKey: queued.idempotency_key }, "succeeded");
-    const recorded = await fixture.state.read((view) =>
-      view.credentialSources.findCredentialWithdrawal(
-        fixture.namespace.id,
-        active.id,
-        toolSourceId,
-      ),
-    );
+    await fixture.work(queued, "succeeded");
+    const recorded = await findWithdrawal(fixture, active, toolSourceId);
     assert.equal(recorded.state, "revoked");
     await runMaintenance();
-    assert.equal((await withdrawalWork()).length, 1, "a revoked withdrawal is not queued again");
+    assert.equal(
+      (await withdrawalAttempts(fixture, active)).length,
+      1,
+      "a revoked withdrawal is not queued again",
+    );
 
     // A revoked model source must stop preparation, but an exhausted tool withdrawal still
     // needs maintenance to recover after a gateway outage.
+    const modelRequest = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
     const modelWithdrawal = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
-      {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: owner.harnessAuth.sourceId,
-      },
+      modelRequest,
     );
     await waitFor("model source withdrawal to be revoked", async () => {
-      const withdrawal = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, {
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: owner.harnessAuth.sourceId,
-      });
+      const withdrawal = await fixture.controller.readAgentCredentialWithdrawal(
+        fixture.actor.id,
+        modelRequest,
+      );
       return withdrawal.state === "revoked" ? withdrawal : undefined;
     });
     assert.equal(modelWithdrawal.state, "pending");
     const preparedBeforeWithdrawalRecovery = dispatched.length;
     await fixture.stop();
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: remainingToolSourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
+    await recordPendingWithdrawal(fixture, owner, active, remainingToolSourceId);
     revoke = false;
     await fixture.start(
       {
@@ -4578,9 +4346,9 @@ revisionTest(
       { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
     );
     await runMaintenance();
-    const recovered = (await withdrawalWork()).at(-1);
+    const recovered = (await withdrawalAttempts(fixture, active)).at(-1);
     assert.equal(
-      (await withdrawalWork()).length,
+      (await withdrawalAttempts(fixture, active)).length,
       3,
       "maintenance must recover the remaining tool withdrawal",
     );
@@ -4590,10 +4358,10 @@ revisionTest(
       "a model-withdrawn revision must not be prepared",
     );
     revoke = true;
-    await fixture.work({ id: active.id, idempotencyKey: recovered.idempotency_key }, "succeeded");
+    await fixture.work(recovered, "succeeded");
     await runMaintenance();
     assert.equal(
-      (await withdrawalWork()).length,
+      (await withdrawalAttempts(fixture, active)).length,
       3,
       "revoked tool sources must not be queued again",
     );
@@ -4694,23 +4462,16 @@ test(
 
     // The withdrawal is queued while the repair still holds the Agent, so it runs first once
     // the expired claim is recovered.
-    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: toolSourceId,
-    });
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, toolSourceId),
+    );
     await fixture.expireClaim(repair, claimed.claim_token);
     await waitFor("the repair to lose its claim", async () =>
       events.find(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
     );
     const withdrawal = await waitFor("the withdrawal to record the source revoked", async () => {
-      const found = await fixture.state.read((view) =>
-        view.credentialSources.findCredentialWithdrawal(
-          fixture.namespace.id,
-          active.id,
-          toolSourceId,
-        ),
-      );
+      const found = await findWithdrawal(fixture, active, toolSourceId);
       return found?.state === "revoked" ? found : undefined;
     });
     assert.equal(withdrawal.lastReason, "CREDENTIALS_WITHDRAWN");
@@ -4727,20 +4488,11 @@ test(
     ]);
     await fixture.work(repair, "succeeded");
     // The row stays revoked and no new withdrawal attempt is queued.
-    const recorded = await fixture.state.read((view) =>
-      view.credentialSources.findCredentialWithdrawal(
-        fixture.namespace.id,
-        active.id,
-        toolSourceId,
-      ),
+    assert.equal((await findWithdrawal(fixture, active, toolSourceId)).state, "revoked");
+    assert.deepEqual(
+      (await withdrawalAttempts(fixture, active)).map(({ state }) => state),
+      ["succeeded"],
     );
-    assert.equal(recorded.state, "revoked");
-    const withdrawalWork = await fixture.observerPool.query(
-      `SELECT state FROM occ.controller_work
-       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
-      [active.id],
-    );
-    assert.deepEqual(withdrawalWork.rows, [{ state: "succeeded" }]);
   },
 );
 
@@ -4779,7 +4531,7 @@ revisionTest(
     );
     await fixture.work(active, "succeeded");
     for (const credentialSourceId of [toolSourceId, modelSourceId]) {
-      const target = { namespaceId: fixture.namespace.id, agentId: owner.id, credentialSourceId };
+      const target = withdrawalRequest(fixture, owner, credentialSourceId);
       await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, target);
       await waitFor(`withdrawal of ${credentialSourceId} to be revoked`, async () => {
         const withdrawal = await fixture.controller.readAgentCredentialWithdrawal(
@@ -4789,18 +4541,15 @@ revisionTest(
         return withdrawal.state === "revoked" ? withdrawal : undefined;
       });
     }
-    const maintenancePass = async () => {
-      const due = await fixture.advanceMaintenance(active);
-      assert.equal(due.rowCount, 1, "one maintenance pass is queued");
-      return { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
-    };
 
     // A gateway outage during the recheck ends only this pass, as REVISION_FINALIZATION_INCOMPLETE
     // (DependencyUnavailableError carries no dependency code); the chain queues the next pass
     // instead of stopping with a revoked source maybe still attached.
     recheckFailure = new DependencyUnavailableError("The Credential Gateway did not answer.");
     rechecked.length = 0;
-    const failed = await maintenancePass();
+    const due = await fixture.advanceMaintenance(active);
+    assert.equal(due.rowCount, 1, "one maintenance pass is queued");
+    const failed = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
     const pending = await completion(
       events,
       "the failed recheck's pass to end pending",
@@ -4816,7 +4565,7 @@ revisionTest(
     // all withdrawals are revoked.
     recheckFailure = undefined;
     rechecked.length = 0;
-    await fixture.work(await maintenancePass(), "succeeded");
+    await runMaintenancePass(fixture, active, "one maintenance pass is queued");
     assert.deepEqual(rechecked, [
       [active.id, modelSourceId],
       [active.id, toolSourceId],
@@ -4858,24 +4607,8 @@ revisionTest(
     // A pending withdrawal whose attempts ran out, after which the Agent principal's grant on
     // the withdrawn source is removed. The source never attaches again either way.
     const strandWithdrawal = async (credentialSourceId) => {
-      await fixture.state.transact((unit) =>
-        unit.credentialSources.requestCredentialWithdrawal({
-          namespaceId: fixture.namespace.id,
-          agentId: owner.id,
-          revisionId: active.id,
-          credentialSourceId,
-          state: "pending",
-          requestedBy: fixture.actor.id,
-          requestedAt: new Date().toISOString(),
-        }),
-      );
-      const removed = await fixture.observerPool.query(
-        `DELETE FROM occ.iam_access_bindings
-         WHERE identity_subject_id = $1 AND resource_kind = 'credential_source'
-           AND resource_id = $2`,
-        [owner.servicePrincipalId, credentialSourceId],
-      );
-      assert.equal(removed.rowCount, 1);
+      await recordPendingWithdrawal(fixture, owner, active, credentialSourceId);
+      await removeSourceGrant(fixture, owner, credentialSourceId);
     };
     const runMaintenance = async () => {
       const due = await fixture.advanceMaintenance(active);
@@ -4891,30 +4624,13 @@ revisionTest(
       });
       assert.equal(settled.state, "succeeded", `maintenance ended ${settled.reason_code}`);
     };
-    const withdrawalWork = async () =>
-      (
-        await fixture.observerPool.query(
-          `SELECT idempotency_key FROM occ.controller_work
-           WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
-           ORDER BY created_at`,
-          [active.id],
-        )
-      ).rows.map(({ idempotency_key }) => ({ id: active.id, idempotencyKey: idempotency_key }));
     const withdrawalState = async (credentialSourceId) =>
-      (
-        await fixture.state.read((view) =>
-          view.credentialSources.findCredentialWithdrawal(
-            fixture.namespace.id,
-            active.id,
-            credentialSourceId,
-          ),
-        )
-      ).state;
+      (await findWithdrawal(fixture, active, credentialSourceId)).state;
 
     // A tool source: maintenance re-queues its withdrawal and repairs the revision without it.
     await strandWithdrawal(toolSourceId);
     await runMaintenance();
-    const [toolWithdrawal, ...extra] = await withdrawalWork();
+    const [toolWithdrawal, ...extra] = await withdrawalAttempts(fixture, active);
     assert.ok(toolWithdrawal, "maintenance must queue the pending tool withdrawal again");
     assert.deepEqual(extra, []);
     assert.deepEqual(dispatched.at(-1), []);
@@ -4925,7 +4641,7 @@ revisionTest(
     await strandWithdrawal(modelSourceId);
     const prepared = dispatched.length;
     await runMaintenance();
-    const work = await withdrawalWork();
+    const work = await withdrawalAttempts(fixture, active);
     assert.equal(work.length, 2, "maintenance must queue the pending model withdrawal again");
     const modelWithdrawal = work[1];
     await fixture.work(modelWithdrawal, "succeeded");
@@ -4945,12 +4661,7 @@ revisionTest(
     const toolSourceId = toolSources(owner)[0].sourceId;
     const active = await fixture.revision(owner, 1);
     // The Agent principal's exact grant is removed between admission and dispatch.
-    const removed = await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings
-       WHERE identity_subject_id = $1 AND resource_kind = 'credential_source' AND resource_id = $2`,
-      [owner.servicePrincipalId, toolSourceId],
-    );
-    assert.equal(removed.rowCount, 1);
+    await removeSourceGrant(fixture, owner, toolSourceId);
     const prepared = [];
     await fixture.start(
       {
@@ -4997,24 +4708,8 @@ revisionTest(
 
     // The tool source has a pending withdrawal. The Agent principal then loses its grant on the
     // model source, which is not withdrawn and still attaches, so maintenance must refuse.
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.requestCredentialWithdrawal({
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: active.id,
-        credentialSourceId: toolSourceId,
-        state: "pending",
-        requestedBy: fixture.actor.id,
-        requestedAt: new Date().toISOString(),
-      }),
-    );
-    const removed = await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings
-       WHERE identity_subject_id = $1 AND resource_kind = 'credential_source'
-         AND resource_id = $2`,
-      [owner.servicePrincipalId, modelSourceId],
-    );
-    assert.equal(removed.rowCount, 1);
+    await recordPendingWithdrawal(fixture, owner, active, toolSourceId);
+    await removeSourceGrant(fixture, owner, modelSourceId);
     const due = await fixture.advanceMaintenance(active);
     assert.equal(due.rowCount, 1);
     const settled = await waitFor("the maintenance pass to settle", async () => {
@@ -5070,26 +4765,15 @@ revisionTest(
       "the fixture Agent must have no active revision yet",
     );
 
-    const requested = await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      credentialSourceId: sourceId,
-    });
+    const requested = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, sourceId),
+    );
     assert.equal(requested.revisionId, legacy.id);
     assert.equal(requested.state, "pending");
     // The admitted legacy successor gets its own withdrawal too. So does the older revision:
     // no deployment has activated the legacy revision yet, so nothing has retired it.
-    const recorded = await fixture.state.read((view) =>
-      Promise.all(
-        [listed, legacy, successor].map((revision) =>
-          view.credentialSources.findCredentialWithdrawal(
-            fixture.namespace.id,
-            revision.id,
-            sourceId,
-          ),
-        ),
-      ),
-    );
+    const recorded = await findWithdrawals(fixture, [listed, legacy, successor], sourceId);
     assert.deepEqual(
       recorded.map((withdrawal) => withdrawal?.state),
       ["pending", "pending", "pending"],
@@ -6001,10 +5685,7 @@ test(
     const otherActor = `delete-successor-${randomUUID()}`;
     await fixture.copyActorGrants(otherActor);
     // The initiator is offboarded: it no longer holds any access.
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [fixture.actor.id],
-    );
+    await removeAccessBindings(fixture, fixture.actor.id);
     // A caller without delete permission still cannot take over.
     await assert.rejects(
       fixture.controller.deleteAgent(
@@ -6438,10 +6119,7 @@ revisionTest(
     assert.deepEqual(await observe(), exhausted);
 
     // The initiator is offboarded: it no longer holds any access.
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [fixture.actor.id],
-    );
+    await removeAccessBindings(fixture, fixture.actor.id);
     // A caller without delete permission still cannot take over.
     await assert.rejects(
       fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
@@ -7375,46 +7053,23 @@ revisionTest(
     // Deployment admission locks the Namespace, then the Agent. Hold the Namespace
     // until the worker waits on it; the waiting worker must not hold the Agent, or
     // admission and maintenance completion deadlock.
-    const admission = await fixture.observerPool.connect();
-    let released = false;
-    let failed = false;
-    try {
-      await admission.query("BEGIN");
-      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
-      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
-        fixture.namespace.id,
-      ]);
-      await waitFor("the worker's real wait on the Namespace lock", async () => {
-        const waiting = await fixture.observerPool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [admissionBackend.rows[0].pid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
-      const before = await succeededMaintenance();
-      await assert.doesNotReject(
-        admission.query(
+    const before = await withNamespaceLockHeld(
+      fixture.observerPool,
+      fixture.namespace.id,
+      async (lock) => {
+        await lock.waitForBlocked("the worker's real wait on the Namespace lock");
+        const succeeded = await succeededMaintenance();
+        await lock.assertNotHeld(
           "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
           [fixture.namespace.id, owner.id],
-        ),
-        "a worker waiting for the Namespace must not already hold the Agent",
-      );
-      await admission.query("ROLLBACK");
-      released = true;
-      await waitFor("the maintenance chain to continue", async () =>
-        (await succeededMaintenance()) > before ? true : undefined,
-      );
-    } catch (error) {
-      failed = true;
-      throw error;
-    } finally {
-      if (!released) {
-        await admission.query("ROLLBACK").catch(() => {});
-      }
-      // Discard the connection after a failure instead of returning it to the pool.
-      admission.release(failed);
-    }
+          "a worker waiting for the Namespace must not already hold the Agent",
+        );
+        return succeeded;
+      },
+    );
+    await waitFor("the maintenance chain to continue", async () =>
+      (await succeededMaintenance()) > before ? true : undefined,
+    );
   },
 );
 

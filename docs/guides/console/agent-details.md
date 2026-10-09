@@ -40,8 +40,10 @@ another version or the draft. Its milestones use the persisted record:
 | **Deployment work**     | `queued` awaits an initial or subsequent claim; `running` records a worker claim. |
 | **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
 
-A `failed` result shows the stored error and an **Open vN Logs** link to that
-version's [Logs tab](../topics/agent-logs.md), which the draft does not have.
+A `failed` result shows the stored error. Select **Open vN Logs** to open that
+version's [Logs tab](../topics/agent-logs.md) and bring the panel into view,
+even from the draft or another version. If logs are unavailable, the panel
+shows an access or availability message.
 For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
 `RUNTIME_MODEL_PROBE_TIMEOUT` and `AGENT_GATEWAY_UNAUTHORIZED` it also states
 the next step and links **Credentials** or the draft **Configuration** (for

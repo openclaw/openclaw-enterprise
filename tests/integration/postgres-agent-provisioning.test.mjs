@@ -33,6 +33,7 @@ import {
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -1092,57 +1093,32 @@ test(
     // Stopping or deleting a provisioned Agent locks the Namespace, then the Agent, then this
     // claimed work row (cancelByAgent). Hold the Namespace until the worker's permanent failure
     // waits on it; the waiting failure must not hold the work row yet, or the two deadlock.
-    const admission = await fixture.pool.connect();
     let committed;
-    let released = false;
-    let failed = false;
     try {
-      await admission.query("BEGIN");
-      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
-      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
-        namespace.id,
-      ]);
-      committed = fixture.state.transact(async (unit) => {
-        const current = await unit.provisioning.findByWorkId(workId);
-        await unit.provisioning.recordFailure(
-          claim,
-          {
-            completedPhase: current.completedPhase,
-            progress: { ...current.progress, error: failure },
-          },
-          { disposition: "permanent", ...failure },
-        );
-      });
-      // Surface an early failure through the await below instead of an unhandled rejection.
-      committed.catch(() => {});
-      // No worker runs here, so the only backend that can wait on this lock is the failure's.
-      await waitFor("the failure's real wait on the Namespace lock", async () => {
-        const waiting = await fixture.pool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [admissionBackend.rows[0].pid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
-      await assert.doesNotReject(
-        admission.query(
+      await withNamespaceLockHeld(fixture.pool, namespace.id, async (lock) => {
+        committed = fixture.state.transact(async (unit) => {
+          const current = await unit.provisioning.findByWorkId(workId);
+          await unit.provisioning.recordFailure(
+            claim,
+            {
+              completedPhase: current.completedPhase,
+              progress: { ...current.progress, error: failure },
+            },
+            { disposition: "permanent", ...failure },
+          );
+        });
+        // Surface an early failure through the await below instead of an unhandled rejection.
+        committed.catch(() => {});
+        // No worker runs here, so the only backend that can wait on this lock is the failure's.
+        await lock.waitForBlocked("the failure's real wait on the Namespace lock");
+        await lock.assertNotHeld(
           "SELECT state FROM occ.controller_work WHERE idempotency_key = $1 FOR UPDATE NOWAIT",
           [workId],
-        ),
-        "a failure waiting for the Namespace must not already hold its work row",
-      );
-      await admission.query("ROLLBACK");
-      released = true;
+          "a failure waiting for the Namespace must not already hold its work row",
+        );
+      });
       await committed;
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
-      if (!released) {
-        await admission.query("ROLLBACK").catch(() => {});
-      }
-      // Discard the connection after a failure instead of returning it to the pool.
-      admission.release(failed);
       await committed?.catch(() => {});
     }
 

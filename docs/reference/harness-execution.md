@@ -61,7 +61,7 @@ explicit matching Harness runtime; fallbacks must resolve through the same
 policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
 reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-`agents.list` is unsupported; Kubernetes refuses retired rosters OpenClaw rejects. Admission
+`agents.list` is unsupported; Kubernetes refuses rosters OpenClaw rejects. Admission
 preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 

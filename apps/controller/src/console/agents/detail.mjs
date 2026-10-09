@@ -141,7 +141,7 @@ const DEPLOYMENT_FAILURE_LINK_LABELS = {
   configuration: "Open Configuration",
 };
 
-function deploymentFailure(error, hrefs = {}, logs = null) {
+function deploymentFailure(error, hrefs = {}, logsLink = null) {
   if (!error) {
     return element("p", { className: "muted" }, "No persisted startup failure.");
   }
@@ -166,13 +166,7 @@ function deploymentFailure(error, hrefs = {}, logs = null) {
         )
       : null,
     // A failed version may never become current, so link its output directly.
-    logs
-      ? element(
-          "p",
-          { className: "hint" },
-          element("a", { href: logs.href }, `Open v${logs.revision} Logs`),
-        )
-      : null,
+    logsLink ? element("p", { className: "hint" }, logsLink) : null,
     runtimeFailure && typeof runtimeFailure === "object"
       ? element(
           "dl",
@@ -252,7 +246,7 @@ function createDeploymentStatusPanel(
   onAgentChange,
   onStatusChange,
   credentialsHref = null,
-  logsHref = null,
+  logsLink = null,
   configurationHref = null,
 ) {
   const section = element("section", { className: "agent-card deployment-status" });
@@ -398,7 +392,7 @@ function createDeploymentStatusPanel(
       deploymentFailure(
         state.status.error,
         { credentials: credentialsHref, configuration: configurationHref },
-        logsHref ? { href: logsHref, revision: revision.revision } : null,
+        logsLink,
       ),
       state.status.warnings?.length
         ? element(
@@ -928,6 +922,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
     versionLayout,
   );
+  function revealSelectedTab() {
+    const strip = tabs.getBoundingClientRect();
+    const bounds = tabControls.get(selectedTab).getBoundingClientRect();
+    if (bounds.left < strip.left) {
+      tabs.scrollLeft += Math.floor(bounds.left - strip.left);
+    } else if (bounds.right > strip.right) {
+      tabs.scrollLeft += Math.ceil(bounds.right - strip.right);
+    }
+  }
+  const tabResize = new ResizeObserver(() => {
+    if (!context.isCurrent() || !tabs.isConnected) {
+      tabResize.disconnect();
+      return;
+    }
+    revealSelectedTab();
+  });
+  tabResize.observe(tabs);
+  // Detached views stop observing; Back's retained view re-arms the strip.
+  context.onResume?.(() => {
+    if (tabs.isConnected) {
+      tabResize.observe(tabs);
+    }
+  });
   let details;
   const retainedTabs = new Map();
   let mountedTab = null;
@@ -1293,10 +1310,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             agent.harnessAuth?.method === "runtime"
               ? null
               : context.pageUrl(`agents/${agent.id}?revision=draft&tab=credentials`, namespaceId),
-            context.pageUrl(
-              `agents/${agent.id}?revision=${encodeURIComponent(mostRecent.id)}&tab=logs`,
-              namespaceId,
-            ),
+            link(`Open v${mostRecent.revision} Logs`, target(mostRecent.id, "logs"), context),
             context.pageUrl(`agents/${agent.id}?revision=draft&tab=configuration`, namespaceId),
           )
         : element(
@@ -1790,6 +1804,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         control.removeAttribute("aria-current");
       }
     }
+    revealSelectedTab();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
@@ -1839,6 +1854,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       content.append(renderAgentLogs(tabContext, { agent, revisionId: selected }));
       state.loading = false;
       content.style.minHeight = "";
+      // Finish the overview layout before bringing this version's output into view.
+      await details;
+      if (tabContext.isCurrent() && !deleting) {
+        tabControls.get("logs").focus({ preventScroll: true });
+        detailPane.scrollIntoView({ block: "start" });
+      }
       return;
     }
     content.append(element("p", { role: "status" }, "Loading configuration…"));

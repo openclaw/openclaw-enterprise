@@ -1313,7 +1313,42 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     read,
     objects,
     key,
+    save,
+    clients,
   } = fixture;
+  const suffix = digest(revision.agentId);
+  const predecessor = new KubernetesComputeDriver(
+    {
+      ...driver.options,
+      network: {
+        ...driver.options.network,
+        providerHarness: {
+          namespace: "openshell-system",
+          podLabels: { app: "openshell-gateway" },
+          address: "10.43.0.50",
+          port: 8080,
+        },
+      },
+    },
+    { sandboxDriver },
+  );
+  // A switch from Codex inherits its provider grant until native activation
+  // installs the outbound enrollment pair and removes that obsolete grant.
+  const stale = predecessor
+    .agentNetworkPolicies(
+      { ...revision, harness: { id: "codex", version: "1.0.0", mode: "dedicated" } },
+      { name: namespace, plane: "execution" },
+    )
+    .find(({ resource }) => resource.metadata.name === `allow-gateway-agent-${suffix}`).resource;
+  stale.metadata.uid = "predecessor-harness-egress-uid";
+  save(stale);
+  const deleted = [];
+  clients.networking.deleteNamespacedNetworkPolicy = async ({ name, namespace: target, body }) => {
+    assert.equal(target, namespace);
+    assert.equal(body.preconditions.uid, read("NetworkPolicy", name, target).metadata.uid);
+    deleted.push(name);
+    objects.delete(key("NetworkPolicy", name, target));
+  };
   assert.equal(driver.options.network.providerHarness, undefined);
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
@@ -1342,6 +1377,8 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   };
   state.connected = true;
   assert.equal((await prepare()).ready, true);
+  assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
+  assert.deepEqual(deleted, []);
   await assert.rejects(
     driver.activateRevision(revision, authContext(revision)),
     /gateway is not ready/,
@@ -1349,7 +1386,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   markReady(gatewayName);
   await driver.activateRevision(revision, authContext(revision));
 
-  const suffix = digest(revision.agentId);
+  assert.deepEqual(deleted, [stale.metadata.name]);
   assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);
   assert.equal(objects.has(key("NetworkPolicy", `allow-agent-runtime-${suffix}`)), false);
   assert.equal(objects.has(key("NetworkPolicy", `allow-agent-auth-${suffix}`)), false);
@@ -5295,14 +5332,9 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     },
   });
   for (const agents of [
-    { entries: null },
     { entries: { helper: { workspace: "/home/node/helper" } } },
-    // OpenClaw normalizes `main!` to main and may match it first.
-    {
-      ownership: "explicit",
-      entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} },
-    },
-    { entries: { " main": {} } },
+    // OpenClaw's schema admits a leading underscore, but it is not a canonical id.
+    { ownership: "explicit", entries: { main: {}, _main: {} } },
     {
       ownership: "explicit",
       entries: { main: {}, helper: {} },
@@ -5403,12 +5435,60 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       JSON.stringify(agents),
     );
   }
+  // OpenClaw's schema also rejects these, and its Gateway exits 78 on them.
+  const malformedRosters = [
+    { entries: null },
+    { entries: [] },
+    { entries: "main" },
+    { entries: { main: null } },
+    { entries: { main: [] } },
+    { entries: { main: false } },
+    { ownership: "explicit", entries: { main: {}, helper: null } },
+    { entries: { "main!": {} } },
+    // OpenClaw normalizes `main!` to main and may match it first.
+    {
+      ownership: "explicit",
+      entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} },
+    },
+    { entries: { " main": {} } },
+    { entries: { "-main": {} } },
+    { entries: { "a.b": {} } },
+    { entries: { "": {} } },
+    { entries: { ["a".repeat(65)]: {} } },
+    { ownership: "explicit", entries: { main: {}, Main: {} } },
+    { ownership: "explicit", entries: { main: {}, helper: {}, HELPER: {} } },
+    // OpenClaw drops trailing dashes from a key that starts with _.
+    { ownership: "explicit", entries: { _x: {}, "_x-": {} } },
+    { ownership: "explicit", entries: { _X: {}, "_x--": {} } },
+  ];
+  for (const [harness, configure] of topologies) {
+    for (const configuration of [
+      ...malformedRosters.map(configure),
+      { ...configure({}), agents: null },
+      { ...configure({}), agents: [] },
+    ]) {
+      assert.throws(
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
+        (error) =>
+          error instanceof ConfigurationHarnessError &&
+          /^The OpenClaw Gateway requires agents and agents\.entries to be objects, and each entry to be an object keyed by an Agent ID of up to 64 letters, digits, _ or -/.test(
+            error.message,
+          ),
+        `${harness.mode} ${harness.id} ${JSON.stringify(configuration.agents)}`,
+      );
+    }
+  }
   // Only dedicated OpenClaw serves main; the other topologies keep any valid roster.
   for (const [harness, configure] of topologies.slice(1)) {
     for (const agents of [
       { entries: { helper: {} } },
       { list: [] },
       { ownership: "explicit", entries: { helper: {}, reviewer: {} } },
+      { entries: { _helper: {} } },
+      { entries: { "9lives": {} } },
+      { entries: { ["a".repeat(64)]: {} } },
+      { ownership: "explicit", entries: { Main: {}, helper_2: {}, "re-viewer": {} } },
+      { ownership: "explicit", entries: { x: {}, "x-": {}, _x: {}, "_-x": {} } },
     ]) {
       assert.doesNotThrow(
         () => driver.validateHarnessAuth(harness, apiKeyAuth, configure(agents)),
@@ -8861,9 +8941,32 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   );
   assert.equal(writes.length, writesBeforeActivation);
 
+  // Finding 861, reverse switch: a plain dedicated predecessor's Harness grant is
+  // not one this revision writes, so activation deletes it and keeps the pair.
+  const plainRuntime = driver
+    .agentNetworkPolicies(
+      { ...revision, id: "plain-predecessor", sandboxDriverId: undefined },
+      { name: namespace, plane: "execution" },
+    )
+    .map(({ resource }) => resource)
+    .find(({ metadata }) => metadata.name === `allow-agent-runtime-${digest(revision.agentId)}`);
+  save({ ...plainRuntime, metadata: { ...plainRuntime.metadata, uid: "plain-runtime-uid" } });
+  const deletedPolicies = [];
+  clients.networking.deleteNamespacedNetworkPolicy = async ({ name, namespace: target, body }) => {
+    assert.equal(
+      body.preconditions.uid,
+      objects.get(key("NetworkPolicy", name, target)).metadata.uid,
+    );
+    deletedPolicies.push(name);
+    objects.delete(key("NetworkPolicy", name, target));
+  };
   fixture.setObservation({ items: [fixture.pod("ready")] });
   await driver.activateRevision(revision, authContext(revision));
   assert.equal(endpoints.length, 6);
+  assert.deepEqual(deletedPolicies, [plainRuntime.metadata.name]);
+  for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
+    assert.ok(objects.has(key("NetworkPolicy", `${name}-${digest(revision.agentId)}`)), name);
+  }
   assert.equal(
     objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
@@ -11075,6 +11178,403 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
     assert.equal(objects.has(key(kind, name)), false, `${kind} ${name} must be deleted`);
   }
   assert.deepEqual(objects.get(key("ConfigMap", sibling.metadata.name)), sibling);
+});
+
+// Finding 860: retiring the last OpenShell revision left the workspace-node pair
+// (supervisor egress to the Gateway, Gateway ingress from supervisors) in the namespace.
+for (const stopped of [false, true]) {
+  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async () => {
+    const cleanupCalls = [];
+    const driver = new KubernetesComputeDriver(
+      options({
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        network: {
+          ...options().network,
+          providerHarness: {
+            namespace: "openshell-system",
+            podLabels: { app: "openshell-gateway" },
+            address: "10.43.0.50",
+            port: 8080,
+          },
+        },
+      }),
+      {
+        sandboxDriver: {
+          id: "sandbox-provider",
+          implementation: "openshell",
+          async provisionHarness() {
+            assert.fail("retirement must not provision a Harness");
+          },
+          async harnessEndpoint() {
+            return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+          },
+          async cleanup(context) {
+            cleanupCalls.push(context.revision.id);
+          },
+        },
+      },
+    );
+    const revision = routedRevision(driver, {
+      id: "revision-openshell-retirement",
+      agentId: "agent-openshell-retirement",
+      sandboxDriverId: "sandbox-provider",
+    });
+    const namespace = kubernetesNamespaceName(revision.namespaceId);
+    const target = { name: namespace, plane: "execution" };
+    const gatewayName = `gateway-${digest(revision.agentId)}`;
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const key = (kind, name) => `${kind}:${name}`;
+    const objects = new Map();
+    const save = (object) => {
+      assert.equal(object.metadata.namespace ?? namespace, namespace);
+      object.metadata.uid ??= `${object.metadata.name}-uid`;
+      objects.set(key(object.kind, object.metadata.name), structuredClone(object));
+    };
+    save({
+      ...driver.manifest("v1", "Namespace", namespace, { namespaceId: revision.namespaceId }),
+      status: { phase: "Active" },
+    });
+    // Stop already removed the Gateway Deployment; Agent deletion then retires the revision.
+    if (!stopped) {
+      const gateway = driver.manifest("apps/v1", "Deployment", gatewayName, ownership, target);
+      gateway.metadata.annotations["openclaw.dev/agent-revision-id"] = revision.id;
+      save(gateway);
+    }
+    const policies = [
+      ...driver.agentNetworkPolicies(revision, target).map(({ resource }) => resource),
+      driver.channelNetworkPolicy(revision, [], target),
+    ];
+    const policyNames = policies.map(({ metadata }) => metadata.name);
+    for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
+      assert.ok(policyNames.includes(`${name}-${digest(revision.agentId)}`), name);
+    }
+    for (const policy of policies) {
+      save(policy);
+    }
+    // A sibling Agent's identically shaped policy must survive.
+    const sibling = driver.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      `allow-workspace-node-gateway-${digest("agent-sibling")}`,
+      { namespaceId: revision.namespaceId, agentId: "agent-sibling" },
+      target,
+    );
+    save(sibling);
+
+    const deleted = [];
+    const missing = (kind, name) =>
+      Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
+    const read = (kind) => async (request) => {
+      const name = request.name ?? request.metadata?.name;
+      const value = objects.get(key(kind, name));
+      if (value === undefined) {
+        throw missing(kind, name);
+      }
+      return structuredClone(value);
+    };
+    const remove = (kind) => async (request) => {
+      const current = await read(kind)(request);
+      assert.equal(request.namespace, namespace);
+      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
+      deleted.push(`${kind}/${request.name}`);
+      objects.delete(key(kind, request.name));
+      return {};
+    };
+    const core = {
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [] };
+      },
+      readNamespace: read("Namespace"),
+      async listNamespacedPod() {
+        return { apiVersion: "v1", kind: "PodList", items: [] };
+      },
+    };
+    for (const kind of [
+      "ConfigMap",
+      "Secret",
+      "Service",
+      "ServiceAccount",
+      "PersistentVolumeClaim",
+    ]) {
+      core[`readNamespaced${kind}`] = read(kind);
+      core[`deleteNamespaced${kind}`] = remove(kind);
+    }
+    driver.apiClients = Promise.resolve({
+      core,
+      apps: {
+        readNamespacedDeployment: read("Deployment"),
+        deleteNamespacedDeployment: remove("Deployment"),
+      },
+      networking: {
+        readNamespacedNetworkPolicy: read("NetworkPolicy"),
+        deleteNamespacedNetworkPolicy: remove("NetworkPolicy"),
+      },
+      objects: {
+        read: async (object) => read(object.kind)(object),
+      },
+    });
+
+    await driver.retireRevision(revision);
+    assert.deepEqual(cleanupCalls, [revision.id]);
+    assert.equal(objects.has(key("Deployment", gatewayName)), false);
+    for (const name of policyNames) {
+      assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);
+    }
+    assert.deepEqual(objects.get(key("NetworkPolicy", sibling.metadata.name)), sibling);
+
+    // A retried retirement finds nothing left to delete.
+    const deletedOnce = deleted.length;
+    await driver.retireRevision(revision);
+    assert.equal(deleted.length, deletedOnce);
+  });
+}
+
+// Finding 861: the Agent-scoped policies share one name per Agent and each revision
+// applied its set additively, so after a revision left OpenShell the workspace-node
+// pair kept selecting its new Gateway and admitting every supervisor Pod.
+test("activating a revision that leaves OpenShell deletes the Agent policies it no longer writes", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+  const target = { name: namespace, plane: "execution" };
+  const suffix = digest(revision.agentId);
+  const policyKey = (name) => `NetworkPolicy:${namespace}:${name}`;
+  // Render what the OpenShell predecessor's activation wrote.
+  const openShell = new KubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: {
+        providerHarness: {
+          namespace: "openshell-system",
+          podLabels: { app: "openshell-gateway" },
+          address: "10.43.0.50",
+          port: 8080,
+        },
+      },
+    }),
+    {
+      sandboxDriver: {
+        id: "sandbox-provider",
+        implementation: "openshell",
+        async provisionHarness() {
+          assert.fail("rendering policies must not provision a Harness");
+        },
+        async harnessEndpoint() {
+          return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+        },
+      },
+    },
+  );
+  const predecessor = { ...revision, sandboxDriverId: "sandbox-provider" };
+  const pair = [`allow-workspace-node-gateway-${suffix}`, `allow-gateway-workspace-node-${suffix}`];
+  const seeded = openShell
+    .agentNetworkPolicies(predecessor, target)
+    .map(({ resource }) => resource);
+  assert.deepEqual(
+    pair.filter((name) => !seeded.some(({ metadata }) => metadata.name === name)),
+    [],
+  );
+  for (const policy of seeded) {
+    objects.set(policyKey(policy.metadata.name), {
+      ...structuredClone(policy),
+      metadata: { ...structuredClone(policy.metadata), uid: `${policy.metadata.name}-uid` },
+    });
+  }
+  // Another Agent's OpenShell pair in the same namespace must survive.
+  const siblings = openShell
+    .agentNetworkPolicies({ ...predecessor, agentId: "agent-openshell-sibling" }, target)
+    .map(({ resource }) => resource)
+    .filter(({ metadata }) => metadata.name.startsWith("allow-workspace-node-gateway-"));
+  assert.equal(siblings.length, 1);
+  for (const policy of siblings) {
+    objects.set(policyKey(policy.metadata.name), {
+      ...structuredClone(policy),
+      metadata: { ...structuredClone(policy.metadata), uid: `${policy.metadata.name}-uid` },
+    });
+  }
+
+  const successor = { ...revision, id: "plain-successor", revision: revision.revision + 1 };
+  const successorContext = { ...context, ...authContext(successor) };
+  state.ready = true;
+  assert.equal(await prepareUntilReady(driver, successor, successorContext), 1);
+  for (const name of pair) {
+    assert.equal(objects.has(policyKey(name)), true, `preparation must keep ${name}`);
+  }
+
+  await driver.activateRevision(successor, successorContext);
+  for (const name of pair) {
+    assert.equal(objects.has(policyKey(name)), false, `activation must delete ${name}`);
+  }
+  const written = new Set(
+    driver.agentNetworkPolicies(successor, target).map(({ resource }) => resource.metadata.name),
+  );
+  const remaining = [...objects.keys()]
+    .filter((name) => name.startsWith(`NetworkPolicy:${namespace}:`) && name.endsWith(suffix))
+    .map((name) => name.slice(`NetworkPolicy:${namespace}:`.length));
+  assert.deepEqual(
+    remaining.filter(
+      (name) =>
+        !written.has(name) &&
+        name !== `allow-agent-auth-${suffix}` &&
+        name !== `allow-gateway-channels-${suffix}`,
+    ),
+    [],
+  );
+  const gatewayAgent = objects.get(policyKey(`allow-gateway-agent-${suffix}`));
+  assert.notEqual(gatewayAgent.spec.egress[0].to[0].podSelector, undefined);
+  assert.equal(JSON.stringify(gatewayAgent.spec).includes("openshell-system"), false);
+  for (const policy of siblings) {
+    assert.equal(
+      objects.get(policyKey(policy.metadata.name)).metadata.uid,
+      policy.metadata.name + "-uid",
+    );
+  }
+
+  // A repeated activation has nothing left to trim.
+  const before = structuredClone(
+    [...objects.entries()].filter(([name]) => name.startsWith("NetworkPolicy:")),
+  );
+  await driver.activateRevision(successor, successorContext);
+  assert.deepEqual(
+    [...objects.entries()]
+      .filter(([name]) => name.startsWith("NetworkPolicy:"))
+      .map(([name]) => name),
+    before.map(([name]) => name),
+  );
+});
+
+test("activating an embedded revision deletes a dedicated predecessor's Gateway grants", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(true);
+  const target = { name: namespace, plane: "execution" };
+  const suffix = digest(revision.agentId);
+  const policyKey = (name) => `NetworkPolicy:${namespace}:${name}`;
+  const dedicated = {
+    ...revision,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    configuration: {
+      ...revision.configuration,
+      agents: { defaults: { model: "codex/gpt-5" } },
+    },
+  };
+  for (const { resource: policy } of driver.agentNetworkPolicies(dedicated, target)) {
+    objects.set(policyKey(policy.metadata.name), {
+      ...structuredClone(policy),
+      metadata: { ...structuredClone(policy.metadata), uid: `${policy.metadata.name}-uid` },
+    });
+  }
+  // The dedicated Gateway's Harness transport egress would select the embedded Gateway.
+  assert.equal(objects.has(policyKey(`allow-gateway-agent-${suffix}`)), true);
+
+  state.ready = true;
+  assert.equal(await prepareUntilReady(driver, revision, context), 1);
+  await driver.activateRevision(revision, context);
+  assert.equal(objects.has(policyKey(`allow-gateway-agent-${suffix}`)), false);
+  const written = new Set(
+    driver.agentNetworkPolicies(revision, target).map(({ resource }) => resource.metadata.name),
+  );
+  const remaining = [...objects.keys()]
+    .filter((name) => name.startsWith(`NetworkPolicy:${namespace}:`) && name.endsWith(suffix))
+    .map((name) => name.slice(`NetworkPolicy:${namespace}:`.length));
+  assert.deepEqual(
+    remaining.filter((name) => !written.has(name) && name !== `allow-gateway-channels-${suffix}`),
+    [],
+  );
+  // The embedded Gateway keeps the model egress it writes under the shared name.
+  const runtime = objects.get(policyKey(`allow-agent-runtime-${suffix}`));
+  assert.equal(runtime.spec.podSelector.matchLabels["openclaw.dev/workload-role"], "gateway");
+});
+
+// Two clusters: a dedicated Gateway lives in the control-plane Gateway namespace,
+// an embedded one in the execution namespace. Activation trims only the namespace
+// its own Gateway lives in.
+test("activation trims unwritten Agent policies only in its Gateway namespace", async () => {
+  const driver = new KubernetesComputeDriver(twoClusterOptions());
+  const dedicated = routedRevision(driver);
+  const embedded = {
+    ...dedicated,
+    id: "revision-embedded-trim",
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    configuration: {
+      ...dedicated.configuration,
+      agents: { defaults: { model: "openai/gpt-5" } },
+    },
+  };
+  const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const control = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+  const suffix = digest(dedicated.agentId);
+  const names = [
+    "allow-gateway-agent",
+    "allow-gateway-workspace-node",
+    "allow-workspace-node-gateway",
+    "allow-agent-runtime",
+    "allow-plugin-status-proxy",
+    "allow-plugin-status-agent",
+    "allow-plugin-status-gateway",
+  ].map((name) => `${name}-${suffix}`);
+  const fixture = (target, objects, deleted) => ({
+    networking: {
+      async readNamespacedNetworkPolicy({ name, namespace }) {
+        assert.equal(namespace, target.name);
+        const value = objects.get(name);
+        if (value === undefined) {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        }
+        return structuredClone(value);
+      },
+      async deleteNamespacedNetworkPolicy({ name, namespace, body }) {
+        assert.equal(namespace, target.name);
+        assert.equal(body.preconditions.uid, objects.get(name).metadata.uid);
+        deleted.push(`${target.plane}/${name}`);
+        objects.delete(name);
+      },
+    },
+  });
+  for (const [revision, trimmed] of [
+    [dedicated, control],
+    [embedded, execution],
+  ]) {
+    const deleted = [];
+    const stored = new Map();
+    for (const target of [execution, control]) {
+      const objects = new Map(
+        names.map((name) => [
+          name,
+          {
+            ...driver.manifest(
+              "networking.k8s.io/v1",
+              "NetworkPolicy",
+              name,
+              { namespaceId: tenant.id, agentId: dedicated.agentId },
+              target,
+            ),
+            spec: {},
+          },
+        ]),
+      );
+      for (const object of objects.values()) {
+        object.metadata.uid = `${target.plane}-${object.metadata.name}`;
+      }
+      stored.set(target.plane, objects);
+    }
+    driver.apiClients = Promise.resolve(fixture(control, stored.get("control"), deleted));
+    driver.executionApiClients = Promise.resolve(
+      fixture(execution, stored.get("execution"), deleted),
+    );
+    const written = driver.agentNetworkPolicies(revision, execution);
+    await driver.deleteUnwrittenAgentPolicies(revision, execution, written);
+    const kept = new Set(
+      written
+        .filter(({ namespace }) => namespace.plane === trimmed.plane)
+        .map(({ resource }) => resource.metadata.name),
+    );
+    assert.ok(kept.size > 0);
+    assert.deepEqual(
+      deleted.sort(),
+      names
+        .filter((name) => !kept.has(name))
+        .map((name) => `${trimmed.plane}/${name}`)
+        .sort(),
+      `${revision.harness.mode} trims only its Gateway namespace`,
+    );
+  }
 });
 
 test("retirement preserves active storage and node routing and deletes exact owned UIDs", async () => {

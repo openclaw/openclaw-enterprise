@@ -153,7 +153,22 @@ export function createPluginFields({
       waitingForCatalog = true;
     }
   });
-  const accessHelp = element("div", { className: "plugin-access-help" });
+  const setupInstructions = element("div", { className: "plugin-access-instructions" });
+  const accessHelp = element(
+    "div",
+    { className: "plugin-access-help" },
+    element(
+      "p",
+      { className: "hint" },
+      "Catalog availability does not verify app connections or grant access. Configure credentials and app access before deployment.",
+    ),
+    element(
+      "details",
+      { className: "plugin-access-details" },
+      element("summary", {}, "Access and credential setup"),
+      setupInstructions,
+    ),
+  );
   const setupReminder = element("details", { className: "plugin-setup-reminder" });
   dialog.append(
     element(
@@ -387,7 +402,7 @@ export function createPluginFields({
     const count = Object.keys(values ?? {}).length;
     accessHelp.hidden = !catalog?.setup;
     setupReminder.hidden = !catalog?.setup || count === 0;
-    accessHelp.replaceChildren(...(catalog?.setup ? setupContent(catalog.setup) : []));
+    setupInstructions.replaceChildren(...(catalog?.setup ? setupContent(catalog.setup) : []));
     setupReminder.replaceChildren(
       element("summary", {}, "Check plugin access and credentials before deployment"),
       ...(catalog?.setup ? setupContent(catalog.setup) : []),
