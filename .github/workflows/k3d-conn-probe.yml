@@ -1,0 +1,144 @@
+name: k3d API connection probe (demo, do not merge)
+
+# Demo only (finding 890): runs the k3d Fixture and Configuration lane on the
+# blacksmith 32vcpu runner with the Kubernetes client from main and from this
+# branch, and counts API connections at the serverlb and per host process.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.16.0
+
+jobs:
+  probe:
+    name: probe ${{ matrix.variant }} ${{ matrix.copy }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [blacksmith-32vcpu-ubuntu-2404]
+        variant: [main, fix]
+        copy: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Use the Kubernetes client from main
+        if: matrix.variant == 'main'
+        shell: bash
+        run: cp .github/probe/client-main.ts apps/controller/src/drivers/kubernetes/client.ts
+      - name: Start API watcher
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/probe"
+          mkdir -p "$out"
+          cat > "$out/watch.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -u
+          out=$1
+          docker events --format '{{.TimeNano}} {{.Type}} {{.Action}} {{.Actor.Attributes.name}}' > "$out/events.log" 2>&1 &
+          server=""
+          for _ in $(seq 1 900); do
+            server=$(docker ps --format '{{.Names}}' | grep -E '^k3d-.*-server-0$' | head -n 1)
+            [ -n "$server" ] && break
+            sleep 1
+          done
+          [ -z "$server" ] && { echo "no server container" > "$out/watch.err"; exit 0; }
+          cluster=${server%-server-0}
+          docker logs -f --timestamps "$server" > "$out/server.log" 2>&1 &
+          for _ in $(seq 1 120); do
+            docker inspect "$cluster-serverlb" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker logs -f --timestamps "$cluster-serverlb" > "$out/serverlb.log" 2>&1 &
+          port=""
+          for _ in $(seq 1 300); do
+            port=$(docker port "$cluster-serverlb" 6443/tcp 2>/dev/null | head -n 1 | sed 's/.*://')
+            [ -n "$port" ] && break
+            sleep 1
+          done
+          ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null; }
+          sip=$(ip_of "$server"); lbip=$(ip_of "$cluster-serverlb")
+          echo "server=$server port=$port server_ip=$sip lb_ip=$lbip" > "$out/targets.txt"
+          {
+            echo "lb ulimit -n: $(docker exec "$cluster-serverlb" sh -c 'ulimit -n' 2>&1)"
+            echo "lb nproc: $(docker exec "$cluster-serverlb" nproc 2>&1)"
+            docker exec "$cluster-serverlb" sh -c 'for p in $(pgrep nginx); do grep "open files" /proc/$p/limits; done' 2>&1
+            docker exec "$cluster-serverlb" grep -E 'worker_' /etc/nginx/nginx.conf 2>&1
+            echo "dockerd limits: $(grep 'open files' /proc/$(pidof dockerd)/limits 2>&1)"
+            docker info --format 'docker {{.ServerVersion}} cgroup {{.CgroupVersion}} {{.KernelVersion}}' 2>&1
+          } >> "$out/targets.txt"
+          lbpid=$(docker inspect -f '{{.State.Pid}}' "$cluster-serverlb")
+          (
+            while true; do
+              n=$(sudo nsenter -t "$lbpid" -n ss -Htn state established 2>/dev/null | wc -l)
+              tw=$(sudo nsenter -t "$lbpid" -n ss -Htn state time-wait 2>/dev/null | wc -l)
+              echo "$(date -u +%H:%M:%S.%3N) lb_established=$n lb_time_wait=$tw"
+              ts=$(date -u +%H:%M:%S)
+              sudo ss -Htnp state established "( dport = :$port )" 2>/dev/null \
+                | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort | uniq -c \
+                | while read -r c p; do
+                    [ -f "$out/cmd.$p" ] || { tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-200 > "$out/cmd.$p"; echo "ppid=$(awk '/^PPid/ {print $2}' /proc/$p/status 2>/dev/null)" >> "$out/cmd.$p"; }
+                    echo "$ts $p $c" >> "$out/pids.log"
+                  done
+              host=$(sudo ss -Htn state established "( dport = :$port )" 2>/dev/null | wc -l)
+              echo "$ts host_established=$host" >> "$out/host.log"
+              sleep 1
+            done
+          ) >> "$out/conns.log" 2>&1 &
+          probe() { curl -sk -o /dev/null -w '%{http_code}' --max-time 2 "https://$1/readyz" 2>/dev/null; echo "/$?"; }
+          prev=""
+          while true; do
+            h=$(probe "127.0.0.1:$port"); l=$(probe "$lbip:6443"); s=$(probe "$sip:6443")
+            state="host=$h lb=$l server=$s"
+            if [ "$state" != "$prev" ]; then
+              echo "$(date -u +%H:%M:%S.%3N) $state" >> "$out/transitions.log"
+              prev=$state
+            fi
+            sleep 0.2
+          done
+          EOF
+          chmod +x "$out/watch.sh"
+          nohup "$out/watch.sh" "$out" > "$out/watch.out" 2>&1 &
+          echo $! > "$out/watch.pid"
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: k3d-fixture-configuration
+          profile: k3d
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: probe-${{ matrix.variant }}-${{ matrix.copy }}
+          static-checks: "false"
+      - name: Report API watcher
+        if: always()
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/probe"
+          cat "$out/targets.txt" "$out/watch.err" 2>/dev/null || true
+          echo "=== transitions"
+          cat "$out/transitions.log" 2>/dev/null || true
+          echo "=== docker events (no exec)"
+          grep -v -E ' exec_(create|start|die)' "$out/events.log" 2>/dev/null | grep -E ' (die|kill|stop|restart|oom|start|destroy|disconnect|connect) ' | tail -n 80 || true
+          echo "=== server log errors and warnings"
+          grep -E ' E[0-9]{4} | W[0-9]{4} |level=(error|fatal|warning)|panic|Shutting|signal|leader|apiserver exited|Starting k3s' "$out/server.log" 2>/dev/null | grep -v -i -E 'token|password|secret' | tail -n 200 || true
+          echo "=== serverlb log (after the config dump)"
+          awk '/=======================================$/ { start = NR } { line[NR] = $0 } END { for (i = start + 1; i <= NR; i++) print line[i] }' "$out/serverlb.log" 2>/dev/null | tail -n 150 || true
+          echo "serverlb log lines: $(wc -l < "$out/serverlb.log" 2>/dev/null)"
+          echo "=== serverlb connections (max and per-second around drops)"
+          sort -t= -k2 -n "$out/conns.log" 2>/dev/null | tail -n 3 || true
+          cat "$out/conns.log" 2>/dev/null | awk 'NR % 5 == 1' | head -n 60 || true
+          echo "=== host-side API connections (peak)"
+          sort -t= -k2 -n "$out/host.log" 2>/dev/null | tail -n 3 || true
+          echo "=== peak API connections per host process"
+          awk '{ if ($3 > max[$2]) max[$2] = $3; n[$2] += $3; s[$2]++ } END { for (p in max) print max[p], p, s[p] }' "$out/pids.log" 2>/dev/null \
+            | sort -rn | head -n 25 | while read -r m p secs; do
+                echo "peak=$m pid=$p seconds=$secs $(tr '\n' ' ' < "$out/cmd.$p" 2>/dev/null)"
+              done || true
+          echo "=== kernel"
+          sudo dmesg -T 2>/dev/null | grep -i -E 'oom|conntrack|nf_|killed|segfault|link|veth|br-' | tail -n 60 || true
+          echo "=== server.log size $(wc -l < "$out/server.log" 2>/dev/null)"
+          kill "$(cat "$out/watch.pid")" 2>/dev/null || true
