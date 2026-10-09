@@ -56,13 +56,17 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       "listSourceTypes",
       "registerSource",
       "updateSource",
-      "rotateSource",
       "sourceStatus",
       "removeSource",
       "attachForRevision",
       "attachmentStatus",
       "withdraw",
     ].every((operation) => typeof candidate[operation] === "function");
+  }
+  if (driver.capability === "credential_refresh") {
+    return ["configureRefresh", "rotate", "refreshStatus", "removeRefresh"].every(
+      (operation) => typeof candidate[operation] === "function",
+    );
   }
   if (driver.capability === "service_account") {
     return ["create", "createCredential", "delete"].every(

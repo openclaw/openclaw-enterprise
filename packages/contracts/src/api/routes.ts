@@ -891,6 +891,22 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "rotateCredentialSource",
+    method: "POST",
+    path: "/namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate",
+    action: "openclaw.credential_sources.rotate",
+    iamAction: "update",
+    resourceKind: "credential_source",
+    authorizationTarget: "credential_source",
+    summary: "Force the Credential Refresh Driver to mint a new token for a refresh-type source",
+    tags: ["Credential sources"],
+    schema: {
+      querystring: EmptyQuery,
+      params: CredentialSourceParams,
+      response: { 200: CredentialSourceResponseRef, ...mutationErrors },
+    },
+  },
+  {
     operationId: "deleteCredentialSource",
     method: "DELETE",
     path: "/namespaces/:namespaceId/credential-sources/:credentialSourceId",

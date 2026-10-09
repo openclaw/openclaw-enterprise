@@ -181,7 +181,7 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
   }
   const apps = array(release.app_ids, 100).map((id) => text(id, 256));
   // Native Codex loads skills from the installed bundle; validate catalog metadata here.
-  array(release.skills, 1000);
+  const skills = array(release.skills, 1000);
   if (
     !["AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE"].includes(
       String(plugin.installation_policy),
@@ -210,12 +210,12 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
         unavailableReason =
           "Unavailable for this account. Ask a ChatGPT workspace administrator to review plugin access; the service did not provide a recognized reason.";
     }
-  } else if (release.requires_local_executor !== false) {
-    // The list can rule out local executors; details still check native component support.
+  } else if (release.requires_local_executor !== false && skills.length === 0) {
+    // Skills use the native runtime; details must still check other local components.
     unavailableReason =
-      "This plugin requires a local executor that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
-  } else if (apps.length === 0) {
-    unavailableReason = "This plugin has no concrete hosted app supported by OCE.";
+      "This plugin requires local components that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
+  } else if (apps.length === 0 && skills.length === 0) {
+    unavailableReason = "This plugin has no concrete hosted app or skills supported by OCE.";
   }
   const presentation = record(release.interface);
   const description = presentation.short_description ?? release.description;
@@ -326,12 +326,15 @@ export async function getHostedPlugin(
       invalid();
     }
     if (appIds.length === 0) {
+      if (entry.available !== false && array(release.skills, 1000).length > 0) {
+        return { ...entry, tools: [] };
+      }
       return entry.available === false
         ? entry
         : {
             ...entry,
             available: false,
-            unavailableReason: "This plugin has no concrete hosted app supported by OCE.",
+            unavailableReason: "This plugin has no concrete hosted app or skills supported by OCE.",
             unavailableHelp: PLUGIN_SETUP,
           };
     }

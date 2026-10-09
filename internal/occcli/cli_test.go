@@ -121,6 +121,7 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 	}{
 		{[]string{"credential-source", "update", "cs_1"}, call{http.MethodPatch, "/namespaces/ns_1/credential-sources/cs_1", "{}"}},
 		{[]string{"credential-source", "update", "cs_1", "--file", replacement}, call{http.MethodPatch, "/namespaces/ns_1/credential-sources/cs_1", secrets}},
+		{[]string{"credential-source", "rotate", "cs_1"}, call{http.MethodPost, "/namespaces/ns_1/credential-sources/cs_1/rotate", ""}},
 		{[]string{"agent", "credential-withdrawal", "request", "agt_1", "cs_1"}, call{http.MethodPost, "/namespaces/ns_1/agents/agt_1/credential-sources/cs_1/withdraw", ""}},
 		{[]string{"agent", "credential-withdrawal", "get", "agt_1", "cs_1"}, call{http.MethodGet, "/namespaces/ns_1/agents/agt_1/credential-sources/cs_1/withdrawal", ""}},
 	} {

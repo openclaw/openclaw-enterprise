@@ -67,6 +67,12 @@ function createTestCredentialGateway(options = {}) {
           secrets: [],
           rotation: "none",
         },
+        {
+          type: "oauth-client",
+          config: [{ name: "client_id", required: true }],
+          secrets: [{ name: "client_secret", required: true }],
+          rotation: "refresh",
+        },
       ];
     },
     async registerSource(context, input) {
@@ -108,9 +114,6 @@ function createTestCredentialGateway(options = {}) {
       stored.set(context.source.id, input.secrets);
       return { state: "ready" };
     },
-    async rotateSource() {
-      throw new Error("not exercised");
-    },
     async sourceStatus(context) {
       return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
     },
@@ -129,6 +132,39 @@ function createTestCredentialGateway(options = {}) {
     },
     async withdraw() {
       throw new Error("not exercised");
+    },
+  };
+}
+
+/**
+ * Test-only Credential Refresh Driver: records OCC's calls in the gateway's call log, so cases
+ * can assert ordering across both roles. Real minting is proved against OpenShell and Keycloak.
+ */
+function createTestCredentialRefresh(calls, options = {}) {
+  const configured = new Map();
+  return {
+    id: "credential-refresh-test",
+    capability: "credential_refresh",
+    implementation: "test-recording-refresh",
+    configured,
+    async configureRefresh(context, input) {
+      calls.push({ operation: "configureRefresh", sourceId: context.source.id, input });
+      configured.set(context.source.id, input.secrets);
+      return { state: "pending" };
+    },
+    async rotate(context, requestId) {
+      calls.push({ operation: "rotate", sourceId: context.source.id, requestId });
+      return (
+        options.rotateStatus ?? { state: "ready", lastRefreshAt: "2026-09-27T12:00:00.000000000Z" }
+      );
+    },
+    async refreshStatus(context) {
+      calls.push({ operation: "refreshStatus", sourceId: context.source.id });
+      return { state: "ready", expiresAt: "2026-09-27T13:00:00.000000000Z" };
+    },
+    async removeRefresh(context) {
+      calls.push({ operation: "removeRefresh", sourceId: context.source.id });
+      configured.delete(context.source.id);
     },
   };
 }
@@ -255,6 +291,7 @@ async function fixture(options = {}) {
   }
   const secretDriver = createTestSecretDriver();
   const gateway = createTestCredentialGateway(options.gateway);
+  const refresh = createTestCredentialRefresh(gateway.calls, options.refresh);
   // Compute owns runtime placement; the gateway must see the same name as the paired Sandbox.
   const compute = {
     ...createDevelopmentComputeDriver({ id: "credential-source-compute" }),
@@ -268,6 +305,7 @@ async function fixture(options = {}) {
     createTestConfigurationDriver({ id: "credential-source-configuration" }),
     secretDriver,
     ...(options.withoutGateway ? [] : [gateway]),
+    ...(options.withoutRefresh || options.withoutGateway ? [] : [refresh]),
     ...(options.withoutSandbox ? [] : [createTestSandbox()]),
   ];
   for (const driver of drivers) {
@@ -339,10 +377,201 @@ async function fixture(options = {}) {
     modelSecret,
     namespace,
     passRegistrationFence,
+    refresh,
     secretDriver,
     state,
   };
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+async function refreshSource(context, name = "oauth-client") {
+  const secret = await context.controller.createSecret(administrator, {
+    namespaceId: context.namespace.id,
+    name: `client-secret-${crypto.randomUUID()}`,
+    value: "synthetic-client-secret",
+  });
+  const source = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name,
+    type: "oauth-client",
+    config: { client_id: "occ-tools" },
+    secrets: { client_secret: secret.ref },
+  });
+  return { secret, source };
+}
+
+test("a refresh source is ready only after its first mint, and its material is not a gateway value", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const { secret, source } = await refreshSource(context);
+  assert.equal(source.state, "ready");
+  assert.deepEqual(source.status, {
+    state: "ready",
+    refresh: { state: "ready", lastRefreshAt: "2026-09-27T12:00:00.000000000Z" },
+  });
+  // The gateway registers the source first; refresh material goes only to the refresh role,
+  // which then mints the first token. Each step carries a UUID request ID for replay.
+  const calls = context.gateway.calls.filter(({ sourceId }) => sourceId === source.id);
+  assert.deepEqual(
+    calls.map(({ operation }) => operation),
+    ["registerSource", "configureRefresh", "rotate"],
+  );
+  // Custody boundary: the gateway registers config only and never receives the issuer secret.
+  assert.deepEqual(calls[0].input.secrets, {});
+  assert.deepEqual(calls[1].input.secrets, { client_secret: "synthetic-client-secret" });
+  assert.deepEqual(calls[1].input.config, { client_id: "occ-tools" });
+  assert.match(calls[1].input.requestId, UUID);
+  assert.match(calls[2].requestId, UUID);
+  assert.notEqual(calls[1].input.requestId, calls[2].requestId);
+  assert.deepEqual(source.secrets, { client_secret: secret.ref });
+  assert.equal(JSON.stringify(source).includes("synthetic-client-secret"), false);
+});
+
+test("a refresh type needs a selected Credential Refresh Driver before any gateway effect", async () => {
+  const context = await fixture({ withoutRefresh: true });
+  await context.makeReady();
+  await assert.rejects(refreshSource(context), DependencyUnavailableError);
+  assert.equal(context.gateway.calls.length, 0);
+  assert.deepEqual(
+    await context.controller.listCredentialSources(administrator, context.namespace.id),
+    [],
+  );
+});
+
+test("a refresh source whose first mint fails is removed from the gateway and from OCC", async () => {
+  const context = await fixture({
+    refresh: {
+      rotateStatus: {
+        state: "failed",
+        failureCode: "oauth_invalid_client",
+        recoveryAction: "fix_configuration",
+      },
+    },
+  });
+  await context.makeReady();
+  // The Driver's safe failure code reaches the caller; the issuer's own text never does.
+  await assert.rejects(
+    refreshSource(context),
+    (error) =>
+      error instanceof DependencyUnavailableError && /oauth_invalid_client/.test(error.message),
+  );
+  assert.deepEqual(
+    context.gateway.calls.map(({ operation }) => operation),
+    ["registerSource", "configureRefresh", "rotate", "removeRefresh", "removeSource"],
+  );
+  assert.equal(context.refresh.configured.size, 0);
+  assert.equal(context.gateway.stored.size, 0);
+  assert.deepEqual(
+    await context.controller.listCredentialSources(administrator, context.namespace.id),
+    [],
+  );
+});
+
+test("rotation needs update on a refresh source, reads no Secret, and refuses static types", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const { source } = await refreshSource(context);
+  const input = { namespaceId: context.namespace.id, credentialSourceId: source.id };
+  await assert.rejects(
+    context.controller.rotateCredentialSource(deployer, input),
+    AuthorizationDeniedError,
+  );
+  // The updater holds update on sources but no Secret operate: rotation reads no material.
+  const rotated = await context.controller.rotateCredentialSource(updater, input);
+  assert.equal(rotated.status.refresh.state, "ready");
+  assert.equal(context.gateway.calls.filter(({ operation }) => operation === "rotate").length, 2);
+  // Rotation forces a mint with the stored material; it never reconfigures the source.
+  assert.equal(
+    context.gateway.calls.filter(({ operation }) => operation === "configureRefresh").length,
+    1,
+  );
+
+  // A static source has no issuer; rotating it means updating its Secret values instead.
+  const model = await context.modelSecret();
+  const staticSource = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: model.ref },
+  });
+  await assert.rejects(
+    context.controller.rotateCredentialSource(administrator, {
+      namespaceId: context.namespace.id,
+      credentialSourceId: staticSource.id,
+    }),
+    (error) => error instanceof ResourceConflictError && /refresh-type/.test(error.message),
+  );
+});
+
+test("an update reconfigures refresh material and mints again instead of pushing a value", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const { source } = await refreshSource(context);
+  const replacement = await context.controller.createSecret(administrator, {
+    namespaceId: context.namespace.id,
+    name: `client-secret-${crypto.randomUUID()}`,
+    value: "replacement-client-secret",
+  });
+  const before = context.gateway.calls.length;
+  const updated = await context.controller.updateCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    credentialSourceId: source.id,
+    secrets: { client_secret: replacement.ref },
+  });
+  assert.deepEqual(updated.secrets, { client_secret: replacement.ref });
+  assert.equal(updated.status.refresh.state, "ready");
+  const calls = context.gateway.calls.slice(before);
+  assert.deepEqual(
+    calls.map(({ operation }) => operation),
+    ["configureRefresh", "rotate"],
+  );
+  assert.deepEqual(calls[0].input.secrets, { client_secret: "replacement-client-secret" });
+  assert.equal(JSON.stringify(updated).includes("replacement-client-secret"), false);
+});
+
+test("reading a refresh source reports its refresh status, and deletion removes refresh first", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const { source } = await refreshSource(context);
+  const read = await context.controller.readCredentialSource(
+    administrator,
+    context.namespace.id,
+    source.id,
+  );
+  assert.deepEqual(read.status, {
+    state: "ready",
+    refresh: { state: "ready", expiresAt: "2026-09-27T13:00:00.000000000Z" },
+  });
+  context.passRegistrationFence();
+  const before = context.gateway.calls.length;
+  await context.controller.deleteCredentialSource(administrator, context.namespace.id, source.id);
+  assert.deepEqual(
+    context.gateway.calls.slice(before).map(({ operation }) => operation),
+    ["removeRefresh", "removeSource"],
+  );
+});
+
+test("reading a source whose type left the catalog keeps the gateway's status", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const tool = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "registry",
+    type: "registry",
+    config: { host: "registry.example.com" },
+  });
+  const { source: refresh } = await refreshSource(context);
+  // Removing an Installation setting, such as OpenShell's toolBinaries, withdraws types from
+  // the catalog. Existing sources stay registered, so a read must still report the gateway's
+  // own status rather than a false failure.
+  context.gateway.listSourceTypes = async () => [];
+  const read = (source) =>
+    context.controller.readCredentialSource(administrator, context.namespace.id, source.id);
+  assert.deepEqual((await read(tool)).status, { state: "ready" });
+  // An unoffered refresh type cannot be classified, so its read omits refresh status.
+  assert.deepEqual((await read(refresh)).status, { state: "ready" });
+});
 
 test("registration validates the catalog and hands the gateway values OCC never stores", async () => {
   const { controller, gateway, makeReady, modelSecret, namespace } = await fixture();

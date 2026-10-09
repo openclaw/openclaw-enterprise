@@ -71,7 +71,7 @@ migrated `openclaw_k8s_*` database via `OCC_TEST_DATABASE_URL`.
 `tests/integration/codex-plugin-startup-reads.test.mjs` normally runs controlled
 protocol cases that verify read batching, error draining, and ordered writes.
 The opt-in companion `codex-plugin-startup-reads-real.test.mjs`, registered in the
-credentialed `plugin-model` lane, launches a disposable Docker container with Codex 0.156.0,
+credentialed `plugin-model` lane, launches a disposable Docker container with Codex 0.163.0-alpha.1,
 logs in using an authorized service-account token, and runs the generated
 production client against the real authenticated app-server. It checks six
 catalog reads in batches of at most four, ordered results, a native invalid-plugin
@@ -81,7 +81,7 @@ selections and effective app-policy readback.
 After obtaining credential authorization under [the contribution policy](../../CONTRIBUTING.md),
 inject `CODEX_ACCESS_TOKEN` without putting its value in a command or file, and
 set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to a locally available immutable runtime
-image ID or digest containing Codex 0.156.0:
+image ID or digest containing Codex 0.163.0-alpha.1:
 
 ```sh
 OCC_TEST_CODEX_STARTUP_READS_REAL=1 node --test \

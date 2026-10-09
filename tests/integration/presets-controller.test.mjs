@@ -373,6 +373,47 @@ test("Preset writes refuse a caller without the grant before reading the body", 
   );
 });
 
+test("Preset writes check the grant again in their transaction after the pre-body check", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Preset grant re-check", { ready: true });
+  const existing = await createPreset(fixture, namespace.id, "Existing");
+  let writer;
+  const member = await fixture.createAccountWithPolicy("preset-writer", (principal) => {
+    ({ binding: writer } = grantRole(fixture.policy, principal.id, {
+      id: "re-check-preset-writer",
+      bindingId: "re-check-write-presets",
+      namespaceId: namespace.id,
+      permissions: { namespace: ["read"], preset: ["read", "create", "update"] },
+    }));
+  });
+  const session = await fixture.signIn(member.credentials);
+  // The grant is withdrawn right after the pre-body check passes, before the handler runs.
+  const occ = fixture.controller;
+  const preBodyCheck = occ.authorizePresetWrite;
+  occ.authorizePresetWrite = async (...args) => {
+    await preBodyCheck.apply(occ, args);
+    const index = fixture.policy.bindings.indexOf(writer);
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+  };
+  t.after(() => delete occ.authorizePresetWrite);
+  for (const [method, path] of [
+    ["POST", collection(namespace.id)],
+    ["PATCH", `${collection(namespace.id)}/${existing.id}`],
+  ]) {
+    const refused = await fixture.request(method, path, {
+      session,
+      body: { name: "Withdrawn", template: {} },
+    });
+    assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.code, "FORBIDDEN", method);
+    // The pre-body check passed and withdrew the grant; restore it for the next write.
+    assert.equal(fixture.policy.bindings.includes(writer), false, method);
+    fixture.policy.bindings.push(writer);
+  }
+  assert.deepEqual((await fixture.request("GET", collection(namespace.id))).data, [existing]);
+});
+
 test("Preset variables create independent ordinary Agent drafts that survive template replacement and deletion", async (t) => {
   const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
   const fixture = await createFixture(t);

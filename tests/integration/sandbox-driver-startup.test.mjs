@@ -9,6 +9,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -411,6 +412,60 @@ test("startup composes both OpenShell members from one Backend", async (t) => {
     sandbox: createdDriver.sandboxDriver.id,
     credential_gateway: createdDriver.credentialGatewayDriver.id,
   });
+});
+
+test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
+  const refreshing = () => {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].drivers.credential_refresh = "openshell-refresh";
+    configuration.drivers.credential_refresh = { id: "openshell-refresh", configuration: {} };
+    configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+    return configuration;
+  };
+  const createdDriver = await loadInstallationFile(t, refreshing());
+  assert.ok(createdDriver.credentialRefreshDriver instanceof OpenShellCredentialRefreshDriver);
+  assert.deepEqual(createdDriver.installation.backend[0].drivers, {
+    sandbox: "openshell-sandbox",
+    credential_gateway: "openshell-credentials",
+    credential_refresh: "openshell-refresh",
+  });
+  // The gateway offers refresh types only when its Backend can mint their tokens.
+  const signal = AbortSignal.timeout(2_000);
+  const offered = await createdDriver.credentialGatewayDriver.listSourceTypes({ signal });
+  assert.deepEqual(
+    offered.filter(({ rotation }) => rotation === "refresh").map(({ type }) => type),
+    ["oauth2-client-credentials", "oauth2-refresh-token"],
+  );
+  const withoutRefresh = sandboxInstallation();
+  withoutRefresh.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+  const staticOnly = await loadInstallationFile(t, withoutRefresh);
+  assert.deepEqual(
+    (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
+    ["openai", "bearer-token"],
+  );
+
+  // Refresh state lives on the gateway's provider records, so the roles cannot be split.
+  const unselected = refreshing();
+  delete unselected.drivers.credential_refresh;
+  await assert.rejects(
+    loadInstallationFile(t, unselected),
+    /drivers\.credential_refresh must match the selected drivers\.credential_refresh\.id/,
+  );
+  const undeclared = refreshing();
+  delete undeclared.backend[0].drivers.credential_refresh;
+  await assert.rejects(
+    loadInstallationFile(t, undeclared),
+    /drivers\.credential_refresh must match the selected drivers\.credential_refresh\.id/,
+  );
+  const withoutGateway = refreshing();
+  delete withoutGateway.drivers.credential_gateway;
+  await assert.rejects(
+    loadInstallationFile(t, withoutGateway),
+    /drivers\.credential_refresh requires drivers\.credential_gateway/,
+  );
+  const configured = refreshing();
+  configured.drivers.credential_refresh.configuration = { interval: 60 };
+  await assert.rejects(loadInstallationFile(t, configured), /configuration/);
 });
 
 test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
@@ -2459,6 +2514,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["[::1]:65536", false],
     ["gateway.example.test?x:8080", false],
     ["user@gateway.example.test:8080", false],
+    // An empty userinfo hides a colon before the host.
+    [":@gateway.example.test:8080", false],
     ["http://gateway.example.test", true],
     ["http://gateway.example.test:8080", true],
     ["http://[::1]:8080", true],
@@ -2466,6 +2523,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["http://gateway.example.test:65536", false],
     ["http://1.2.3.999:8080", false],
     ["http://gate%way.example.test:8080", false],
+    // An origin carries no path.
+    ["http://gateway.example.test:8080/grpc", false],
     ["https://gateway.example.test", true],
     ["https://gateway.example.test:8443", true],
     ["https://[::1]:8443", true],

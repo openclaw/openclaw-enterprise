@@ -32,7 +32,7 @@ export function createDeviceCredentialGateway({
           type: "codex-device",
           config: [],
           secrets: [],
-          rotation: "gateway",
+          rotation: "external",
           deviceAuthorization: { harnessId: "codex" },
           harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
         },

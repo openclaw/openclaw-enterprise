@@ -6200,12 +6200,12 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
         `${topology} ${JSON.stringify(agents)}`,
       );
     }
-    // main in any case, as OpenClaw matches it, satisfies every rule.
+    // main in any case, and padded with spaces, as OpenClaw normalizes it, satisfies every rule.
     for (const agents of [
       {
         ownership: "explicit",
         entries: { Main: {}, helper: {} },
-        defaults: { sessionStore: { agentId: "MAIN" }, systemAgent: { agentId: "main" } },
+        defaults: { sessionStore: { agentId: "MAIN" }, systemAgent: { agentId: " main " } },
       },
       { ownership: "explicit", entries: { Main: {}, helper_2: {}, "re-viewer": {} } },
       { list: [] },
@@ -6269,8 +6269,12 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     [{ list: [{ id: "main", default: true }] }, listRefusal],
     [{ list: [], entries: { main: {} } }, listRefusal],
     [{ list: [], ownership: "explicit", entries: { main: {} } }, listRefusal],
+    // The Gateway drops an empty list only beside an implicit roster, so this names the list.
+    [{ list: [], ownership: "explicit" }, listRefusal],
     [{ entries: { main: {}, helper: {} } }, multiRefusal],
     [{ ownership: "shared", entries: { main: {} } }, ownershipRefusal],
+    // With several broken rules, an entry's default marker is named before the ownership.
+    [{ ownership: "shared", entries: { main: { default: true } } }, defaultRefusal("main")],
   ];
   for (const agents of [
     // OpenClaw reads an empty roster as `{ main: {} }` and drops an empty list beside it.
@@ -13406,7 +13410,7 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
           type: source.type,
           config: [],
           secrets: [],
-          rotation: "gateway",
+          rotation: "external",
           harnessAuth: { modelProvider: "openai", loginMode: snapshot.loginMode },
         },
       ];
