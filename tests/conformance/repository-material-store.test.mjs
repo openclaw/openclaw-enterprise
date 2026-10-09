@@ -137,20 +137,26 @@ test("earliest expiry during first creation prevents the next creation and leave
   assert.equal(fake.objects.size, 0);
 });
 
-test("unexpired material is created and the retained session is reused", async (t) => {
-  t.mock.method(Date, "now", () => now);
+// Creates material for one session that expires a second after `now` and returns
+// the spec that retains it.
+async function retainedSession() {
   const input = binding("project", "session_one", now + 1000);
   const owner = revision([input.repositoryRef], input.deadlineWallMs);
   const fake = fakeCore();
   const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
-  assert.equal((await store.prepare(owner, repositoryMaterialSpec(owner, [input]))).kind, "ready");
-  const retained = {
-    kind: "retained",
-    repositoryRef: input.repositoryRef,
-    sessionId: input.sessionId,
-    deadlineWallMs: input.deadlineWallMs,
-  };
-  const result = await store.prepare(owner, repositoryMaterialSpec(owner, [retained]));
+  const first = await store.prepare(owner, repositoryMaterialSpec(owner, [input]));
+  const { repositoryRef, sessionId, deadlineWallMs } = input;
+  const spec = repositoryMaterialSpec(owner, [
+    { kind: "retained", repositoryRef, sessionId, deadlineWallMs },
+  ]);
+  return { input, owner, fake, store, first, spec };
+}
+
+test("unexpired material is created and the retained session is reused", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  const { input, owner, fake, store, first, spec } = await retainedSession();
+  assert.equal(first.kind, "ready");
+  const result = await store.prepare(owner, spec);
   assert.equal(result.kind, "ready");
   assert.equal(result.spec.bindings[0].sessionId, input.sessionId);
   assert.equal(fake.created.length, 1);
@@ -159,18 +165,7 @@ test("unexpired material is created and the retained session is reused", async (
 test("expiry during retained Secret read is not reported as missing material", async (t) => {
   let clock = now;
   t.mock.method(Date, "now", () => clock);
-  const input = binding("project", "session_one", now + 1000);
-  const owner = revision([input.repositoryRef], input.deadlineWallMs);
-  const fake = fakeCore();
-  const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
-  await store.prepare(owner, repositoryMaterialSpec(owner, [input]));
-  const retained = {
-    kind: "retained",
-    repositoryRef: input.repositoryRef,
-    sessionId: input.sessionId,
-    deadlineWallMs: input.deadlineWallMs,
-  };
-  const spec = repositoryMaterialSpec(owner, [retained]);
+  const { input, owner, fake, store, spec } = await retainedSession();
   fake.onRead(() => {
     clock = input.deadlineWallMs;
   });
@@ -184,18 +179,7 @@ test("expiry during retained Secret validation is not reported as missing materi
   let validating = false;
   let observations = 0;
   t.mock.method(Date, "now", () => (validating && ++observations > 1 ? now + 1000 : now));
-  const input = binding("project", "session_one", now + 1000);
-  const owner = revision([input.repositoryRef], input.deadlineWallMs);
-  const fake = fakeCore();
-  const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
-  await store.prepare(owner, repositoryMaterialSpec(owner, [input]));
-  const retained = {
-    kind: "retained",
-    repositoryRef: input.repositoryRef,
-    sessionId: input.sessionId,
-    deadlineWallMs: input.deadlineWallMs,
-  };
-  const spec = repositoryMaterialSpec(owner, [retained]);
+  const { owner, fake, store, spec } = await retainedSession();
   fake.onRead(() => {
     validating = true;
   });

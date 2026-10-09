@@ -40,6 +40,10 @@ method below. Startup rejects a Driver that omits one.
 | `attachmentStatus`  | The same context plus the provisioned `SandboxResourceRef`.                                | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                      | Compute blocks activation on any state other than `ready` or `pending`.           |
 | `withdraw`          | Placement, revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.  |
 
+`attachForRevision` throws `CredentialSourceRevisionError` when two sources would
+share a placeholder environment variable; the worker then fails the deployment
+at once instead of retrying.
+
 A `CredentialSourceType` declares:
 
 - `type`: an implementation-defined name, such as `openai`.
@@ -58,7 +62,10 @@ The contract has no optional methods. `SecretDriver.withValue` is the
 passes to `registerSource` and `updateSource`. Withdrawal also needs two optional
 methods on its collaborators: Compute's `withdrawCredentialSource`, which the
 worker calls, and the Sandbox Driver's `harnessResource`, which returns the exact
-Sandbox a revision runs in without side effects.
+Sandbox a revision runs in without side effects. Compute throws
+`CredentialWithdrawalRefusedError` when its configuration cannot reach that
+Sandbox or it finds an object it does not own; the worker then fails the
+withdrawal without retrying.
 
 ## IAM
 
@@ -130,7 +137,11 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
    Compute derives the revision's Sandbox and calls `withdraw` for each pending
    withdrawal of the revision. Only `revoked` or `absent` marks one `revoked`;
    otherwise the work retries. The revision never re-attaches a withdrawn
-   source.
+   source. Because a Sandbox create accepted before a withdrawal can land after
+   it, each preparation, and each maintenance pass of a revision whose Harness
+   source is withdrawn, first calls `withdraw` with `recheck` for every
+   `revoked` source of the revision: the gateway then detaches only a source
+   the Sandbox still lists.
 8. **Deletion.** The API refuses deletion while an Agent draft, active revision,
    or pending deployment references the source. Otherwise it marks the record
    `deleting`, calls `removeSource`, then deletes the record. Revision stop
@@ -158,10 +169,11 @@ adopt or delete the same stored copy.
 
 | Symptom                                              | What to check                                                                                                                     |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Registration returns `400` or `404`                  | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
+| Registration returns `400`, `404`, or `409`          | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
 | Registration or binding returns `403`                | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
 | Deployment returns `409` with a gateway selected     | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
 | Registration, read status, or deletion returns `503` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
+| `503` naming the driver that registered the source   | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
 | A revision never activates                           | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
 
 ## Implementations

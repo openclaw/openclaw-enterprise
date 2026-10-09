@@ -16,6 +16,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { connect as connectTls } from "node:tls";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -23,6 +24,7 @@ import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
+  OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY,
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
@@ -398,9 +400,14 @@ async function waitForWorkspaceGatewayTls(hostname, port) {
 
 async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
   const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Podman Machine's host network is its Linux VM. Publish back to macOS loopback
-  // while using the VM-provided hostname to reach the host-owned port-forward.
-  const usesPodmanMachine = process.platform === "darwin" && basename(containerEngine) === "podman";
+  // Docker Desktop and Podman Machine host networking stays in their Linux VM.
+  // Publish to macOS loopback and use the engine's host alias for the port-forward.
+  const usesContainerVm = process.platform === "darwin";
+  const relayHost = usesContainerVm
+    ? basename(containerEngine) === "podman"
+      ? "host.containers.internal"
+      : "host.docker.internal"
+    : "127.0.0.1";
   const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
   assert.ok(
     dockerRuntimeImage,
@@ -422,8 +429,8 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
     /^(?:\d{1,3}\.){3}\d{1,3}$/,
     "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
   );
-  const endpointPort = usesPodmanMachine ? await availablePort() : 443;
-  if (usesPodmanMachine) {
+  const endpointPort = usesContainerVm ? await availablePort() : 443;
+  if (usesContainerVm) {
     const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
     assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
     await kubectl(
@@ -496,12 +503,12 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
     'const net = require("node:net");',
     "const targetPort = Number(process.argv[1]);",
     "const server = net.createServer((client) => {",
-    `  const upstream = net.connect({ host: ${JSON.stringify(usesPodmanMachine ? "host.containers.internal" : "127.0.0.1")}, port: targetPort });`,
+    `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
     "  client.pipe(upstream).pipe(client);",
     '  client.on("error", () => upstream.destroy());',
     '  upstream.on("error", () => client.destroy());',
     "});",
-    `server.listen(443, ${JSON.stringify(usesPodmanMachine ? "0.0.0.0" : "127.0.0.1")});`,
+    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
     'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
   ].join("\n");
   await executeFile(containerEngine, [
@@ -510,7 +517,7 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
     "-d",
     "--name",
     relayName,
-    ...(usesPodmanMachine ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
+    ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
     "--user",
     "0",
     "--stop-timeout",
@@ -767,6 +774,7 @@ async function waitForCredentialJobDeletion(operatorKubernetes, context, name) {
 }
 
 function credentialBridgeResource(context, claimName, subPath) {
+  const { uid: runtimeUser, gid: runtimeGroup } = OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY;
   const namespaceName = context.namespace.name;
   const name = credentialJobName(context.revision.id);
   const workloadIdentity = context.requirements.workloadIdentity;
@@ -809,7 +817,8 @@ function credentialBridgeResource(context, claimName, subPath) {
     },
     spec: {
       backoffLimit: 0,
-      ttlSecondsAfterFinished: 300,
+      // The copied ServiceAccount token remains bound to this completed Job's Pod.
+      ttlSecondsAfterFinished: servicePrincipalToken.expirationSeconds,
       template: {
         metadata: {
           labels: {
@@ -823,9 +832,9 @@ function credentialBridgeResource(context, claimName, subPath) {
           automountServiceAccountToken: false,
           securityContext: {
             runAsNonRoot: true,
-            runAsUser: 10001,
-            runAsGroup: 10001,
-            fsGroup: 10001,
+            runAsUser: runtimeUser,
+            runAsGroup: runtimeGroup,
+            fsGroup: runtimeGroup,
             seccompProfile: { type: "RuntimeDefault" },
           },
           containers: [
@@ -1027,9 +1036,8 @@ function portableRuntimeCommand(command) {
   const programIndex = inlineNodeProgramIndex(command);
   const runtimeArguments = command.slice(programIndex);
   const nodeProgramLoader = nodeProgramArguments("")[0];
-  if (runtimeArguments[0].endsWith(nodeProgramLoader)) {
-    // Compute already compressed the program behind this fixed loader. Preserve that contract
-    // and the bridge's credential bootstrap while splitting the concatenated payload below
+  if (runtimeArguments[0] === nodeProgramLoader) {
+    // Preserve Compute's fixed loader while splitting the compressed payload below
     // OpenShell's smaller argument limit.
     const payload = runtimeArguments.slice(1).join("");
     return [
@@ -1087,6 +1095,11 @@ function bridgeRequirements(context, claimName, subPath) {
   const nodeSetupCode = optionalSecretEnvironment(context.requirements, "OPENCLAW_NODE_SETUP_CODE");
   literalEnvironment(context.requirements, "OPENCLAW_NODE_CA_PEM");
   const credentialBootstrap = [
+    // The Driver keeps launch-time TMPDIR at /tmp for the supervisor; after
+    // launch, the native worker must use the private mount it owns.
+    ...(needsNativeTemporary
+      ? [`process.env.TMPDIR = ${JSON.stringify(nativeTemporaryMountPath)};`]
+      : []),
     ...(appServerToken === undefined
       ? []
       : [
@@ -1101,8 +1114,16 @@ function bridgeRequirements(context, claimName, subPath) {
   ].join("\n");
   const runtimeCommand = structuredClone(context.requirements.command);
   const programIndex = inlineNodeProgramIndex(runtimeCommand);
-  runtimeCommand[programIndex] = `${credentialBootstrap}
-${runtimeCommand[programIndex]}`;
+  assert.equal(runtimeCommand[programIndex], nodeProgramArguments("")[0]);
+  const runtimeProgram = inflateRawSync(
+    Buffer.from(runtimeCommand.slice(programIndex + 1).join(""), "base64"),
+  ).toString("utf8");
+  // The Driver admits only the fixed loader; bootstrap belongs in its compressed program.
+  runtimeCommand.splice(
+    programIndex,
+    runtimeCommand.length - programIndex,
+    ...nodeProgramArguments(`${credentialBootstrap}\n${runtimeProgram}`),
+  );
   const environment = context.requirements.environment
     .filter(
       ({ name }) =>
@@ -1122,15 +1143,6 @@ ${runtimeCommand[programIndex]}`;
       }
       if (needsNativeTemporary && entry.name === "NODE_COMPILE_CACHE") {
         return { name: entry.name, value: `${bridgedNodeStateMountPath}/.cache/node-compile` };
-      }
-      if (needsNativeTemporary && entry.name === "OPENCLAW_NATIVE_INFERENCE_CONFIG") {
-        const configuration = JSON.parse(entry.value);
-        assert.ok(Array.isArray(configuration.workspaces));
-        configuration.workspaces = configuration.workspaces.map((workspace) => {
-          assert.equal(workspace.path, `${nodeStateMountPath}/node-host`);
-          return { ...workspace, path: `${bridgedNodeStateMountPath}/node-host` };
-        });
-        return { name: entry.name, value: JSON.stringify(configuration) };
       }
       return entry;
     });
@@ -1194,12 +1206,16 @@ ${runtimeCommand[programIndex]}`;
         mountPath: openclawHomeMountPath,
         readOnly: false,
       },
-      {
-        claimName,
-        subPath: `${bridgedWorkspaceSubPath}/.codex`,
-        mountPath: "/home/node/.codex",
-        readOnly: false,
-      },
+      ...(needsPluginRuntime
+        ? [
+            {
+              claimName,
+              subPath: `${bridgedWorkspaceSubPath}/.codex`,
+              mountPath: "/home/node/.codex",
+              readOnly: false,
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -1357,14 +1373,12 @@ function assertBridgedNativeStateMount(pod) {
   const nativeInference = JSON.parse(
     environment.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG")?.value,
   );
-  assert.equal(nativeInference.workspaces.length > 0, true);
-  assert.equal(
-    nativeInference.workspaces.every(
-      ({ path }) => path === `${bridgedNodeStateMountPath}/node-host`,
-    ),
-    true,
-    "the native inference grant must follow the bridged node-state mount.",
-  );
+  assert.ok(nativeInference.models.providers.openai.models.length > 0);
+  assert.deepEqual(nativeInference.models.providers.openai.apiKey, {
+    source: "env",
+    provider: "model",
+    id: "OPENAI_API_KEY",
+  });
   const mounts = container.volumeMounts ?? [];
   assert.equal(
     mounts.some(
@@ -1649,22 +1663,17 @@ function createIntegrationSandboxDriverFactory(
           const subPath = `.openclaw/openshell-bootstrap/${hash(context.revision.id, 32)}`;
           bridge = credentialBridgeResource(context, claimName, subPath);
           const previousBridge = credentialBridges.get(context.revision.id);
-          if (previousBridge !== undefined) {
-            await deleteCredentialJob(operatorKubernetes, context, previousBridge.metadata.name);
-            await waitForCredentialJobDeletion(
+          if (previousBridge === undefined) {
+            await applyCredentialJob(operatorKubernetes, bridge);
+            await waitForCredentialJob(
               operatorKubernetes,
               context,
-              previousBridge.metadata.name,
+              bridge.metadata.name,
+              context.namespace.name,
             );
+            // Readiness retries must not revoke the token by deleting its bound Pod.
+            credentialBridges.set(context.revision.id, bridge);
           }
-          credentialBridges.set(context.revision.id, bridge);
-          await applyCredentialJob(operatorKubernetes, bridge);
-          await waitForCredentialJob(
-            operatorKubernetes,
-            context,
-            bridge.metadata.name,
-            context.namespace.name,
-          );
           const requirements = bridgeRequirements(context, claimName, subPath);
           const endpoint = await endpointForNamespace(context, {
             sandboxServiceAccountName: context.requirements.workloadIdentity.serviceAccountName,
@@ -1683,10 +1692,15 @@ function createIntegrationSandboxDriverFactory(
             );
             provisioningFailures.set(context.revision.id, error);
           }
-          if (bridge !== undefined) {
+          if (bridge !== undefined && !credentialBridges.has(context.revision.id)) {
             await deleteCredentialJob(operatorKubernetes, context, bridge.metadata.name).catch(
               () => undefined,
             );
+            await waitForCredentialJobDeletion(
+              operatorKubernetes,
+              context,
+              bridge.metadata.name,
+            ).catch(() => undefined);
           }
           throw error;
         }
@@ -1706,6 +1720,18 @@ function createIntegrationSandboxDriverFactory(
                 endpoint,
                 context,
               ).harnessEndpoint(context);
+            },
+            // Compute activates only a Harness that completes the authenticated handshake.
+            async harnessStatus(context) {
+              const endpoint = await endpointForNamespace(context, {
+                sandboxServiceAccountName: agentSandboxServiceAccount(context),
+              });
+              return await delegate(
+                context.requirements,
+                context.namespace.name,
+                endpoint,
+                context,
+              ).harnessStatus(context);
             },
           }),
       async cleanup(context) {
@@ -1736,7 +1762,8 @@ function createIntegrationSandboxDriverFactory(
                 "sh",
                 "-ceu",
                 [
-                  "chmod -R u+w /bootstrap/plugin-runtime /bootstrap/service-principal",
+                  "if [ -d /bootstrap/plugin-runtime ]; then chmod -R u+w /bootstrap/plugin-runtime; fi",
+                  "chmod -R u+w /bootstrap/service-principal",
                   "rm -f /bootstrap/app-server-token /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem",
                   "rm -rf /bootstrap/plugin-runtime /bootstrap/service-principal /bootstrap/runtime-assets /bootstrap/native-tmp /bootstrap/openclaw-home",
                 ].join("\n"),
@@ -1747,19 +1774,28 @@ function createIntegrationSandboxDriverFactory(
               cleaner.spec.template.spec.volumes = cleaner.spec.template.spec.volumes.filter(
                 ({ name }) => name === "bootstrap",
               );
-              await applyCredentialJob(operatorKubernetes, cleaner);
-              await waitForCredentialJob(
-                operatorKubernetes,
-                context,
-                cleaner.metadata.name,
-                context.namespace.name,
-              );
-              await deleteCredentialJob(
-                operatorKubernetes,
-                context,
-                cleaner.metadata.name,
-                context.namespace.name,
-              );
+              try {
+                await applyCredentialJob(operatorKubernetes, cleaner);
+                await waitForCredentialJob(
+                  operatorKubernetes,
+                  context,
+                  cleaner.metadata.name,
+                  context.namespace.name,
+                );
+              } finally {
+                await deleteCredentialJob(
+                  operatorKubernetes,
+                  context,
+                  cleaner.metadata.name,
+                  context.namespace.name,
+                ).catch(() => undefined);
+                await deleteCredentialJob(
+                  operatorKubernetes,
+                  context,
+                  bridge.metadata.name,
+                  context.namespace.name,
+                ).catch(() => undefined);
+              }
               credentialBridges.delete(context.revision.id);
             }
             await deleteCredentialJob(
@@ -1895,7 +1931,27 @@ async function prepareProductionInstallation(
     // scripts/k3d builds this runtime from an OpenClaw source with native worker support.
     configuration.runtime = { nativeWorkerSupport: "custom-image" };
     configuration.drivers.compute.configuration.runtime.nativeOpenClawSessionCapacity = 2;
+    // The node and two retained session workers share one container; the single-Harness
+    // 2 GiB budget OOM-kills the second turn. Keep Compute and Sandbox budgets aligned.
+    configuration.drivers.compute.configuration.resources.agent.limits.memory = "6Gi";
+    configuration.drivers.sandbox.configuration.kubernetes.agentResources.limits.memory =
+      configuration.drivers.compute.configuration.resources.agent.limits.memory;
+    configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
+    // Automatic enrollment egress belongs to the Driver's Codex runtime provider. The native
+    // verification bridge must admit only its Node executable and exact Gateway endpoint.
+    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
+      name: "workspace-node-enrollment",
+      binaries: [{ path: "/usr/local/bin/node" }],
+      endpoints: [
+        {
+          host: workspaceGateway.routing.hostname,
+          ports: [workspaceGateway.routing.endpointPort],
+          tls: "skip",
+          enforcement: "enforce",
+        },
+      ],
+    });
   }
   // A cluster-internal echo service stands in for a protected non-model API. Only curl may
   // carry a non-model source's credential to it.
@@ -1910,7 +1966,7 @@ async function prepareProductionInstallation(
   configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
     "/home/node/.openclaw-node",
   );
-  // The Sandbox Driver adds the workspace node's Gateway egress rule itself
+  // For Codex, the Sandbox Driver adds the workspace node's Gateway egress rule itself
   // (`workspace-node-enrollment`); a second rule for the same host and port is ambiguous.
   configuration.drivers.secret.configuration.authentication = controller.authentication;
   const gatewayApiKeyPath = join(directory, "workspace-gateway-api-key");

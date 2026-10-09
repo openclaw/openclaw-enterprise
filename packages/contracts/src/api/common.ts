@@ -1,4 +1,21 @@
 import { Type } from "typebox";
+import {
+  BACKEND_ID_MAX_CHARACTERS,
+  BACKEND_ID_PATTERN,
+  NAME_MAX_CHARACTERS,
+  PLAIN_TEXT_PATTERN,
+} from "./plain-text.ts";
+
+// The Name and Backend ID text rules live in a module with no dependencies, so the
+// installation profile renderer can load them without `pnpm install`.
+export {
+  BACKEND_ID_MAX_CHARACTERS,
+  BACKEND_ID_PATTERN,
+  isBackendId,
+  isName,
+  NAME_MAX_CHARACTERS,
+  NAME_RULE,
+} from "./plain-text.ts";
 
 const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
@@ -30,60 +47,16 @@ export const AgentProvisioningWorkId = Type.String({
   maxLength: 200,
   pattern: "^[A-Za-z0-9._~:@/-]{1,200}$",
 });
-/**
- * The text rule shared by Names and Backend IDs: no leading or trailing whitespace, and no
- * control character (C0, DEL or C1) and no line or paragraph separator (U+2028, U+2029)
- * anywhere. C1 is refused because the PostgreSQL `[[:cntrl:]]` checks on names and backend
- * IDs refuse it: PostgreSQL's `[[:cntrl:]]` is exactly C0, DEL and C1 under every locale
- * provider, so a value the API accepted could not be saved. The separators never matched the
- * old `.+` Name pattern either; PostgreSQL accepts them.
- */
-const PLAIN_TEXT_PATTERN = /^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.source;
-
-/**
- * The Backend ID rule, shared by the API schema, OCC's Installation configuration check and
- * the in-memory state store. An ID is 1 to 200 code points (Ajv counts `maxLength` that way,
- * and so does PostgreSQL `char_length`) and follows the plain text rule above.
- */
-export const BACKEND_ID_PATTERN = PLAIN_TEXT_PATTERN;
-export const BACKEND_ID_MAX_CHARACTERS = 200;
 export const BackendId = Type.String({
   minLength: 1,
   maxLength: BACKEND_ID_MAX_CHARACTERS,
   pattern: BACKEND_ID_PATTERN,
 });
 
-const PLAIN_TEXT = new RegExp(PLAIN_TEXT_PATTERN, "u");
-const LONE_SURROGATE = /\p{Cs}/u;
-
-/**
- * True when `value` is 1 to `maxCharacters` code points that follow the plain text rule,
- * checked the way Ajv checks the schema. A lone surrogate is refused too: it has no UTF-8
- * spelling, so it could not be stored as given.
- */
-function isPlainText(value: unknown, maxCharacters: number): value is string {
-  return (
-    typeof value === "string" &&
-    PLAIN_TEXT.test(value) &&
-    !LONE_SURROGATE.test(value) &&
-    Array.from(value).length <= maxCharacters
-  );
-}
-
-/** True when `value` meets the Backend ID rule (see `isPlainText`). */
-export function isBackendId(value: unknown): value is string {
-  return isPlainText(value, BACKEND_ID_MAX_CHARACTERS);
-}
-
 export const Timestamp = Type.String({
   format: "date-time",
   pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
 });
-
-export const NAME_MAX_CHARACTERS = 200;
-/** The Name rule in words, for refusals of names that skip the API schema. */
-export const NAME_RULE =
-  "1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators";
 
 /** A resource Name: 1 to 200 code points that follow the plain text rule. */
 export const Name = Type.String({
@@ -91,15 +64,6 @@ export const Name = Type.String({
   maxLength: NAME_MAX_CHARACTERS,
   pattern: PLAIN_TEXT_PATTERN,
 });
-
-/**
- * True when `value` meets the Name rule, checked the way Ajv checks the `Name` schema (plus
- * the lone surrogate refusal of `isPlainText`). OCC applies it to names that skip the API:
- * the stored Installation, configured default Presets and direct controller calls.
- */
-export function isName(value: unknown): value is string {
-  return isPlainText(value, NAME_MAX_CHARACTERS);
-}
 
 export const PluginApproversSchema = Type.Array(
   Type.Object(
@@ -726,7 +690,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it.",
+          "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
@@ -839,6 +803,8 @@ export const ERROR_CODES = Object.freeze([
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
+  "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
   "MODEL_DISCOVERY_RATE_LIMITED",
@@ -912,6 +878,14 @@ export const ErrorResponse = Type.Object(
           Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
             description:
               "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+          }),
+          Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
+            description:
+              "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+          }),
+          Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
+            description:
+              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
           }),
           Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
             description:

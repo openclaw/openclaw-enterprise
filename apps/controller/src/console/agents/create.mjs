@@ -138,7 +138,8 @@ function wait(ms) {
 
 // Failed provisioning codes that a retry of the same job cannot fix: the worker rejected
 // the request (a taken name, a scope or authorization rejection, a Namespace or Agent
-// lifecycle change) or the job was cancelled. Every other code, including the worker's
+// lifecycle change, an Installation Driver change the stored plan no longer passes, or a
+// Secret Driver switch) or the job was cancelled. Every other code, including the worker's
 // PROVISIONING_FAILED and PROVISIONING_WORK_NOT_FOUND, keeps Retry.
 const PERMANENT_PROVISIONING_CODES = new Set(["PROVISIONING_REJECTED", "PROVISIONING_CANCELLED"]);
 

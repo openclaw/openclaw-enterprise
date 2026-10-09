@@ -62,8 +62,21 @@ require_private_file() {
   (((8#$mode & 077) == 0)) || die "$path must not grant group or other permissions."
 }
 
+# Input checks set LC_ALL=C locally: under a locale such as en_US.UTF-8, bash
+# regex ranges like [a-f0-9] also match accented letters and non-ASCII digits.
 immutable_image() {
+  local LC_ALL=C
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
+}
+
+positive_integer() {
+  local LC_ALL=C
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+full_commit_sha() {
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-f0-9]{40}$ ]]
 }
 
 json_file_name() {
@@ -165,14 +178,14 @@ for input in kubeconfig context namespace release values installation source_rev
 done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
   die "select a controller, broker, or runtime image."
-[[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || die "--timeout-seconds must be positive."
+positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
 [[ -z "$controller_image" ]] || immutable_image "$controller_image" ||
   die "--controller-image must be an approved immutable SHA-256 image reference."
 [[ -z "$broker_image" ]] || immutable_image "$broker_image" ||
   die "--broker-image must be an approved immutable SHA-256 image reference."
 [[ -z "$runtime_image" ]] || immutable_image "$runtime_image" ||
   die "--runtime-image must be an approved immutable SHA-256 image reference."
-[[ "$source_revision" =~ ^[a-f0-9]{40}$ ]] ||
+full_commit_sha "$source_revision" ||
   die "--source-revision must be a full lowercase Git commit SHA."
 if ((resume)); then
   [[ -d "$evidence_dir" && ! -L "$evidence_dir" ]] || die "--resume requires the original evidence directory."

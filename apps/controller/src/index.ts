@@ -79,6 +79,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
 import {
   OCC_SERVICE_KEY_HEADER,
+  SERVICE_KEY_NAME_MAX_LENGTH,
+  ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
   type PreparedAuthAccount,
@@ -100,6 +102,7 @@ import {
   canonicalFailure,
   cappedPath,
   dependencyUnavailable,
+  dependencyUnavailableLogFields,
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
@@ -307,7 +310,8 @@ function ipv4(value: string): number | undefined {
   }
   let result = 0;
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) {
+    // Same no-leading-zero rule as production trusted proxies and Compute: "010" is not 10.
+    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(part)) {
       return undefined;
     }
     const octet = Number(part);
@@ -325,7 +329,13 @@ function cidrContains(cidr: string, address: string): boolean {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const prefix = Number(prefixText);
-  if (!/^\d+$/.test(prefixText) || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+  // "08" is not prefix 8. Production parseCidr refuses that spelling, and so does Compute.
+  if (
+    !/^(?:0|[1-9][0-9]{0,2})$/.test(prefixText) ||
+    !Number.isInteger(prefix) ||
+    prefix < 0 ||
+    prefix > 32
+  ) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const networkValue = ipv4(network);
@@ -2604,7 +2614,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   properties: {
                     servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
                     namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
-                    name: { type: "string", minLength: 1, maxLength: 32, pattern: "\\S" },
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: SERVICE_KEY_NAME_MAX_LENGTH,
+                      pattern: "\\S",
+                    },
                     expiresIn: {
                       type: "integer",
                       minimum: 86400,
@@ -2768,10 +2783,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 ...(body.expiresIn === undefined ? {} : { expiresIn: body.expiresIn }),
               });
               await options.auditSink.append(audit(key));
-            } catch {
+            } catch (error) {
               // Never return an unaudited credential; remove it if audit persistence fails.
               if (key) {
                 await options.auth.revokeServiceKey(key).catch(() => {});
+              }
+              // The schema admitted this name, so a refusal is a contract mismatch, not an
+              // outage: answer as the schema does for a name over its bound.
+              if (error instanceof ServiceKeyNameRefused) {
+                throw failure(
+                  400,
+                  "INVALID_REQUEST",
+                  `The request does not match the operation contract: body /name is too long (expected at most ${SERVICE_KEY_NAME_MAX_LENGTH} characters).`,
+                  [{ path: "/name", code: "TOO_LONG" }],
+                );
               }
               throw dependencyUnavailable();
             }
@@ -3722,8 +3747,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                       "INVALID_REQUEST",
                       "The request does not match the operation contract.",
                     )
-                  : new DependencyUnavailableError(
-                      error instanceof Error ? error.message : "Auth account provisioning failed.",
+                  : Object.assign(
+                      new DependencyUnavailableError("Auth account provisioning failed."),
+                      // The API log names the cause's class and code, never its message.
+                      { cause: error },
                     );
         }
         const account = prepared;
@@ -3933,6 +3960,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         host: "auth.openai.com",
         reason: error.reason,
         failure: error.failure,
+      });
+    }
+    if (
+      mapped.status === 503 &&
+      mapped.code === "DEPENDENCY_UNAVAILABLE" &&
+      error instanceof Error &&
+      isDependencyUnavailable(error)
+    ) {
+      // The response keeps its text (the caller learns nothing more); the operator finds the
+      // cause here by request ID. Reading the error must never change the response.
+      let fields: ReturnType<typeof dependencyUnavailableLogFields> = {};
+      try {
+        fields = dependencyUnavailableLogFields(error);
+      } catch {
+        // An error whose fields cannot be read is logged without them.
+      }
+      app.log.warn({
+        event: "http.dependency_unavailable",
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url ?? "unmatched",
+        ...fields,
       });
     }
     if (mapped.code === "INTERNAL_ERROR") {

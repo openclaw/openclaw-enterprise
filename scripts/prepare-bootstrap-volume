@@ -28,12 +28,17 @@ quote_command() {
   printf '%s' "${quoted[*]}"
 }
 
+# Name checks set LC_ALL=C locally: under a locale such as en_US.UTF-8, bash
+# regex ranges like [a-z0-9] also match accented letters and non-ASCII digits,
+# which Kubernetes refuses later with a less direct error.
 is_dns_label() {
+  local LC_ALL=C
   local value=$1
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#value} -le 63 ]]
 }
 
 is_dns_subdomain() {
+  local LC_ALL=C
   local value=$1
   local label
   [[ ${#value} -le 253 ]] || return 1
@@ -46,6 +51,7 @@ is_dns_subdomain() {
 }
 
 is_label_name() {
+  local LC_ALL=C
   local value=$1
   [[ ${#value} -le 63 ]] || return 1
   [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$ ]]
@@ -64,10 +70,15 @@ is_label_key() {
   is_label_name "$value"
 }
 
+# Kubernetes allows an empty label value, as in node-role.kubernetes.io/infra=.
 is_label_value() {
   local value=$1
-  [[ -n "$value" ]] || return 1
-  is_label_name "$value"
+  [[ -z "$value" ]] || is_label_name "$value"
+}
+
+immutable_image() {
+  local LC_ALL=C
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
 }
 
 add_node_selector() {
@@ -77,7 +88,7 @@ add_node_selector() {
   key=${selector%%=*}
   value=${selector#*=}
   is_label_key "$key" || die "--node-selector key must be a Kubernetes label key."
-  is_label_value "$value" || die "--node-selector value must be a nonempty Kubernetes label value."
+  is_label_value "$value" || die "--node-selector value must be a Kubernetes label value."
   if ((${#node_selectors[@]})); then
     for existing in "${node_selectors[@]}"; do
       [[ "${existing%%=*}" != "$key" ]] || die "--node-selector repeats key $key."
@@ -146,7 +157,7 @@ is_dns_label "$namespace" ||
   die "--namespace must be a DNS label."
 is_dns_subdomain "$claim" ||
   die "--claim must be a DNS subdomain."
-[[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] ||
+immutable_image "$image" ||
   die "--image must be an approved immutable SHA-256 image reference."
 
 suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)

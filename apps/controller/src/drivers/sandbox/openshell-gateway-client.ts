@@ -15,9 +15,23 @@ import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
+import { isIP } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
+import { checkServerIdentity, connect as tlsConnect, createSecureContext } from "node:tls";
 import { fileURLToPath } from "node:url";
-import type { Client, ClientUnaryCall, Metadata, ServiceClientConstructor } from "@grpc/grpc-js";
+import {
+  getServiceDocument,
+  serviceWebSocketHandshake,
+  type OpenShellServiceDocument,
+} from "./openshell-service-transport.ts";
+import type {
+  ChannelCredentials,
+  Client,
+  ClientUnaryCall,
+  Metadata,
+  ServiceClientConstructor,
+} from "@grpc/grpc-js";
 import type { PackageDefinition } from "@grpc/proto-loader";
 
 export {
@@ -36,6 +50,8 @@ export interface OpenShellGatewayClientOptions {
     | { readonly mode: "unauthenticated" }
     | { readonly mode: "bearerTokenFile"; readonly path: string };
   readonly requestTimeoutMs?: number;
+  /** Bounds one Sandbox deletion: the DeleteSandbox call plus any wait for its completion. */
+  readonly sandboxDeleteTimeoutMs?: number;
   readonly rootCertificatePath?: string;
 }
 
@@ -235,6 +251,19 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     signal: AbortSignal,
   ): Promise<OpenShellServiceResponse | undefined>;
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
+  /** One bounded GET to a bearer-passthrough service path, through the gateway listener. */
+  getServiceDocument(
+    serviceUrl: string,
+    path: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellServiceDocument>;
+  /** True when the service completes an authenticated WebSocket handshake. */
+  serviceWebSocketHandshake(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<boolean>;
   getProviderProfile(
     workspace: string,
     id: string,
@@ -335,11 +364,15 @@ class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
 
   constructor(method: OpenShellMethod, error: unknown) {
     const grpcStatus = rawStatusCode(error);
+    // A failure without a gRPC status (a local client error) keeps only its class: its message
+    // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
     const detail =
       method === "CreateSandbox"
         ? sanitizedErrorDetail(error)
-        : grpcStatus === undefined
-          ? sanitizedText(error instanceof Error ? error.message : undefined)
+        : grpcStatus === undefined &&
+            error instanceof Error &&
+            /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
+          ? error.name
           : undefined;
     super(
       `OpenShell ${method} failed${
@@ -352,6 +385,15 @@ class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
 const CLIENT_MODULE = "@grpc/grpc-js";
 const LOADER_MODULE = "@grpc/proto-loader";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+// At the pinned OpenShell revision, DeleteSandbox answers only after the Kubernetes driver
+// has watched the Sandbox Pod go (a 30 s termination grace plus a 30 s Kubernetes API
+// timeout, around list, delete and get calls of up to 30 s each). A running Sandbox takes
+// about 30 s, so the ordinary request deadline (at most 30 s) expired on every redeploy and
+// the worker retried the whole prepare pass (finding 857). 120 s covers that with headroom;
+// a rarer longer run fails this attempt, and OpenShell's delete keeps going regardless of
+// the client, so the retry sees ACCEPTED or NOT_FOUND.
+const DEFAULT_SANDBOX_DELETE_TIMEOUT_MS = 120_000;
+const SANDBOX_DELETE_POLL_INTERVAL_MS = 500;
 
 function nonempty(value: unknown, description: string): string {
   if (!isNonEmptyString(value)) {
@@ -568,7 +610,7 @@ function normalizeEndpoint(endpoint: string): {
     );
   }
   if (parsed.protocol === "http:") {
-    return { target: parsed.host, secure: false };
+    return { target: `${parsed.hostname}:${parsed.port || "80"}`, secure: false };
   }
   if (parsed.protocol === "https:") {
     return { target: parsed.host, secure: true };
@@ -598,7 +640,7 @@ function serviceUrl(value: unknown): URL {
   return serviceUrl;
 }
 
-function normalizeServiceUrl(value: unknown, endpoint: string): string {
+export function normalizeServiceUrl(value: unknown, endpoint: string): string {
   const normalized = serviceUrl(value);
   const gateway = normalizeEndpoint(endpoint);
   const gatewayUrl = new URL(`${gateway.secure ? "https" : "http"}://${gateway.target}`);
@@ -692,6 +734,61 @@ function metadataValue(token: string): string {
   return `Bearer ${value}`;
 }
 
+// TLS forbids an IP address in SNI, and Node 25 and later reject one (DEP0123), but
+// grpc-js always sends the target host as the servername. An IP endpoint therefore
+// connects through this connector: no SNI, and the certificate must carry the
+// endpoint IP, verified the same way the service transport does (`tlsIdentity`).
+// A DNS endpoint uses createSsl. grpc-js's GRPC_SSL_CIPHER_SUITES and
+// GRPC_DEFAULT_SSL_ROOTS_FILE_PATH overrides do not apply to this path.
+function ipEndpointCredentials(
+  grpc: typeof import("@grpc/grpc-js"),
+  address: string,
+  rootCertificate: Buffer | undefined,
+): ChannelCredentials {
+  const secureContext = createSecureContext(
+    rootCertificate === undefined ? {} : { ca: rootCertificate },
+  );
+  class IpEndpointCredentials extends grpc.ChannelCredentials {
+    _isSecure(): boolean {
+      return true;
+    }
+    _equals(other: ChannelCredentials): boolean {
+      return other === this;
+    }
+    // Typed through Parameters: grpc-js does not export the GrpcUri target type.
+    _createSecureConnector(
+      ...[, , callCredentials]: Parameters<ChannelCredentials["_createSecureConnector"]>
+    ): ReturnType<ChannelCredentials["_createSecureConnector"]> {
+      return {
+        connect: (socket) =>
+          new Promise((resolve, reject) => {
+            const tlsSocket = tlsConnect(
+              {
+                socket,
+                secureContext,
+                ALPNProtocols: ["h2"],
+                checkServerIdentity: (_name, certificate) =>
+                  checkServerIdentity(address, certificate),
+              },
+              () => {
+                if (!tlsSocket.authorized) {
+                  reject(tlsSocket.authorizationError);
+                  return;
+                }
+                resolve({ socket: tlsSocket, secure: true });
+              },
+            );
+            tlsSocket.on("error", reject);
+          }),
+        waitForReady: () => Promise.resolve(),
+        getCallCredentials: () => callCredentials ?? grpc.CallCredentials.createEmpty(),
+        destroy: () => {},
+      };
+    }
+  }
+  return new IpEndpointCredentials();
+}
+
 async function metadata(
   grpc: typeof import("@grpc/grpc-js"),
   auth: OpenShellGatewayClientOptions["auth"],
@@ -726,6 +823,7 @@ async function loadGrpc(): Promise<{
 export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   private readonly options: OpenShellGatewayClientOptions;
   private readonly requestTimeoutMs: number;
+  private readonly sandboxDeleteTimeoutMs: number;
   private client:
     | Promise<{
         readonly grpc: typeof import("@grpc/grpc-js");
@@ -739,12 +837,54 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (!Number.isSafeInteger(this.requestTimeoutMs) || this.requestTimeoutMs < 1000) {
       throw new OpenShellGatewayFailure("OpenShell request timeout must be at least 1000 ms.");
     }
+    this.sandboxDeleteTimeoutMs = Math.max(
+      this.requestTimeoutMs,
+      options.sandboxDeleteTimeoutMs ?? DEFAULT_SANDBOX_DELETE_TIMEOUT_MS,
+    );
+    if (!Number.isSafeInteger(this.sandboxDeleteTimeoutMs)) {
+      throw new OpenShellGatewayFailure("OpenShell Sandbox delete timeout must be an integer.");
+    }
     if (options.auth?.mode === "bearerTokenFile" && !isAbsolute(options.auth.path)) {
       throw new OpenShellGatewayFailure("OpenShell bearer token file path must be absolute.");
     }
     if (options.rootCertificatePath !== undefined && !isAbsolute(options.rootCertificatePath)) {
       throw new OpenShellGatewayFailure("OpenShell root certificate path must be absolute.");
     }
+  }
+
+  async getServiceDocument(
+    serviceUrl: string,
+    path: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellServiceDocument> {
+    return getServiceDocument(this.serviceTransportOptions(), serviceUrl, path, bearer, signal);
+  }
+
+  async serviceWebSocketHandshake(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
+  }
+
+  private serviceRootCertificate: Buffer | undefined;
+
+  private serviceTransportOptions() {
+    // Validates the endpoint exactly as the gRPC channel does, and like it reads the
+    // root certificate once.
+    normalizeEndpoint(this.options.endpoint);
+    if (this.options.rootCertificatePath !== undefined) {
+      this.serviceRootCertificate ??= readFileSync(this.options.rootCertificatePath);
+    }
+    return {
+      endpoint: this.options.endpoint,
+      requestTimeoutMs: this.requestTimeoutMs,
+      ...(this.serviceRootCertificate === undefined
+        ? {}
+        : { rootCertificate: this.serviceRootCertificate }),
+    };
   }
 
   async health(signal: AbortSignal): Promise<void> {
@@ -986,12 +1126,23 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     });
   }
 
+  /**
+   * Resolves only once OpenShell reports the Sandbox gone: COMPLETED, ALREADY_ABSENT or
+   * NOT_FOUND from DeleteSandbox, or, after ACCEPTED (or no outcome), GetSandbox no longer
+   * finding the targeted Sandbox. One deadline bounds the call and that wait (a GetSandbox in
+   * flight can overrun it by one request timeout); past it the deletion is reported as an
+   * unavailable dependency, so the caller retries the idempotent delete instead of treating
+   * the Sandbox as removed.
+   */
   async deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void> {
+    const deadlineAt = Date.now() + this.sandboxDeleteTimeoutMs;
+    let response: RecordValue;
     try {
-      await this.unary(
+      response = await this.unary(
         "DeleteSandbox",
         { name: request.name, workspace_scope: { workspace: request.workspace } },
         signal,
+        this.sandboxDeleteTimeoutMs,
       );
     } catch (error) {
       const { grpc } = await this.ensureClient();
@@ -999,6 +1150,34 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         return;
       }
       throw error;
+    }
+    if (deletionConfirmed(response)) {
+      return;
+    }
+    // ACCEPTED: the gateway record still exists while OpenShell finishes cleanup. Watch the
+    // targeted Sandbox ID when OpenShell names it, so a same-name replacement does not hold
+    // this wait open.
+    const sandboxId = isNonEmptyString(response.sandbox_id) ? response.sandbox_id : undefined;
+    for (;;) {
+      const current = await this.getSandbox(request, signal);
+      if (
+        current === undefined ||
+        (sandboxId !== undefined && current.id !== undefined && current.id !== sandboxId)
+      ) {
+        return;
+      }
+      if (Date.now() + SANDBOX_DELETE_POLL_INTERVAL_MS >= deadlineAt) {
+        throw new DependencyUnavailableError(
+          `OpenShell accepted deletion of Sandbox ${request.name} but did not finish it within ${Math.round(
+            this.sandboxDeleteTimeoutMs / 1000,
+          )} s.`,
+        );
+      }
+      try {
+        await sleep(SANDBOX_DELETE_POLL_INTERVAL_MS, undefined, { signal });
+      } catch (error) {
+        throw signal.aborted ? (signal.reason ?? error) : error;
+      }
     }
   }
 
@@ -1358,6 +1537,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     method: OpenShellMethod,
     request: RecordValue,
     signal: AbortSignal,
+    timeoutMs: number = this.requestTimeoutMs,
   ): Promise<RecordValue> {
     signal.throwIfAborted();
     const { grpc, client } = await this.ensureClient();
@@ -1380,7 +1560,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         call = client[method](
           request,
           headers,
-          { deadline: deadline(this.requestTimeoutMs) },
+          { deadline: deadline(timeoutMs) },
           (error, response) => {
             signal.removeEventListener("abort", abort);
             if (signal.aborted) {
@@ -1471,13 +1651,18 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       throw new OpenShellGatewayFailure("OpenShell gRPC service was not found in the proto.");
     }
     const endpoint = normalizeEndpoint(this.options.endpoint);
-    const credentials = endpoint.secure
-      ? grpc.credentials.createSsl(
-          this.options.rootCertificatePath === undefined
-            ? undefined
-            : readFileSync(this.options.rootCertificatePath),
-        )
-      : grpc.credentials.createInsecure();
+    let credentials: ChannelCredentials = grpc.credentials.createInsecure();
+    if (endpoint.secure) {
+      const rootCertificate =
+        this.options.rootCertificatePath === undefined
+          ? undefined
+          : readFileSync(this.options.rootCertificatePath);
+      const address = new URL(`https://${endpoint.target}`).hostname.replace(/^\[(.*)\]$/, "$1");
+      credentials =
+        isIP(address) === 0
+          ? grpc.credentials.createSsl(rootCertificate)
+          : ipEndpointCredentials(grpc, address, rootCertificate);
+    }
     return {
       grpc,
       client: new OpenShell(endpoint.target, credentials) as unknown as OpenShellGrpcClient,

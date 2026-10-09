@@ -2093,6 +2093,33 @@ async function verifyCredentialSourceContract(
     },
     "An active revision's credential source cannot be deleted.",
   );
+  const blocking = (transaction) =>
+    transaction.credentialSources.findBlockingReference(sourceNamespace.id, source.id);
+  // Queued withdrawal work for a revision that held the source blocks deletion on its own, and
+  // is reported as such so the refusal can say that only waiting helps. Rolled back.
+  const rollback = new Error("roll back the withdrawal-only case");
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      await transaction.agents.compareAndClearActiveRevision(
+        sourceNamespace.id,
+        sourceAgent.id,
+        sourceRevision.id,
+      );
+      await transaction.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        target: "credentials_withdrawn",
+        operationId: "withdrawal-blocking-contract",
+        namespaceId: sourceNamespace.id,
+        resourceId: sourceRevision.id,
+        actorId: "principal-platform-state-contract",
+      });
+      assert.equal(await sourceReferences(transaction), true);
+      assert.equal(await blocking(transaction), "withdrawal_work");
+      throw rollback;
+    }),
+    (error) => error === rollback,
+  );
   await store.transact(async (transaction) => {
     await transaction.agents.compareAndClearActiveRevision(
       sourceNamespace.id,
@@ -2100,6 +2127,7 @@ async function verifyCredentialSourceContract(
       sourceRevision.id,
     );
     assert.equal(await sourceReferences(transaction), false);
+    assert.equal(await blocking(transaction), undefined);
     // A queued deployment will attach the source, so it must survive until that work settles.
     await transaction.operations.append({
       kind: "agent_revision",
@@ -2109,6 +2137,7 @@ async function verifyCredentialSourceContract(
       actorId: "principal-platform-state-contract",
     });
     assert.equal(await sourceReferences(transaction), true);
+    assert.equal(await blocking(transaction), "reference");
     assert.equal(
       await transaction.credentialSources.hasReferences(accountNamespace.id, source.id),
       false,
@@ -2176,6 +2205,47 @@ async function verifyCredentialSourceContract(
     );
     assert.equal(deployment.agentTarget, undefined);
   });
+  // A pending withdrawal can be reassigned to the operator whose replay queues its next attempt;
+  // it keeps the first request's time.
+  await store.transact(async (transaction) => {
+    assert.deepEqual(
+      await transaction.credentialSources.reassignCredentialWithdrawal(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        "principal-platform-state-replay",
+      ),
+      { ...withdrawal, requestedBy: "principal-platform-state-replay" },
+    );
+    // The worker reads the stored requester, so the reassignment must persist.
+    assert.deepEqual(
+      await transaction.credentialSources.listCredentialWithdrawals(
+        sourceNamespace.id,
+        sourceRevision.id,
+      ),
+      [{ ...withdrawal, requestedBy: "principal-platform-state-replay" }],
+    );
+    // A blank requester is refused; the worker would have no principal to authorize. Pinned on
+    // a pending withdrawal, the only kind the controller reassigns.
+    await assert.rejects(
+      transaction.credentialSources.reassignCredentialWithdrawal(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        "",
+      ),
+      { name: "ScopeViolationError", message: "A credential withdrawal requester is missing." },
+    );
+    assert.deepEqual(
+      await transaction.credentialSources.reassignCredentialWithdrawal(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        withdrawal.requestedBy,
+      ),
+      withdrawal,
+    );
+  });
   const completedAt = new Date().toISOString();
   const attempted = {
     ...withdrawal,
@@ -2217,6 +2287,16 @@ async function verifyCredentialSourceContract(
         sourceRevision.id,
         source.id,
         completedAt,
+      ),
+      undefined,
+    );
+    // A revoked withdrawal keeps the requester whose authority revoked it.
+    assert.equal(
+      await transaction.credentialSources.reassignCredentialWithdrawal(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        "principal-platform-state-replay",
       ),
       undefined,
     );
@@ -2483,6 +2563,92 @@ async function verifyCredentialSourceContract(
     ),
     { name: "ScopeViolationError" },
     "A revision cannot freeze an empty source list.",
+  );
+
+  // An update that leaves harnessAuth out keeps the stored binding without checking it again;
+  // only a supplied binding must be available. Here the bound source is already deleting.
+  const staleSource = {
+    ...source,
+    id: identifier("cs"),
+    name: "Stale Harness source " + randomUUID(),
+  };
+  const staleBinding = { method: "credential_source", sourceId: staleSource.id };
+  const staleAgent = {
+    ...sourceAgent,
+    id: identifier("agt"),
+    name: "Stale Harness source agent " + randomUUID(),
+    harnessAuth: staleBinding,
+    credentialSources: [{ sourceId: staleSource.id }],
+    servicePrincipalId: identifier("service-agent"),
+  };
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.createCredentialSource(staleSource);
+    await transaction.agents.createAgent(staleAgent);
+    assert.equal(
+      (
+        await transaction.credentialSources.markCredentialSourceDeleting(
+          sourceNamespace.id,
+          staleSource.id,
+        )
+      ).state,
+      "deleting",
+    );
+  });
+  const kept = await store.transact((transaction) =>
+    transaction.agents.updateConfiguration(
+      sourceNamespace.id,
+      staleAgent.id,
+      sourceConfiguration.id,
+      "dedicated",
+    ),
+  );
+  assert.deepEqual(
+    {
+      executionMode: kept.executionMode,
+      harnessAuth: kept.harnessAuth,
+      credentialSources: kept.credentialSources,
+    },
+    {
+      executionMode: "dedicated",
+      harnessAuth: staleBinding,
+      credentialSources: staleAgent.credentialSources,
+    },
+    "Omitting harnessAuth keeps the stored binding without checking it again.",
+  );
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.agents.updateConfiguration(
+        sourceNamespace.id,
+        staleAgent.id,
+        sourceConfiguration.id,
+        undefined,
+        staleBinding,
+      ),
+    ),
+    {
+      name: "ScopeViolationError",
+      message: "The Agent harness authentication references an unavailable credential source.",
+    },
+    "Supplying the same binding again checks it.",
+  );
+  const detached = await store.transact((transaction) =>
+    transaction.agents.updateConfiguration(
+      sourceNamespace.id,
+      staleAgent.id,
+      sourceConfiguration.id,
+      undefined,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+    ),
+  );
+  assert.deepEqual(
+    { harnessAuth: detached.harnessAuth, credentialSources: detached.credentialSources },
+    { harnessAuth: null, credentialSources: undefined },
   );
 
   // Deletion is two-phase: a deleting source stays recorded and blocks Namespace

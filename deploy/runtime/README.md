@@ -36,14 +36,19 @@ the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
 The source archive and patch hashes identify the resulting custom build.
 
-The selected commit does not support dedicated native OpenClaw. That Harness
-needs both required worker placement (`cloudWorkers.requiredProfile`) and native
-worker inference (`nodeHost.workerRuns.nativeInferenceConfig`). The selected
-commit supports required placement, but still rejects native inference, so the
-Harness refuses to start. `PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
-`packages/occ/src/native-worker-support.ts` records this, and admission refuses
-dedicated native OpenClaw while it is `false`. The images-runtime-startup lane
-runs both entrypoints against this image and fails when the image disagrees with it.
+Dedicated native OpenClaw requires both required worker placement
+(`cloudWorkers.requiredProfile`) and node-local inference from canonical
+`models.providers` configuration. The node snapshots its model credentials and
+projects each worker's managed workspace from its authorized launch descriptor;
+OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field.
+
+The selected image remains unqualified for the complete dedicated native flow.
+`PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
+`packages/occ/src/native-worker-support.ts` stays false, so admission refuses
+that topology unless the operator declares an explicitly selected custom image.
+The images-runtime-startup lane validates both generated configurations with the
+image's CLI. Schema acceptance alone does not qualify enrollment, workspace
+access, or native model execution.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |

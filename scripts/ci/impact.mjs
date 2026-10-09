@@ -48,8 +48,13 @@ const testPath = /^tests\/(?:conformance|integration|browser|docs)\/[A-Za-z0-9._
 const manifestPath = /^scripts\/ci\/test-suites\/[a-z0-9-]+\.json$/;
 const suiteIndexPath = "scripts/ci/test-suites.json";
 const laneName = /^[a-z0-9-]+$/;
-// The only lane that lints, format-checks, typechecks and builds documentation.
-const alwaysSelected = "checks-baseline-1";
+// Static Checks lints, format-checks and builds documentation in every mode.
+// Checks and Conformance 1's own extra checks (typecheck, Go CLI) read no test
+// file, so a test-only change runs it only when the lane lists a changed test,
+// or as the matrix lane a selection needs when only the runtime image fixture
+// (its own job) would run.
+const fallbackLane = "checks-baseline-1";
+const fixtureLane = "runtime-image-fixture";
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -89,7 +94,7 @@ function suiteIndex(commit) {
   if (
     !Array.isArray(ci) ||
     !ci.every((name) => typeof name === "string" && lanes.has(name)) ||
-    !ci.includes(alwaysSelected)
+    !ci.includes(fallbackLane)
   ) {
     throw new InspectionError("suite index has an unexpected shape", "manifest_unavailable");
   }
@@ -150,7 +155,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
   if (tree.split("\0").some((entry) => entry.startsWith("120000 "))) {
     throw new InspectionError("the tested tree contains a symbolic link", "referenced_test");
   }
-  const selected = new Set([alwaysSelected]);
+  const selected = new Set();
   for (const [path, lanes] of owners) {
     if (lanes.size === 0 || [...lanes].some((name) => !index.ci.has(name))) {
       throw new InspectionError("a changed test is not mapped only to CI lanes", "unmapped_test");
@@ -190,6 +195,9 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
         throw new InspectionError("another file refers to a changed test", "referenced_test");
       }
     }
+  }
+  if ([...selected].every((name) => name === fixtureLane)) {
+    selected.add(fallbackLane);
   }
   return [...selected].sort();
 }

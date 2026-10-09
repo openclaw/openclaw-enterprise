@@ -391,6 +391,32 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     [{ accessToken: "at-browser-plugin-one" }],
   );
   const setup = dialog.locator(".plugin-access-help");
+  // Mobile browsing keeps pagination reachable while full setup guidance remains available by keyboard.
+  const nextPage = dialog.getByRole("button", { name: "Next page", exact: true });
+  for (const height of [844, 640]) {
+    await page.setViewportSize({ width: 390, height });
+    assert.equal(
+      await nextPage.evaluate((node) => {
+        const bounds = node.getBoundingClientRect();
+        const target = node.ownerDocument.elementFromPoint(
+          bounds.x + bounds.width / 2,
+          bounds.y + bounds.height / 2,
+        );
+        return node.contains(target);
+      }),
+      true,
+      "Catalog pagination must be reachable without scrolling the whole dialog",
+    );
+  }
+  const boundary = setup.getByText(
+    "Catalog availability does not verify app connections or grant access. Configure credentials and app access before deployment.",
+    { exact: true },
+  );
+  await boundary.waitFor();
+  assert.equal(await setup.getByText(/Service accounts/).isVisible(), false);
+  const setupDisclosure = setup.locator("summary");
+  await setupDisclosure.focus();
+  await setupDisclosure.press("Enter");
   await setup.getByText(/Service accounts/).waitFor();
   assert.match(await setup.textContent(), /App connection status is not verified/);
   for (const [name, href] of [
@@ -406,6 +432,29 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     assert.equal(await link.getAttribute("target"), "_blank");
     assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
   }
+  // Expanded instructions leave a short browser region; wheel scrolling still reaches its actions.
+  const pluginBrowser = dialog.locator(".plugin-browser");
+  await pluginBrowser.hover();
+  await page.mouse.wheel(0, 320);
+  await page.waitForFunction((node) => node.scrollTop > 0, await pluginBrowser.elementHandle());
+  assert.equal(
+    await nextPage.evaluate((node) => {
+      const bounds = node.getBoundingClientRect();
+      const target = node.ownerDocument.elementFromPoint(
+        bounds.x + bounds.width / 2,
+        bounds.y + bounds.height / 2,
+      );
+      return node.contains(target);
+    }),
+    true,
+    "Catalog pagination must remain reachable with setup instructions expanded",
+  );
+  await setupDisclosure.press("Enter");
+  await setup.getByRole("link", { name: "Service account credentials", exact: true }).waitFor({
+    state: "hidden",
+  });
+  await boundary.waitFor();
+  await page.setViewportSize({ width: 1280, height: 720 });
   // Unavailable guidance stays out of the row layout and is reachable without opening details.
   const unavailableRow = dialog.locator(".plugin-list-row").filter({
     has: page.getByRole("button", { name: "Admin-disabled", exact: true }),
@@ -662,7 +711,11 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   const clearedSetup = page.locator(".plugin-access-help");
   await clearedSetup.locator("a").first().waitFor({ state: "detached" });
   assert.equal(await clearedSetup.locator("a").count(), 0);
-  assert.equal((await clearedSetup.textContent()).trim(), "");
+  assert.equal(await clearedSetup.isVisible(), false);
+  assert.equal(
+    (await clearedSetup.locator(".plugin-access-instructions").textContent()).trim(),
+    "",
+  );
   assert.equal(await reminder.isVisible(), false);
   assert.equal(await reminder.locator("a").count(), 0);
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);

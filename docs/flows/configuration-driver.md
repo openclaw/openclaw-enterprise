@@ -1,6 +1,6 @@
 ---
 created: 2026-08-19
-updated: 2026-10-05
+updated: 2026-10-09
 last_updated_session: authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611
 ---
 
@@ -96,7 +96,15 @@ apply only to later deployments.
 Provisioning's `KubernetesConfigurationDriver.createExact` and `inspectExact`
 use the same verified CP namespace as ordinary Configuration CRUD. Recovery checks
 the exact identity and document there; an adopted data-plane namespace does not
-change canonical Configuration ownership.
+change canonical Configuration ownership. When a create's outcome is unknown and
+`inspectExact` still finds nothing 90 seconds after the provisioning effect began
+(database clock), the worker fences again and sends the same create under the
+same effect; earlier attempts wait without spending a retry, and a Namespace
+deletion keeps waiting meanwhile. The Driver's write deadline is 10 seconds and
+the API server's default request timeout 60 seconds, so a late original then
+fails `AlreadyExists`. The window covers the first send only: later attempts
+resend at once. A failed resend settles the effect only if `inspectExact` finds
+the exact Configuration.
 
 ### 3. Authorize the exact Namespace Configuration operation
 
@@ -195,6 +203,9 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-09 15:00: A failed Configuration delete or update compensates only while the metadata row is unchanged, so a delete or update another request committed after the lock was released is never undone and leaves no orphan ConfigMap. (fix-944-945)
+- 2026-10-09 13:00: Configuration create and delete register their compensation before the write and undo only what `inspectExact` shows they stored or removed, so a write that applied but answered an error leaves no orphan ConfigMap or metadata without one. (fix-916)
+- 2026-10-09 12:00: Provisioning resends a Configuration create still missing after its 90-second settle window, and a Configuration update's compensation is registered before the replace, so a replace that applied but answered an error is rolled back too. (fix-911)
 - 2026-10-06 15:00: Deployment admission refuses a native gateway setting Kubernetes Compute cannot deploy, naming it, instead of failing every preparation attempt. (dogfood-r36/deploy-gateway-settings)
 - 2026-10-05 16:38: Trace owned temporary-file cleanup after filesystem Configuration write or rename failure. (authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611 - 69b5c21806187125a7a20b9ca447bb15f6f3e890)
 

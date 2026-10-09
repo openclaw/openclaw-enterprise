@@ -166,7 +166,9 @@ Events and log sources of a revision, or one source without Events;
 `readAgentRuntimeLogs(binding, request)` returns bounded **raw** lines from a
 listed Pod. Drivers re-check ownership and raise
 `RuntimeLogsForbiddenByClusterError` for a cluster `403`; OCC [redacts and bounds](../../guides/topics/agent-logs.md) output. Without them,
-or with `runtimeLogging: "driver"`, both routes answer `501`.
+or with `runtimeLogging: "driver"`, both routes answer `501`. The Kubernetes
+implementation normalizes RFC3339 timestamp offsets to UTC without reducing
+fractional precision.
 
 ### Runtime logging ownership
 

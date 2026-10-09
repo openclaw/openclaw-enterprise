@@ -928,7 +928,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Get the withdrawal state of a credential source for an Agent's active revision",
+    summary: "Get the withdrawal state of a credential source for an Agent",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

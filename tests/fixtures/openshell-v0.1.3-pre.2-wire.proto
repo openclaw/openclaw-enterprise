@@ -174,7 +174,19 @@ message ObjectMeta {
   string workspace = 7;
 }
 
-message DeleteSandboxResponse {}
+message DeleteSandboxResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+  string sandbox_id = 3;
+}
+
+enum DeletionOutcome {
+  DELETION_OUTCOME_UNSPECIFIED = 0;
+  DELETION_OUTCOME_COMPLETED = 1;
+  DELETION_OUTCOME_ACCEPTED = 2;
+  DELETION_OUTCOME_ALREADY_ABSENT = 3;
+}
 
 // openshell.datamodel.v1.Provider
 message Provider {

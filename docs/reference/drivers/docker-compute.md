@@ -83,7 +83,9 @@ workload.
 
 `deleteNamespace(namespace)` removes only driver-owned containers and the
 driver-owned network for that exact Namespace. It refuses to adopt or delete a
-foreign network with the same name but different ownership labels.
+foreign network with the same name but different ownership labels. If the network
+was removed externally, deletion still removes remaining owned containers and
+workspace volumes before reporting success.
 
 Each Namespace maps to one Docker network. Runtime containers for one
 Namespace join only that network; they do not join the control-plane management

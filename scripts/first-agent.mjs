@@ -184,6 +184,10 @@ async function loadLocalInstallation(harness) {
   }
 
   const environment = { ...process.env, DOCKER_HOST: state.dockerHost };
+  // The recorded endpoint is a local Unix socket, not a TLS daemon connection.
+  delete environment.DOCKER_TLS;
+  delete environment.DOCKER_TLS_VERIFY;
+  delete environment.DOCKER_CERT_PATH;
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
   if (state.containerEngine === "podman") {

@@ -24,6 +24,7 @@
       "expectedTests": [
         "demo Grafana keeps its disposable SQLite database off node disk",
         "demo guide install can be rerun after a cold-cache wait timeout",
+        "demo Service names admit valid release shapes and keep Grafana URLs aligned",
         "demo Kubernetes identifiers remain strings for 407",
         "demo Kubernetes identifiers remain strings for true",
         "demo Kubernetes identifiers remain strings for null",

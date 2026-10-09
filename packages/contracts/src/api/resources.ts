@@ -772,7 +772,11 @@ export const CredentialWithdrawalSchema = Type.Object(
   {
     namespaceId: NamespaceId,
     agentId: AgentId,
-    revisionId: RevisionId,
+    revisionId: Type.String({
+      ...RevisionId,
+      description:
+        "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+    }),
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:

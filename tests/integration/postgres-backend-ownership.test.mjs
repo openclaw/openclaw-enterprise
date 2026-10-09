@@ -84,13 +84,10 @@ async function assertNoAgentNamed(pool, namespaceId, name, label) {
   assert.equal(result.rows[0].count, 0, label);
 }
 
-async function expectBackendConflict(operation, pattern) {
+async function expectBackendConflict(operation, pattern, name = "ResourceConflictError") {
   await assert.rejects(
     operation,
-    (error) =>
-      // A Harness authentication refusal at deploy names itself after authorization.
-      (error?.name === "ResourceConflictError" || error?.name === "ResourceStateConflictError") &&
-      (pattern === undefined || pattern.test(error.message)),
+    (error) => error?.name === name && (pattern === undefined || pattern.test(error.message)),
   );
 }
 
@@ -345,6 +342,7 @@ test(
           resolveApprovedHarness,
         ),
       /configured model and topology/,
+      "ResourceStateConflictError",
     );
     await assertNoRevision(
       fixture.pool,
@@ -478,6 +476,7 @@ test(
             resolveApprovedHarness,
           ),
         /configured model and topology/,
+        "ResourceStateConflictError",
       );
       assert.deepEqual(await admissionCounts(), beforeNativeAttempts, source.kind);
     }
@@ -686,6 +685,7 @@ test(
         credential: { kind: "api_key", secretRef: { name: "provider-api-key", key: "api-key" } },
         binding: {},
         message: /requires an issued account access-token credential/,
+        expectedErrorName: "ResourceStateConflictError",
       },
       {
         label: "workspace-mismatch",
@@ -717,6 +717,7 @@ test(
       await expectBackendConflict(
         () => provision(namespace, brokenAccount, scenario.label),
         scenario.message,
+        scenario.expectedErrorName,
       );
       assert.equal(
         await pendingWork(namespace),

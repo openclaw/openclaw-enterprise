@@ -12,9 +12,40 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 The suite calls `scripts/dev-up` for Compose OCC + Kubernetes compute and
 Kubernetes OCC + Kubernetes compute. Both use Sandbox Driver `none`. Each
 installation runs its two presets sequentially, selecting the appropriate Plugin
-Driver and stopping the prior agent before switching. It creates unique clusters,
+Driver and stopping the prior agents before switching. It creates unique clusters,
 Compose projects, ports, and private state directories. It does not select an
 existing cluster or change the default kubeconfig.
+
+## Parallel scenarios on shared setup
+
+Each installation creates one k3d cluster and reuses its control plane and
+repository broker. Within a preset, two scenario workers run concurrently by
+default. Each owns a fresh Agent, configuration, credentials, and workspace:
+
+- `model-ui`: model and native browser assertions, in that order.
+- `git-full`: native checkout/edit/commit/push/PR and credential disposal.
+- `calendar`: Codex Calendar reads and approval-policy transitions.
+- `git-read`: Codex read-only push denial and credential disposal.
+
+The steps inside each scenario stay sequential. Separate chat sessions on one
+Agent would still share its policy, deployment, and workspace. Calendar and Git
+therefore use different Agents. There is one browser scenario at a time, so the
+Compose TLS relay cannot switch targets during another browser test.
+
+After those workers finish and stop their Agents, the Codex `slack` scenario
+runs on its own Agent. Slack setup can restart shared services; its Socket Mode
+consumer is disabled before the next installation starts. Installations stay
+sequential to avoid competing for the same Slack app credentials.
+
+Set `OCC_TEST_QA_CONCURRENCY` to an integer from `1` to `4` (default `2`). Use `1`
+for a serial diagnostic replay. Increase it only with sufficient cluster memory
+and model-service capacity; each gateway has a 4 GiB memory limit, in addition to
+any dedicated Agent and shared services. This is scenario concurrency, not a
+request to create more clusters or reuse an existing external installation.
+
+Teardown waits for all workers. Every repository worker tracks its own pending
+credential disposal; one successful cleanup cannot release another worker's
+unresolved session or allow its broker to be removed.
 
 ## Coverage and applicability
 
@@ -150,7 +181,8 @@ node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run qa-matrix \
 ### Read scenario outcomes
 
 The test runner prints named subtests. `matrix.json` records completed stage
-callbacks with `cell`, `stage`, and `outcome`, plus a redacted `reason` on failure:
+callbacks with `cell`, `stage`, `outcome`, `startedAt`, and `durationMs`.
+Worker stages also include `scenario`; failures include a redacted `reason`:
 
 - `passed`: the stage completed its assertions.
 - `failed`: execution or an assertion failed.
@@ -158,14 +190,18 @@ callbacks with `cell`, `stage`, and `outcome`, plus a redacted `reason` on failu
   installation setup or Agent deployment.
 
 Installation setup uses `compose` or `kubernetes` as its cell; preset stages use
-names such as `compose/Codex`. Each stage updates the file, so earlier outcomes
-remain available when a later stage fails. The workflow retains these files in
+names such as `compose/Codex`. Completed stages enter the report in completion
+order. Writes are serialized and published atomically, so simultaneous workers
+do not overwrite outcomes or expose partial JSON. Earlier outcomes remain
+available when a later stage fails. The workflow retains these files in
 its `qa-matrix-<run-id>-<attempt>` artifact for seven days.
 
 A grouped stage has one outcome: clone, commit, push, and PR creation are not
 separate result rows. Cell evidence adds Agent/revision/Pod identities, nonce
 results, remote SHAs, credential disposal, and Slack timestamps. The summary
-currently has no per-stage durations or explicit `not run`/`not applicable` rows.
+has per-stage wall-clock durations, excluding queue time and report writes, but
+no explicit `not run`/`not applicable` rows. Parallel durations overlap; adding
+them does not give the overall run duration.
 Filtered, unentered, or interrupted stages can be absent; absence is not a pass.
 Inspect runner failures and cleanup results alongside the JSON.
 
@@ -180,6 +216,24 @@ installation and reports the recovery path. Keep that broker alive until its
 sessions are `DISPOSED`, with zero active uses, active/pending/uncertain cleanup,
 and no auxiliary cleanup pending. Do not delete another run's resources.
 
+### Intermittent Git connection failures
+
+If native Git reports `GnuTLS recv error` or an unexpectedly closed TLS
+connection, check the broker's upstream connectivity before changing certificate
+trust or command deadlines. An upstream connection failure can cause the broker
+to close the Agent connection without returning an HTTP error.
+
+Verify the addresses resolved for both `github.com` and `api.github.com` from
+the broker Pod against the private `upstream-cidrs.json` fixture and installed
+NetworkPolicy. DNS answers can rotate: an allowed address may succeed while a
+different address is refused on the next clone or fetch. A successful API call
+does not prove Git egress, and a single successful DNS lookup is insufficient.
+Use the [local repository input procedure](../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs)
+to refresh the approved endpoints. After confirming session disposal, recreate
+only the run-owned installation and rerun the affected scenarios. Keep the Git,
+sandbox, and disposal assertions intact; retries do not correct a missing
+egress destination.
+
 ## Extend the scenarios
 
 Add a named `stage(...)` in
@@ -190,9 +244,10 @@ above. See [fixture and scenario conventions](fixtures-and-scenarios.md).
 
 - Reuse installation setup. State the prerequisites and report unavailable
   prerequisites as blocked instead of passing an empty scenario.
-- Keep preset-specific cases explicit. Stages run sequentially and may change
-  Agent configuration or stop an Agent; restore the needed state or create a
-  fresh Agent before the next dependent scenario.
+- Add independent cases to the named scenario list; each worker receives its
+  own Agent and must clean up only that Agent. Keep dependent steps sequential
+  within the worker. Installation-wide changes belong before or after the
+  joined worker group, never inside a parallel scenario.
 - Register cleanup with the fixture, preserve uncertain credential-disposal
   recovery, and record only nonsecret evidence.
 - For new required inputs, update
@@ -209,7 +264,6 @@ not automatically qualify another deployment mode.
 
 | Previous owner                                                        | Canonical or retained owner                                                                                                                                                                  |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Calendar policy case in `plugin-driver-real.test.mjs`                 | Shared `calendar-review.mjs`, executed in both Codex matrix cells. Other plugin isolation/failure cases remain.                                                                              |
 | Native Git/PR journeys in `repository-credentials-k3d-real.test.mjs`  | Shared `repository-native-journey.mjs`, executed in all four matrix cells. Installed credential isolation and sandboxed read-only denial remain focused cases.                               |
 | Retrying Slack delivery in `harness-topology-k3d-slack-real.test.mjs` | `slack-delivery.mjs` single-send proof in both Codex cells and the focused Slack lane until hosted qualification. Credential placement, proxy denial, and Socket Mode checks remain focused. |
 | Browser chat helpers in `native-admin-k3d-real.test.mjs`              | Shared `native-ui-chat.mjs`. Native access boundaries, session isolation, drift, and lifecycle cases remain focused.                                                                         |

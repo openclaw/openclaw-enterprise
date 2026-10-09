@@ -1325,6 +1325,24 @@ test("Agent reads return the bound credentialSources; revision reads return only
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.deepEqual(created.data.credentialSources, [{ sourceId: source.data.id }]);
+  // An object array declared uniqueItems: listing one source twice names the rule.
+  const repeated = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "credential-source-agent-repeated",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "runtime" },
+      credentialSources: [{ sourceId: source.data.id }, { sourceId: source.data.id }],
+    },
+  });
+  assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
+  assert.equal(
+    repeated.body.error.message,
+    "The request does not match the operation contract: body /credentialSources has an unsupported value (expected no duplicate items).",
+  );
+  assert.deepEqual(repeated.body.error.details, [
+    { path: "/credentialSources", code: "INVALID_VALUE" },
+  ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
   assert.deepEqual((await controller.request("GET", agentPath)).data.credentialSources, [
     { sourceId: source.data.id },
@@ -2993,6 +3011,16 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     "The request does not match the operation contract: body /query is too long (expected at most 200 characters).",
   );
   assert.deepEqual(longQuery.body.error.details, [{ path: "/query", code: "TOO_LONG" }]);
+  // A string array declared uniqueItems names the rule, not just an unsupported value.
+  const repeatedIds = await controller.request("POST", path, {
+    body: { secretId: secret.data.id, kind: "users", ids: ["U123", "U123"] },
+  });
+  assert.equal(repeatedIds.status, 400, JSON.stringify(repeatedIds.body));
+  assert.equal(
+    repeatedIds.body.error.message,
+    "The request does not match the operation contract: body /ids has an unsupported value (expected no duplicate items).",
+  );
+  assert.deepEqual(repeatedIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
   // An unknown kind fits no shape, so every shape's problem stays, but the three hydration
   // shapes' identical missing /ids is listed once.
   const unknownKind = await controller.request("POST", path, {
@@ -3194,6 +3222,31 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     { channel: "slack", id: "team:T123:user:U456" },
   ]);
   assertPolicyOnlyPlugin(replacedPlugins.data.plugins[diffsPluginId]);
+  // The nullable approver list is a referenced schema ($id PluginApprovers). Its problems belong
+  // to the list's branch, so the null branch adds no wrong-type clause (finding 808).
+  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const approver = { channel: "slack", id: "team:T123:user:U456" };
+  for (const [pluginApprovers, problem] of [
+    [
+      [approver, approver],
+      "body /pluginApprovers has an unsupported value (expected no duplicate items)",
+    ],
+    [
+      Array.from({ length: 65 }, (_, index) => ({ channel: "slack", id: `user:${index}` })),
+      "body /pluginApprovers has an unsupported value (expected at most 64 items)",
+    ],
+    [[{ ...approver, role: "admin" }], "body /pluginApprovers/0/role is not an accepted field"],
+    ["slack", "body /pluginApprovers has the wrong type (expected one of array, null)"],
+  ]) {
+    const rejected = await controller.request("PATCH", agentPath, {
+      body: { configurationId: replacementConfiguration.id, pluginApprovers },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(
+      rejected.body.error.message,
+      `The request does not match the operation contract: ${problem}.`,
+    );
+  }
 
   const clearedPlugins = await controller.request(
     "PATCH",
@@ -3677,12 +3730,36 @@ test("native ServiceAccounts keep private credential references and cannot admit
     namespace.id,
     "ready",
   );
+  // This Installation has no ChatGPT Backend: issuance is a conflict naming the fix, not an
+  // outage, and only after the caller's grant and the account lookup.
+  const issuance = await controller.request("POST", `${accountPath}/credentials`, { body: {} });
+  assert.equal(issuance.status, 409, JSON.stringify(issuance.body));
+  assert.equal(issuance.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+  assert.equal(
+    issuance.body.error.message,
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  );
+  const unknownIssuance = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000/credentials`,
+    { body: {} },
+  );
+  assert.equal(unknownIssuance.status, 404, JSON.stringify(unknownIssuance.body));
+  const issuer = await controller.fixture.createAuthPrincipal("service-account-no-backend-issuer");
+  controller.fixture.state.identities.push(issuer.principal);
+  const deniedIssuance = await controller.request("POST", `${accountPath}/credentials`, {
+    body: {},
+    session: issuer.session,
+  });
+  assert.equal(deniedIssuance.status, 403, JSON.stringify(deniedIssuance.body));
+
+  // Without a Backend no account can hold an access token, so deployment names the Backend too.
   const missingCredential = await controller.request("POST", deploymentPath);
   assert.equal(missingCredential.status, 409);
-  assert.equal(missingCredential.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(missingCredential.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.equal(
     missingCredential.body.error.message,
-    "ChatGPT Harness authentication requires an issued account access-token credential.",
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   );
 
   const initialCredential = {
@@ -3707,7 +3784,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
   const nativeDeployment = await controller.request("POST", deploymentPath);
   assert.equal(nativeDeployment.status, 409);
-  assert.equal(nativeDeployment.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(nativeDeployment.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   // A PAT source admits only an access-token credential, never an API key in its place.
   assert.match(
     nativeDeployment.body.error.message,
@@ -3725,7 +3802,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assert.equal(oauthUpdate.status, 200);
   const oauthDeployment = await controller.request("POST", deploymentPath);
   assert.equal(oauthDeployment.status, 409);
-  assert.equal(oauthDeployment.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(oauthDeployment.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.match(
     oauthDeployment.body.error.message,
     /requires an issued account access-token credential/,
@@ -5174,7 +5251,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     { body: provisioningRequestBody(namespace.data.id, secrets) },
   );
   assert.equal(refusedUnauthorized.status, 403, JSON.stringify(refusedUnauthorized.body));
-  // Authorization also precedes OCC's own plan checks. Each body below draws a 400 or 404 from
+  // Authorization also precedes OCC's own plan checks. Each body below draws a 400 from
   // an authorized caller; without the grant it is the same 403, so a caller learns nothing about
   // a Namespace they cannot provision in from how the plan is refused.
   const planRefusals = [
@@ -5183,15 +5260,19 @@ test("Agent provisioning API validates inline configuration with existing Secret
       provisioningRequestBody(namespace.data.id, secrets, { executionMode: undefined }),
       400,
     ],
+    // Provisioning needs dedicated Harness authentication. The rule is about the body, so an
+    // authorized caller gets it by name, not a generic "not found" (D547).
     [
       "no Harness authentication",
       provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: null }),
-      404,
+      400,
+      "Agent provisioning requires dedicated Harness authentication.",
     ],
     [
       "runtime Harness authentication",
       provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: { method: "runtime" } }),
-      404,
+      400,
+      "Agent provisioning requires dedicated Harness authentication.",
     ],
   ];
   const assertPlanRefusalsDenied = async (grant) => {
@@ -5217,7 +5298,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   });
   await assertPlanRefusalsDenied("without Installation administer");
   fixture.state.restrictions.pop();
-  for (const [description, body, status] of planRefusals) {
+  for (const [description, body, status, message] of planRefusals) {
     const refused = await injectedRequest(
       fixture.app,
       "POST",
@@ -5225,6 +5306,13 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { body },
     );
     assert.equal(refused.status, status, `${description}: ${JSON.stringify(refused.body)}`);
+    if (message !== undefined) {
+      assert.deepEqual(
+        { code: refused.body.error.code, message: refused.body.error.message },
+        { code: "INVALID_REQUEST", message },
+        description,
+      );
+    }
   }
   // The logged reason keeps at most 512 characters, and a thrown non-Error's value is not logged.
   for (const [thrown, reason] of [
