@@ -48,7 +48,9 @@ A `CredentialSourceType` declares:
 - `type`: an implementation-defined name, such as `openai`.
 - `config` and `secrets`: field specifications with `name`, `required`, and an
   optional description. `config` fields are nonsecret strings; `secrets` fields
-  are supplied as OCC Secret references.
+  are supplied as OCC Secret references. `issuerRotated: true` marks a secret
+  the issuer replaces on use, such as a rotating refresh token; an update must
+  reference a new Secret for it.
 - `rotation`: `none`, `external`, or `refresh`. A `refresh` type stores no
   static value. The [Credential Refresh Driver](credential-refresh.md) on the
   same Backend mints and refreshes its tokens, and OCC calls that Driver, not

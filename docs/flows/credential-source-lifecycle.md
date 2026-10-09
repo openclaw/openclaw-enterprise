@@ -206,17 +206,17 @@ append fails, the record stays `deleting`. Namespace deletion returns
 `packages/occ/src/index.ts:updateCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
-One transaction locks the Namespace and source, authorizes
-`credential_source:update`, and requires a `ready` source of a type the
+One transaction authorizes `credential_source:update`, reads the Namespace,
+locks the source (not the Namespace), and requires a `ready` source of a type the
 catalog offers (`409` otherwise). It validates any
 replacement references against the catalog's Secret fields, authorizes
 `secret:operate` on each Secret it reads, and reads the values with
 `withValue`. It calls `updateSource` with Compute's placement while holding the
 source lock; the OpenShell Driver requires the OCC-owned provider and calls
 `UpdateProvider`. It then replaces the Secret references, and the handler
-appends the audit event in the same transaction. The gateway is updated before
-that transaction commits: a gateway failure rolls back the references, and a
-later failure leaves the gateway newer than OCC until the request is repeated. An `absent` or `failed` gateway
+appends the audit event in the same transaction. A failure after the gateway
+call rolls back the references but leaves the gateway newer, until the request
+is repeated, and records a `failure` audit event. An `absent` or `failed` gateway
 status returns `503`. The OpenShell Driver rejects empty values because
 `UpdateProvider` merges them into the existing provider. OpenShell gives the new
 value only to processes started after the update.

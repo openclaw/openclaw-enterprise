@@ -79,8 +79,9 @@ destructor.
    only after a `ready` mint. The update is not atomic: after `configureRefresh`
    succeeds, a failed mint returns `503` but the Driver keeps the new material,
    and the source stays `ready` with the failure in its status. OCC restores
-   nothing. An update with no `secrets` re-applies the recorded references;
-   otherwise supply corrected Secrets. On OpenShell, running Agents need a
+   nothing; supply corrected Secrets. An update must name a different Secret
+   for a catalog field marked `issuerRotated`, such as `refresh_token`,
+   because the Driver may hold a newer value. On OpenShell, running Agents need a
    redeploy after any update that reaches `configureRefresh`; see its
    [limits](openshell-credential-gateway.md#limits).
 4. **Rotation.** `POST …/rotate` calls `rotate` for incidents such as a

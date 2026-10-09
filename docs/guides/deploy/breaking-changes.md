@@ -10,6 +10,27 @@ you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-09: refresh-token source updates need a new Secret
+
+**What breaks.** Since #2016, `PATCH` on an `oauth2-refresh-token` credential
+source answers `409` when it keeps the recorded `refresh_token` Secret. That
+includes `{}` and `occ credential-source update ID` without `--file`, which the
+docs used to suggest after a failed update. The issuer may have replaced the
+token, so the recorded one can be stale, and re-sending it could make the
+issuer revoke the sign-in.
+
+**Who is affected.** Operators and scripts that update such a source in place,
+by changing its Secret's value and then re-sending it. Other source types,
+including `oauth2-client-credentials`, still accept `{}`.
+
+**How to tell.** The `409` says the gateway may already hold a newer
+`refresh_token`.
+
+**Steps.** Complete a new sign-in, store its refresh token in a new Secret, and
+send `{ "secrets": { "refresh_token": <the new Secret's ref> } }`, or
+`occ credential-source update ID --file` with that document. Redeploy Agents
+that use the source.
+
 ## 2026-10-09: released Gateways need an agent database migration
 
 **What breaks.** Gateways deployed by the 2026-09-28 release keep their chat

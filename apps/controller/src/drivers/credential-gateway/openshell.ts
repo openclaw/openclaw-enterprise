@@ -313,6 +313,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         name: "refresh_token",
         required: true,
         description: "OAuth2 refresh token from a completed sign-in.",
+        issuerRotated: true,
       }),
       Object.freeze({
         name: "client_secret",
