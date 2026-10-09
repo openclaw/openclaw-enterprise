@@ -34,17 +34,19 @@ test("image lanes use separate cache scopes without exposing credentials or comp
       'const fs = require("node:fs");\n' +
       "const args = process.argv.slice(2);\n" +
       'if (args[0] === "version") { console.log("29.4.0"); process.exit(0); }\n' +
-      "fs.writeFileSync(process.env.COMMANDS_PATH, JSON.stringify(args));\n" +
+      "fs.appendFileSync(process.env.COMMANDS_PATH, `${JSON.stringify(args)}\\n`);\n" +
       "process.exit(42);\n",
     { mode: 0o700 },
   );
-  for (const [lane, role, writer] of [
-    ["images-packaging", "controller", true],
-    ["images-model-probes", "runtime", false],
-    ["images-runtime-startup", "runtime", false],
-    ["images-runtime-startup-2", "runtime", false],
+  for (const [lane, roles, writer] of [
+    // Images and Packaging builds its two images at once.
+    ["images-packaging", ["controller", "runtime"], true],
+    ["images-model-probes", ["runtime"], false],
+    ["images-runtime-startup", ["runtime"], false],
+    ["images-runtime-startup-2", ["runtime"], false],
   ]) {
     const statePath = join(directory, `${lane}.json`);
+    await rm(commandsPath, { force: true });
     const result = run(prepare, ["--lane", lane, "--state", statePath], {
       GITHUB_ACTIONS: "true",
       // A main push, where Images and Packaging also writes; pull request runs
@@ -65,20 +67,38 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /42/, result.stderr);
-    const args = JSON.parse(await readFile(commandsPath, "utf8"));
-    assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
-    assert.equal(
-      args[args.indexOf("--cache-from") + 1],
-      `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
+    const calls = (await readFile(commandsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    // Lanes that only restore first probe for an image the engine already
+    // holds; the failed probe falls back to the loading build.
+    const builds = calls.filter((args) => args.includes("--load"));
+    assert.equal(calls.length, writer ? builds.length : 2 * builds.length);
+    assert.deepEqual(
+      builds.map((args) => (args.includes("--target") ? "controller" : "runtime")).sort(),
+      roles,
     );
-    assert.equal(args.includes("--cache-to"), writer);
-    if (writer) {
-      assert.match(args[args.indexOf("--cache-to") + 1], /mode=max,ignore-error=true,timeout=60s$/);
+    for (const args of builds) {
+      const role = args.includes("--target") ? "controller" : "runtime";
+      assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
+      assert.equal(
+        args[args.indexOf("--cache-from") + 1],
+        `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
+      );
+      assert.equal(args.includes("--cache-to"), writer);
+      if (writer) {
+        assert.match(
+          args[args.indexOf("--cache-to") + 1],
+          /mode=max,ignore-error=true,timeout=60s$/,
+        );
+      }
     }
     const state = await readFile(statePath, "utf8");
-    assert.equal(JSON.parse(state).resources[0].status, "planned");
+    assert.equal(JSON.parse(state).resources.length, roles.length);
+    assert.ok(JSON.parse(state).resources.every(({ status }) => status === "planned"));
     assert.doesNotMatch(
-      JSON.stringify(args) + state + result.stdout + result.stderr,
+      JSON.stringify(builds) + state + result.stdout + result.stderr,
       /synthetic-cache-credential/,
     );
   }
@@ -105,17 +125,20 @@ test("failed image preparation and cleanup retain a sanitized attempt-bound tag"
   assert.equal(preparation.error, undefined);
   const state = JSON.parse(await readFile(statePath, "utf8"));
   assert.deepEqual(state.ciRun, { id: "12345", attempt: "2" });
-  assert.equal(state.resources.length, 1, preparation.stderr);
-  const [image] = state.resources;
+  // Both tags are recorded before the builds start together, so each stays planned.
+  assert.equal(state.resources.length, 2, preparation.stderr);
   const label = createHash("sha256")
     .update(JSON.stringify(["12345", "2", state.prefix]))
     .digest("hex")
     .slice(0, 17);
+  const [image, runtimeImage] = state.resources;
   assert.match(
     image.name,
     new RegExp(`^localhost/openclaw-ci-image-${label}-[a-f0-9]{12}/controller:local$`),
   );
+  assert.equal(runtimeImage.name, image.name.replace("/controller:", "/runtime:"));
   assert.equal(image.status, "planned");
+  assert.equal(runtimeImage.status, "planned");
   state.env = { SECRET: "do-not-export" };
   await writeFile(statePath, JSON.stringify(state));
   const cleaned = run(cleanup, ["--state", statePath], env);
@@ -124,7 +147,10 @@ test("failed image preparation and cleanup retain a sanitized attempt-bound tag"
   const exported = run(exporter, [statePath, directory], env);
   assert.equal(exported.status, 0, exported.stderr);
   const record = JSON.parse(await readFile(join(directory, "images-12345-2.json"), "utf8"));
-  assert.deepEqual(record.images, [{ id: image.id, name: image.name, status: "planned" }]);
+  assert.deepEqual(
+    record.images,
+    [image, runtimeImage].map(({ id, name }) => ({ id, name, status: "planned" })),
+  );
   assert.doesNotMatch(JSON.stringify(record), /do-not-export/);
 });
 

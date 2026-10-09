@@ -1365,7 +1365,11 @@ test("OpenShell client closes cancellation races around provider dispatch", asyn
       },
     );
     fake.client.client = Promise.resolve({ grpc: fake.grpc, client: fake.transport });
-    await assert.rejects(fake.client.createProvider(provider, abort.signal), /transport failed/);
+    // A failure without a gRPC status keeps only its class, never the library's text.
+    await assert.rejects(
+      fake.client.createProvider(provider, abort.signal),
+      (error) => error.message === "OpenShell CreateProvider failed: Error",
+    );
     assert.equal(getEventListeners(abort.signal, "abort").length, 0);
     fake.client.close();
   });

@@ -1279,7 +1279,7 @@ for (const [failure, gatewayOptions] of [
   });
 }
 
-test("withdrawal is recorded for the active revision and queued for the worker once", async () => {
+test("withdrawal is recorded for the active revision and queued once, and the read prefers a stalled successor withdrawal", async () => {
   const {
     controller,
     dedicatedAgent,
@@ -1366,11 +1366,39 @@ test("withdrawal is recorded for the active revision and queued for the worker o
     }),
     ScopeViolationError,
   );
-  // A withdrawn source stays referenced by the active revision until a redeploy replaces it.
+  // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
+  // and that reference, not the queued withdrawal, is what the refusal names.
   await assert.rejects(
     controller.deleteCredentialSource(administrator, namespace.id, source.id),
-    ResourceConflictError,
+    (error) =>
+      error instanceof ResourceConflictError &&
+      error.name === "ResourceStateConflictError" &&
+      error.message.startsWith("An Agent, active revision, or pending deployment"),
   );
+
+  // A later deployment's pending withdrawal with no attempt outstanding, as exhausted attempts
+  // leave it (memory never runs work, so it is recorded without any), needs a replay. The read
+  // reports it ahead of the active revision's withdrawal, whose attempt is still outstanding.
+  const successor = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  await controller.transact((unit) =>
+    unit.credentialSources.requestCredentialWithdrawal({
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      revisionId: successor.id,
+      credentialSourceId: source.id,
+      state: "pending",
+      requestedBy: administrator,
+      requestedAt: new Date().toISOString(),
+    }),
+  );
+  const stalled = await controller.readAgentCredentialWithdrawal(administrator, request);
+  assert.equal(stalled.revisionId, successor.id);
+  assert.equal(stalled.state, "pending");
+  assert.equal(stalled.withdrawalInProgress, false);
 });
 
 test("withdrawal also covers each admitted successor revision that holds the source", async () => {

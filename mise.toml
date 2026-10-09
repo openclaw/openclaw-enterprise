@@ -10,6 +10,7 @@ idiomatic_version_file_enable_tools = ["pnpm"]
 node = "24.16.0"
 python = "3.14.7"
 go = "1.27.1"
+gh = "2.100.0"
 actionlint = "1.7.7"
 helm = "3.19.2"
 k3d = "5.8.3"

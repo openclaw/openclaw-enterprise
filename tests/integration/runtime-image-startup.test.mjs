@@ -1074,6 +1074,7 @@ function run(args, env, readinessUrl) {
       } } },
       secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
     }),
+    OPENCLAW_RUNTIME_STATUS_PORT: "18791",
     OPENCLAW_HARNESS_MODEL: model,
     OPENCLAW_HARNESS_PROVIDER: "openai",
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",

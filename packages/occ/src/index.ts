@@ -132,6 +132,7 @@ import {
   isNonEmptyString,
 } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import { requireDeployableRoster } from "./openclaw-roster.ts";
 import {
   capability,
   driverHasCapabilityContract,
@@ -157,6 +158,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
   CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalInProgressError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -265,6 +267,7 @@ export type { RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 export {
   ActivationFailedError,
   ActivationPendingError,
+  agentEntryMessage,
   AgentCredentialSourceBindingError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
@@ -284,6 +287,8 @@ export {
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalInProgressError,
+  CredentialWithdrawalRefusedError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -307,6 +312,7 @@ export {
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   SecretBindingDriverError,
+  ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
   SecretDriverOwnershipError,
@@ -377,6 +383,7 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
@@ -527,6 +534,23 @@ export interface ControllerOptions {
   readonly configuredServiceAccountDriverId?: string;
   /** Installation startup `runtime.nativeWorkerSupport`; never set from the API. */
   readonly nativeWorkerSupport?: NativeWorkerSupport;
+}
+
+/** The result of a ServiceAccount deletion. */
+export interface ServiceAccountDeletion {
+  readonly removedAccessBindings: readonly RemovedAccessBinding[];
+  /**
+   * Set only when a forced deletion removed an account whose issued access token no
+   * ServiceAccount Driver could revoke. The token itself is never read. Its Backend binding
+   * is absent when OCC has no record of it.
+   */
+  readonly unrevokedCredential?: {
+    readonly backendId?: string;
+    readonly workspaceId?: string;
+    /** The provider account the credential belongs to; the provider revokes by both IDs. */
+    readonly externalAccountId?: string;
+    readonly credentialId?: string;
+  };
 }
 
 /** One shipped version of a bundled default Preset (`deploy/presets/archive/versions.json`). */
@@ -733,7 +757,8 @@ export type ReconciliationOperation = PlatformOperation;
 export type AgentProvisioningWorkerOutcome =
   | { readonly outcome: "succeeded"; readonly revisionId: string }
   | {
-      readonly outcome: "retry" | "permanent";
+      /** `pending` waits out a settle window without spending an attempt. */
+      readonly outcome: "retry" | "permanent" | "pending";
       readonly code: string;
       /** A Compute refusal's reason for the operator log; status keeps the fixed text. */
       readonly reason?: string;
@@ -776,6 +801,14 @@ const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
  * gateway copy does not prove that no late create is still in flight, so the record is kept.
  */
 const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
+/**
+ * How long after a provisioning Configuration create was recorded an absent Configuration may
+ * still be a late create in flight (finding 911). The Kubernetes Driver gives up on a write after
+ * 10 s, and the API server ends a request it accepted within its request timeout (60 s by
+ * default), so a create that has not appeared 90 s after the effect began (database clock) is
+ * sent again. A late original then meets an existing ConfigMap and fails AlreadyExists.
+ */
+const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
 /**
  * The most references a Secret read or delete examines. Each one costs authorization work,
  * so the bound keeps both the response and the IAM work small. Delete makes those decisions
@@ -928,6 +961,19 @@ function fittedList(prefix: string, items: readonly string[], suffix: string): s
     shown -= 1;
   }
   return render(shown);
+}
+
+/**
+ * A pending provisioning Configuration create is not visible yet but may still be in flight, so
+ * the attempt defers for the rest of the settle window instead of spending a retry (finding 911).
+ */
+class ProvisioningConfigurationSettlingError extends DependencyUnavailableError {
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number) {
+    super("The pending Configuration provisioning effect outcome is unknown.");
+    this.retryAfterMs = retryAfterMs;
+  }
 }
 
 /**
@@ -2504,10 +2550,15 @@ export class OpenClawController {
       ) {
         code = "PROVISIONING_REJECTED";
       }
+      const deferMs =
+        error instanceof ProvisioningConfigurationSettlingError ? error.retryAfterMs : undefined;
       const disposition =
-        code === "PROVISIONING_DEPENDENCY_UNAVAILABLE" || code === "PROVISIONING_OUTCOME_UNKNOWN"
-          ? "retry"
-          : "permanent";
+        deferMs !== undefined && code === "PROVISIONING_OUTCOME_UNKNOWN"
+          ? "defer"
+          : code === "PROVISIONING_DEPENDENCY_UNAVAILABLE" ||
+              code === "PROVISIONING_OUTCOME_UNKNOWN"
+            ? "retry"
+            : "permanent";
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       const message = provisioningFailureMessage(code, error);
@@ -2525,7 +2576,9 @@ export class OpenClawController {
               error: { code, message },
             },
           },
-          { disposition, code, message },
+          disposition === "defer"
+            ? { disposition, code, message, delayMs: deferMs! }
+            : { disposition, code, message },
         );
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
@@ -2554,7 +2607,7 @@ export class OpenClawController {
         });
       });
       return Object.freeze({
-        outcome: disposition,
+        outcome: disposition === "defer" ? ("pending" as const) : disposition,
         code,
         ...(error instanceof ComputeProvisioningRefusedError ? { reason: error.reason } : {}),
       });
@@ -3623,6 +3676,25 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * The grant check that opens createPreset (no presetId) or updatePreset, alone. The HTTP
+   * layer runs it before it reads a write's body (up to 6 MiB), so a caller without the grant
+   * is refused as before, without the body being buffered. Both writes repeat it in their
+   * transaction.
+   */
+  async authorizePresetWrite(
+    principalId: string,
+    namespaceId: string,
+    presetId?: string,
+  ): Promise<void> {
+    this.namespaceIdentity(namespaceId);
+    await this.authorize(principalId, presetId === undefined ? "create" : "update", {
+      kind: "preset",
+      id: presetId ?? namespaceId,
+      namespaceId,
+    });
+  }
+
   async updatePreset(principalId: string, input: UpdatePresetInput): Promise<Readonly<Preset>> {
     if (input.name !== undefined && !isName(input.name)) {
       throw new PresetValidationError("The Preset name is invalid.");
@@ -4378,10 +4450,15 @@ export class OpenClawController {
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (await state.credentialSources.hasReferences(locked.id, found.id)) {
+      const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
+      if (blocking === "reference") {
         throw new ResourceStateConflictError(
           "An Agent, active revision, or pending deployment still references the credential source. Delete those Agents, or deploy them without it, first.",
         );
+      }
+      if (blocking === "withdrawal_work") {
+        // No active revision or pending work holds the source, so only waiting or Agent deletion helps.
+        throw new CredentialWithdrawalInProgressError();
       }
       const owner = this.ownedCredentialGatewayDriver(found.driverId);
       const deleting =
@@ -4463,6 +4540,7 @@ export class OpenClawController {
         createdAt: this.timestamp(),
       });
       validateModelProviderSettings(values);
+      requireDeployableRoster(values);
       await driver.validate(configuration);
       const metadata = await state.configurations.createConfiguration({
         id: configuration.id,
@@ -4472,10 +4550,28 @@ export class OpenClawController {
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
         createdAt: configuration.createdAt,
       });
+      // Registered before the write: a create that applied but answered with an error (a
+      // timeout, a lost response) would otherwise leave a ConfigMap without metadata (finding
+      // 916). The rollback deletes only this exact Configuration (identity, generation, creation
+      // time and values); an absent one means the create never applied, and a Driver that cannot
+      // inspect it is compensated only after a create it saw succeed.
+      let created = false;
+      this.registerRollback(async () => {
+        if (driver.inspectExact === undefined) {
+          if (!created) {
+            return;
+          }
+        } else if (
+          (await this.driverOperation(() => driver.inspectExact!(configuration))) === undefined
+        ) {
+          return;
+        }
+        await this.driverOperation(() =>
+          driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+        );
+      });
       const result = await this.driverOperation(() => driver.create(configuration));
-      this.registerRollback(async () =>
-        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
-      );
+      created = true;
       return this.exactConfiguration(result, metadata);
     });
   }
@@ -4602,11 +4698,19 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * `force` matters only for an account holding an issued access token while this API selects
+   * no ServiceAccount Driver (no ChatGPT Backend): instead of refusing, it removes the
+   * account-owned token Secret and the account, and reports the token as unrevoked. With a
+   * Driver selected, force is ignored and the token is revoked as usual, so a revocation that
+   * can run is never skipped. Grants, the account lookup, and reference checks are unchanged.
+   */
   async deleteServiceAccount(
     principalId: string,
     namespaceId: string,
     serviceAccountId: string,
-  ): Promise<readonly RemovedAccessBinding[]> {
+    options: { readonly force?: boolean } = {},
+  ): Promise<ServiceAccountDeletion> {
     this.serviceAccountIdentity(namespaceId, serviceAccountId);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
@@ -4626,13 +4730,28 @@ export class OpenClawController {
           "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
         );
       }
+      // Decided once, on the locked account row: Driver selection is fixed when the API
+      // starts, and issuance takes the same row lock, so no token can appear after this read.
       const driver = this.serviceAccountDriver();
+      let unrevokedCredential: ServiceAccountDeletion["unrevokedCredential"];
       if (account.credential?.kind === "access_token" && driver === undefined) {
-        // Only the Backend's Driver can revoke the issued token, so deletion waits for it.
-        // Only the worker sets a configured Driver id, so the API always answers the 409.
-        throw this.configuredServiceAccountDriverId === undefined
-          ? new ServiceAccountDriverNotConfiguredError("delete")
-          : new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
+        // Only the Backend's Driver can revoke the issued token, so deletion waits for it
+        // unless the caller forces it. Only the worker sets a configured Driver id, so the API
+        // always answers the 409 (or forces).
+        if (this.configuredServiceAccountDriverId !== undefined) {
+          throw new DependencyUnavailableError(
+            "The selected ServiceAccount Driver is unavailable.",
+          );
+        }
+        if (options.force !== true) {
+          throw new ServiceAccountDriverNotConfiguredError("delete");
+        }
+        const binding = await state.serviceAccounts.findIssuedCredentialBinding(
+          namespace.id,
+          account.id,
+        );
+        await this.deleteUnrevokedCredentialSecret(account, account.credential);
+        unrevokedCredential = binding === undefined ? {} : { ...binding };
       }
       if (driver !== undefined) {
         await this.driverOperation(() => driver.delete(account), "ServiceAccount");
@@ -4646,8 +4765,36 @@ export class OpenClawController {
       if (!(await state.serviceAccounts.deleteServiceAccount(namespace.id, account.id))) {
         throw new ResourceStateConflictError("The ServiceAccount changed during deletion.");
       }
-      return removed;
+      return {
+        removedAccessBindings: removed,
+        ...(unrevokedCredential === undefined ? {} : { unrevokedCredential }),
+      };
     });
+  }
+
+  /**
+   * A forced deletion still removes OCC's copy of the unrevoked token: the account-owned
+   * Secret the ChatGPT Driver would have removed after revoking it. The Compute Driver that
+   * stored it owns that Secret; one without the operation never stored account tokens.
+   */
+  private async deleteUnrevokedCredentialSecret(
+    account: Readonly<ServiceAccount>,
+    credential: ServiceAccountCredential,
+  ): Promise<void> {
+    const compute = this.selectedDriver("compute");
+    const deleteSecret = compute.deleteServiceAccountCredential?.bind(compute);
+    if (deleteSecret === undefined) {
+      return;
+    }
+    await this.driverOperation(
+      () =>
+        deleteSecret({
+          namespaceId: account.namespaceId,
+          serviceAccountId: account.id,
+          secretRef: credential.secretRef,
+        }),
+      "Compute",
+    );
   }
 
   async getConfiguration(
@@ -4735,11 +4882,24 @@ export class OpenClawController {
         createdAt: advanced.createdAt,
       });
       validateModelProviderSettings(values);
+      // A stored Configuration that predates this rule still reads, and deployment refuses it as
+      // before; only a replacement that keeps the refused roster fails.
+      requireDeployableRoster(values);
       await driver.validate(configuration);
-      const updated = await this.driverOperation(() => driver.update(configuration));
+      // Registered before the write: a replace that applied but answered with an error (a
+      // timeout, a lost response) would otherwise leave the stored Configuration one generation
+      // ahead of the rolled-back metadata (finding 911). A write that never applied is left alone,
+      // and so is a stored generation another update committed after the lock was released.
       this.registerRollback(async () => {
-        await driver.update(previous);
+        const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
+        if (
+          stored.generation !== previous.generation &&
+          (await this.configurationRecordUnchanged(metadata))
+        ) {
+          await driver.update(previous);
+        }
       });
+      const updated = await this.driverOperation(() => driver.update(configuration));
       return this.exactConfiguration(updated, advanced);
     });
   }
@@ -4787,12 +4947,31 @@ export class OpenClawController {
         ),
         configuration,
       );
+      // Registered before the write: a delete that applied but answered with an error would
+      // otherwise leave the metadata without its ConfigMap (finding 916). The rollback recreates
+      // the previous Configuration only when it is gone and its record is still the one locked
+      // here; one still stored exactly means the delete never applied, and a record another
+      // request deleted or changed in the meantime is that request's (finding 945). A Driver that
+      // cannot inspect it is compensated only after a delete it saw succeed.
+      let deleted = false;
+      this.registerRollback(async () => {
+        if (driver.inspectExact === undefined) {
+          if (!deleted) {
+            return;
+          }
+        } else if (
+          (await this.driverOperation(() => driver.inspectExact!(previous))) !== undefined
+        ) {
+          return;
+        }
+        if (await this.configurationRecordUnchanged(configuration)) {
+          await this.driverOperation(() => driver.create(previous));
+        }
+      });
       await this.driverOperation(() =>
         driver.delete({ id: configuration.id, namespaceId: namespace.id }),
       );
-      this.registerRollback(async () => {
-        await driver.create(previous);
-      });
+      deleted = true;
       const removed = await accessBindingsTargeting(
         state,
         namespace.id,
@@ -6386,11 +6565,12 @@ export class OpenClawController {
    * worker work to revoke it. Every admitted successor revision that holds the source gets its
    * own withdrawal too, so a deployment still in flight cannot attach it again, and so does
    * each predecessor that may still run until the active revision's deployment retires it.
-   * A replay of a pending withdrawal queues another attempt only when no earlier attempt is
-   * still queued or running, and that attempt runs on the replaying operator's authority; a
-   * revoked withdrawal is left unchanged. The response describes the active revision's
-   * withdrawal, or, once that is revoked, a pending one of another revision that may still run
-   * with the source (see readAgentCredentialWithdrawal).
+   * A replay of a pending withdrawal makes the replaying operator its requester, so its next
+   * attempt runs on their authority. It queues another attempt only when no earlier attempt is
+   * still queued or running, and otherwise lets a queued one run now; a revoked withdrawal is
+   * left unchanged. The response describes the active revision's withdrawal, or, once that is
+   * revoked, a pending one of another revision that may still run with the source (see
+   * readAgentCredentialWithdrawal).
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6450,8 +6630,9 @@ export class OpenClawController {
   }
 
   /**
-   * Inserts or returns the revision's withdrawal of the source. A pending one without
-   * outstanding work makes the caller its requester and queues an attempt.
+   * Inserts or returns the revision's withdrawal of the source. A pending one makes the caller
+   * its requester. Without outstanding work it queues an attempt; otherwise the queued attempt
+   * runs now instead of at its scheduled time, so one chain still serves the withdrawal.
    */
   private async requestRevisionCredentialWithdrawal(
     state: PlatformUnitOfWork,
@@ -6470,18 +6651,13 @@ export class OpenClawController {
         requestedAt: this.timestamp(),
       }),
     );
-    if (
-      withdrawal.state !== "pending" ||
-      (await state.operations.hasOutstandingCredentialWithdrawalWork(
-        revision.namespaceId,
-        revision.id,
-      ))
-    ) {
+    if (withdrawal.state !== "pending") {
       return withdrawal;
     }
     // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
-    // may have lost it since, so the attempt this replay queues runs on the authority just
-    // checked by the caller; otherwise nobody could ever complete the withdrawal.
+    // may have lost it since, so the next attempt, queued now or earlier, runs on the authority
+    // just checked by the caller; otherwise nobody could ever complete the withdrawal. The
+    // request's own audit event records the caller; earlier events keep their actors.
     if (withdrawal.requestedBy !== principalId) {
       const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
         withdrawal.namespaceId,
@@ -6496,6 +6672,18 @@ export class OpenClawController {
       }
       withdrawal = reassigned;
     }
+    // A queued attempt (a retry backing off, or a later series of the worker's recovery chain)
+    // runs now rather than up to five minutes later. A running one reads the new requester
+    // when it settles (the worker's finalizeCredentialWithdrawal).
+    if (
+      await state.operations.hasOutstandingCredentialWithdrawalWork(
+        revision.namespaceId,
+        revision.id,
+      )
+    ) {
+      await state.operations.expediteCredentialWithdrawalWork(revision.namespaceId, revision.id);
+      return withdrawal;
+    }
     await this.record(state, {
       kind: "agent_revision",
       action: "reconcile",
@@ -6509,8 +6697,9 @@ export class OpenClawController {
   }
 
   /**
-   * A `pending` withdrawal whose attempts ran out has no outstanding work, whether the last
-   * attempt failed or its claim expired, so `withdrawalInProgress` is read from the queue.
+   * A `pending` withdrawal has no outstanding work once its attempts ran out with no later
+   * series queued (the chain ended, it awaits a replay, or maintenance has not re-queued it
+   * yet), so `withdrawalInProgress` is read from the queue.
    *
    * The source is withdrawn from the Agent only once every revision that may still run with it
    * confirmed its own withdrawal, so the read reports the active revision's withdrawal unless
@@ -8162,6 +8351,7 @@ export class OpenClawController {
     return effect.targetId === undefined || pending.targetId === effect.targetId;
   }
 
+  /** Settles the pending Configuration create once observed; undefined while it is absent. */
   private async inspectProvisioningConfigurationEffect(
     workId: string,
     record: Readonly<AgentProvisioningRecord>,
@@ -8169,7 +8359,7 @@ export class OpenClawController {
     configuration: Configuration,
     driver: ConfigurationDriver,
     runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
-  ): Promise<Readonly<AgentProvisioningRecord>> {
+  ): Promise<Readonly<AgentProvisioningRecord> | undefined> {
     if (!this.provisioningPendingEffectMatches(record, effect)) {
       throw new DependencyUnavailableError(
         "The pending Configuration provisioning effect outcome is unknown.",
@@ -8182,12 +8372,64 @@ export class OpenClawController {
     }
     return runEffect(async () => {
       const recovered = await this.driverOperation(() => driver.inspectExact!(configuration));
-      if (recovered === undefined) {
-        throw new DependencyUnavailableError(
-          "The pending Configuration provisioning effect outcome is unknown.",
-        );
+      return recovered === undefined
+        ? undefined
+        : this.settleProvisioningEffect(workId, record, effect);
+    });
+  }
+
+  /**
+   * Sends a pending Configuration create again when it is still absent after its settle window
+   * (finding 911): a create that never reached the API server is otherwise never resent, and the
+   * work retries as an unknown outcome until attempts run out. Inside the window the attempt
+   * defers without spending a retry. The resend keeps the pending effect, its owner and target,
+   * so the Namespace still waits for it; it follows a fresh fence, as the first send did, and
+   * writes the same deterministic Configuration with create-if-absent semantics. If it fails
+   * (AlreadyExists, or a lost response), an earlier send may have landed after all: the exact
+   * inspection, which checks identity, generation, creation time and values, decides whether
+   * the effect settles, and a conflict it reports replaces the create's error. The window is
+   * measured from the first send only (the pending effect cannot be replaced), so a later
+   * attempt resends at once and relies on create-if-absent and that inspection alone. An effect
+   * recorded before its start was stamped keeps waiting.
+   */
+  private async resendProvisioningConfigurationEffect(
+    claim: ClaimedWork,
+    record: Readonly<AgentProvisioningRecord>,
+    effect: ProvisioningEffectTarget & { readonly kind: "configuration" },
+    configuration: Configuration,
+    driver: ConfigurationDriver,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<Readonly<AgentProvisioningRecord>> {
+    const startedAt = provisioningPendingEffect(record)?.startedAt;
+    if (startedAt === undefined) {
+      throw new DependencyUnavailableError(
+        "The pending Configuration provisioning effect outcome is unknown.",
+      );
+    }
+    // The fence stamps updated_at on the database clock, the clock that stamped startedAt.
+    const fenced = await this.mutate((state) => this.fenceAgentProvisioning(state, claim));
+    if (!this.provisioningPendingEffectMatches(fenced, effect)) {
+      throw new DependencyUnavailableError(
+        "The pending Configuration provisioning effect outcome is unknown.",
+      );
+    }
+    const remainingMs =
+      startedAt.getTime() + PROVISIONING_CONFIGURATION_SETTLE_MS - fenced.updatedAt.getTime();
+    if (remainingMs > 0) {
+      throw new ProvisioningConfigurationSettlingError(
+        Math.min(Math.ceil(remainingMs), PROVISIONING_CONFIGURATION_SETTLE_MS),
+      );
+    }
+    return runEffect(async () => {
+      try {
+        await this.driverOperation(() => driver.createExact!(configuration));
+      } catch (error) {
+        const landed = await this.driverOperation(() => driver.inspectExact!(configuration));
+        if (landed === undefined) {
+          throw error;
+        }
       }
-      return this.settleProvisioningEffect(workId, record, effect);
+      return this.settleProvisioningEffect(claim.idempotencyKey, fenced, effect);
     });
   }
 
@@ -8255,8 +8497,9 @@ export class OpenClawController {
    * plan names (another selected Driver is left to the fence, which then retries the work); and
    * settling records what it observed for that exact pending kind, owner and target (a pending
    * effect replaced meanwhile settles nothing), as Agent deletion does for cancelled work.
-   * Nothing is written outside OCC before the fence, and a write it cannot observe stays pending
-   * and retries, as before. Other work, and work whose effect is already settled, is unchanged.
+   * Nothing is written outside OCC before the fence. A write it cannot observe stays pending for
+   * the fenced step: a transport write retries, and a Configuration create may be resent after
+   * its settle window. Other work, and work whose effect is already settled, is unchanged.
    */
   private async reconcileProvisioningEffect(
     record: Readonly<AgentProvisioningRecord>,
@@ -8276,13 +8519,16 @@ export class OpenClawController {
       if (drivers?.configuration !== driver.id) {
         return record;
       }
-      return this.inspectProvisioningConfigurationEffect(
-        record.workId,
-        record,
-        { kind: "configuration", targetId: pending.targetId },
-        this.provisioningConfiguration(record, pending.targetId),
-        driver,
-        runEffect,
+      // An absent write is left to the fenced Configuration step, which may resend it.
+      return (
+        (await this.inspectProvisioningConfigurationEffect(
+          record.workId,
+          record,
+          { kind: "configuration", targetId: pending.targetId },
+          this.provisioningConfiguration(record, pending.targetId),
+          driver,
+          runEffect,
+        )) ?? record
       );
     }
     const driver = this.runtimeCredentialComputeDriver("provision");
@@ -8341,14 +8587,23 @@ export class OpenClawController {
       );
       if (metadata === undefined) {
         if (this.provisioningPendingEffectMatches(current, effect)) {
-          current = await this.inspectProvisioningConfigurationEffect(
-            claim.idempotencyKey,
-            current,
-            effect,
-            configuration,
-            driver,
-            runEffect,
-          );
+          current =
+            (await this.inspectProvisioningConfigurationEffect(
+              claim.idempotencyKey,
+              current,
+              effect,
+              configuration,
+              driver,
+              runEffect,
+            )) ??
+            (await this.resendProvisioningConfigurationEffect(
+              claim,
+              current,
+              effect,
+              configuration,
+              driver,
+              runEffect,
+            ));
         } else {
           current = await this.beginProvisioningEffect(claim, effect);
           await runEffect(async () => {
@@ -9671,7 +9926,7 @@ export class OpenClawController {
 
   private async driverOperation<T>(
     operation: () => Promise<T>,
-    capability: "Configuration" | "ServiceAccount" = "Configuration",
+    capability: "Configuration" | "ServiceAccount" | "Compute" = "Configuration",
   ): Promise<T> {
     try {
       return await operation();
@@ -9685,6 +9940,31 @@ export class OpenClawController {
       }
       throw new DependencyUnavailableError(`The selected ${capability} Driver is unavailable.`);
     }
+  }
+
+  /**
+   * Compensations run after the failed transaction's ROLLBACK released its row locks, so another
+   * request may have deleted or updated the Configuration in between (finding 945). A
+   * compensation restores the previous document only while the record is still the one the
+   * failed request locked; otherwise that later write owns the backend state. A state read that
+   * fails counts as unchanged: the failure is usually the same outage that failed the request,
+   * when no other request can commit either, and skipping would leave the metadata without its
+   * ConfigMap (finding 916).
+   */
+  private async configurationRecordUnchanged(
+    expected: Pick<Configuration, "id" | "namespaceId" | "generation" | "createdAt">,
+  ): Promise<boolean> {
+    const current = await this.read((state) =>
+      state.configurations.findConfiguration(expected.namespaceId, expected.id),
+    ).catch(() => "unreadable" as const);
+    if (current === "unreadable") {
+      return true;
+    }
+    return (
+      current !== undefined &&
+      current.generation === expected.generation &&
+      current.createdAt === expected.createdAt
+    );
   }
 
   private exactConfiguration(

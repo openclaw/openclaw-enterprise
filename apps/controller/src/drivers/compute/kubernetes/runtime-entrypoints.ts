@@ -34,6 +34,7 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
 ]);
 
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
+export const RUNTIME_READINESS_PATH = "/readyz";
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
@@ -88,6 +89,38 @@ function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
 }
 `;
 
+const RUNTIME_READINESS_RESPONSE_HELPER = String.raw`
+async function answerRuntimeReadiness(response, readiness) {
+  let ready = false;
+  try {
+    ready = await readiness() === true;
+  } catch {}
+  if (response.destroyed) return;
+  response.writeHead(ready ? 200 : 503, { "cache-control": "no-store" });
+  response.end();
+}
+`;
+
+const RUNTIME_READINESS_SERVER_HELPER = String.raw`
+${RUNTIME_READINESS_RESPONSE_HELPER}
+function startRuntimeReadinessServer(readiness) {
+  const port = Number(process.env.OPENCLAW_RUNTIME_STATUS_PORT);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Runtime status port is invalid.");
+  }
+  const server = readinessCreateServer((request, response) => {
+    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (request.method !== "GET" || pathname !== ${JSON.stringify(RUNTIME_READINESS_PATH)}) {
+      response.writeHead(404, { "cache-control": "no-store" });
+      response.end();
+      return;
+    }
+    void answerRuntimeReadiness(response, readiness);
+  });
+  server.listen(port, "0.0.0.0");
+}
+`;
+
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -95,6 +128,7 @@ const {
   resolve: pluginResolve,
 } = require("node:path");
 const {
+  existsSync: pluginExistsSync,
   mkdirSync: pluginMkdirSync,
   mkdtempSync: pluginMkdtempSync,
   readFileSync: pluginReadFileSync,
@@ -108,7 +142,7 @@ const {
   randomUUID: pluginRandomUUID,
 } = require("node:crypto");
 const { spawnSync: pluginSpawnSync } = require("node:child_process");
-const { createServer: pluginCreateServer } = require("node:http");
+const { createServer: pluginCreateServer, get: pluginHttpGet } = require("node:http");
 const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
 const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
@@ -118,6 +152,7 @@ const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
 const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
 const RUNTIME_IMAGE_PATH = "/openclaw/runtime/image";
+const RUNTIME_READINESS_PATH = ${JSON.stringify(RUNTIME_READINESS_PATH)};
 const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
 const RUNTIME_DIAGNOSTIC_CODES = new Set([
   "LOGIN_FAILED",
@@ -134,6 +169,7 @@ const RUNTIME_DIAGNOSTIC_CODES = new Set([
 const pluginBaseAppServerToken = process.env.APP_SERVER_TOKEN;
 
 ${PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER}
+${RUNTIME_READINESS_RESPONSE_HELPER}
 
 class PluginTerminalDiagnosticError extends Error {
   constructor(diagnostic, message) {
@@ -644,11 +680,15 @@ async function runtimeDiagnosticsReport(abortSignal) {
   };
 }
 
-function startPluginRuntimeStatusServer() {
+function startPluginRuntimeStatusServer(readiness) {
   const port = runtimeStatusPort() ?? pluginRuntimeStatusPort();
   if (port === undefined) return;
   const server = pluginCreateServer(async (request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (request.method === "GET" && pathname === RUNTIME_READINESS_PATH) {
+      await answerRuntimeReadiness(response, readiness);
+      return;
+    }
     const remote = pathname === REMOTE_PLUGIN_STATUS_PATH && process.env.OPENCLAW_REMOTE_PLUGIN_STATUS === "true";
     if (remote) {
       const expected = Buffer.from(remotePluginStatusAuthorization());
@@ -2152,7 +2192,36 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
-startPluginRuntimeStatusServer();
+
+function gatewayRuntimeReady() {
+  if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
+    return false;
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (ready) => {
+      if (settled) return;
+      settled = true;
+      resolve(ready);
+    };
+    const request = pluginHttpGet(
+      {
+        host: "127.0.0.1",
+        port: requireNonEmptyString(process.env.OPENCLAW_GATEWAY_PORT, "Gateway port"),
+        path: "/readyz",
+        timeout: 2_000,
+      },
+      (response) => {
+        response.resume();
+        settle(response.statusCode === 200);
+      },
+    );
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => settle(false));
+  });
+}
+
+startPluginRuntimeStatusServer(gatewayRuntimeReady);
 
 // A respawn for a changed Harness peer bounds its retries and falls back to a
 // container restart when the peer keeps changing.
@@ -3037,7 +3106,58 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${startupPhaseHelper("agent")}
-startPluginRuntimeStatusServer();
+
+function agentRuntimeReady() {
+  if (
+    process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined &&
+    !pluginExistsSync(process.env.OPENCLAW_PLUGIN_READY_MARKER)
+  ) {
+    return false;
+  }
+  if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
+    return false;
+  }
+  let ReadinessWebSocket;
+  try {
+    ReadinessWebSocket = require("ws");
+  } catch {
+    return false;
+  }
+  let token = pluginBaseAppServerToken;
+  try {
+    if (pluginRuntimeStatusPort() !== undefined) {
+      token = derivePluginAppServerToken(pluginStatusReport.startupId);
+    }
+  } catch {
+    return false;
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout;
+    const socket = new ReadinessWebSocket(codexAppServerUrl(), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    const settle = (ready) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        if (ready) socket.close();
+        else socket.terminate?.();
+      } catch {}
+      resolve(ready);
+    };
+    const onSocket = (event, listener) => {
+      if (typeof socket.addEventListener === "function") socket.addEventListener(event, listener);
+      else socket.on(event, listener);
+    };
+    timeout = setTimeout(() => settle(false), 2_000);
+    onSocket("open", () => settle(true));
+    onSocket("error", () => settle(false));
+  });
+}
+
+startPluginRuntimeStatusServer(agentRuntimeReady);
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
@@ -3672,8 +3792,10 @@ for (const slot of [...processes].reverse()) start(slot);
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
+const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
+${RUNTIME_READINESS_SERVER_HELPER}
 
 function publishRuntimeFailure() {}
 function serveHeldRuntimeFailureToTransportPeer() {}
@@ -3697,6 +3819,40 @@ if (
 ) {
   throw new Error("Dedicated OpenClaw worker configuration is invalid.");
 }
+
+function nativeWorkerReady() {
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      ["/app/openclaw.mjs", "node", "identity", "--json"],
+      {
+        env: {
+          ...process.env,
+          OPENCLAW_STATE_DIR: state,
+          OPENCLAW_CONFIG_PATH: join(state, "openclaw.json"),
+        },
+        encoding: "utf8",
+        timeout: 2_000,
+      },
+      (error, stdout) => {
+        if (error !== null) {
+          resolve(false);
+          return;
+        }
+        let deviceId;
+        try {
+          deviceId = JSON.parse(stdout).deviceId;
+        } catch {
+          resolve(false);
+          return;
+        }
+        resolve(typeof deviceId === "string" && /^[a-f0-9]{64}$/u.test(deviceId));
+      },
+    );
+  });
+}
+
+startRuntimeReadinessServer(nativeWorkerReady);
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
@@ -3770,9 +3926,8 @@ child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 
 }
 `;
 
-// Kubelet puts an exec probe's output in the Pod's "Readiness probe failed:"
-// event. Each readiness program prints one line from a fixed vocabulary, never
-// a response body, so the event says why the container is unready.
+// Docker Compute runs the remaining Codex readiness program as a healthcheck.
+// It emits only a fixed-vocabulary reason when the container is unready.
 const READINESS_FAILURE_HELPER = String.raw`
 const { writeSync: readinessWriteSync } = require("node:fs");
 const readinessHttp = require("node:http");
@@ -3862,88 +4017,6 @@ function checkPluginStatus(ready) {
   request.on("error", (error) =>
     readinessFail("plugin runtime status unavailable: " + readinessErrorCode(error)),
   );
-}
-`;
-
-export const NATIVE_WORKER_READINESS_ENTRYPOINT = String.raw`
-const { join } = require("node:path");
-const { spawnSync } = require("node:child_process");
-const { writeSync } = require("node:fs");
-function fail(reason) {
-  try {
-    writeSync(1, reason + "\n");
-  } catch {}
-  process.exit(1);
-}
-const state = process.env.OPENCLAW_NODE_STATE_DIR;
-if (!state) fail("native node state directory is not configured");
-const identity = spawnSync(
-  process.execPath,
-  ["/app/openclaw.mjs", "node", "identity", "--json"],
-  {
-    env: {
-      ...process.env,
-      OPENCLAW_STATE_DIR: state,
-      OPENCLAW_CONFIG_PATH: join(state, "openclaw.json"),
-    },
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 2_000,
-  },
-);
-if (identity.error !== undefined) {
-  fail("native node identity command failed: " + (identity.error.code ?? "error"));
-}
-if (identity.status !== 0) {
-  fail(
-    identity.signal === null
-      ? "native node identity command exited with " + identity.status
-      : "native node identity command was stopped by " + identity.signal,
-  );
-}
-let deviceId;
-try {
-  deviceId = JSON.parse(identity.stdout).deviceId;
-} catch {
-  fail("native node identity output is not JSON");
-}
-if (typeof deviceId !== "string" || !/^[a-f0-9]{64}$/u.test(deviceId)) {
-  fail("native node identity has no device ID");
-}
-process.exit(0);
-`;
-
-// Check native readiness over Pod loopback: kubelet's node source can also be
-// the trusted apiserver proxy source, but its probes have no forwarded headers.
-export const GATEWAY_READINESS_ENTRYPOINT = String.raw`
-${READINESS_FAILURE_HELPER}
-${READINESS_PLUGIN_STATUS_HELPER}
-let readinessWaitingFor = "plugin runtime status";
-const timeout = setTimeout(
-  () => readinessExit("no answer from " + readinessWaitingFor + " within 2s"),
-  2_000,
-);
-function nativeReady() {
-  readinessWaitingFor = "Gateway /readyz";
-  const request = readinessHttp.get(
-    "http://127.0.0.1:" + process.env.OPENCLAW_GATEWAY_PORT + "/readyz",
-    (response) => {
-      response.resume();
-      if (response.statusCode === 200) {
-        clearTimeout(timeout);
-        process.exit(0);
-      }
-      readinessFail("Gateway /readyz returned HTTP " + response.statusCode);
-    },
-  );
-  request.on("error", (error) =>
-    readinessFail("Gateway /readyz unavailable: " + readinessErrorCode(error)),
-  );
-}
-if (process.env.OPENCLAW_PLUGIN_STATUS_PORT === undefined) {
-  nativeReady();
-} else {
-  checkPluginStatus(() => nativeReady());
 }
 `;
 

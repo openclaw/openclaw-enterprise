@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,12 @@ import (
 )
 
 const defaultTimeoutSeconds = "30"
+
+var dns1123LabelPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
+
+func dns1123Label(name string) bool {
+	return len(name) >= 1 && len(name) <= 63 && dns1123LabelPattern.MatchString(name)
+}
 
 // outputFormatsAnnotation lists the -o values a command accepts; the first replaces
 // the global "table" default.
@@ -92,7 +99,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		&app.namespace,
 		"namespace",
 		os.Getenv("OCC_NAMESPACE"),
-		"Namespace scope for Configuration, Secret, Preset, credential source, IAM, and Agent operations",
+		"Namespace scope for Configuration, Secret, Preset, credential source, ServiceAccount, IAM, and Agent operations",
 	)
 	flags.StringVarP(&app.output, "output", "o", "table", "Output format: table, json, or yaml")
 
@@ -105,6 +112,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.secretCommand(),
 		app.presetCommand(),
 		app.credentialSourceCommand(),
+		app.serviceAccountCommand(),
 		app.agentCommand(),
 		developmentCommand(),
 	)
@@ -170,7 +178,11 @@ func (app *application) namespaceCommand() *cobra.Command {
 		Use:   "create NAME",
 		Short: "Create a Namespace",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			// createNamespace existingNamespace: a DNS-1123 label of at most 63 characters.
+			if command.Flags().Changed("existing-namespace") && !dns1123Label(existingNamespace) {
+				return fmt.Errorf("--existing-namespace must be a DNS-1123 label of at most 63 characters")
+			}
 			client, err := app.client()
 			if err != nil {
 				return err
@@ -615,6 +627,64 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 	return command
 }
 
+func (app *application) serviceAccountCommand() *cobra.Command {
+	command := commandGroup("service-account", "Manage ServiceAccounts in the selected Namespace")
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List ServiceAccounts",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			accounts, err := client.ListServiceAccounts(namespace)
+			if err != nil {
+				return err
+			}
+			return app.printItems(accounts, true, []column{
+				{title: "ID", key: "id"},
+				{title: "NAME", key: "name"},
+			})
+		},
+	}
+
+	var force bool
+	deleteCommand := &cobra.Command{
+		Use:   "delete ID",
+		Short: "Delete an unreferenced ServiceAccount",
+		Long: "Delete an unreferenced ServiceAccount, revoking its issued access token.\n" +
+			"--force also deletes an account whose token no ChatGPT Backend can revoke, because\n" +
+			"the Backend is gone; an administrator must then revoke the token at the provider.\n" +
+			"With a ChatGPT Backend configured, --force changes nothing: the token is revoked.",
+		Args: idArgs(serviceAccountIDArg),
+		RunE: func(command *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			unrevoked, err := client.DeleteServiceAccount(namespace, args[0], force)
+			if err != nil {
+				return err
+			}
+			if unrevoked == nil {
+				return app.printDeletion("service account", args[0])
+			}
+			return app.printUnrevokedServiceAccountDeletion(command.ErrOrStderr(), args[0], unrevoked)
+		},
+	}
+	deleteCommand.Flags().BoolVar(
+		&force,
+		"force",
+		false,
+		"Delete even if no ChatGPT Backend can revoke the account's access token",
+	)
+
+	command.AddCommand(list, deleteCommand)
+	return command
+}
+
 func (app *application) agentCommand() *cobra.Command {
 	command := commandGroup("agent", "Manage Agents in the selected Namespace")
 
@@ -722,7 +792,7 @@ func (app *application) agentCommand() *cobra.Command {
 		Use:   "revisions AGENT_ID",
 		Short: "List an Agent's immutable revisions (deployment IDs)",
 		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
@@ -731,7 +801,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, namespace, args[0], result)
+			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], result)
 			if err != nil {
 				return err
 			}
@@ -828,7 +898,7 @@ func (app *application) agentCommand() *cobra.Command {
 // revision: whether it is the Agent's active revision and the status of the
 // deployment that created it. A revision whose deployment status the caller may
 // not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, namespace, agentID string, value any) ([]any, error) {
+func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, value any) ([]any, error) {
 	revisions, ok := value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("OCC returned an invalid resource collection")
@@ -839,6 +909,10 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 	}
 	resource, _ := agent.(map[string]any)
 	activeID, _ := resource["activeRevisionId"].(string)
+	agentReadError, agentUnreadable := resource["configurationReadError"].(map[string]any)
+	if agentUnreadable {
+		noticef(notices, "notice: Agent saved configuration is unreadable (%s); deployment status is unavailable in revision history", displayValue(agentReadError["field"]))
+	}
 	rows := make([]any, 0, len(revisions))
 	for _, item := range revisions {
 		revision, ok := item.(map[string]any)
@@ -849,7 +923,7 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
 		row["deploymentStatus"] = nil
-		if id != "" {
+		if id != "" && !agentUnreadable && row["configurationReadError"] == nil {
 			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
 			var apiErr *occclient.APIError
 			switch {

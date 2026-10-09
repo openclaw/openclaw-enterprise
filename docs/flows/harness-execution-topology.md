@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-08
-last_updated_session: authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6
+updated: 2026-10-10 00:29
+last_updated_session: authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733
 ---
 
 # Harness Execution Topology Flow
@@ -105,7 +105,9 @@ See the [harness authentication flow](native-service-account-credential-delivery
 for admission, immutable source snapshots, and worker reauthorization.
 
 API composition, including development, and worker startup call
-`KubernetesComputeDriver.preflight` before reconciliation. Single-cluster
+`KubernetesComputeDriver.preflight` before reconciliation. `KubernetesComputeDriver.validateConfiguration`
+first rejects native Gateway or derived sandbox listener ports overlapping private
+runtime status TCP/18791. Single-cluster
 preflight checks every storage-namespace page and refuses legacy split targets
 without changing labels or state.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
@@ -198,8 +200,9 @@ preparation, or preparing/activating that predecessor, clears its record.
 Both PVCs survive downtime; recovery retries or creates a revision. New exclusive
 revisions supersede old reconciliation/maintenance without automatic rollback; see
 [production revision stages](../reference/drivers/compute.md#production-revision-stages).
-Dedicated Codex and dedicated OpenClaw must complete a bounded native
-authentication/model probe before their Harness becomes ready.
+Kubelet probes private `/readyz` on runtime-backed workloads. Gates remain:
+Gateway plugin/native status, Codex plugin state and authenticated app-server
+WebSocket, or dedicated OpenClaw identity. Responses are bodyless `200` or `503`.
 While first-deploy [workspace setup](workspace-files.md) is pending, embedded
 preparation starts the replacement Gateway itself before activation. If the Gateway
 of a revision that never served (its Service still selects no Pod) is unready,
@@ -319,6 +322,10 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 00:29: Reserve private status TCP/18791 before native listeners start. (authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
+
+- 2026-10-08 14:19: Move Kubernetes runtime readiness to private HTTP with unchanged gates. (authoring-run/5a25b09c-b1c6-4dd2-b281-8b10a847e8b9 - aac339d52e472dd96489599dc1818da414abf556)
 
 - 2026-10-08 02:42: Align the admitted native Agent workspace and Gateway file-transfer binding with OpenShell's approved data mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - a8d2969355bd3c0478337e16a01e267ad3607595)
 

@@ -123,6 +123,27 @@ A standard npm package manifest provides identity and an ESM entry point:
 }
 ```
 
+The root export is resolved as Node's `import()` resolves it: ordered target
+arrays and the `node`, `import`, `module-sync`, `node-addons`, and `default`
+conditions in key order, with `"."` only at the top level. Invalid targets and
+unmatched conditions permit another array entry. The selected target must name
+an existing file exactly (no extension, directory, or `main` lookup). A selected
+missing file, directory, or failed import stops startup. The entry must be
+`.mjs`, or `.js` whose nearest `package.json` within the package declares
+`"type": "module"`; Node's import uses that file, not always the package root.
+The refusal names that `package.json`. Node can also load a `.js` file outside a
+module scope when it detects ESM syntax; the controller refuses it on purpose.
+For every entry the controller accepts, Node fixes the format from package
+metadata alone, before any package code runs; neither the file's contents nor
+Node's `--no-experimental-detect-module` flag changes it. Accepting detected
+ESM would tie startup to Node's detection heuristic, which has changed between
+releases, and the only way to read a detected format without running the file
+is Node's process-lifetime module hooks. Node itself treats the shape as a
+mistake: outside `node_modules` it warns about such a file and asks for
+`"type": "module"`. To fix a refusal, add `"type": "module"` to the
+`package.json` it names, or rename the entry to `.mjs`. See the
+[breaking-change notices](../../guides/deploy/breaking-changes.md).
+
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
 with TypeBox, then applies the Driver's own semantic validation:

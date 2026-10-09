@@ -150,10 +150,9 @@ Gateway use. Operator mode applies namespace labels, workspace-chart resources
 and provider NetworkPolicies, then checks health; optional namespace-local
 readiness comes first. Development uses the central Gateway endpoint.
 
-`apps/controller/src/backends/openshell.ts:clientForNamespace` supplies the
-endpoint to `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts`.
-HTTP origins retain port 80 instead of inheriting gRPC's 443; nondefault ports,
-HTTPS and raw targets retain their behavior.
+`apps/controller/src/backends/openshell.ts:clientForNamespace` passes raw
+endpoints, including bracketed IPv6, unchanged to the gRPC client. HTTP
+origins keep port 80 explicit; HTTPS and nondefault ports retain their behavior.
 
 The Driver uses Compute's physical namespace name for the Workspace. It reads
 it, creates it if missing, or rereads after concurrent `ALREADY_EXISTS`.
@@ -360,6 +359,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 ## Changelog
 
 - 2026-10-09 12:22: Pass the Sandbox-owned private native hook credential directory to the Gateway launcher. (authoring-run/8e337823-5cdf-4dbb-bdac-e9c51a5051b9 - 635244e85c443a4408c92730b508601bbb20f2cd)
+
+- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 

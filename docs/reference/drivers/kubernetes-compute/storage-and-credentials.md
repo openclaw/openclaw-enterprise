@@ -105,6 +105,12 @@ from the default StorageClass, mounted only by its Harness:
 | `codex-sessions`                             | `/home/node/.codex/sessions`         |
 | `workspace-node-<agent-hash>-<harness-hash>` | `/home/node/.openclaw-node`          |
 
+The nonroot init container creates each subpath as uid 1000 with mode `0700`
+before the kubelet mounts it. Claims from the first release hold root-owned
+`workspace` and `generated-images` directories the kubelet created; the init
+renames such a directory aside, recreates it and moves its entries back. A name
+the new directory already has stays in `.<subpath>.kubelet-created`.
+
 This directory keeps node identity across Pod and revision replacement.
 The node Secret's setup code expires ten minutes after preparation mints it. A
 node with a saved device token for the same Gateway reconnects with that token;
@@ -208,7 +214,10 @@ There is no Gateway Secret mirror.
 
 New credentials use `transport-<agent-hash>` (configured prefix) with only
 `app-server-token`, and `gateway-password-<agent-hash>` with only
-`gateway-password`, in either execution mode. Mode changes preserve these sources.
+`gateway-password`, in either execution mode. The hash is 12 hexadecimal
+characters. Startup refuses a prefix when `<prefix>-<hash>` is not a DNS-safe
+Kubernetes resource name, the same check credential provisioning already applies.
+Mode changes preserve these sources.
 Legacy combined transport Secrets remain readable. Before rendering new workloads,
 Compute copies their password into an owned separate source; the legacy Secret
 survives for older Gateway Pods. Conflicting password sources fail closed.

@@ -100,7 +100,9 @@ Agent's stock network settings without modifying the Codex binary. Both installs
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build tools remain in full Bookworm stages; final images
-use a separately pinned Node 24 Bookworm slim base.
+use a separately pinned Node 24 Bookworm slim base. Both bases apply available
+Debian package updates when their recipe layers build. The Node digest identifies
+the upstream image; it does not freeze Debian package repositories.
 
 `deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
 the final image environment. Harness child processes inherit that default, so

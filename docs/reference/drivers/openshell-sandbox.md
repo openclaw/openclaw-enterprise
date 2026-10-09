@@ -56,7 +56,7 @@ to a running Agent requires upstream support:
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
-| `process`    | OpenShell process policy, including the configured run-as user and group.                     |
+| `process`    | OpenShell process policy; v0.1.3-pre.2 ignores its run-as user and group.                     |
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
@@ -123,6 +123,10 @@ approved mounts, and `/sandbox/.openclaw-runtime` are writable. Set an explicit
 `filesystem` block to replace the baseline when tightening the Sandbox. The
 Driver still adds its required mounts, runtime root, and `/tmp`.
 
+The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
+OpenShell ignores them: its Kubernetes driver runs every Sandbox process as the
+workload identity, default `10001:10001`.
+
 Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
@@ -162,10 +166,8 @@ The disposable profile enables OpenShell's unauthenticated development mode.
 The pinned release serves control-plane RPCs and provider-advertised Harness
 traffic on the same Gateway port. NetworkPolicies limit access to trusted OCE,
 OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
-service-only authority on that shared listener. This limitation is accepted
-only in an owned disposable development cluster. It does not block merging or
-using these development flows, but this topology must not be qualified for
-production.
+service-only authority on that shared listener. Accept this only in an owned
+disposable development cluster; never qualify this topology for production.
 
 `gateway.operatorWorkspaceResources` accepts the namespace-scoped
 ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the

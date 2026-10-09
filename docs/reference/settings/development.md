@@ -29,8 +29,8 @@ worker require initialized state and do not read those credentials or output.
 | `OCC_DOCKER_RUNTIME_IMAGE`                          | Image reference.                                                                                       | Optional shared image used for both gateway and Agent runtimes when it contains both entrypoints; `scripts/dev-up` selects `openclaw-enterprise-runtime:quickstart` for its default invocation.                                                                                                             |
 | `OPENCLAW_DEV_PORT`                                 | TCP port; defaults to `3000`.                                                                          | Publishes the controller on host `127.0.0.1:<port>`.                                                                                                                                                                                                                                                        |
 | `OCC_DEVELOPMENT_BROWSER_PORT`                      | TCP port; defaults to `8443`.                                                                          | Kubernetes-only profile without OpenShell. Publishes the per-installation HTTPS browser endpoint on host loopback.                                                                                                                                                                                          |
-| `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR`               | CIDR block.                                                                                            | Explicit Compose bridge range admitted as local development traffic while keeping forwarded headers rejected.                                                                                                                                                                                               |
-| `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR`            | Private IPv4 `/32`.                                                                                    | Set automatically by `scripts/dev-up` for a rootful macOS Podman connection; rootless forwarding uses the Compose bridge CIDR.                                                                                                                                                                              |
+| `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR`               | IPv4 CIDR with no leading zero.                                                                        | Explicit Compose bridge range admitted as local development traffic while keeping forwarded headers rejected. An octet or prefix with a leading zero is refused.                                                                                                                                            |
+| `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR`            | Private IPv4 `/32` with no leading zero.                                                               | Set automatically by `scripts/dev-up` for a rootful macOS Podman connection; rootless forwarding uses the Compose bridge CIDR. An octet or prefix with a leading zero is refused.                                                                                                                           |
 | `OCC_DEVELOPMENT_STATE_DIRECTORY`                   | Private absolute path; default is below.                                                               | Kubernetes profile only. Holds cleanup state, generated kubeconfigs, Installation YAML, the bootstrap key, and the Kubernetes-only administrator password; use the same value for `occ dev down`.                                                                                                           |
 | `OCC_DEVELOPMENT_COMPOSE_PROJECT`                   | Compose project name; defaults to `openclaw-enterprise-development-kubernetes`.                        | Compose-backed Kubernetes profile only. The Kubernetes-only profile rejects Compose arguments and creates no Compose project.                                                                                                                                                                               |
 | `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE`              | Kubernetes Namespace; defaults to `oce-system`.                                                        | Kubernetes-only profile. Contains PostgreSQL and the Helm-installed OCE API and worker, plus the OpenShell Gateway when selected.                                                                                                                                                                           |
@@ -96,7 +96,9 @@ implicitly; `namespaceId` remains their exact tenant boundary.
 
 The active runtime does not expose environment variables for these settings:
 
-- Maximum HTTP request body: `64 KiB`.
+- General HTTP request body limit: `64 KiB`. [Agent creation](../agents.md),
+  [workspace writes](../agents.md#workspace-files) and [Preset writes](../presets.md)
+  use their operation-specific budgets.
 - Maximum nested JSON configuration depth: `24`; prototype-mutating property
   names are rejected.
 - Resource display names: `1` through `200` characters, without outer whitespace
@@ -120,5 +122,6 @@ The active runtime does not expose environment variables for these settings:
   unavailable.
 
 An embedded caller can set `ControllerAppOptions.maxBodyBytes` to a positive
-integer, but the supported development compositions fix it at `64 * 1024` and
-offer no environment override.
+integer for the general limit and Agent/Preset write overrides. Standard
+development composition uses the factory defaults and offers no environment
+override; workspace writes retain their fixed operation budget.

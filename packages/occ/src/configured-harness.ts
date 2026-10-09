@@ -1,7 +1,7 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
-import { ConfigurationHarnessError } from "./errors.ts";
+import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
 
 function configuredRuntime(value: unknown): string | undefined {
   const runtimeValue = asRecord(value)?.agentRuntime;
@@ -49,6 +49,10 @@ function configuredModels(value: unknown): readonly string[] {
   return models;
 }
 
+// The rule matchingSelectableModels enforces, for messages that name agents.*.models.
+const selectableRule =
+  "must be an object keyed by model ref: a model other than the primary needs the primary's provider and the same agentRuntime, set on both.";
+
 function matchingSelectableModels(
   value: Readonly<Record<string, unknown>> | undefined,
   selectedModel: string | undefined,
@@ -72,7 +76,11 @@ function isCatalogModelId(id: unknown, reference: string): boolean {
   return id === reference || id === splitModelRef(reference).id;
 }
 
+const providerModelsArrayMessage = (path: string): string =>
+  `Configuration setting ${path}.models must be an array of model entries.`;
+
 function providerModelEntry(
+  providerId: string,
   provider: Readonly<Record<string, unknown>>,
   model: string,
 ): Readonly<Record<string, unknown>> | undefined {
@@ -81,50 +89,101 @@ function providerModelEntry(
     return undefined;
   }
   if (!Array.isArray(configured)) {
-    throw new ConfigurationHarnessError("Configured provider models must be a native model array.");
+    throw new ConfigurationHarnessError(
+      modelProviderMessage(providerId, providerModelsArrayMessage),
+    );
   }
   const matches = configured.filter((candidate) =>
     isCatalogModelId(asRecord(candidate)?.id, model),
   );
   if (matches.length > 1) {
-    throw new ConfigurationHarnessError("The selected provider model Harness policy is ambiguous.");
+    throw new ConfigurationHarnessError(
+      modelProviderMessage(
+        providerId,
+        (path) =>
+          `Configuration setting ${path}.models lists the selected model more than once: keep one entry.`,
+      ),
+    );
   }
   return asRecord(matches[0]);
+}
+
+/**
+ * The agents shape rules resolveConfiguredHarnessId checks first. They hold for every topology,
+ * so Configuration create and update check them too (requireDeployableRoster).
+ */
+export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocument>): void {
+  // A non-object agents, agents.defaults, agents.entries or entry would otherwise read as absent
+  // and surface as an unrelated model-policy refusal.
+  const agents = asRecord(values.agents);
+  if (values.agents !== undefined && agents === undefined) {
+    throw new ConfigurationHarnessError("Configuration setting agents must be an object.");
+  }
+  if (agents?.defaults !== undefined && asRecord(agents.defaults) === undefined) {
+    throw new ConfigurationHarnessError("Configuration setting agents.defaults must be an object.");
+  }
+  const entries = asRecord(agents?.entries);
+  if (agents?.entries !== undefined && entries === undefined) {
+    throw new ConfigurationHarnessError(
+      "Configuration setting agents.entries must be an object keyed by Agent ID.",
+    );
+  }
+  if (agents?.list !== undefined && (!Array.isArray(agents.list) || agents.list.length > 0)) {
+    throw new ConfigurationHarnessError(
+      "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+    );
+  }
+  for (const [key, value] of Object.entries(entries ?? {})) {
+    if (asRecord(value) === undefined) {
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(key, (path) => `Configuration setting ${path} must be an object.`),
+      );
+    }
+  }
 }
 
 /** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
 export function resolveConfiguredHarnessId(
   values: Readonly<OpenClawConfigurationDocument>,
 ): string {
+  // Shape refusals come first.
+  requireAgentsShape(values);
   const agents = asRecord(values.agents);
   const defaults = asRecord(agents?.defaults);
   const entries = asRecord(agents?.entries);
-  if (agents?.list !== undefined && (!Array.isArray(agents.list) || agents.list.length > 0)) {
-    throw new ConfigurationHarnessError("Configured Agent lists are unsupported.");
-  }
   const providerConfigurations = asRecord(asRecord(values.models)?.providers);
   const defaultSelection = configuredModels(defaults?.model);
   const defaultModels = asRecord(defaults?.models);
   const candidates: Array<{ model: string; entry?: Readonly<Record<string, unknown>> }> =
     defaultSelection.map((model) => ({ model }));
 
-  for (const value of Object.values(entries ?? {})) {
-    const entry = asRecord(value);
-    if (entry === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent runtime entry is invalid.");
-    }
+  for (const [key, value] of Object.entries(entries ?? {})) {
+    // requireAgentsShape refused every entry that is not an object.
+    const entry = asRecord(value)!;
     const selection = entry.model === undefined ? defaultSelection : configuredModels(entry.model);
     const model = selection[0];
     if (model === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent runtime model cannot be resolved.");
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(
+          key,
+          (path) =>
+            `Configuration setting ${path}.model is required when agents.defaults.model is unset: set either one.`,
+        ),
+      );
     }
     if (candidates[0] !== undefined && model !== candidates[0].model) {
-      throw new ConfigurationHarnessError("Configured Agent entries must match the primary model.");
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(
+          key,
+          (path) =>
+            `Configuration setting ${path}.model must select the same primary model as agents.defaults.model and the other agents.entries.`,
+        ),
+      );
     }
     const models = asRecord(entry.models);
     if (entry.models !== undefined && !matchingSelectableModels(models, model)) {
       throw new ConfigurationHarnessError(
-        "Configured selectable models must match the primary model.",
+        agentEntryMessage(key, (path) => `Configuration setting ${path}.models ${selectableRule}`),
       );
     }
     candidates.push(...selection.map((model) => ({ model, entry })));
@@ -135,21 +194,28 @@ export function resolveConfiguredHarnessId(
     !matchingSelectableModels(defaultModels, candidates[0]?.model)
   ) {
     throw new ConfigurationHarnessError(
-      "Configured selectable models must match the primary model.",
+      candidates[0] === undefined
+        ? "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model."
+        : `Configuration setting agents.defaults.models ${selectableRule}`,
     );
   }
 
   for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
     const provider = asRecord(value);
     if (provider === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent model provider is invalid.");
+      throw new ConfigurationHarnessError(
+        modelProviderMessage(
+          providerId,
+          (path) => `Configuration setting ${path} must be an object.`,
+        ),
+      );
     }
     if (provider.models === undefined) {
       continue;
     }
     if (!Array.isArray(provider.models)) {
       throw new ConfigurationHarnessError(
-        "Configured provider models must be a native model array.",
+        modelProviderMessage(providerId, providerModelsArrayMessage),
       );
     }
     if (
@@ -163,7 +229,11 @@ export function resolveConfiguredHarnessId(
       })
     ) {
       throw new ConfigurationHarnessError(
-        "Configured selectable provider models must match the primary model.",
+        modelProviderMessage(
+          providerId,
+          (path) =>
+            `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
+        ),
       );
     }
   }
@@ -178,7 +248,9 @@ export function resolveConfiguredHarnessId(
     const providerId = splitModelRef(candidate.model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
     const providerModel =
-      provider === undefined ? undefined : providerModelEntry(provider, candidate.model);
+      provider === undefined
+        ? undefined
+        : providerModelEntry(providerId, provider, candidate.model);
     const entryModels = asRecord(candidate.entry?.models);
     const policies = new Set(
       [entryModels?.[candidate.model], defaultModels?.[candidate.model], providerModel, provider]

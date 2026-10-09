@@ -204,9 +204,8 @@ that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it activates without the
 source, and the read below then returns its withdrawal. An earlier revision
 that still runs because the active revision's deployment has not finished
 replacing it gets its own withdrawal too. A replay returns the
-same withdrawal. It queues another attempt only if no
-attempt is already queued or running, and the caller then becomes the
-withdrawal's `requestedBy`.
+same withdrawal and makes the caller its `requestedBy`. It queues another
+attempt only if none is queued or running; a queued attempt runs at once.
 
 The worker detaches the source from the revision's Sandbox and records
 `revoked` only after the gateway confirms that the revision's placeholders no
@@ -221,12 +220,29 @@ attempt is queued or running. A `pending` withdrawal with reason
 running process never confirms revocation. `AUTHORIZATION_DENIED` or
 `ACTOR_REVOKED` means the requester lost `agent:operate`; another operator can
 send the withdraw request again to retry it on their own authority.
+`CREDENTIAL_WITHDRAWAL_MISCONFIGURED` or `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`
+means Compute cannot reach the revision's Sandbox as configured, or found an
+object it does not own; the attempt fails without retries, even with
+maintenance. Correct the cause, then send the request again.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
-(`OCC_WORKER_MAX_ATTEMPTS`). When those attempts run out, the withdrawal stays
-`pending` with `withdrawalInProgress: false`, and nothing retries it on its own
-unless the revision has maintenance (see below). Send the withdraw request
-again to queue another attempt.
+(`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run
+out because the gateway is unreachable or has not confirmed revocation (or the
+last attempt outlived its worker's claim, after a worker restart or a hung
+gateway call), and Compute has no maintenance (the Kubernetes Compute Driver
+has none), the worker queues another series 30 seconds later, then after 1, 2
+and 4 minutes, then every 5 minutes, 15 series in all (about an hour).
+Meanwhile the read shows `pending`, the latest `reason`, and
+`withdrawalInProgress: true`, and the source still resolves in the Sandbox. The first series the gateway confirms
+records `revoked`, with no replay needed. A withdraw request sent while a
+series waits queues nothing more; the series runs at once, on the caller's
+authority.
+
+When the last series fails, or every withdrawal left on the revision is denied
+to its requester, the withdrawal stays `pending` with
+`withdrawalInProgress: false`. Nothing retries it on its own unless the
+revision has maintenance (see below). Send the withdraw request again to queue
+another attempt, with its own series.
 
 A withdrawn source never re-attaches to that revision. If its Sandbox is
 recreated, a withdrawn source is left out and the revision keeps running
@@ -255,8 +271,16 @@ or another authentication method.
 `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 requires exact `delete` and returns `204`:
 
-- It returns `409` while an Agent draft, active revision, or pending deployment
-  references the source.
+- It returns `409 RESOURCE_CONFLICT` while an Agent draft, active revision, or
+  pending deployment references the source. Remove it from those Agents and
+  redeploy, or delete them.
+- When only a withdrawal attempt or retry series, queued or running for a
+  revision that held the source, blocks it, the `409` is
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps
+  its series queued for up to about an hour, even after a redeploy, and the
+  withdraw request no longer applies once the active revision drops the
+  source. Wait for the series to finish, or delete the Agent: a completed Agent
+  deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.

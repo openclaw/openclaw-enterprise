@@ -48,6 +48,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
+  CredentialWithdrawalRefusedError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
   WorkClaimLostError,
@@ -60,6 +61,7 @@ import {
   provisioningEffectReceipt as provisioningEffectReceiptForRecord,
   provisioningPendingEffect,
   type ClaimedWork,
+  type ControllerWork,
   type NativeWorkerSupport,
   type ProvisioningEffectReceipt,
   type PlatformReadView,
@@ -351,11 +353,51 @@ function settleCredentialWithdrawal(
 /**
  * A pending withdrawal whose last attempt found its requester without `agent:operate` waits
  * for a replay: only an operator who still holds it can take it over and queue an attempt
- * that can succeed, so maintenance does not queue another denied attempt.
+ * that can succeed, so maintenance does not queue another denied attempt. One Compute refused
+ * (CredentialWithdrawalRefusedError) waits too: an operator corrects the cause, then replays.
  */
+const CREDENTIAL_WITHDRAWAL_REPLAY_REASONS: ReadonlySet<string> = new Set([
+  "AUTHORIZATION_DENIED",
+  "ACTOR_REVOKED",
+  "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+  "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+]);
+
 function credentialWithdrawalAwaitsReplay(withdrawal: Readonly<CredentialWithdrawal>): boolean {
   return (
-    withdrawal.lastReason === "AUTHORIZATION_DENIED" || withdrawal.lastReason === "ACTOR_REVOKED"
+    withdrawal.lastReason !== undefined &&
+    CREDENTIAL_WITHDRAWAL_REPLAY_REASONS.has(withdrawal.lastReason)
+  );
+}
+
+/**
+ * Later attempt series a withdrawal gets after its work runs out of attempts on a retryable
+ * failure: 30 s, 1, 2 and 4 min, then every 5 min, about an hour in all.
+ */
+const MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES = 15;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_BASE_MS = 30_000;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_MAX_MS = 300_000;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_SUFFIX = /:recovery:([1-9][0-9]*)$/;
+
+/**
+ * The series after the claimed one. Every series of one request shares the request's work key
+ * with its number appended, so a series is queued once and the chain stays bounded; a replay is
+ * a new request whose chain starts again.
+ */
+function nextCredentialWithdrawalRecovery(idempotencyKey: string): {
+  readonly idempotencyKey: string;
+  readonly number: number;
+} {
+  const current = CREDENTIAL_WITHDRAWAL_RECOVERY_SUFFIX.exec(idempotencyKey);
+  const requestKey = current === null ? idempotencyKey : idempotencyKey.slice(0, current.index);
+  const number = (current === null ? 0 : Number(current[1])) + 1;
+  return { idempotencyKey: `${requestKey}:recovery:${number}`, number };
+}
+
+function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
+  return Math.min(
+    CREDENTIAL_WITHDRAWAL_RECOVERY_MAX_MS,
+    CREDENTIAL_WITHDRAWAL_RECOVERY_BASE_MS * 2 ** Math.min(recovery - 1, 10),
   );
 }
 
@@ -365,6 +407,36 @@ function firstPendingCredentialWithdrawal(
 ): Readonly<CredentialWithdrawal> | undefined {
   const pending = withdrawals.filter(({ state }) => state === "pending");
   return pending.find((withdrawal) => !credentialWithdrawalAwaitsReplay(withdrawal)) ?? pending[0];
+}
+
+/**
+ * A pending withdrawal that needs an attempt queued: it does not await a replay, and no attempt
+ * for its revision is queued or running. Every path that queues withdrawal work without an
+ * operator request (maintenance, a later series) checks this, so each revision keeps one chain.
+ */
+async function credentialWithdrawalNeedsAttempt(
+  unit: PlatformUnitOfWork,
+  withdrawal: Readonly<CredentialWithdrawal>,
+): Promise<boolean> {
+  return (
+    withdrawal.state === "pending" &&
+    !credentialWithdrawalAwaitsReplay(withdrawal) &&
+    !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
+      withdrawal.namespaceId,
+      withdrawal.revisionId,
+    ))
+  );
+}
+
+/** Each requester's withdrawn source ids, in attempt order. */
+function sourceIdsByRequester(
+  attempts: readonly CredentialWithdrawalAttempt[],
+): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const { requestedBy, credentialSourceId } of attempts) {
+    grouped.set(requestedBy, [...(grouped.get(requestedBy) ?? []), credentialSourceId]);
+  }
+  return grouped;
 }
 
 /** The revision's admitted sources once each: its Harness source first, then the others. */
@@ -402,7 +474,7 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
-function workOperation(claim: ClaimedWork): string {
+function workOperation(claim: ControllerWork): string {
   if (isCredentialWithdrawalWork(claim)) {
     return "agent_revision.credential_withdrawal";
   }
@@ -990,7 +1062,8 @@ export class ControllerWorker {
       // Every pass starts here, including back-to-back claims that skip the idle delay.
       this.progress();
       try {
-        await this.queue.recoverStale();
+        const recovery = await this.queue.recoverStale();
+        await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         const claim = await this.queue.claim();
         if (claim !== undefined) {
           const started = process.hrtime.bigint();
@@ -2466,18 +2539,23 @@ export class ControllerWorker {
         throw error;
       }
       // Confirmed revocations stand; every withdrawal not yet confirmed or denied retries,
-      // including one IAM failed to authorize, so no earlier denial stays its last reason.
+      // including one IAM failed to authorize, so no earlier denial stays its last reason. A
+      // Compute refusal that retrying cannot change (a configuration that cannot reach the
+      // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
+      // mismatch does; a replay tries again.
+      const code =
+        error instanceof CredentialWithdrawalRefusedError ? error.code : "DEPENDENCY_UNAVAILABLE";
       const settled = new Set(
         [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
       );
       result = {
-        outcome: "retry",
-        code: "DEPENDENCY_UNAVAILABLE",
+        outcome: error instanceof CredentialWithdrawalRefusedError ? "permanent" : "retry",
+        code,
         attempts: [
           ...attempts,
           ...unrevokedAttempts(
             requested.filter(({ credentialSourceId }) => !settled.has(credentialSourceId)),
-            "DEPENDENCY_UNAVAILABLE",
+            code,
           ),
           ...denied,
         ],
@@ -2488,20 +2566,25 @@ export class ControllerWorker {
 
   private async finalizeCredentialWithdrawal(
     claim: ClaimedWork,
-    result: CredentialWithdrawalDispatchResult,
+    dispatched: CredentialWithdrawalDispatchResult,
   ): Promise<void> {
+    let result = dispatched;
+    const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
+      outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      result = dispatched;
+      let terminalFailure = terminal(result);
       // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
       // them first, in admission order, before updating withdrawal rows: a concurrent
-      // withdrawal request locks the Namespace, then the Agent, then the same rows.
+      // withdrawal request locks the Namespace, then the Agent, then the same rows. Under those
+      // locks, a replay that took a denied withdrawal over during this pass is settled.
       if (terminalFailure) {
         await this.lockClaimScope(unit, claim);
+        result = await this.withoutReassignedDenials(unit, claim, result);
+        terminalFailure = terminal(result);
       }
       // Each row explains a withdrawal that is still pending, including after the last attempt.
       const at = new Date().toISOString();
@@ -2524,12 +2607,7 @@ export class ControllerWorker {
       const attempts = result.attempts ?? [];
       // Each confirmed revocation is audited as its requester's mutation in the pass that
       // confirmed it, so a later retry cannot lose it.
-      const revokedBy = new Map<string, string[]>();
-      for (const { requestedBy, credentialSourceId, revoked } of attempts) {
-        if (revoked) {
-          revokedBy.set(requestedBy, [...(revokedBy.get(requestedBy) ?? []), credentialSourceId]);
-        }
-      }
+      const revokedBy = sourceIdsByRequester(attempts.filter(({ revoked }) => revoked));
       for (const [actorId, credentialSourceIds] of revokedBy) {
         await this.appendCredentialWithdrawalAudit(unit, claim, {
           actorId,
@@ -2554,27 +2632,35 @@ export class ControllerWorker {
         const unsettled = attempts.filter(
           ({ revoked, denial }) => !revoked && denial === undefined,
         );
-        if (terminalFailure && (unsettled.length > 0 || attempts.length === 0)) {
-          await this.appendCredentialWithdrawalAudit(unit, claim, {
-            actorId: claim.actorId,
-            outcome: "failure",
-            code: result.code,
-            credentialSourceIds: unsettled.map(({ credentialSourceId }) => credentialSourceId),
-          });
+        // A failure is audited against each unsettled withdrawal's requester, as a revocation
+        // is, so a withdrawal a replay took over is not attributed to the claim's actor.
+        if (terminalFailure) {
+          const failedBy = sourceIdsByRequester(unsettled);
+          if (attempts.length === 0) {
+            failedBy.set(claim.actorId, []);
+          }
+          for (const [actorId, credentialSourceIds] of failedBy) {
+            await this.appendCredentialWithdrawalAudit(unit, claim, {
+              actorId,
+              outcome: "failure",
+              code: result.code,
+              credentialSourceIds,
+            });
+          }
         }
       }
       if (result.outcome === "success") {
         await queue.complete(claim);
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
+        if (result.outcome === "retry") {
+          await this.scheduleCredentialWithdrawalRecovery(unit, queue, claim);
+        }
       } else {
         await queue.retry(claim, { code: result.code });
       }
     }, this.queueOptions);
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = terminal(result) ? "permanent" : result.outcome;
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -2585,6 +2671,139 @@ export class ControllerWorker {
       outcome: result.outcome,
       code: result.code,
     });
+  }
+
+  /**
+   * A denial checked the requester this pass read. A replay that made another operator the
+   * requester since then (requestRevisionCredentialWithdrawal) leaves this claim as the
+   * withdrawal's only work, so the denial must not end it: that withdrawal becomes unconfirmed
+   * with CREDENTIAL_WITHDRAWAL_REASSIGNED, and a claim that only denials failed retries, so
+   * its next attempt authorizes the new requester. Other outcomes stand. Runs under the
+   * Namespace and Agent locks, which the replay takes before it reassigns.
+   */
+  private async withoutReassignedDenials(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+    result: CredentialWithdrawalDispatchResult,
+  ): Promise<CredentialWithdrawalDispatchResult> {
+    const attempts = result.attempts ?? [];
+    if (!attempts.some(({ denial }) => denial !== undefined)) {
+      return result;
+    }
+    const current = await unit.credentialSources.listCredentialWithdrawals(
+      claim.namespaceId,
+      claim.revisionId!,
+    );
+    let reassigned = false;
+    const settled = attempts.map((attempt): CredentialWithdrawalAttempt => {
+      const withdrawal = current.find(
+        ({ credentialSourceId }) => credentialSourceId === attempt.credentialSourceId,
+      );
+      if (
+        attempt.denial === undefined ||
+        withdrawal?.state !== "pending" ||
+        withdrawal.requestedBy === attempt.requestedBy
+      ) {
+        return attempt;
+      }
+      reassigned = true;
+      return {
+        credentialSourceId: attempt.credentialSourceId,
+        requestedBy: withdrawal.requestedBy,
+        code: "CREDENTIAL_WITHDRAWAL_REASSIGNED",
+        revoked: false,
+      };
+    });
+    if (!reassigned) {
+      return result;
+    }
+    // settleCredentialWithdrawal failed the claim only for its denials when every other
+    // withdrawal was revoked; it now retries. Any other failure keeps its outcome and code.
+    if (
+      result.outcome === "permanent" &&
+      attempts.every(({ revoked, denial }) => revoked || denial !== undefined)
+    ) {
+      return { outcome: "retry", code: "CREDENTIAL_WITHDRAWAL_REASSIGNED", attempts: settled };
+    }
+    return { ...result, attempts: settled };
+  }
+
+  /**
+   * Withdrawal work that ran out of attempts on a retryable failure (an unreachable gateway, or
+   * one that has not confirmed revocation yet) queues one later series of attempts for its
+   * revision, in the transaction that fails it, or right after stale-claim recovery fails it
+   * (scheduleRecoveredCredentialWithdrawals). Compute without a maintenance interval (the
+   * Kubernetes Driver) has no pass that would re-queue it, so without this a dependency outage
+   * longer than the attempt budget would leave a token usable after the dependency recovers.
+   * The queued series keeps `withdrawalInProgress` true while it waits. Each series waits twice
+   * as long as the one before, up to five minutes, and the chain ends after
+   * MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES series. Where Compute schedules maintenance, each pass
+   * re-queues the withdrawal instead (recoverPendingCredentialWithdrawals). A revision whose
+   * pending withdrawals all await a replay gets none, and neither does one whose replay already
+   * queued an attempt (credentialWithdrawalNeedsAttempt). The Namespace and Agent are already
+   * locked here, as for any terminal failure.
+   */
+  private async scheduleCredentialWithdrawalRecovery(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, "enqueue">,
+    claim: ControllerWork,
+  ): Promise<void> {
+    const recovery = nextCredentialWithdrawalRecovery(claim.idempotencyKey);
+    if (
+      this.maintenanceIntervalMs !== undefined ||
+      recovery.number > MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES
+    ) {
+      return;
+    }
+    const next = firstPendingCredentialWithdrawal(
+      await unit.credentialSources.listCredentialWithdrawals(claim.namespaceId, claim.revisionId!),
+    );
+    if (next === undefined || !(await credentialWithdrawalNeedsAttempt(unit, next))) {
+      return;
+    }
+    await queue.enqueue({
+      idempotencyKey: recovery.idempotencyKey,
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId!,
+      revisionId: claim.revisionId!,
+      actorId: claim.actorId,
+      agentTarget: CREDENTIAL_WITHDRAWAL_TARGET,
+      availableAt: new Date(Date.now() + credentialWithdrawalRecoveryDelayMs(recovery.number)),
+    });
+  }
+
+  /**
+   * Stale-claim recovery fails withdrawal work whose lease ran out on its last attempt (its
+   * worker died, or a gateway call outlasted the lease) without the worker's final pass. Each
+   * such item gets its next series here, as if that pass had failed it, in its own transaction
+   * that takes the Namespace and Agent first. A replay queued in between wins (the
+   * outstanding-work check), so this never starts a second chain. An item that cannot be
+   * scheduled is reported and left for a replay; the others still are.
+   */
+  private async scheduleRecoveredCredentialWithdrawals(
+    failed: readonly ControllerWork[],
+  ): Promise<void> {
+    if (this.maintenanceIntervalMs !== undefined) {
+      return;
+    }
+    for (const work of failed) {
+      if (!isCredentialWithdrawalWork(work) || work.agentId === undefined) {
+        continue;
+      }
+      try {
+        await this.state.transactWithQueue(async (unit, queue) => {
+          await this.lockClaimScope(unit, work);
+          await this.scheduleCredentialWithdrawalRecovery(unit, queue, work);
+        }, this.queueOptions);
+      } catch {
+        this.emit({
+          event: "worker.error",
+          code: "WORKER_UNAVAILABLE",
+          workId: work.idempotencyKey,
+          operation: workOperation(work),
+        });
+      }
+    }
   }
 
   private async appendCredentialWithdrawalAudit(
@@ -2732,7 +2951,8 @@ export class ControllerWorker {
    * Withdrawal work retries a bounded number of times. Maintenance of a revision that keeps
    * running re-queues any pending non-model withdrawal, its own or that of a revision that may
    * still run with a source, so a gateway outage cannot leave a token usable after the gateway
-   * recovers. Ordinary maintenance then continues.
+   * recovers. Without Compute maintenance, scheduleCredentialWithdrawalRecovery queues a bounded
+   * chain of later attempts instead. Ordinary maintenance then continues.
    */
   private async recoverPendingCredentialWithdrawals(
     claim: ClaimedWork,
@@ -2818,13 +3038,7 @@ export class ControllerWorker {
     pending: readonly Readonly<CredentialWithdrawal>[],
   ): Promise<void> {
     for (const withdrawal of pending) {
-      if (
-        credentialWithdrawalAwaitsReplay(withdrawal) ||
-        (await unit.operations.hasOutstandingCredentialWithdrawalWork(
-          withdrawal.namespaceId,
-          withdrawal.revisionId,
-        ))
-      ) {
+      if (!(await credentialWithdrawalNeedsAttempt(unit, withdrawal))) {
         continue;
       }
       await unit.operations.append({
@@ -4266,14 +4480,17 @@ export class ControllerWorker {
   // Agent, such as deploy, stop, delete or credential withdrawal.
   private async lockClaimAgent(
     unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
+    claim: Pick<ControllerWork, "namespaceId" | "agentId">,
   ): Promise<Readonly<Agent> | undefined> {
     await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
     return unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
   }
 
   // lockClaimAgent for work that may carry no Agent (a malformed withdrawal target).
-  private async lockClaimScope(unit: PlatformUnitOfWork, claim: ClaimedWork): Promise<void> {
+  private async lockClaimScope(
+    unit: PlatformUnitOfWork,
+    claim: Pick<ControllerWork, "namespaceId" | "agentId">,
+  ): Promise<void> {
     if (claim.agentId === undefined) {
       await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
     } else {

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-08
-last_updated_session: authoring-run/95ed7983-818c-4af2-8875-1330333f5e41
+updated: 2026-10-10
+last_updated_session: authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0
 ---
 
 # Common Operational Logging Flow
@@ -153,7 +153,9 @@ pass through. Kubernetes performs complete validation after rendering. See the
 for the supported scope.
 
 The chart validates one exporter destination: an IPv4 `/32` or paired namespace/Pod
-selectors, with a bounded TCP port. It renders exporter egress alongside DNS/API
+selectors, with a decimal TCP port from 1 to 65535. Leading zeros fail rendering:
+Kubernetes YAML would read them as octal and grant a different port. It renders
+exporter egress alongside DNS/API
 access. Empty Collector metrics selectors grant no ingress; paired selectors admit
 port 8888. Policies are additive. The demo can export privately to Loki using
 the bundled Collector or an external Collector with its own filtering policy.
@@ -202,7 +204,10 @@ and its bounded failure (such as `TimeoutError`) as `occ.device_authorization.fa
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
-`request.id`; the Driver's reason stays local. `native_admin.websocket_audit_failed`
+`request.id`; the Driver's reason stays local. `http.dependency_unavailable` (the cause
+of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
+`request.id`; its route, error class, message and causes stay in the API's local log.
+`native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
 carries none. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
@@ -229,6 +234,19 @@ service, worker reconciliation, or PostgreSQL audit persistence.
 ### 8. The demo dashboard presents existing metadata
 
 `deploy/helm/openclaw-observability-demo/templates/grafana.yaml:logs.json`
+
+`deploy/helm/openclaw-observability-demo/templates/_helpers.tpl:demo.serviceName`
+preserves short DNS-label Service names. For dotted, leading-digit or overlong
+release names, it prefixes the component and a normalized release name,
+then appends the original release hash. Ending with the hash separates these
+names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
+`templates/grafana.yaml` uses the same names in both datasource URLs.
+Deployment names, Pod selectors and discovery identity keep the full release.
+The separately configured Collector endpoint remains in its exporter Secret.
+If an upgrade renames Loki, the operator updates that endpoint and refreshes
+the Collector Pods before new records can reach Loki; the
+[recovery procedure](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address)
+covers managed and external exporters.
 
 For the bundled Collector path, Loki retains event names and normalizes attributes
 as structured metadata. Grafana formats metadata at query time without changing
@@ -263,6 +281,13 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-10-10 00:44: Refuse noncanonical Collector exporter ports before Kubernetes YAML can change their meaning. (authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
+
+- 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
+
+- 2026-10-09 21:42: Bound demo Service names and keep Grafana datasource URLs aligned. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 49d1562335120b125d3f149a5a6a64a5c51577a9)
+
+- 2026-10-09 14:00: Export `http.dependency_unavailable`, the API warning that names the cause of a `503 DEPENDENCY_UNAVAILABLE` by request ID; the cause stays local. (fix-529-938)
 - 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
 
 - 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.

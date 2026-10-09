@@ -94,6 +94,10 @@ node "$credential_client" \
   /absolute/path/sessions/task git push origin HEAD:refs/heads/agent-feature
 ```
 
+The launcher forwards SIGINT/SIGTERM. A child terminated by these signals returns
+130/143. An interrupted remote command may already have changed the repository;
+inspect its result before retrying.
+
 Use credential-free HTTPS URLs; the selected session helper supplies authentication.
 Git keeps its normal configuration, hooks and worktrees. These native settings
 are overridable defaults, so operators remain responsible for inherited URL

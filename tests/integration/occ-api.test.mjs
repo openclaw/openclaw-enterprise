@@ -3698,6 +3698,91 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   assert.deepEqual(afterStoredRefusal.data, beforeDriverSwitch.data);
 });
 
+test("a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "service-account-force-delete");
+  const account = await createServiceAccount(controller, namespace.id, "orphaned-token");
+  const accountPath = `/namespaces/${namespace.id}/service-accounts/${account.id}`;
+  const missingPath = `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000`;
+  // The token was issued while a ChatGPT Backend was configured; this Installation has none.
+  await controller.fixture.controller.transact((unit) =>
+    unit.serviceAccounts.updateCredential(namespace.id, account.id, {
+      kind: "access_token",
+      secretRef: { name: `account-${account.id.slice(3)}`, key: "token" },
+    }),
+  );
+
+  // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
+  for (const path of [accountPath, `${accountPath}?force=false`]) {
+    const refused = await controller.request("DELETE", path);
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+    assert.match(
+      refused.body.error.message,
+      /force the delete and revoke the token at the provider/,
+    );
+  }
+  const malformed = await controller.request("DELETE", `${accountPath}?force=yes`);
+  assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
+  assert.equal(malformed.body.error.code, "INVALID_REQUEST");
+
+  // Force adds no oracle: a caller without delete gets the same 403 for a real and an unknown
+  // account, and the grant holder the usual 404 for an unknown one.
+  const outsider = await controller.fixture.createAuthPrincipal("service-account-force-outsider");
+  controller.fixture.state.identities.push(outsider.principal);
+  const denials = [];
+  for (const path of [accountPath, missingPath]) {
+    const denied = await controller.request("DELETE", `${path}?force=true`, {
+      session: outsider.session,
+    });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    denials.push({ ...denied.body.error });
+  }
+  assert.deepEqual(denials[0], denials[1]);
+  const unknown = await controller.request("DELETE", `${missingPath}?force=true`);
+  assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+
+  const forced = await controller.request("DELETE", `${accountPath}?force=true`);
+  assert.equal(forced.status, 200, JSON.stringify(forced.body));
+  // The in-memory state keeps no Backend binding, so no binding identity is reported.
+  assert.deepEqual(forced.data, {
+    id: account.id,
+    namespaceId: namespace.id,
+    revocation: "skipped",
+  });
+  assert.equal((await controller.request("GET", accountPath)).status, 404);
+
+  const deletion = controller.fixture.auditSink.events.findLast(
+    (event) => event.action === "openclaw.service_accounts.delete",
+  );
+  assert.equal(deletion.outcome, "success");
+  assert.equal(deletion.actorId, controller.fixture.principal.id);
+  assert.deepEqual(deletion.resource, {
+    kind: "service_account",
+    id: account.id,
+    namespaceId: namespace.id,
+  });
+  // `revocation` survives audit redaction, which a `tokenRevoked` key would not.
+  assert.equal(deletion.details.force, true);
+  assert.equal(deletion.details.revocation, "skipped");
+
+  // An account without an issued token never needed revocation: force answers the usual 204.
+  const native = await createServiceAccount(controller, namespace.id, "native");
+  const nativeDeleted = await controller.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/service-accounts/${native.id}?force=true`,
+  );
+  assert.equal(nativeDeleted.status, 204);
+  const nativeEvent = controller.fixture.auditSink.events.findLast(
+    (event) => event.action === "openclaw.service_accounts.delete",
+  );
+  assert.equal(nativeEvent.resource.id, native.id);
+  // The requested force is recorded, but nothing was skipped.
+  assert.equal(nativeEvent.details.force, true);
+  assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
+});
+
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
   const controller = await configuredController({ recordOperations: true });
   await bootstrap(controller);

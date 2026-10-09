@@ -4955,7 +4955,11 @@ test("Credentials preserves an existing OpenClaw credential source without offer
     namespace.id,
     "OpenClaw source Agent",
     createHarnessConfiguration("openclaw", "gpt-5.1"),
-    { executionMode: "dedicated", harnessAuth, credentialSources: [{ sourceId: source.id }] },
+    {
+      executionMode: "dedicated",
+      harnessAuth,
+      credentialSources: [{ sourceId: harnessAuth.sourceId }],
+    },
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);

@@ -310,13 +310,13 @@ spec:
             - name: OCC_WORKER_LIVENESS_PATH
               value: /run/openclaw-worker/alive
             - name: OCC_WORKER_POLL_INTERVAL_MS
-              value: {{ $.Values.worker.pollIntervalMs | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.pollIntervalMs" "value" $.Values.worker.pollIntervalMs) | quote }}
             - name: OCC_WORKER_LEASE_DURATION_MS
-              value: {{ $.Values.worker.leaseDurationMs | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.leaseDurationMs" "value" $.Values.worker.leaseDurationMs) | quote }}
             - name: OCC_WORKER_MAX_ATTEMPTS
-              value: {{ $.Values.worker.maxAttempts | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.maxAttempts" "value" $.Values.worker.maxAttempts) | quote }}
             - name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS
-              value: {{ $.Values.worker.convergenceTimeoutMs | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
             {{- if $.Values.executionCluster.enabled }}

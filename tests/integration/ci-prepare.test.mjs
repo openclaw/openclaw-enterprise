@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
-import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import {
+  assertStderrMatch,
+  fixture,
+  fixtureImageCommands,
+  fixturePreparationMetrics,
+  immutableImage,
+  mutableImage,
+  nodeBaseImage,
+} from "../helpers/ci-prepare-fixture.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -22,28 +28,9 @@ const { loadYaml } = createRequire(new URL("../../apps/controller/package.json",
   "@kubernetes/client-node",
 );
 
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-prepare-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(root, { recursive: true });
-  return root;
-}
-
 async function writeState(path, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
-}
-
-// Lane preparation stderr opens with timing and host metrics, and assert.match's default
-// message keeps only its start (finding 818). Show the end, where the cause is.
-function assertStderrMatch(stderr, pattern, label) {
-  const prefix = label ? `${label}: ` : "";
-  const tail = stderr.slice(-1_500);
-  assert.match(
-    stderr,
-    pattern,
-    `${prefix}stderr did not match ${pattern}; it ended with:\n${tail}`,
-  );
 }
 
 function runPrepare(args, env = {}) {
@@ -52,590 +39,6 @@ function runPrepare(args, env = {}) {
     encoding: "utf8",
     env: { ...process.env, ...env },
   });
-}
-
-function fixturePreparationMetrics(stderr) {
-  return stderr.split("\n").flatMap((line) => {
-    const match = line.match(/^\[prepare:k3d-fixture-configuration\] (\{.*\})$/);
-    return match ? [JSON.parse(match[1])] : [];
-  });
-}
-
-async function fixtureImageCommands(
-  t,
-  scenario,
-  lane = "k3d-fixture-configuration",
-  extraEnv = {},
-) {
-  const root = await fixture(t);
-  const bin = join(root, "bin");
-  const home = join(root, "home");
-  await mkdir(bin);
-  await mkdir(home);
-  const commandSource = `#!${process.execPath}\n${String.raw`
-import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import {
-  appendFileSync,
-  closeSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmdirSync,
-  writeFileSync,
-  writeSync,
-} from "node:fs";
-import { basename, join } from "node:path";
-
-const root = process.env.CI_FIXTURE_ROOT;
-const scenario = process.env.CI_FIXTURE_SCENARIO;
-const command = basename(process.argv[1], ".mjs");
-const args = process.argv.slice(2);
-const statePath = join(root, "commands-state.json");
-const initialState = existsSync(statePath) ? readFileSync(statePath, "utf8") : "{}";
-const state = JSON.parse(initialState);
-const equals = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
-const configId = "sha256:" + "b".repeat(64);
-const manifestDigest = "sha256:" + "c".repeat(64);
-appendFileSync(join(root, "commands.jsonl"), JSON.stringify({
-  command, args, envPublished: existsSync(join(root, "github.env")), at: Date.now(),
-}) + "\n");
-// Preparation runs independent commands concurrently. Merge this command's
-// changes into the latest shared state under a lock so none is lost.
-function commitState() {
-  const serializedState = JSON.stringify(state);
-  // Parallel diagnostic reads must not truncate the shared fixture state.
-  if (serializedState === initialState) return;
-  const lock = statePath + ".lock";
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      break;
-    } catch (error) {
-      if (error.code !== "EEXIST" || Date.now() > deadline) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-    }
-  }
-  try {
-    const before = JSON.parse(initialState);
-    const latest = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
-    for (const [key, value] of Object.entries(state)) {
-      if (JSON.stringify(value) === JSON.stringify(before[key])) continue;
-      const nested = (entry) => entry && typeof entry === "object" && !Array.isArray(entry);
-      latest[key] = nested(value) && nested(latest[key]) ? { ...latest[key], ...value } : value;
-    }
-    // Commands read the state unlocked at startup. Replace the file atomically
-    // so a concurrent reader sees the old or the new state, never an empty file.
-    const temp = statePath + "." + process.pid + ".tmp";
-    writeFileSync(temp, JSON.stringify(latest));
-    renameSync(temp, statePath);
-  } finally {
-    rmdirSync(lock);
-  }
-}
-function finish(stdout = "") {
-  commitState();
-  process.stdout.write(stdout);
-  process.exit(0);
-}
-// An engine or node command that does not answer; preparation must time it out. It exits
-// on its own later, so a regression cannot leave it running.
-async function hang() {
-  setTimeout(() => process.exit(124), 40_000);
-  await new Promise(() => {});
-}
-async function readInput() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString();
-}
-
-if (command === "docker" || command === "podman") {
-  if (equals(args, ["version", "--format", "{{.Server.Version}}"])) finish("29.4.0\n");
-  for (const [list, format] of [
-    [["ps", "-a"], "{{.Names}}"],
-    [["network", "ls"], "{{.Name}}"],
-    [["volume", "ls"], "{{.Name}}"],
-  ]) {
-    if (equals(args.slice(0, list.length), list)) {
-      assert.ok(state.clusterDeleted, "cluster inventory is checked after deletion");
-      assert.ok([
-        "label=k3d.cluster=" + state.cluster,
-        "name=k3d-" + state.cluster,
-      ].includes(args[list.length + 1]));
-      assert.deepEqual(args.slice(list.length), ["--filter", args[list.length + 1], "--format", format]);
-      finish();
-    }
-  }
-  if ((scenario.startsWith("nodes-unready") || scenario === "cluster-create-failed") &&
-      ["server-0", "agent-0"].some((suffix) => args.at(-1) === "k3d-" + state.cluster + "-" + suffix)) {
-    if (state.containersAvailable === false) {
-      process.stderr.write("node container was removed by rollback\n");
-      process.exit(1);
-    }
-    if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .State}}"])) {
-      finish(JSON.stringify({ Status: "running", Running: true, OOMKilled: false, ExitCode: 0 }));
-    }
-    if (equals(args.slice(0, 3), ["logs", "--tail=20000", "--timestamps"])) {
-      // The node's own error on stderr, followed by more kubectl retries against
-      // localhost:8080 than the old 100-line tail held (finding 15).
-      const retries = Array.from({ length: 150 }, (_, second) =>
-        new Date(Date.UTC(2026, 8, 23, 0, 1, second)).toISOString() +
-        " The connection to the server localhost:8080 was refused - did you specify the right host or port?\n").join("");
-      process.stderr.write("2026-09-23T00:00:30Z E0923 00:00:30.000000 1 kubelet_node_status.go:1] " +
-        "\"Error updating node status\" err=\"fixture node lease timeout\"\n" + retries);
-      finish("2026-09-23T00:00:00Z network plugin is not ready\nTOKEN=do-not-publish-node-token\n");
-    }
-  }
-  const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
-  if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
-    if (scenario === "hung-host-digests") await hang();
-    if (scenario === "image-absent-late-stderr" && !state.pulled) {
-      // Keep the real stderr pipe open after the command exits, so its missing
-      // image diagnostic arrives during stream drain rather than process exit.
-      spawn(process.execPath, ["-e", 'setTimeout(() => process.stderr.write("Error response from daemon: No such image\\n"), 75)'], {
-        stdio: ["ignore", "ignore", process.stderr],
-      });
-      process.exit(1);
-    }
-    if (
-      scenario === "inspect-failed" ||
-      (["image-absent", "podman-image-absent"].includes(scenario) && !state.pulled)
-    ) {
-      process.stderr.write(
-        scenario === "inspect-failed"
-           ? "Cannot connect to the Docker daemon\n"
-           : scenario === "podman-image-absent"
-             ? "failed to find image: image not known\n"
-             : "Error response from daemon: No such image\n",
-      );
-      process.exit(1);
-    }
-    const matching = ["local-digest", "hung-host-id", "hung-host-tag", "hung-host-platform"].includes(scenario) ||
-      (state.pulled && scenario !== "pull-mismatch");
-    finish(JSON.stringify([matching ? sourceImage : "registry.example/other@sha256:" + "d".repeat(64)]));
-  }
-  if (sourceImage && equals(args, ["pull", sourceImage])) {
-    state.pulled = true;
-    finish();
-  }
-  if (sourceImage && equals(args, ["image", "inspect", "--format", "{{.Id}}", sourceImage])) {
-    if (scenario === "hung-host-id") await hang();
-    finish(configId + "\n");
-  }
-  if (sourceImage && args[0] === "tag" && args[1] === sourceImage) {
-    if (scenario === "hung-host-tag") await hang();
-    state.tag = args[2];
-    finish();
-  }
-  if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
-    assert.match(args[4], /^openclaw_ci_pg_/);
-    if (equals(args.slice(5), ["up", "-d", "--wait"])) finish();
-    if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) finish();
-    if (args[5] === "exec" && args[8] === "psql") finish();
-  }
-  if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .NetworkSettings.Networks}}"]) &&
-      args[3] === "k3d-" + state.cluster + "-server-0") {
-    finish(JSON.stringify({ ["k3d-" + state.cluster]: {
-      Gateway: scenario === "public-gateway" ? "203.0.113.1" : "172.19.0.1",
-    } }));
-  }
-  if (args[0] === "build" && args.includes("--build-arg")) {
-    assert.equal(args[args.indexOf("--build-arg") + 1], "RUNTIME_IMAGE=" + state.runtime);
-    assert.ok(args[args.indexOf("-f") + 1].endsWith("/Dockerfile.platform-fixture"));
-    state.tag = args[args.indexOf("-t") + 1];
-    finish();
-  }
-  if (equals(args.slice(0, 2), ["buildx", "build"]) && args.includes("--target")) {
-    assert.equal(args[args.indexOf("--target") + 1], "runtime");
-    if (scenario === "controller-build-failed") {
-      // The tag is owned before the build; cleanup must still remove it.
-      state.controller = args[args.indexOf("-t") + 1];
-      commitState();
-      process.stderr.write("#7 [runtime 3/9] synthetic controller step\nERROR: synthetic build failure\n");
-      process.exit(1);
-    }
-    assert.equal(args.at(-1), ".");
-    state.controller = args[args.indexOf("-t") + 1];
-    finish();
-  }
-  if ((args[0] === "build" || equals(args.slice(0, 2), ["buildx", "build"])) && args.includes("-f")) {
-    assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
-    state.runtime = args[args.indexOf("-t") + 1];
-    finish();
-  }
-  if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {
-    // The fixture build overlaps cluster creation, so its tag cannot name the cluster.
-    assert.match(args[3], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/fixture:local$/);
-    state.tag = args[3];
-    finish();
-  }
-  if (equals(args, ["image", "inspect", state.tag])) {
-    if (scenario === "hung-host-owned") await hang();
-    finish("[]\n");
-  }
-  // Images and Packaging pulls its pinned Node base image after the builds.
-  if (equals(args.slice(0, 4), ["image", "inspect", "--format", "{{json .RepoDigests}}"]) &&
-      args[4]?.startsWith("docker.io/library/node:")) {
-    finish(JSON.stringify([args[4].replace(/:[^/@]+@/, "@")]) + "\n");
-  }
-  if (equals(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"]) &&
-      args[4]?.startsWith("docker.io/library/node:")) {
-    finish(configId + "\n");
-  }
-  if (equals(args, ["image", "inspect", "--format", "{{.Id}}", state.tag])) {
-    finish((command === "podman" ? configId.slice("sha256:".length) : configId) + "\n");
-  }
-  if (equals(args, ["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", state.tag])) {
-    if (scenario === "hung-host-platform") await hang();
-    finish("linux/amd64\n");
-  }
-  const expectedSave = command === "podman"
-    ? ["image", "save", state.tag]
-    : ["image", "save", "--platform", "linux/amd64", state.tag];
-  if (equals(args, expectedSave)) {
-    if (scenario === "save-failed-late-exit") {
-      // The truncated stream ends before the export's exit is seen. A busy runner can
-      // observe an ordinary exit that late; closing the output a second early
-      // reproduces that order.
-      writeSync(1, "synthetic image");
-      writeSync(2, "synthetic export failure\n");
-      closeSync(1);
-      setTimeout(() => process.exit(23), 1_000);
-      await new Promise(() => {});
-    }
-    if (scenario === "save-failed") {
-      // A truncated export must fail preparation even if a node accepts it.
-      process.stdout.write("synthetic image");
-      process.stderr.write("synthetic export failure\n");
-      process.exit(23);
-    }
-    finish("synthetic image archive " + state.tag + "\n");
-  }
-  if (equals(args, ["image", "rm", "-f", state.tag])) finish();
-  // The hung tag never created its local tag, so the engine has nothing to remove.
-  if (scenario === "hung-host-tag" && equals(args.slice(0, 3), ["image", "rm", "-f"]) &&
-      args[3]?.startsWith("localhost/")) {
-    process.stderr.write("Error response from daemon: No such image: " + args[3] + "\n");
-    process.exit(1);
-  }
-  if (state.runtime && equals(args, ["image", "rm", "-f", state.runtime])) finish();
-  if (state.controller && equals(args, ["image", "rm", "-f", state.controller])) finish();
-  if (equals(args.slice(0, 2), ["exec", "-i"]) && ["server-0", "agent-0"].some((suffix) =>
-      args[2] === "k3d-" + state.cluster + "-" + suffix)) {
-    const node = args[2];
-    assert.deepEqual(args.slice(3), ["ctr", "-n", "k8s.io", "images", "import", "--all-platforms", "-"]);
-    // The worker fails before reading, which stops the export early.
-    if (scenario === "nonzero-worker-import" && node.endsWith("-agent-0")) {
-      process.stderr.write("synthetic import command failure\n");
-      process.exit(17);
-    }
-    const archive = await readInput();
-    if (scenario === "nonzero-import") {
-      process.stderr.write("synthetic import command failure\n");
-      process.exit(17);
-    }
-    if (archive !== "synthetic image archive " + state.tag + "\n") {
-      process.stderr.write("ctr: unexpected EOF\n");
-      process.exit(1);
-    }
-    if (scenario !== "missing-tag") {
-      state.importedNodes ??= {};
-      state.importedNodes[node] = true;
-    }
-    finish();
-  }
-  if (args[0] === "exec" && ["server-0", "agent-0"].some((suffix) =>
-      args[1] === "k3d-" + state.cluster + "-" + suffix)) {
-    const node = args[1];
-    const alias = state.aliases?.[node];
-    if (equals(args.slice(2), ["ip", "route", "get", "10.42.7.0"])) {
-      assert.ok(node.endsWith("-server-0"));
-      // Node readiness can precede Flannel's cross-node route. The first lookup
-      // then selects the container network, which must never become the allowlist.
-      state.routeLookups = (state.routeLookups ?? 0) + 1;
-      if (scenario === "delayed-overlay-route" && state.routeLookups === 1) {
-        finish("10.42.7.0 via 172.19.0.1 dev eth0 src 172.19.0.2\n");
-      }
-      finish(scenario === "missing-proxy-source"
-        ? "10.42.7.0 dev flannel.1\n"
-        : "10.42.7.0 via 10.42.7.0 dev flannel.1 src 10.42.3.0\n");
-    }
-    const ctr = ["ctr", "-n", "k8s.io", "images"];
-    if (equals(args.slice(2), [...ctr, "list"])) {
-      if (scenario === "hung-ctr-list" && node.endsWith("-agent-0")) await hang();
-      // The first list on the server is the digest lookup after the import.
-      if (scenario === "hung-server-list" && node.endsWith("-server-0")) await hang();
-      const references = [state.importedNodes?.[node] && state.tag, alias].filter(Boolean);
-      finish("REF TYPE DIGEST SIZE PLATFORMS LABELS\n" + references.map((ref) =>
-        ref + " application/vnd.oci.image.manifest.v1+json " + manifestDigest + " 1 linux/amd64 -\n",
-      ).join(""));
-    }
-    if (equals(args.slice(2, 8), [...ctr, "tag", state.tag]) && args.length === 9) {
-      if (scenario === "hung-ctr-tag" && node.endsWith("-agent-0")) await hang();
-      if (scenario !== "missing-alias") {
-        state.aliases ??= {};
-        state.aliases[node] = args[8];
-      }
-      finish();
-    }
-    if (equals(args.slice(2, 7), [...ctr, "rm"]) && args.length === 8 &&
-        [state.tag, alias].includes(args[7])) finish();
-    if (equals(args.slice(2), ["crictl", "inspecti", alias]) && alias) {
-      if (scenario === "hung-worker-cri" && node.endsWith("-agent-0")) {
-        // A cache-miss answer before the hang: a timeout must still not be retried as one.
-        process.stderr.write('time="2026-10-06T11:05:15Z" level=fatal msg="no such image"\n');
-        await hang();
-      }
-      if (scenario === "missing-cri" ||
-          (scenario === "missing-worker-cri" && node.endsWith("-agent-0"))) {
-        process.stderr.write("synthetic CRI image not found\n");
-        process.exit(19);
-      }
-      // CRI fills its image cache from containerd events after ctr tags the
-      // reference, so the worker's CRI can briefly miss it, or never catch up.
-      state.criLookups ??= {};
-      state.criLookups[node] = (state.criLookups[node] ?? 0) + 1;
-      if (node.endsWith("-agent-0") &&
-          (scenario === "absent-worker-cri" ||
-            (scenario === "lagging-worker-cri" && state.criLookups[node] <= 2))) {
-        commitState();
-        process.stderr.write('time="2026-10-06T11:05:15Z" level=fatal msg="no such image \\"' + alias + '\\" present"\n');
-        process.exit(1);
-      }
-      finish(JSON.stringify({ status: { id: configId, repoDigests: [alias] } }));
-    }
-  }
-}
-if (command === "helm" && equals(args, ["version", "--short"])) finish("v3.19.0\n");
-if (command === "yq" && equals(args, ["--version"])) finish("yq (https://github.com/mikefarah/yq/) version v4.45.1\n");
-if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
-  assert.match(process.env.OCC_MIGRATION_DATABASE_URL, /^postgresql:\/\/occ_migrator:.*\/openclaw_k8s_/);
-  finish();
-}
-if (command === "k3d") {
-  if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [13, 15, 16].includes(args.length)) {
-    assert.match(args[2], /^openclaw-k8s-/);
-    assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
-    // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
-    // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
-    assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
-    if (args.length >= 15) {
-    assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
-    const storage = args[10].split(":");
-    assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
-    assert.ok(existsSync(storage[0]), "both nodes must mount an existing shared host directory");
-    assert.equal(args[11], "--api-port");
-    assert.match(args[12], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(13, 15), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
-    // The creation-failure case models k3d's default rollback so it can prove
-    // that the preparation owner retains containers for diagnosis and cleanup.
-    if (scenario !== "cluster-create-failed") {
-      assert.deepEqual(args.slice(15), ["--no-rollback"]);
-    } else {
-      assert.ok(equals(args.slice(15), []) || equals(args.slice(15), ["--no-rollback"]));
-    }
-    } else {
-    assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
-    assert.match(args[10], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(11), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
-    }
-    state.cluster = args[2];
-    state.clusterDeleted = false;
-    const hangOnce = ["cluster-create-hangs-once", "cluster-create-hangs-escaped"].includes(scenario);
-    if (scenario === "cluster-create-hangs" || (hangOnce && !state.createHung)) {
-      state.createHung = true;
-      commitState();
-      // The escaped case ignores SIGTERM and its descendant leaves the group, so
-      // only SIGKILL stops k3d and nothing can close the held pipes.
-      const escaped = scenario === "cluster-create-hangs-escaped";
-      if (escaped) process.on("SIGTERM", () => {});
-      // A descendant that shares the output pipes, as a credential helper would.
-      // The timeout must reach it, or "close" never comes.
-      const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 40_000)"], {
-        stdio: ["ignore", "inherit", "inherit"],
-        detached: escaped,
-      });
-      appendFileSync(join(root, "hung-pids"), process.pid + "\n" + (escaped ? "" : descendant.pid + "\n"));
-      if (escaped) appendFileSync(join(root, "escaped-pids"), descendant.pid + "\n");
-      await hang();
-    }
-    if (scenario === "cluster-create-failed") {
-      state.containersAvailable = args.includes("--no-rollback");
-      commitState();
-      process.stderr.write("synthetic cluster creation failure\n");
-      process.exit(1);
-    }
-    finish();
-  }
-  if (equals(args, ["kubeconfig", "get", state.cluster])) finish("apiVersion: v1\n");
-  if (equals(args, ["cluster", "list", "-o", "json"])) {
-    finish(JSON.stringify(state.clusterDeleted ? [] : [{ name: state.cluster }]));
-  }
-  if (equals(args, ["cluster", "delete", state.cluster])) {
-    state.clusterDeleted = true;
-    finish();
-  }
-}
-if (command === "kubectl") {
-  if (equals(args, ["version", "--client=true"])) finish("{}\n");
-  if (args[0] === "--kubeconfig" && args[2] === "--context" &&
-      args[3] === "k3d-" + state.cluster) {
-    if (!existsSync(args[1])) {
-      process.stderr.write("kubeconfig is unavailable\n");
-      process.exit(1);
-    }
-    if (equals(args.slice(4), ["config", "view", "--minify", "--flatten", "-o", "json"])) {
-      finish(JSON.stringify({ clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }] }));
-    }
-    if (equals(args.slice(4), ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout=120s"])) {
-      if (scenario.startsWith("nodes-unready")) {
-        process.stderr.write("synthetic node readiness timeout\n");
-        process.exit(1);
-      }
-      finish();
-    }
-    if (equals(args.slice(4), ["version", "-o", "json"])) {
-      finish(JSON.stringify({ serverVersion: {
-        gitVersion: scenario === "wrong-server-version" ? "v1.34.11+k3s1" : "v1.35.8+k3s1",
-      } }));
-    }
-    if (equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-agent-0", "-o", "json"])) {
-      finish(JSON.stringify({ spec: { podCIDR: "10.42.7.0/24" } }));
-    }
-    if (equals(args.slice(4), ["get", "nodes", "-o", "json"])) {
-      if (scenario.startsWith("nodes-unready")) {
-        finish(JSON.stringify({ items: [{
-          metadata: { name: "k3d-" + state.cluster + "-agent-0", annotations: { private: "do-not-publish-node-annotation" } },
-          spec: { providerID: "do-not-publish-node-spec" },
-          status: { conditions: [{ type: "Ready", status: "False", reason: "KubeletNotReady", message: "NetworkPluginNotReady" }] },
-        }] }));
-      }
-      finish(JSON.stringify({ items: [{ metadata: { name: "worker" },
-        spec: { taints: [{ key: "node.kubernetes.io/disk-pressure", effect: "NoSchedule" }] },
-        status: { conditions: [{ type: "DiskPressure", status: "True", reason: "KubeletHasDiskPressure" }] } }] }));
-    }
-    if (equals(args.slice(4, 6), ["--namespace", "kube-system"])) {
-      if (equals(args.slice(6), ["get", "pods", "-o", "json"])) {
-        if (scenario === "nodes-unready-diagnostics-failed") {
-          process.stderr.write("synthetic diagnostic API failure\n");
-          process.exit(1);
-        }
-        finish(JSON.stringify({ items: [{ metadata: { name: "coredns-fixture" },
-          spec: { containers: [{ env: [{ name: "PRIVATE", value: "do-not-publish-pod-spec" }] }] },
-          status: { phase: "Pending", conditions: [{ type: "PodScheduled", status: "False", reason: "Unschedulable" }] },
-        }] }));
-      }
-      if (equals(args.slice(6), ["get", "events", "-o", "json"])) {
-        if (scenario === "nodes-unready-diagnostics-failed") {
-          // Keep this external command alive until the real preparation deadline kills it.
-          setInterval(() => {}, 60_000);
-          await new Promise(() => {});
-        }
-        finish(JSON.stringify({ items: [{ type: "Warning", reason: "FailedScheduling",
-          message: "fixture network is not ready", involvedObject: { kind: "Pod", name: "coredns-fixture" },
-        }] }));
-      }
-      if (equals(args.slice(6, 8), ["apply", "-f"]) && args.length === 9) {
-        const manifest = JSON.parse(readFileSync(args[8], "utf8"));
-        assert.equal(manifest.kind, "DaemonSet");
-        assert.equal(manifest.metadata.name, "openclaw-ci-fixture-image-pin");
-        assert.equal(manifest.metadata.namespace, "kube-system");
-        const pod = manifest.spec.template.spec;
-        assert.equal(pod.automountServiceAccountToken, false);
-        assert.deepEqual(pod.tolerations, [{ operator: "Exists" }]);
-        assert.equal(pod.containers.length, 1);
-        assert.equal(pod.containers[0].image, Object.values(state.aliases)[0]);
-        assert.equal(pod.containers[0].imagePullPolicy, "Never");
-        assert.deepEqual(pod.containers[0].securityContext.capabilities.drop, ["ALL"]);
-        assert.equal(pod.containers[0].securityContext.readOnlyRootFilesystem, true);
-        state.fixtureImagePinned = true;
-        finish();
-      }
-      if (equals(args.slice(6), ["rollout", "status", "daemonset/openclaw-ci-fixture-image-pin", "--timeout=120s"])) {
-        assert.equal(state.fixtureImagePinned, true);
-        finish();
-      }
-      if (equals(args.slice(6), ["rollout", "status", "deployment/local-path-provisioner", "--timeout=120s"])) {
-        if (scenario === "storage-unready" || (scenario === "storage-after-image-unready" && state.storageRestarted)) {
-          process.stderr.write("deployment exceeded its progress deadline\n");
-          process.exit(1);
-        }
-        finish();
-      }
-      if (equals(args.slice(6), ["rollout", "restart", "deployment/local-path-provisioner"])) {
-        state.storageRestarted = true;
-        finish();
-      }
-      if (equals(args.slice(6), ["get", "pods", "--selector=app=local-path-provisioner", "-o", "json"])) {
-        finish(JSON.stringify({ items: [{ metadata: { name: "local-path-provisioner-fixture" },
-          spec: { nodeSelector: { "kubernetes.io/os": "linux" }, containers: [{ env: [{ name: "PRIVATE", value: "do-not-publish-pod-spec" }] }] },
-          status: { phase: "Pending", conditions: [{ type: "PodScheduled", status: "False", reason: "Unschedulable", message: "0/2 nodes are available: untolerated disk-pressure taint" }], containerStatuses: [{ name: "local-path-provisioner", ready: false,
-            restartCount: 3, state: { waiting: { reason: "CrashLoopBackOff" } } }] } }] }));
-      }
-      if (equals(args.slice(6), ["logs", "deployment/local-path-provisioner", "--tail=30"]) ||
-          equals(args.slice(6), ["logs", "deployment/local-path-provisioner", "--tail=30", "--previous"])) {
-        finish("Error starting daemon: fixture configuration rejected\n");
-      }
-    }
-  }
-}
-throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
-`}`;
-  for (const command of [
-    "docker.mjs",
-    "k3d.mjs",
-    "kubectl.mjs",
-    "podman",
-    "corepack",
-    "helm",
-    "yq",
-  ]) {
-    await writeFile(join(bin, command), commandSource, { mode: 0o700 });
-  }
-  const statePath = join(root, "state.json");
-  const githubEnv = join(root, "github.env");
-  // No inherited credentials, infrastructure selectors, or real command fallback.
-  const env = {
-    HOME: home,
-    PATH: bin,
-    TMPDIR: root,
-    TMP: root,
-    TEMP: root,
-    RUNNER_TEMP: root,
-    CI_FIXTURE_ROOT: root,
-    CI_FIXTURE_SCENARIO: scenario,
-    OCC_DOCKER_BIN: join(
-      bin,
-      ["podman-success", "podman-image-absent"].includes(scenario) ? "podman" : "docker.mjs",
-    ),
-    OPENCLAW_CI_K3D_BIN: join(bin, "k3d.mjs"),
-    OCC_KUBECTL_BIN: join(bin, "kubectl.mjs"),
-    ...extraEnv,
-  };
-  const run = (script, args) =>
-    spawnSync(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      timeout: 30_000,
-      env,
-    });
-  return {
-    statePath,
-    githubEnv,
-    prepare: () =>
-      run("prepare.mjs", ["--lane", lane, "--state", statePath, "--github-env", githubEnv]),
-    warmImageCache: (args = []) =>
-      run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
-    prepareFile: (file) =>
-      run("prepare.mjs", ["--lane", lane, "--file", file, "--state", statePath]),
-    cleanup: () => run("cleanup.mjs", ["--state", statePath]),
-    commands: async () =>
-      (await readFile(join(root, "commands.jsonl"), "utf8")).trim().split("\n").map(JSON.parse),
-  };
 }
 
 for (const { scenario, error } of [
@@ -855,446 +258,6 @@ for (const { scenario, error } of [
   });
 }
 
-test("fixture preparation rejects an unknown proxy source before publishing its environment", async (t) => {
-  const commands = await fixtureImageCommands(t, "missing-proxy-source");
-  const result = commands.prepare();
-  assert.equal(result.status, 1);
-  assertStderrMatch(result.stderr, /Unable to determine the cross-node plugin status proxy source/);
-  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-  assert.equal(state.env, undefined);
-  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-  // Failed preparation retains ownership so cleanup can remove the partial cluster.
-  const cleanup = commands.cleanup();
-  assert.equal(cleanup.status, 0, cleanup.stderr);
-  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-});
-
-for (const { scenario, stage, error } of [
-  {
-    scenario: "nodes-unready",
-    stage: "k3d-nodes-ready",
-    error: /synthetic node readiness timeout$/,
-  },
-  {
-    scenario: "nodes-unready-diagnostics-failed",
-    stage: "k3d-nodes-ready",
-    error: /synthetic node readiness timeout$/,
-  },
-  {
-    scenario: "cluster-create-failed",
-    stage: "k3d-create",
-    error: /synthetic cluster creation failure$/,
-  },
-]) {
-  test(`fixture preparation preserves bootstrap failure with bounded diagnostics: ${scenario}`, async (t) => {
-    const commands = await fixtureImageCommands(t, scenario);
-    const result = commands.prepare();
-    assert.equal(result.error, undefined, "diagnostics must finish within the CLI watchdog");
-    assert.equal(result.status, 1);
-    assert.match(result.stderr.trim().split("\n").at(-1), error);
-
-    const failedTiming = fixturePreparationMetrics(result.stderr).find(
-      (metric) => metric.stage === stage && metric.status === "failed",
-    );
-    assert.ok(failedTiming, "the bootstrap failure must retain its measured stage");
-    assert.ok(Number.isFinite(failedTiming.elapsedMs) && failedTiming.elapsedMs >= 0);
-
-    const artifactPath = `${commands.statePath}.diagnostics.json`;
-    const artifactText = await readFile(artifactPath, "utf8");
-    const evidence = JSON.parse(artifactText);
-    assert.equal(evidence.lane, "k3d-fixture-configuration");
-    assert.equal(evidence.nodeImage, defaultK3sImage);
-    if (scenario === "cluster-create-failed") {
-      // Container diagnostics remain available before a kubeconfig can be written.
-      for (const field of ["nodes", "pods", "events"]) {
-        assert.equal(evidence[field].status, "unavailable");
-      }
-    } else {
-      assert.equal(evidence.nodes.status, "ok");
-      assert.match(JSON.stringify(evidence.nodes.value), /KubeletNotReady/);
-    }
-    assert.equal(evidence.containers.length, 2);
-    for (const container of evidence.containers) {
-      assert.equal(container.state.status, "ok");
-      assert.equal(container.logs.status, "ok");
-      assert.match(
-        container.logs.value,
-        /network plugin is not ready\n.*Error updating node status/s,
-      );
-      assert.doesNotMatch(container.logs.value, /localhost:8080 was refused/);
-      assert.match(container.logs.value, /omitted 150 kubectl retry lines against localhost:8080/);
-    }
-    assert.doesNotMatch(artifactText, /do-not-publish/);
-    assert.doesNotMatch(result.stderr, /do-not-publish/);
-    if (scenario === "nodes-unready-diagnostics-failed") {
-      assert.equal(evidence.pods.status, "unavailable");
-      assert.equal(evidence.events.status, "timed-out");
-    } else if (scenario === "nodes-unready") {
-      assert.equal(evidence.pods.status, "ok");
-      assert.match(JSON.stringify(evidence.pods.value), /Unschedulable/);
-      assert.equal(evidence.events.status, "ok");
-      assert.match(JSON.stringify(evidence.events.value), /FailedScheduling/);
-    }
-
-    // Failure must retain owned cleanup state without admitting workload execution.
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
-    assert.equal(evidence.cluster, cluster.name);
-    assert.equal(cluster.status, "planned");
-    assert.equal(state.env, undefined);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const cleanup = commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
-    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-    await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
-    assert.equal(await readFile(artifactPath, "utf8"), artifactText);
-  });
-}
-
-// Linux reports an exited but unreaped process as a zombie; it holds nothing.
-function processRunning(pid) {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  try {
-    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
-  } catch {
-    return true;
-  }
-}
-
-async function hungK3dProcesses(commands) {
-  const text = await readFile(join(dirname(commands.statePath), "hung-pids"), "utf8");
-  return text.trim().split("\n").map(Number);
-}
-
-test("k3d preparation times out a hung cluster create, discards it and retries once", async (t) => {
-  const commands = await fixtureImageCommands(t, "cluster-create-hangs-once", undefined, {
-    OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "5000",
-  });
-  const result = commands.prepare();
-  assert.equal(result.error, undefined, "a hung create must not reach the CLI watchdog");
-  assert.equal(result.status, 0, result.stderr);
-  assertStderrMatch(
-    result.stderr,
-    /k3d cluster create openclaw-k8s-\S+ did not finish within 5000 ms \(attempt 1 of 2\)/,
-  );
-  const stages = fixturePreparationMetrics(result.stderr)
-    .filter(({ stage, status }) => stage.startsWith("k3d-create") && status !== "started")
-    .map(({ stage, status }) => `${stage}:${status}`);
-  assert.deepEqual(stages, ["k3d-create:failed", "k3d-create-discard:passed", "k3d-create:passed"]);
-  for (const pid of await hungK3dProcesses(commands)) {
-    assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
-  }
-
-  // The retry reuses the owned name, deleting the first attempt before creating again.
-  const k3d = (await commands.commands())
-    .filter(({ command, args }) => command === "k3d" && args[0] === "cluster")
-    .map(({ args }) => args.slice(0, 2).join(" "));
-  const firstCreate = k3d.indexOf("cluster create");
-  const secondCreate = k3d.indexOf("cluster create", firstCreate + 1);
-  assert.ok(secondCreate > firstCreate);
-  assert.ok(k3d.slice(firstCreate, secondCreate).includes("cluster delete"));
-  const evidence = JSON.parse(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
-  assert.match(evidence.failure, /\(attempt 1 of 2\)$/);
-
-  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-  const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
-  assert.equal(clusters.length, 1);
-  assert.equal(clusters[0].status, "ready");
-  const cleanup = commands.cleanup();
-  assert.equal(cleanup.status, 0, cleanup.stderr);
-  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-});
-
-test("k3d preparation stops waiting for create output held outside its process group", async (t) => {
-  const commands = await fixtureImageCommands(t, "cluster-create-hangs-escaped", undefined, {
-    OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "4000",
-  });
-  const escapedPids = join(dirname(commands.statePath), "escaped-pids");
-  t.after(async () => {
-    const text = await readFile(escapedPids, "utf8").catch(() => "");
-    for (const pid of text.split("\n").map(Number)) {
-      if (!Number.isInteger(pid) || pid <= 0) {
-        continue;
-      }
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    }
-  });
-  const result = commands.prepare();
-  assert.equal(result.error, undefined, "held output must not reach the CLI watchdog");
-  assert.equal(result.status, 0, result.stderr);
-  const timings = fixturePreparationMetrics(result.stderr).filter(
-    ({ stage, status }) => stage.startsWith("k3d-create") && status !== "started",
-  );
-  assert.deepEqual(
-    timings.map(({ stage, status }) => `${stage}:${status}`),
-    ["k3d-create:failed", "k3d-create-discard:passed", "k3d-create:passed"],
-  );
-  // SIGTERM is ignored: SIGKILL follows after 5 s, and the held pipes are
-  // abandoned 5 s later.
-  assert.ok(timings[0].elapsedMs >= 13_500, `first attempt ended after ${timings[0].elapsedMs} ms`);
-  for (const pid of await hungK3dProcesses(commands)) {
-    assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
-  }
-  const cleanup = commands.cleanup();
-  assert.equal(cleanup.status, 0, cleanup.stderr);
-});
-
-test("k3d preparation fails clearly when every cluster create attempt hangs", async (t) => {
-  const commands = await fixtureImageCommands(t, "cluster-create-hangs", undefined, {
-    OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "3000",
-  });
-  const result = commands.prepare();
-  assert.equal(result.error, undefined, "a hung create must not reach the CLI watchdog");
-  assert.equal(result.status, 1);
-  assert.match(
-    result.stderr.trim().split("\n").at(-1),
-    /^k3d cluster create openclaw-k8s-\S+ did not finish within 3000 ms \(attempt 2 of 2\); giving up\./,
-  );
-  for (const pid of await hungK3dProcesses(commands)) {
-    assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
-  }
-  const creates = (await commands.commands()).filter(
-    ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
-  );
-  assert.equal(creates.length, 2);
-  const evidence = JSON.parse(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
-  assert.match(evidence.failure, /\(attempt 2 of 2\)$/);
-  assert.equal(evidence.containers.length, 2);
-
-  // The partial cluster stays registered for cleanup; nothing is published.
-  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-  const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
-  assert.equal(cluster.status, "planned");
-  assert.equal(state.env, undefined);
-  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-  const cleanup = commands.cleanup();
-  assert.equal(cleanup.status, 0, cleanup.stderr);
-  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
-  await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
-});
-
-test("k3d node log excerpts stay bounded and keep the start, later errors and the end", () => {
-  const at = (second) => new Date(Date.UTC(2026, 8, 23, 0, 0, second)).toISOString();
-  const info = (second) =>
-    `${at(second)} I0923 kubelet.go:1] "fixture progress ${second}" ${"x".repeat(200)}`;
-  const stdout = [
-    // An output cap can start a stream mid-line, past the keyword of a credential.
-    "=do-not-publish-cut-credential more",
-    `${at(0)} level=info msg="Starting k3s agent fixture"`,
-    ...Array.from({ length: 4_000 }, (_, second) => info(second + 1)),
-    `${at(4_001)} level=info msg="fixture end of log"`,
-  ].join("\n");
-  const stderr = [
-    `${at(2_000)} E0923 kubelet_node_status.go:1] "Error updating node status" err="fixture lease"`,
-    `${at(2_001)} level=error msg="fixture join token=do-not-publish-node-token"`,
-    // The credential keyword sits past the 1000-character line cut.
-    `${at(2_001)} level=warning msg="do-not-publish-long-line ${"y".repeat(1_100)} password=hidden"`,
-    ...Array.from(
-      { length: 500 },
-      (_, index) => `${at(2_002 + index)} The connection to the server localhost:8080 was refused`,
-    ),
-  ].join("\n");
-  const excerpt = nodeLogExcerpt(stdout, stderr);
-  assert.ok(excerpt.length < 42_000, `excerpt has ${excerpt.length} characters`);
-  assert.match(excerpt, /^\[diagnostics dropped 1 unstamped line fragments\]\n/);
-  assert.match(excerpt, /\n\[diagnostics omitted 500 kubectl retry lines against localhost:8080/);
-  assert.match(excerpt, /Starting k3s agent fixture/);
-  assert.match(excerpt, /Error updating node status/);
-  assert.match(excerpt, /\[redacted credential-bearing line\]/);
-  assert.match(excerpt, /fixture end of log"$/);
-  assert.match(excerpt, /\[diagnostics omitted \d+ lines; 3 of 3 error and warning lines/);
-  assert.doesNotMatch(excerpt, /do-not-publish|localhost:8080 was refused/);
-});
-
-for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
-  test(`fixture preparation reports unavailable storage without publishing workload inputs: ${scenario}`, async (t) => {
-    const commands = await fixtureImageCommands(t, scenario);
-    const result = commands.prepare();
-    assert.equal(result.status, 1);
-    assertStderrMatch(result.stderr, /CI fixture storage controller is not ready/);
-    assertStderrMatch(result.stderr, /CrashLoopBackOff/);
-    assertStderrMatch(result.stderr, /fixture configuration rejected/);
-    assertStderrMatch(result.stderr, /Unschedulable/);
-    assertStderrMatch(result.stderr, /KubeletHasDiskPressure/);
-    assert.doesNotMatch(result.stderr, /do-not-publish-pod-spec/);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(state.env, undefined);
-    const cleanup = commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
-  });
-}
-
-const digest = "a".repeat(64);
-const immutableImage = `registry.example/openclaw/runtime@sha256:${digest}`;
-const nodeBaseImage = `docker.io/library/node:24-bookworm@sha256:${digest}`;
-const mutableImage = "registry.example/openclaw/runtime:latest";
-
-test("k3d preparation reuses only matching local immutable images and verifies fresh pulls", async (t) => {
-  for (const scenario of [
-    "local-digest",
-    "image-absent",
-    "podman-image-absent",
-    "image-absent-late-stderr",
-    "local-mismatch",
-    "pull-mismatch",
-    "inspect-failed",
-  ]) {
-    const commands = await fixtureImageCommands(t, scenario, "k3d-model", {
-      NODE_BASE_IMAGE: nodeBaseImage,
-      // Supply the controller artifact so this case isolates image import, not its build.
-      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-      OPENAI_API_KEY: "test-only-key",
-      OCC_TEST_OPENAI_MODEL: "test-model",
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
-      // Stop at the next independent preparation boundary after image import.
-      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
-    });
-    const result = commands.prepare();
-    assert.equal(result.status, 1);
-    const calls = await commands.commands();
-    const pulls = calls.filter(
-      ({ command, args }) => ["docker", "podman"].includes(command) && args[0] === "pull",
-    );
-    assert.equal(
-      pulls.length,
-      ["local-digest", "inspect-failed"].includes(scenario) ? 0 : 1,
-      scenario,
-    );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const imported = state.resources.filter(({ kind }) => kind === "k3d-image");
-    if (scenario === "pull-mismatch") {
-      assertStderrMatch(result.stderr, /pull did not materialize the requested registry digest/);
-      assert.equal(imported.length, 0);
-    } else if (scenario === "inspect-failed") {
-      assertStderrMatch(result.stderr, /Cannot connect to the Docker daemon/);
-      assert.equal(imported.length, 0);
-    } else {
-      assertStderrMatch(result.stderr, /limited to reviewed Codex versions/);
-      assert.equal(imported.length, 1);
-      assert.equal(imported[0].status, "ready");
-      assert.equal(imported[0].sourceImage, immutableImage);
-      assert.equal(imported[0].hostImageId, `sha256:${"b".repeat(64)}`);
-    }
-    const cleanup = commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
-    assert.ok(
-      !(await commands.commands()).some(
-        ({ args }) => args[0] === "image" && args[1] === "rm" && args.includes(immutableImage),
-      ),
-      "cleanup must preserve the caller's immutable source image",
-    );
-  }
-});
-
-test("k3d preparation times out a hung host image command and never pulls for it", async (t) => {
-  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const imported = String.raw`localhost/\S+`;
-  for (const [scenario, shown] of [
-    ["hung-host-digests", escape(`image inspect --format {{json .RepoDigests}} ${immutableImage}`)],
-    ["hung-host-id", escape(`image inspect --format {{.Id}} ${immutableImage}`)],
-    ["hung-host-tag", `${escape(`tag ${immutableImage} `)}${imported}`],
-    [
-      "hung-host-platform",
-      `${escape("image inspect --format {{.Os}}/{{.Architecture}} ")}${imported}`,
-    ],
-  ]) {
-    const commands = await fixtureImageCommands(t, scenario, "k3d-model", {
-      NODE_BASE_IMAGE: nodeBaseImage,
-      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-      OPENAI_API_KEY: "test-only-key",
-      OCC_TEST_OPENAI_MODEL: "test-model",
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
-      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
-      OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
-    });
-    const result = commands.prepare();
-    assert.equal(result.status, 1, scenario);
-    assertStderrMatch(
-      result.stderr,
-      new RegExp(String.raw`The container engine did not answer within 3000 ms \(${shown}\)\.`),
-      scenario,
-    );
-    // A timeout is not an absent image: nothing pulls, and nothing reaches the cluster.
-    const calls = await commands.commands();
-    assert.equal(
-      calls.filter(
-        ({ command, args }) => ["docker", "podman"].includes(command) && args[0] === "pull",
-      ).length,
-      0,
-      scenario,
-    );
-    assert.equal(
-      calls.some(({ args }) => args[0] === "exec" && args[1] === "-i"),
-      false,
-      scenario,
-    );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(
-      state.resources.some(({ kind, status }) => kind === "k3d-image" && status === "ready"),
-      false,
-      scenario,
-    );
-    const cleanup = commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
-  }
-});
-
-test("fixture preparation times out a hung inspect of its own fixture image", async (t) => {
-  const commands = await fixtureImageCommands(t, "hung-host-owned", undefined, {
-    OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
-  });
-  const result = commands.prepare();
-  assert.equal(result.status, 1);
-  assertStderrMatch(
-    result.stderr,
-    /The container engine did not answer within 3000 ms \(image inspect localhost\/\S+\/fixture:local\)\./,
-  );
-  const cleanup = commands.cleanup();
-  assert.equal(cleanup.status, 0, cleanup.stderr);
-});
-
-test("ordinary k3d preparation forwards an immutable K3s override and retains the server version gate", async (t) => {
-  const image = `registry.example/k3s:v1.35.8-k3s1@sha256:${digest}`;
-  for (const scenario of ["success", "wrong-server-version"]) {
-    const commands = await fixtureImageCommands(t, scenario, "k3d-fixture-configuration", {
-      OPENCLAW_CI_K3S_IMAGE: image,
-    });
-    const result = commands.prepare();
-    assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
-    assert.equal(cluster.nodeImage, image);
-    if (scenario === "success") {
-      assert.equal(cluster.kubernetesVersion, "v1.35.8+k3s1");
-    } else {
-      assertStderrMatch(result.stderr, /must resolve to Kubernetes 1\.35\.x/);
-      // The fixture build overlaps cluster creation; nothing reaches the cluster.
-      assert.equal(
-        (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),
-        false,
-      );
-      assert.equal(
-        state.resources.some(({ kind }) => kind === "k3d-image"),
-        false,
-      );
-      assert.equal(state.env, undefined);
-    }
-    const cleanup = commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
-  }
-});
-
 // The docker shim records argv only: this proves the cache credential stays out of
 // build arguments and every output preparation hands on, not out of docker's environment.
 test("repository platform preparation restores the runtime image cache without exporting it", async (t) => {
@@ -1307,9 +270,15 @@ test("repository platform preparation restores the runtime image cache without e
   const prepared = commands.prepare();
   assert.equal(prepared.status, 0, prepared.stderr);
   const calls = (await commands.commands()).filter(({ command }) => command === "docker");
-  const runtime = calls.filter(({ args }) => args[0] === "buildx");
+  const runtime = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
   assert.equal(runtime.length, 1);
   const { args } = runtime[0];
+  // The engine lacked the probed image, so the lane loaded the build.
+  const probes = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--output"));
+  assert.deepEqual(
+    probes.map(({ args: probe }) => probe.slice(7)),
+    [args.slice(3)],
+  );
   assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
   assert.equal(
     args[args.indexOf("--cache-from") + 1],
@@ -1388,8 +357,20 @@ test("Images and Packaging exports the image caches only on main pushes", async 
     });
     const prepared = commands.prepare();
     assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
-    const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    const builds = calls.filter(({ args }) => args.includes("--load"));
     assert.equal(builds.length, 2, event);
+    // Only a lane that exports the cache skips the probe for an existing image.
+    assert.equal(calls.length, exported ? 2 : 4, event);
+    // A fixed epoch keeps independent builds of the same layers on one image ID;
+    // the probe must resolve the same ID the build would load.
+    for (const { args } of calls) {
+      assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
+    }
+    if (!exported) {
+      assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
+      assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);
+    }
     for (const { args } of builds) {
       const role = args.includes("--target") ? "controller" : "runtime";
       const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
@@ -1404,6 +385,128 @@ test("Images and Packaging exports the image caches only on main pushes", async 
     assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
   }
 });
+
+test("image lanes tag the engine's copy when the restored cache resolves to an image it holds", async (t) => {
+  const commands = await fixtureImageCommands(t, "engine-holds-images", "images-packaging", {
+    GITHUB_ACTIONS: "true",
+    GITHUB_EVENT_NAME: "pull_request",
+    OCC_CI_IMAGE_CACHE: "1",
+    ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+    ACTIONS_RESULTS_URL: "https://cache.example.test/",
+  });
+  const prepared = commands.prepare();
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const calls = (await commands.commands()).filter(({ command }) => command === "docker");
+  // Both images resolve from the cache without loading any layer.
+  const builds = calls.filter(({ args }) => args[0] === "buildx");
+  assert.equal(builds.length, 2);
+  assert.ok(builds.every(({ args }) => args.includes("--output") && !args.includes("--load")));
+  const tags = calls.filter(({ args }) => args[0] === "tag");
+  assert.deepEqual(tags.map(({ args }) => args[1]).sort(), [
+    "sha256:" + "d".repeat(64),
+    "sha256:" + "e".repeat(64),
+  ]);
+  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+  for (const { args } of tags) {
+    const tagged = state.resources.find(
+      ({ kind, name }) => kind === "image-tag" && name === args[2],
+    );
+    assert.equal(tagged?.status, "ready", args[2]);
+  }
+  // The log names each resolved image ID.
+  assert.match(
+    prepared.stderr,
+    new RegExp(
+      `"stage":"controller-image-reuse","outcome":"reused","image":"sha256:${"d".repeat(64)}"`,
+    ),
+  );
+  assert.match(
+    prepared.stderr,
+    new RegExp(
+      `"stage":"runtime-image-reuse","outcome":"reused","image":"sha256:${"e".repeat(64)}"`,
+    ),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(calls) + prepared.stdout + prepared.stderr,
+    /synthetic-cache-credential/,
+  );
+  const cleaned = commands.cleanup();
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+});
+
+for (const { scenario, outcome, env = {} } of [
+  {
+    scenario: "engine-holds-different",
+    outcome: { controller: "different", runtime: "different" },
+  },
+  {
+    scenario: "engine-bad-metadata",
+    outcome: { controller: "probe-failed", runtime: "unresolved" },
+  },
+  {
+    scenario: "engine-inspect-failed",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+  },
+  {
+    scenario: "engine-inspect-hung",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+    env: { OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000" },
+  },
+  {
+    scenario: "engine-tag-failed",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+  },
+  // The probe's temporary directory cannot be created.
+  {
+    scenario: "engine-holds-images",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+    env: { RUNNER_TEMP: "/nonexistent/oce-ci-prepare-runner-temp" },
+  },
+]) {
+  test(`image lanes build when the engine image probe cannot reuse: ${scenario} ${JSON.stringify(env)}`, async (t) => {
+    const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
+      GITHUB_ACTIONS: "true",
+      GITHUB_EVENT_NAME: "pull_request",
+      OCC_CI_IMAGE_CACHE: "1",
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
+      ...env,
+    });
+    const prepared = commands.prepare();
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const calls = (await commands.commands()).filter(({ command }) => command === "docker");
+    // Both images build and load as if no probe had run.
+    const builds = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
+    assert.equal(builds.length, 2);
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    for (const { args } of builds) {
+      const tag = args[args.indexOf("-t") + 1];
+      const tagged = state.resources.find(({ kind, name }) => kind === "image-tag" && name === tag);
+      assert.equal(tagged?.status, "ready", tag);
+    }
+    for (const [role, expected] of Object.entries(outcome)) {
+      assert.match(
+        prepared.stderr,
+        new RegExp(`"stage":"${role}-image-reuse","outcome":"${expected}"`),
+        role,
+      );
+    }
+    // Only a probe that failed at the tag itself tried to tag.
+    assert.equal(
+      calls.filter(({ args }) => args[0] === "tag").length,
+      scenario === "engine-tag-failed" ? 2 : 0,
+    );
+    if (env.RUNNER_TEMP !== undefined) {
+      // No probe build ran without a metadata directory.
+      assert.equal(
+        calls.filter(({ args }) => args.includes("type=image,push=false,store=false")).length,
+        0,
+      );
+    }
+    const cleaned = commands.cleanup();
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+  });
+}
 
 const warmCacheEnv = {
   GITHUB_ACTIONS: "true",
@@ -1454,8 +557,33 @@ test("the main image cache warm job builds the packaging images and exports both
     JSON.stringify(builds) + state + warmed.stdout + warmed.stderr,
     /synthetic-cache-credential/,
   );
+  // The runtime image stays tagged under a local name that cleanup does not own and that
+  // names its ID, so the runners' shared image cache keeps main's image for the image lanes.
+  const kept = `localhost/openclaw-ci-main/runtime:${"b".repeat(12)}`;
+  const calls = await commands.commands();
+  const runtimeBuild = calls.findIndex(
+    ({ args }) => args[0] === "buildx" && !args.includes("--target"),
+  );
+  const tagged = calls.findIndex(({ args }) => args[0] === "tag" && args[2] === kept);
+  assert.ok(runtimeBuild >= 0 && tagged > runtimeBuild);
+  assert.match(calls[tagged].args[1], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/runtime:local$/);
+  assert.match(
+    warmed.stderr,
+    new RegExp(`"stage":"runtime-image-kept","image":"sha256:${"b".repeat(64)}","tag":"${kept}"`),
+  );
+  assert.doesNotMatch(state, /openclaw-ci-main/);
   const cleaned = commands.cleanup();
   assert.equal(cleaned.status, 0, cleaned.stderr);
+  const removed = (await commands.commands()).filter(
+    ({ args }) => args[0] === "image" && args[1] === "rm",
+  );
+  assert.deepEqual(
+    removed.map(({ args }) => args.at(-1)).sort(),
+    [
+      calls[tagged].args[1],
+      builds.find(({ args }) => args.includes("--target")).args.at(-2),
+    ].sort(),
+  );
 });
 
 test("the image cache warm job prints a failed build's output and fails", async (t) => {
@@ -1471,6 +599,8 @@ test("the image cache warm job prints a failed build's output and fails", async 
     warmed.stderr,
     /^\[image-cache-warm\] controller build\n#7 \[runtime 3\/9\] synthetic controller step$/m,
   );
+  // A failed warm build keeps nothing.
+  assert.equal((await commands.commands()).filter(({ args }) => args[0] === "tag").length, 0);
   assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
   const cleaned = commands.cleanup();
   assert.equal(cleaned.status, 0, cleaned.stderr);

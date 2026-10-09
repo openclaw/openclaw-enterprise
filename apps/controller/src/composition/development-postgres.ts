@@ -348,7 +348,6 @@ export async function composePostgresDevelopment(
               ],
             }),
       },
-      maxBodyBytes: 64 * 1024,
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     app.get("/healthz", async () => ({ status: "ok" }));

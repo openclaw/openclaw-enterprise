@@ -221,7 +221,10 @@ the profile instead.
   method. With a Credential Gateway selected, only `credential_source` is
   accepted.
 - **`credential-source delete` returns `409`:** an Agent draft, active
-  revision, or pending deployment still references the source.
+  revision, or pending deployment still references the source. With
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`, only withdrawal work still retrying for
+  an earlier revision that held the source blocks it: wait up to about an hour,
+  or delete the Agent.
 - **`iam role delete` returns `409`:** an access binding still uses the Role.
   Deleting the source removes its bindings; otherwise find the binding with
   `./bin/occ iam access-binding list` and delete it first.

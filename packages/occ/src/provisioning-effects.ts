@@ -13,6 +13,11 @@ export interface ProvisioningEffectTarget {
 export interface ProvisioningPendingEffect extends ProvisioningEffectTarget {
   readonly owner?: string;
   readonly targetId: string;
+  /**
+   * When the effect was recorded, on the database clock (the repository stamps it). Effects
+   * recorded before it existed have none.
+   */
+  readonly startedAt?: Date;
   readonly targetMatches: boolean;
   readonly ownerPresent: boolean;
 }
@@ -55,9 +60,11 @@ export function provisioningPendingEffect(
   const targetId = targetIdFor(record, effect);
   const targetMatches =
     targetId.length > 0 && (pendingTargetId === undefined || pendingTargetId === targetId);
+  const startedAt = typeof pending.startedAt === "string" ? new Date(pending.startedAt) : undefined;
   return Object.freeze({
     ...effect,
     ...(owner === undefined ? {} : { owner }),
+    ...(startedAt === undefined || Number.isNaN(startedAt.getTime()) ? {} : { startedAt }),
     targetId,
     targetMatches,
     ownerPresent: targetMatches && isNonEmptyString(owner),

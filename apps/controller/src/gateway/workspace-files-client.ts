@@ -23,6 +23,8 @@ export interface NativeWorkspaceFilesTarget {
   readonly url: string;
   readonly nativeAgentId: string;
   readonly apiKey: string;
+  // Composition can follow an unambiguous native sole roster without listing Agents.
+  readonly preferSoleNativeAgent?: true;
 }
 
 export type NativeWorkspaceFilesTargetResolver = (
@@ -112,15 +114,23 @@ async function requestNativeWorkspaceFile(
     if (!hasGrant(hello, operation)) {
       return { status: "unavailable" };
     }
+    const defaults = hello.snapshot.sessionDefaults;
+    const nativeAgentId =
+      target.preferSoleNativeAgent === true &&
+      defaults?.ownership === "sole" &&
+      defaults.selectionRequired === false &&
+      isNonEmptyString(defaults.defaultAgentId)
+        ? defaults.defaultAgentId
+        : target.nativeAgentId;
     const requestTimeoutMs = remainingDeadlineMs(request.deadline);
     if (requestTimeoutMs === undefined || request.signal.aborted) {
       return { status: "unavailable" };
     }
     const params =
       operation === "read"
-        ? { agentId: target.nativeAgentId, name: request.filename }
+        ? { agentId: nativeAgentId, name: request.filename }
         : {
-            agentId: target.nativeAgentId,
+            agentId: nativeAgentId,
             name: request.filename,
             content: (request as ControllerWorkspaceFileWriteRequest).content,
           };

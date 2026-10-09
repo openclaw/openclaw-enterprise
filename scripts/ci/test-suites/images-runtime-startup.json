@@ -1,13 +1,22 @@
 {
-  "requiredEnv": ["OCC_TEST_RUNTIME_IMAGE", "OCC_TEST_CODEX_SECCOMP_PROFILE"],
+  "requiredEnv": [
+    "OCC_TEST_RUNTIME_IMAGE",
+    "OCC_TEST_CODEX_SECCOMP_PROFILE",
+    "OCC_TEST_WORKSPACE_ENVOY_IMAGE"
+  ],
   "prepare": {
     "requiresPreparedStateForFile": true,
-    "codexSeccomp": true
+    "codexSeccomp": true,
+    "defaultEnv": {
+      "OCC_TEST_WORKSPACE_ENVOY_IMAGE": "docker.io/envoyproxy/envoy:distroless-v1.36.6@sha256:947974108bb93df64469fedaa0ab7191cdf86c608217d6ff9b497c4e96ff1069"
+    },
+    "immutableEnvImages": ["OCC_TEST_WORKSPACE_ENVOY_IMAGE"]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/runtime-image-startup.test.mjs",
-    "tests/integration/runtime-image-native-worker.test.mjs"
+    "tests/integration/runtime-image-native-worker.test.mjs",
+    "tests/integration/workspace-files-native.test.mjs"
   ],
   "files": [
     {
@@ -30,6 +39,12 @@
         "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
         "runtime image reaps descendants during workspace node and Codex restarts",
         "runtime image omits inactive Slack approvers and checks native compatibility before gateway launch"
+      ]
+    },
+    {
+      "path": "tests/integration/workspace-files-native.test.mjs",
+      "expectedTests": [
+        "native workspace files follow a sole roster through OCC and preserve explicit targets and grants"
       ]
     }
   ]

@@ -58,7 +58,8 @@ A `CredentialSourceType` declares:
   config or Secret inputs.
 - `harnessAuth`: optional `{ modelProvider, loginMode }`. Only a type with this
   entry can authenticate a Harness. Login modes are `api_key` and, for dedicated
-  Codex, `chatgptAuthTokens`.
+  Codex, `chatgptAuthTokens`. An Agent lists every source it uses, of any type,
+  in `credentialSources`.
 
 ### External ChatGPT authentication
 
@@ -117,7 +118,11 @@ started by the external service. Source withdrawal and token readiness remain
 that service's responsibility.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
-uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`.
+uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`,
+which returns the exact Sandbox a revision runs in without side effects.
+Compute throws `CredentialWithdrawalRefusedError` when its configuration cannot
+reach that Sandbox or it finds an object it does not own; the worker then fails
+the withdrawal without retrying.
 
 ## IAM
 
@@ -215,6 +220,7 @@ adopt or delete the same stored copy.
   native OpenClaw. `openai`/`chatgptAuthTokens` is dedicated-Codex-only and
   requires the external-auth attachment described above. The bundled catalog
   includes experimental Codex device login through the paired Refresh Driver.
+  Other listed sources need a Sandbox Driver that provisions the Harness.
 - Guided Agent provisioning rejects credential-source Harness authentication.
   Create the Agent, then deploy it.
 - Installed Credential Gateway packages are unsupported.

@@ -851,6 +851,29 @@ export const ServiceAccountResponse = Type.Object(
   { additionalProperties: false },
 );
 
+export const ServiceAccountForceDeletionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        id: ServiceAccountId,
+        namespaceId: NamespaceId,
+        revocation: Type.Literal("skipped", {
+          description:
+            "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+        }),
+        backendId: Type.Optional(BackendId),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+  },
+);
+
 export const ServiceAccountListResponse = Type.Object(
   { data: Type.Array(ServiceAccountSchema), meta: Meta },
   { additionalProperties: false },
@@ -1503,6 +1526,9 @@ export type CredentialWithdrawalWire = Type.Static<typeof CredentialWithdrawalSc
 export type CredentialWithdrawalResponse = Type.Static<typeof CredentialWithdrawalResponse>;
 export type SecretListResponse = Type.Static<typeof SecretListResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
+export type ServiceAccountForceDeletionResponse = Type.Static<
+  typeof ServiceAccountForceDeletionResponse
+>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
 export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;

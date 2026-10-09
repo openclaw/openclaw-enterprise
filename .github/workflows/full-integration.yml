@@ -58,7 +58,10 @@ jobs:
 
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
-    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || startsWith(matrix.lane, 'k3d-observability')) && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    # The lanes ci.yml runs on blacksmith 32vcpu run there too (its kernel enforces the k3d
+    # lanes' NetworkPolicy checks; Image Runtime Startup 2 runs three files at once). The
+    # demo lane, which PR CI does not run, stays on ubuntu-22.04.
+    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability' || startsWith(matrix.lane, 'images-runtime-startup')) && 'blacksmith-32vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: preflight
     if: needs.preflight.outputs.run_all == 'true'
     timeout-minutes: ${{ matrix.timeout }}
@@ -146,6 +149,10 @@ jobs:
             title: Repository Credentials Platform
             profile: k3d
             timeout: 60
+          - lane: keycloak-oidc
+            title: Keycloak OIDC
+            profile: postgres
+            timeout: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -483,7 +490,7 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform", "keycloak-oidc"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

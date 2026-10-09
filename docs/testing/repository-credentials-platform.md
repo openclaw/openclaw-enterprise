@@ -40,7 +40,7 @@ revision ownership, immutable attempt inputs, phases and safe recovery identity.
 The `postgres-repository-broker-receipts.test.mjs` case joins the real broker,
 private receipt listener and limited application role to verify confirmed disposal
 and fencing across service restart. The `postgres-restart-recovery.test.mjs` and
-`postgres-worker-agent-revision.test.mjs` cases cover terminal-retirement transfer,
+`postgres-worker-agent-revision*.test.mjs` cases cover terminal-retirement transfer,
 retries and session-only repair.
 These checks do not prove a running Kubernetes Pod or a model turn.
 

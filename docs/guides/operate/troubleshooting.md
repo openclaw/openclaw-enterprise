@@ -32,6 +32,53 @@ from the repository root with the same profile and state directory. Retry the
 [Compose profile startup](../deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute)
 with the selected image and wait for the development stack to report ready.
 
+## Local K3s cannot load the legacy iptables nat table
+
+Both local k3d profiles start their node with `IPTABLES_MODE=legacy`. A host whose
+Docker uses nftables never loads the legacy netfilter modules, and the node cannot
+load them itself. kube-proxy then exits with
+`can't initialize iptables table 'nat': Table does not exist`, K3s shuts down, and
+cluster creation fails when the startup timeout expires with
+`k3d failed: exit status 1`: ten minutes by default for the Kubernetes-only
+profile, five for the Compose profile.
+
+When the container engine runs on the host's own Linux kernel (not Docker Desktop, a
+Podman machine, or a remote engine), `occ dev up` checks that kernel first. If it can
+tell the kernel has not loaded the modules, it stops before cluster creation with
+`the host kernel has not loaded the legacy iptables modules (ip_tables, iptable_nat)
+that the local k3d node needs`, followed by the `modprobe` command below. A kernel
+that ships no `iptable_nat` module stops with `provides no legacy iptables nat table
+(iptable_nat)` instead; see the end of this section. If it cannot tell, it prints
+`Warning: could not confirm that the host kernel provides the legacy iptables nat
+table (iptable_nat)` and continues, and the timeout above still applies.
+
+In a second terminal, while that wait is still running, read the node log.
+`<cluster>` is the cluster name from the startup output.
+
+```bash
+docker logs 'k3d-<cluster>-server-0' 2>&1 | grep -i 'iptables table'
+```
+
+On the host, `lsmod | grep '^iptable_nat'` prints nothing while the module is
+unloaded. Load the legacy modules K3s uses and keep them across reboots:
+
+```bash
+sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter
+sudo tee /etc/modules-load.d/oce-k3d-legacy-iptables.conf >/dev/null <<'EOF'
+iptable_nat
+iptable_filter
+iptable_mangle
+br_netfilter
+EOF
+```
+
+A failed creation preserves the state directory and reports it for `occ dev down`.
+Wait until that startup exits, then run `./scripts/dev-down` from the repository root
+with the same profile and state directory, and start the profile again.
+`lsmod | grep -E '^iptable_(nat|filter)'` lists both modules, and startup reaches
+`OpenClaw Enterprise development stack is ready.` A host whose kernel ships no
+`iptable_nat` module cannot run these profiles.
+
 ## Local startup stalls on cert-manager
 
 On some Linux hosts, especially Ubuntu with Docker 29, the k3d node cannot
@@ -243,10 +290,10 @@ not prove an Agent has deployed or can run a model.
 ## An Agent's Gateway or Harness Pod stays unready
 
 Run `kubectl describe pod <pod-name>` in the Agent's tenant namespace. Each
-`Readiness probe failed:` event names the step that is not ready, such as
-`plugin runtime phase is starting` or `Gateway /readyz unavailable: ECONNREFUSED`.
-When the startup wrapper holds a failed check, the event adds it, for example
-`; startup check model-probe failed with AUTHENTICATION_FAILED`. See
+`Readiness probe failed:` event reports the private HTTP endpoint's status or a
+connection failure. A `503` means the runtime's native, plugin, authentication,
+or identity gate has not passed. Check the container's startup-phase logs for
+the failing stage. See
 [Harness authentication](../../reference/harness-execution.md#harness-authentication)
 for the probe codes.
 

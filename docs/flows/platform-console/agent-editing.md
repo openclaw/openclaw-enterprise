@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Console Agent editing and runtime requests
@@ -197,7 +197,10 @@ describes the supported edits and their deployment boundaries.
 ### 5. Save authentication and deploy the first revision
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
-Agent before saving authentication and rejects changed bindings. After PATCH,
+Agent before saving authentication and rejects changed bindings. When changing
+the Harness source, the PATCH replaces its prior `credentialSources` entry and
+preserves unrelated entries; it does not delete the old source or revoke grants.
+After PATCH,
 `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal exact `operate` on the selected Secret
 (`api_key` or imported `codex_pat`) or CredentialSource. It reuses or creates a
@@ -337,6 +340,8 @@ worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 20:35: Replace only the old Harness source binding while preserving unrelated sources. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
 
 - 2026-10-07 17:42: Trace exact CredentialSource grants alongside Secret grants after authentication saves. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 

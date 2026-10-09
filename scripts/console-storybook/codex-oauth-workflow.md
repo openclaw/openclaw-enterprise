@@ -40,7 +40,9 @@ The saved credential-source notice stays visible and the authentication source s
 Open **Components/Credentials → Explicit ChatGPT credential replacement (Experimental)**.
 Confirm the saved source is labeled **Credential source** and the ChatGPT replacement
 sign-in notice shows the experimental status. The current source is preserved until a new login completes and the operator
-chooses **Save authentication source**. Inspect the PATCH: it retains the existing OAuth and tool source entries in `credentialSources` and adds the replacement exactly once. Deployment remains a separate action.
+chooses **Save authentication source**. Inspect the PATCH: `credentialSources`
+replaces only the previous Harness entry and preserves unrelated source entries.
+The old source resource remains available; deployment remains a separate action.
 Clearing a new selection retains the current saved source. The newly created credential source also remains available for separate management.
 
 Capture screenshots of pending, ready, and failure states and a short video of

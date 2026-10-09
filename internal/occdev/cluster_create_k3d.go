@@ -34,7 +34,7 @@ func (r *runner) createK3dCluster(ctx context.Context, args ...string) error {
 			fmt.Fprintln(r.opts.Out, "k3d rolled back after a transient container-engine log error; retrying cluster creation once...")
 			continue
 		}
-		return fmt.Errorf("k3d failed: %w", err)
+		return fmt.Errorf("k3d failed: %w%s", err, r.legacyNATFailureHint())
 	}
 }
 

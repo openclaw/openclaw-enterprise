@@ -4,7 +4,8 @@
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $image) -}}
+{{- /* prepare-bootstrap-volume --image: a letter or digit, then letters, digits, dot, underscore, colon, slash, or hyphen, and a lowercase sha256 digest. */ -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $image) -}}
 {{- fail (printf "images.%s must be an approved immutable SHA-256 image reference" $name) -}}
 {{- end -}}
 {{- end -}}
@@ -18,11 +19,39 @@
 {{- /* The host parser maps compatibility characters (UTS #46, close to NFKC) before it checks them, and refuses those that map to a forbidden host code point (full-width ? # / : @, spacing accents that map to a space) or that UTS #46 disallows (dotted numbers such as U+2488, ideographic description characters, U+FFFC, U+FFFD). Go's URL parser keeps them all. The list is generated from Node; sign-in-chart-parity.test.mjs re-derives it. */ -}}
 {{- $baseUrlHostRefused := "[\\x{00A8}\\x{00AF}\\x{00B4}\\x{00B8}\\x{02D8}-\\x{02DD}\\x{037A}\\x{0384}\\x{0385}\\x{1FBD}\\x{1FBF}-\\x{1FC1}\\x{1FCD}-\\x{1FCF}\\x{1FDD}-\\x{1FDF}\\x{1FED}\\x{1FEE}\\x{1FFD}\\x{1FFE}\\x{2017}\\x{2024}-\\x{2026}\\x{203E}\\x{2047}-\\x{2049}\\x{2100}\\x{2101}\\x{2105}\\x{2106}\\x{2488}-\\x{249B}\\x{2A74}\\x{2FF0}-\\x{2FFF}\\x{309B}\\x{309C}\\x{31EF}\\x{33C2}\\x{33C7}\\x{33D8}\\x{FC5E}-\\x{FC63}\\x{FDFA}\\x{FDFB}\\x{FE12}\\x{FE13}\\x{FE16}\\x{FE19}\\x{FE30}\\x{FE47}-\\x{FE4C}\\x{FE52}\\x{FE55}\\x{FE56}\\x{FE5F}\\x{FE64}\\x{FE65}\\x{FE68}\\x{FE6A}\\x{FE6B}\\x{FE70}\\x{FE72}\\x{FE74}\\x{FE76}\\x{FE78}\\x{FE7A}\\x{FE7C}\\x{FE7E}\\x{FF03}\\x{FF05}\\x{FF0F}\\x{FF1A}\\x{FF1C}\\x{FF1E}-\\x{FF20}\\x{FF3B}-\\x{FF3E}\\x{FF5C}\\x{FFE3}\\x{FFFC}\\x{FFFD}\\x{1F100}]" -}}
 {{- if regexMatch $baseUrlHostRefused $baseUrlText -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
-{{- /* The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL). They also refuse a bare ? or #, which urlParse reads as an empty query or fragment. */ -}}
+{{- /* The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL). They also refuse a bare ? or #, which urlParse reads as an empty query or fragment. Go keeps an extra port colon in the host name and accepts an IPv6 zone ID; Node refuses both. */ -}}
 {{- $baseUrl := urlParse $baseUrlText -}}
 {{- $baseUrlPort := trimPrefix ":" (regexFind ":[0-9]+$" $baseUrl.host) -}}
-{{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
+{{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) (and (contains ":" $baseUrl.hostname) (or (not (hasPrefix "[" $baseUrl.host)) (contains "%" $baseUrl.hostname))) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
 {{- fail "auth.baseUrl must be an absolute HTTP(S) origin such as https://console.example.com, without a path, query, fragment or user info" -}}
+{{- end -}}
+{{- /* Both parsers percent-decode the host, so the character checks above also run on the decoded host name (https://ex%C2%A0ample.com), with the same deliberate strictness for the invisible characters the API drops. */ -}}
+{{- if regexMatch "[^\\pL\\pM\\pN\\pP\\pS\\x{200C}\\x{200D}]|[<>]" $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain spaces, invisible characters, < or >; the API's URL parser refuses or drops them in a host" -}}{{- end -}}
+{{- if regexMatch $baseUrlHostRefused $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
+{{- /* Go's URL parser keeps the written host. Node treats a host whose last label (after one trailing dot) is a number, decimal or 0x hex, as IPv4: it reads a leading zero as octal and also accepts hex (a bare 0x is 0), shorthand, a single integer and a trailing dot, then publishes that other address, and refuses a host such as example.123 or foo.1.0.0.1 that is not one. Before that check it maps compatibility characters (UTS #46): it drops variation selectors and Hangul fillers, maps the dots U+3002, U+FF0E and U+FF61, and maps digits such as １, ①, ⑩, 𝟏 and ¹ and letters such as ｘ, Ａ, ⓕ and ㏈ to ASCII. The chart maps the same characters, enough to decide whether the last label is a number; such a host must then be written as four ASCII decimal octets. A DNS name that only borrows those characters elsewhere is left alone. The lists are generated from Node; sign-in-chart-parity.test.mjs re-derives them. */ -}}
+{{- $ipv4Ignored := "[\\x{034F}\\x{115F}\\x{1160}\\x{17B4}\\x{17B5}\\x{180B}-\\x{180D}\\x{180F}\\x{3164}\\x{FE00}-\\x{FE0F}\\x{FFA0}\\x{E0100}-\\x{E01EF}]" -}}
+{{- $ipv4Dots := "[\\x{3002}\\x{FF0E}\\x{FF61}]" -}}
+{{- $ipv4Zeros := "[\\x{2070}\\x{2080}\\x{24EA}\\x{FF10}\\x{1CCF0}\\x{1D7CE}\\x{1D7D8}\\x{1D7E2}\\x{1D7EC}\\x{1D7F6}\\x{1FBF0}]" -}}
+{{- $ipv4Digits := "[\\x{00B2}\\x{00B3}\\x{00B9}\\x{2074}-\\x{2079}\\x{2081}-\\x{2089}\\x{2460}-\\x{2473}\\x{3251}-\\x{325F}\\x{32B1}-\\x{32BF}\\x{FF11}-\\x{FF19}\\x{1CCF1}-\\x{1CCF9}\\x{1D7CF}-\\x{1D7D7}\\x{1D7D9}-\\x{1D7E1}\\x{1D7E3}-\\x{1D7EB}\\x{1D7ED}-\\x{1D7F5}\\x{1D7F7}-\\x{1D7FF}\\x{1FBF1}-\\x{1FBF9}]" -}}
+{{- $ipv4X := "[\\x{02E3}\\x{2093}\\x{2169}\\x{2179}\\x{24CD}\\x{24E7}\\x{FF38}\\x{FF58}\\x{1CCED}\\x{1D417}\\x{1D431}\\x{1D44B}\\x{1D465}\\x{1D47F}\\x{1D499}\\x{1D4B3}\\x{1D4CD}\\x{1D4E7}\\x{1D501}\\x{1D51B}\\x{1D535}\\x{1D54F}\\x{1D569}\\x{1D583}\\x{1D59D}\\x{1D5B7}\\x{1D5D1}\\x{1D5EB}\\x{1D605}\\x{1D61F}\\x{1D639}\\x{1D653}\\x{1D66D}\\x{1D687}\\x{1D6A1}\\x{1F147}]" -}}
+{{- $ipv4Hex := "[\\x{00AA}\\x{1D2C}\\x{1D2E}\\x{1D30}\\x{1D31}\\x{1D43}\\x{1D47}-\\x{1D49}\\x{1D9C}\\x{1DA0}\\x{2090}\\x{2091}\\x{2102}\\x{212C}\\x{212D}\\x{212F}-\\x{2131}\\x{2145}-\\x{2147}\\x{216D}\\x{216E}\\x{217D}\\x{217E}\\x{24B6}-\\x{24BB}\\x{24D0}-\\x{24D5}\\x{3372}\\x{33C4}\\x{33C5}\\x{33C8}\\x{A7F2}\\x{A7F3}\\x{FB00}\\x{FF21}-\\x{FF26}\\x{FF41}-\\x{FF46}\\x{1CCD6}-\\x{1CCDB}\\x{1D400}-\\x{1D405}\\x{1D41A}-\\x{1D41F}\\x{1D434}-\\x{1D439}\\x{1D44E}-\\x{1D453}\\x{1D468}-\\x{1D46D}\\x{1D482}-\\x{1D487}\\x{1D49C}\\x{1D49E}\\x{1D49F}\\x{1D4B6}-\\x{1D4B9}\\x{1D4BB}\\x{1D4D0}-\\x{1D4D5}\\x{1D4EA}-\\x{1D4EF}\\x{1D504}\\x{1D505}\\x{1D507}-\\x{1D509}\\x{1D51E}-\\x{1D523}\\x{1D538}\\x{1D539}\\x{1D53B}-\\x{1D53D}\\x{1D552}-\\x{1D557}\\x{1D56C}-\\x{1D571}\\x{1D586}-\\x{1D58B}\\x{1D5A0}-\\x{1D5A5}\\x{1D5BA}-\\x{1D5BF}\\x{1D5D4}-\\x{1D5D9}\\x{1D5EE}-\\x{1D5F3}\\x{1D608}-\\x{1D60D}\\x{1D622}-\\x{1D627}\\x{1D63C}-\\x{1D641}\\x{1D656}-\\x{1D65B}\\x{1D670}-\\x{1D675}\\x{1D68A}-\\x{1D68F}\\x{1F12B}\\x{1F12D}\\x{1F130}-\\x{1F135}]" -}}
+{{- $ipv4Written := $baseUrl.hostname -}}
+{{- /* Digits and digit runs other than a lone zero become 1 and hex letter runs become a: only whether the label is a number matters here. */ -}}
+{{- $ipv4Mapped := regexReplaceAll $ipv4Ignored $ipv4Written "" -}}
+{{- range $map := list (list $ipv4Dots ".") (list $ipv4Zeros "0") (list $ipv4Digits "1") (list $ipv4X "x") (list $ipv4Hex "a") -}}
+{{- $ipv4Mapped = regexReplaceAll (index $map 0) $ipv4Mapped (index $map 1) -}}
+{{- end -}}
+{{- $ipv4Labels := splitList "." $ipv4Mapped -}}
+{{- if and (gt (len $ipv4Labels) 1) (eq (last $ipv4Labels) "") -}}{{- $ipv4Labels = initial $ipv4Labels -}}{{- end -}}
+{{- if and (not (contains ":" $ipv4Written)) (regexMatch "^(?i)(?:[0-9]+|0x[0-9a-f]*)$" (last $ipv4Labels)) -}}
+{{- if not (regexMatch "^(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $ipv4Written) -}}
+{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros, and a DNS name must not end in a number; the API's URL parser rewrites or refuses other spellings" -}}
+{{- end -}}
+{{- range $octet := splitList "." $ipv4Written -}}
+{{- if gt (atoi $octet) 255 -}}
+{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros, and a DNS name must not end in a number; the API's URL parser rewrites or refuses other spellings" -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- $github := .Values.auth.github -}}
@@ -36,23 +65,25 @@
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
 {{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
+{{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. Go's lower maps U+0130 (İ) to i, but JavaScript's toLowerCase maps it to i and U+0307, which the API then refuses, so the allowlists below map it that way first. */ -}}
+{{- $jsTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- /* Allowlists are checked whether or not their provider is enabled, as the API does, and
 an allowlist without its provider is refused: the API treats it as a startup error. */ -}}
 {{- $githubLists := default dict $github -}}
 {{- $googleLists := default dict $google -}}
 {{- if not (or (kindIs "invalid" $githubLists.allowedOrgs) (kindIs "slice" $githubLists.allowedOrgs)) -}}{{- fail "auth.github.allowedOrgs must be a list of GitHub organization logins" -}}{{- end -}}
 {{- range $org := $githubLists.allowedOrgs -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (trim (toString $org)))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $org) "") "i\u0307"))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries" -}}{{- end -}}
 {{- range $team := $githubLists.allowedTeams -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (trim (toString $team)))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $team) "") "i\u0307"))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $googleLists.allowedDomains) (kindIs "slice" $googleLists.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
 {{- range $domain := $googleLists.allowedDomains -}}
-{{- $name := lower (trim (toString $domain)) -}}
+{{- $name := lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $domain) "") "i\u0307") -}}
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
@@ -116,17 +147,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
 {{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
 {{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
-{{- /* The API trims each value with JavaScript's trim before these checks: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. The rendered env keeps the value as written. */ -}}
-{{- $trim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
-{{- $issuer := regexReplaceAll $trim (toString (default "" $oidc.issuer)) "" -}}
+{{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
 {{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
 {{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
-{{- $url := regexReplaceAll $trim (toString (default "" (index $oidc $key))) "" -}}
+{{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
 {{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
-{{- if and $oidc.displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" (trim (toString $oidc.displayName)))) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
+{{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
+{{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
+{{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $oidc.egressCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
@@ -190,7 +221,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- /* The bootstrap Job, in production, refuses plain HTTP unless the host is 127.0.0.1 or localhost. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
-{{- if not .Values.bootstrap.adminEmail -}}{{- fail "bootstrap.adminEmail must identify the first administrator account" -}}{{- end -}}
+{{- /* The bootstrap Job trims with JavaScript trim, lowercases, then requires local@domain.tld. The rendered env keeps the value as written. */ -}}
+{{- $adminEmailTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
+{{- $adminEmail := lower (regexReplaceAll $adminEmailTrim (toString .Values.bootstrap.adminEmail) "") -}}
+{{- if not (regexMatch "^[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+@[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+\\.[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" $adminEmail) -}}
+{{- fail "bootstrap.adminEmail must contain a valid administrator email" -}}
+{{- end -}}
 {{- /* The bootstrap Job checks installation.name with isName before it creates anything. */ -}}
 {{- $installationName := toString .Values.installation.name -}}
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
@@ -198,6 +234,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
+{{- end -}}
+{{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
+{{- $claimName := toString .Values.bootstrap.password.claimName -}}
+{{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
+{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
 {{- end -}}
 {{- if or (not .Values.bootstrap.serviceKey) (not .Values.bootstrap.serviceKey.fileName) -}}
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
@@ -210,6 +251,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
 {{- fail "bootstrap service key and password output file names must be distinct" -}}
 {{- end -}}
+{{- /* The bootstrap Job's bootstrapOutputPath requires an absolute file. A relative mount path joins into a relative OCC_BOOTSTRAP_PASSWORD_FILE. */ -}}
+{{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
+{{- fail "bootstrap.password.mountPath must be an absolute path" -}}
+{{- end -}}
 {{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
 {{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
@@ -219,9 +264,16 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $client.namespace) (not $client.podLabels) -}}
 {{- fail (printf "api.clients[%d] requires an exact namespace and nonempty Pod selector" $index) -}}
 {{- end -}}
+{{- /* NetworkPolicies select these peers by kubernetes.io/metadata.name, which holds a Namespace name: a DNS label of at most 63 characters. */ -}}
+{{- if or (gt (len (toString $client.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $client.namespace))) -}}
+{{- fail (printf "api.clients[%d].namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" $index) -}}
+{{- end -}}
 {{- end -}}
 {{- if or (not .Values.dns.namespace) (not .Values.dns.podLabels) -}}
 {{- fail "dns requires an exact namespace and nonempty Pod selector" -}}
+{{- end -}}
+{{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) -}}
+{{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}
 {{- if hasKey .Values.database "cidr" -}}{{- fail "database.cidr is retired; configure database.cidrs with explicit IPv4 /32 hosts" -}}{{- end -}}
 {{- if hasKey .Values.cluster "cidr" -}}{{- fail "cluster.cidr is retired; configure cluster.cidrs with explicit IPv4 /32 hosts" -}}{{- end -}}
@@ -235,7 +287,26 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) (not (kindIs "map" .Values.controlPlane.nodeSelector)) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) -}}
+{{- if not (kindIs "map" .Values.controlPlane.nodeSelector) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name; a value is empty or a label name. */ -}}
+{{- $labelName := "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" -}}
+{{- range $key, $value := .Values.controlPlane.nodeSelector }}
+{{- if or (not (kindIs "string" $value)) (gt (len $value) 63) (and (ne $value "") (not (regexMatch $labelName $value))) -}}
+{{- fail "controlPlane.nodeSelector values must be Kubernetes label values" -}}
+{{- end -}}
+{{- if contains "/" $key -}}
+{{- $parts := splitList "/" $key -}}
+{{- $prefix := index $parts 0 -}}
+{{- $name := index $parts 1 -}}
+{{- if or (ne (len $parts) 2) (gt (len $prefix) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $prefix)) (gt (len $name) 63) (not (regexMatch $labelName $name)) -}}
+{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
+{{- end -}}
+{{- else if or (gt (len $key) 63) (not (regexMatch $labelName $key)) -}}
+{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
@@ -246,6 +317,26 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if or (eq .Values.database.caKey ".") (eq .Values.database.caKey "..") (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.database.caKey)) -}}
 {{- fail "database.caKey must be a simple basename" -}}
+{{- end -}}
+{{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
+{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
+{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/etc/openclaw/repository-ca" "/var/run/secrets/kubernetes.io/serviceaccount" "/run/openclaw/repository-control") -}}
+{{- end -}}
+{{- if .Values.gatewayRouting.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-api-key" -}}
+{{- if or (not .Values.gatewayRouting.issuerRef.name) .Values.gatewayRouting.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-ca" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
+{{- end -}}
+{{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
+{{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
 {{- end -}}
 {{- if or (eq .Values.installation.secretName .Values.database.secretName) (eq .Values.installation.secretName .Values.auth.secretName) -}}
@@ -317,6 +408,16 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
+{{- /* Installation startup checks a GitHub Backend ID with isBackendId, then refuses one longer than 200 UTF-16 code units because repository bindings store it under that bound. */ -}}
+{{- $backendId := toString $credentials.backendId -}}
+{{- if or (ne $backendId (trim $backendId)) (hasPrefix "\uFEFF" $backendId) (hasSuffix "\uFEFF" $backendId) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $backendId)) -}}
+{{- fail "repositoryCredentials.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
+{{- end -}}
+{{- /* A code point above U+FFFF is one character and two UTF-16 code units. */ -}}
+{{- $utf16Units := add (len (regexFindAll "." $backendId -1)) (len (regexFindAll "[\\x{10000}-\\x{10FFFF}]" $backendId -1)) -}}
+{{- if gt $utf16Units 200 -}}
+{{- fail "repositoryCredentials.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound" -}}
+{{- end -}}
 {{- $secrets := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $_ := set $secrets "chatgpt" .Values.backend.chatgpt.secretName -}}{{- end -}}
 {{- if .Values.executionCluster.enabled -}}
@@ -352,8 +453,22 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $tlsSecretName := include "openclaw.gatewayRouting.tlsSecretName" . -}}
 {{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . -}}
 {{- if and (hasKey $routing "hostname") (not (kindIs "string" $routing.hostname)) -}}{{- fail "gatewayRouting.hostname must be a string when supplied" -}}{{- end -}}
+{{- /* The same custom hostname enters the Gateway listener and Certificate SANs. Compute validates it while loading the Installation; empty keeps automatic Service DNS derivation. */ -}}
+{{- if and $routing.hostname (or (gt (len $routing.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $routing.hostname))) -}}
+{{- fail "gatewayRouting.hostname must be a DNS hostname without a port or path" -}}
+{{- end -}}
+
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
+{{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
+{{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
+{{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
+{{- fail "gatewayRouting.gatewayName must be a DNS-safe Kubernetes resource name" -}}
+{{- end -}}
 {{- if not $routing.envoyNamespace -}}{{- fail "gatewayRouting.envoyNamespace must identify the existing Envoy Gateway controller namespace" -}}{{- end -}}
+{{- /* The Compute driver (isKubernetesNamespaceName) refuses anything that is not a DNS label of at most 63 characters, as Kubernetes does for a Namespace name. */ -}}
+{{- if or (gt (len (toString $routing.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $routing.envoyNamespace))) -}}
+{{- fail "gatewayRouting.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
+{{- end -}}
 {{- if not $routing.issuerRef -}}{{- fail "gatewayRouting.issuerRef must be configured" -}}{{- end -}}
 {{- if and (hasKey $routing.issuerRef "name") (not (kindIs "string" $routing.issuerRef.name)) -}}{{- fail "gatewayRouting.issuerRef.name must be a string when supplied" -}}{{- end -}}
 {{- if $routing.issuerRef.name -}}
@@ -381,18 +496,24 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and .Values.backend.chatgpt.enabled (eq $routing.caSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.caSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
 {{- end -}}
-{{- if or (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
-{{- fail "gatewayRouting.tenantGatewayPort must be a valid TCP port" -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.tenantGatewayPort))) (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
+{{- fail "gatewayRouting.tenantGatewayPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- if or (lt (int $routing.envoyHttpsTargetPort) 1) (gt (int $routing.envoyHttpsTargetPort) 65535) -}}
-{{- fail "gatewayRouting.envoyHttpsTargetPort must be a valid TCP port" -}}
+{{- /* Compute's PLUGIN_RUNTIME_STATUS_PORT: the private status listener on every Gateway Pod. */ -}}
+{{- $runtimeStatusPort := 18791 -}}
+{{- if eq (int $routing.tenantGatewayPort) $runtimeStatusPort -}}{{- fail (printf "gatewayRouting.tenantGatewayPort cannot use the reserved runtime status port %d" $runtimeStatusPort) -}}{{- end -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.envoyHttpsTargetPort))) (lt (int $routing.envoyHttpsTargetPort) 1) (gt (int $routing.envoyHttpsTargetPort) 65535) -}}
+{{- fail "gatewayRouting.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- if not $routing.envoyGatewayPodLabels -}}{{- fail "gatewayRouting.envoyGatewayPodLabels must select the Envoy Gateway control-plane Pods for xDS egress" -}}{{- end -}}
 {{- if $routing.sandbox.enabled -}}
-{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.[a-z0-9-]+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
+{{- /* Dedicated Agent routes use agent-<32 hex>.<domain>, which must fit the 253-character Gateway API hostname limit. */ -}}
+{{- if gt (len $routing.sandbox.domain) 214 -}}{{- fail "gatewayRouting.sandbox.domain must not exceed 214 characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames" -}}{{- end -}}
 {{- if not $routing.sandbox.tlsSecretName -}}{{- fail "gatewayRouting.sandbox.tlsSecretName must reference a wildcard certificate Secret" -}}{{- end -}}
-{{- if or (lt (int $routing.sandbox.listenerPort) 1024) (gt (int $routing.sandbox.listenerPort) 65535) (eq (int $routing.sandbox.listenerPort) (int $routing.envoyHttpsTargetPort)) -}}{{- fail "gatewayRouting.sandbox.listenerPort must be an unprivileged port distinct from private Envoy HTTPS" -}}{{- end -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.sandbox.listenerPort))) (lt (int $routing.sandbox.listenerPort) 1024) (gt (int $routing.sandbox.listenerPort) 65535) (eq (int $routing.sandbox.listenerPort) (int $routing.envoyHttpsTargetPort)) -}}{{- fail "gatewayRouting.sandbox.listenerPort must be an integer unprivileged port distinct from private Envoy HTTPS" -}}{{- end -}}
 {{- if ge (int $routing.tenantGatewayPort) 65535 -}}{{- fail "gatewayRouting.tenantGatewayPort must leave room for the adjacent sandbox port" -}}{{- end -}}
+{{- if eq (add1 (int $routing.tenantGatewayPort)) $runtimeStatusPort -}}{{- fail (printf "gatewayRouting.tenantGatewayPort cannot be %d with the sandbox enabled: the adjacent sandbox port is the reserved runtime status port %d" (sub $runtimeStatusPort 1) $runtimeStatusPort) -}}{{- end -}}
 {{- if not $routing.sandbox.ingressPeers -}}{{- fail "gatewayRouting.sandbox.ingressPeers must explicitly select public ingress sources" -}}{{- end -}}
 {{- $cookieDomain := trimPrefix "." (lower .Values.agentNativeAdmin.sharedCookieDomain) -}}
 {{- if and $cookieDomain (or (eq $routing.sandbox.domain $cookieDomain) (hasSuffix (printf ".%s" $cookieDomain) $routing.sandbox.domain) (hasSuffix (printf ".%s" $routing.sandbox.domain) $cookieDomain)) -}}{{- fail "gatewayRouting.sandbox.domain must be outside the OCE shared session cookie domain" -}}{{- end -}}
@@ -501,6 +622,20 @@ capabilities:
 
 {{- define "openclaw.repositoryCredentials.serviceName" -}}
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
+{{- end -}}
+
+{{/* Decimal, matching JavaScript Number. Sprig int is octal, so it must not parse these.
+     A values file delivers a float64, and toString prints 1000000 and above as an exponent. */}}
+{{- define "openclaw.positiveSafeInteger" -}}
+{{- $raw := toString .value -}}
+{{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}
+{{- $raw = printf "%.0f" .value -}}
+{{- end -}}
+{{- $parsed := atoi $raw -}}
+{{- if or (not (regexMatch "^[0-9]+$" $raw)) (lt $parsed 1) (gt $parsed 9007199254740991) -}}
+{{- fail (printf "%s must be a positive safe integer" .name) -}}
+{{- end -}}
+{{- $raw -}}
 {{- end -}}
 
 {{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.

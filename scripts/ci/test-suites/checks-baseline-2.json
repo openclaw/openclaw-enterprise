@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
     "tests/integration/repository-credentials-admission.test.mjs",
@@ -43,6 +44,7 @@
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.mjs",
+    "tests/integration/ci-download-pinned.test.mjs",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/repository-runtime-materialization.test.mjs",
@@ -97,6 +99,9 @@
   },
   "files": [
     {
+      "path": "tests/integration/tls-peer-certificate.test.mjs"
+    },
+    {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
     },
     {
@@ -150,7 +155,16 @@
       "path": "tests/integration/ci-prepare.test.mjs"
     },
     {
+      "path": "tests/integration/ci-prepare-k3d.test.mjs"
+    },
+    {
       "path": "tests/integration/ci-image-pull.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-keycloak.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-download-pinned.test.mjs"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"

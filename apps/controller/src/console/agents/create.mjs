@@ -1694,7 +1694,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
-      ...(agent.credentialSources ? { credentialSources: agent.credentialSources } : {}),
+      ...(agent.credentialSources === undefined
+        ? {}
+        : { credentialSources: agent.credentialSources }),
     };
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
     if (

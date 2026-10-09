@@ -414,17 +414,17 @@ export class DockerComputeDriver implements ComputeDriver {
     const name = this.networkName(namespace.id);
     try {
       const existing = await this.network(name);
-      if (existing === undefined) {
-        await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
-        return { ...result, namespaceDeleted: true };
+      if (existing !== undefined) {
+        this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       }
-      this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       await this.lifecycle.beforeNamespaceDelete(namespace);
       for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
         await this.removeContainer(containerId);
       }
       await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
-      await this.removeNetwork(name);
+      if (existing !== undefined) {
+        await this.removeNetwork(name);
+      }
       return { ...result, namespaceDeleted: true };
     } catch (error) {
       return { ...result, failure: failure(error) };
@@ -1253,7 +1253,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   private async removeNetwork(name: string): Promise<void> {
-    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204]);
+    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204, 404]);
   }
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {

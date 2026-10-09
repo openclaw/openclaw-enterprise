@@ -26,9 +26,11 @@ const publicEnvNames = new Set([
   "TMPDIR",
   "USER",
 ]);
+const privateKeyShape =
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu;
 const secretShapes = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu,
-  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gu,
+  privateKeyShape,
+  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+\S{8,}/gu,
   /\b(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*)/gu,
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/gu,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/gu,
@@ -61,6 +63,15 @@ export function failureSecrets(environments) {
       if (value.length >= minimumRedactedEnvLength) {
         values.set(value, name);
       }
+      // Output is redacted line by line, so each line of a multi-line value
+      // (a PEM key) is a value of its own.
+      if (value.includes("\n")) {
+        for (const line of value.split("\n")) {
+          if (line.trim().length >= minimumRedactedEnvLength) {
+            values.set(line.trim(), name);
+          }
+        }
+      }
       // A database or proxy URL can surface its password on its own.
       try {
         const password = decodeURIComponent(new URL(value).password);
@@ -75,7 +86,9 @@ export function failureSecrets(environments) {
   return [...values].sort(([a], [b]) => b.length - a.length);
 }
 
-function redactText(text, limit, secrets, root) {
+// `cut` says the reporter cut the text at failureInputLimit (a caller may have
+// shortened it since).
+function redactText(text, limit, secrets, root, cut = text?.length >= failureInputLimit) {
   if (typeof text !== "string" || text.length === 0) {
     return undefined;
   }
@@ -93,7 +106,7 @@ function redactText(text, limit, secrets, root) {
     .replace(secretAssignment, "$1[redacted]")
     .replace(/:\/\/[^/\s@]+@/gu, "://[redacted]@")
     .replace(/[^\P{Cc}\n\t]/gu, "");
-  if (text.length >= failureInputLimit) {
+  if (cut) {
     // The reporter's cut can split a value so no rule matches it; drop that tail.
     const longest = secrets[0]?.[0].length ?? 0;
     result = result.slice(0, Math.max(0, result.length - Math.max(256, longest)));
@@ -107,13 +120,68 @@ export function redactLogLine(line, secrets, limit) {
 }
 
 // Redacts the reporter's raw `message` and `frame` in one pass over the raw text.
+// The whole `stack` stays out of results; failureDetail keeps it.
 export function redactFailure(error, secrets, root) {
   if (!error || typeof error !== "object") {
     return error;
   }
+  const { stack: _stack, ...rest } = error;
   return {
-    ...error,
+    ...rest,
     message: redactText(error.message, failureMessageLimit, secrets, root),
     frame: redactText(error.frame, failureFrameLimit, secrets, root),
   };
+}
+
+// Value-level redaction cannot see every credential, so lines that name one are
+// dropped whole, as for followed container logs (k3d-diagnostics.mjs).
+const credentialLine = /authorization|bearer\s|private.?key|-----BEGIN|https?:\/\/[^\s/]+@/i;
+// Case-sensitive, so "Unexpected token" lines survive.
+const credentialToken = /\b(?:Basic|Token)\s+\S{8,}/;
+const namesCredential = (line) => credentialLine.test(line) || credentialToken.test(line);
+// Control characters can split a keyword or a private key header.
+const stripControl = (text) => stripVTControlCharacters(text).replace(/[^\P{Cc}\n\t]/gu, "");
+
+function dropCredentialLines(text) {
+  return text
+    ?.split("\n")
+    .map((line) => (namesCredential(line) ? "[redacted credential-bearing line]" : line))
+    .join("\n");
+}
+
+// The diagnostics report's copy of a failure: the whole message and stack the
+// reporter forwarded (up to failureInputLimit each) instead of the job log's
+// 600 characters, with the same redaction plus credential-line drops. Lines are
+// dropped on the raw text first, since a token shape can consume the keyword and
+// keep the rest of its line, and again after redaction. A private key spans
+// lines, so it is replaced whole before that.
+function redactDetailText(text, secrets, root) {
+  if (typeof text !== "string") {
+    return undefined;
+  }
+  const raw = dropCredentialLines(
+    stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
+  );
+  return dropCredentialLines(
+    redactText(raw, failureInputLimit, secrets, root, text.length >= failureInputLimit),
+  );
+}
+
+export function redactFailureDetail(error, secrets, root) {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const message = redactDetailText(error.message, secrets, root);
+  const stack = redactDetailText(error.stack, secrets, root);
+  return message === undefined && stack === undefined ? undefined : { message, stack };
+}
+
+// One line of a failed file's output for the diagnostics report.
+export function redactOutputLine(line, secrets, root, limit) {
+  // Test the raw line first, as for container logs: redaction can consume the keyword.
+  if (namesCredential(stripControl(line))) {
+    return "[redacted credential-bearing line]";
+  }
+  const redacted = redactText(line, limit, secrets, root) ?? "";
+  return namesCredential(redacted) ? "[redacted credential-bearing line]" : redacted;
 }
