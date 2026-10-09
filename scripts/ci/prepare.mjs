@@ -2327,28 +2327,19 @@ async function prepareLane({ lane, statePath }) {
         ),
       );
       const buildFixture = once(() => buildFixtureImage(resolvedStatePath, state));
+      const importFixture = once(async () =>
+        importFixtureImage(resolvedStatePath, state, await createCluster(), await buildFixture()),
+      );
       // Keep imports into this cluster serial: images that share layers may
       // contend for the same containerd content. The chain starts as soon as
       // the cluster is ready and takes the controller image last, so the
-      // pulled and fixture images import while the controller still builds
-      // (about 20 s of a 100 s prepare on hosted runners). Each import still
-      // verifies the immutable reference through CRI on every node.
+      // pulled and fixture images import while the controller still builds.
+      // Each import still verifies the immutable reference through CRI on
+      // every node. The fixture pin is no import; it runs beside the chain.
       const importWorkloadImages = async () => {
         const cluster = await createCluster();
         const imports = [
-          [
-            "OCC_TEST_KUBERNETES_IMAGE",
-            async () => {
-              const fixture = await importFixtureImage(
-                resolvedStatePath,
-                state,
-                cluster,
-                await buildFixture(),
-              );
-              await pinFixtureImageInK3d(cluster, fixture.image);
-              return fixture.image;
-            },
-          ],
+          ["OCC_TEST_KUBERNETES_IMAGE", async () => (await importFixture()).image],
           ...Object.entries(externalImages).map(([variable, image]) => [
             variable,
             async () => {
@@ -2386,6 +2377,15 @@ async function prepareLane({ lane, statePath }) {
         () =>
           prepareTogether([
             () => timedPreparation(name, "workload-image-imports", importWorkloadImages),
+            // Keep the fixture image active on every node so kubelet image
+            // garbage collection cannot remove it.
+            async () => {
+              const cluster = await createCluster();
+              const fixture = await importFixture();
+              await timedPreparation(name, "fixture-image-pin", () =>
+                pinFixtureImageInK3d(cluster, fixture.image),
+              );
+            },
             createCluster,
             buildController,
             pullExternal,
