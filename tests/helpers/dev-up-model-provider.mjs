@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { availablePort } from "./available-port.mjs";
@@ -18,34 +19,62 @@ const registryImage =
 const nodeBaseImage =
   "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584";
 
-function execute(command, args, { env, input, timeout = 120_000 } = {}) {
+function execute(
+  command,
+  args,
+  { env, input, signal, timeout = 120_000, killSignal = "SIGKILL" } = {},
+) {
+  signal?.throwIfAborted();
   return new Promise((resolveRun, reject) => {
+    let result;
     const child = execFile(
       command,
       args,
-      { cwd: repository, env, timeout, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 },
+      { cwd: repository, env, signal, timeout, killSignal, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
-        if (error) {
-          error.stderr = stderr;
-          reject(error);
-        } else {
-          resolveRun({ stdout, stderr });
-        }
+        result = { error, stdout, stderr };
       },
     );
+    // execFile reports an abort before the process closes. Join the process,
+    // including the launcher's graceful cancellation, before releasing its owner.
+    const deadline = setTimeout(() => child.kill("SIGKILL"), timeout + 10_000);
+    deadline.unref();
+    let force;
+    const abort = () => {
+      force = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      force.unref();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    child.once("close", (_code, terminationSignal) => {
+      clearTimeout(force);
+      clearTimeout(deadline);
+      signal?.removeEventListener("abort", abort);
+      const { error, stdout, stderr } = result;
+      if (error) {
+        Object.assign(error, {
+          stdout,
+          stderr,
+          forcedTermination: killSignal === "SIGTERM" && terminationSignal === "SIGKILL",
+        });
+        reject(error);
+      } else {
+        resolveRun({ stdout, stderr });
+      }
+    });
     child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }
 
-async function waitFor(description, operation, timeout) {
+async function waitFor(description, operation, timeout, signal) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const result = await operation();
     if (result.done) {
       return result.value;
     }
-    await delay(1_000);
+    await delay(1_000, undefined, { signal });
   }
   throw new Error(`Timed out waiting for ${description}`);
 }
@@ -53,7 +82,35 @@ async function waitFor(description, operation, timeout) {
 // This owner exists before any creation request. The caller registers cleanup
 // before prepare(), and retains this directory if either cluster or fixture
 // teardown fails. The journal also covers creation with a lost engine response.
-export function createDevUpModelProvider({ directory, cluster, environment, run = execute }) {
+export function createDevUpModelProvider({
+  directory,
+  cluster,
+  environment,
+  signal,
+  run = execute,
+}) {
+  const closing = new AbortController();
+  const lifetime = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
+  const pending = new Set();
+  let preparation;
+  let cleaning;
+  const admitted = async (operation) => {
+    lifetime.throwIfAborted();
+    const work = Promise.resolve().then(() => {
+      lifetime.throwIfAborted();
+      return operation();
+    });
+    pending.add(work);
+    try {
+      return await work;
+    } finally {
+      pending.delete(work);
+    }
+  };
+  const stop = async () => {
+    closing.abort();
+    await Promise.allSettled([...pending]);
+  };
   const owner = randomUUID();
   const prefix = `oce-dev-provider-${owner.slice(0, 8)}`;
   const resources = [];
@@ -69,21 +126,31 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
   const subnetBase = `11.${octets[0]}.${octets[1]}`;
   const modelAddress = `${subnetBase}.2`;
   const nodeAddress = `${subnetBase}.3`;
-  const command = (program, args, options = {}) => run(program, args, { env, ...options });
+  const command = (program, args, options = {}) => {
+    lifetime.throwIfAborted();
+    return run(program, args, { env, ...options, signal: lifetime });
+  };
   const docker = (args, options) => command("docker", args, options);
-  const record = async () => {
-    const temporary = `${journal}.tmp`;
-    await writeFile(
-      temporary,
-      `${JSON.stringify({ owner, cluster, dockerHost: env.DOCKER_HOST, resources }, null, 2)}\n`,
-      { mode: 0o600 },
-    );
-    await rename(temporary, journal);
+  // Cleanup has its own bounded commands; the cancelled producer signal must
+  // never suppress recovery. Journal writes also serialize the two image builds.
+  const cleanupDocker = (args) => run("docker", args, { env });
+  let recording = Promise.resolve();
+  const record = (remaining = resources) => {
+    const content = `${JSON.stringify({ owner, cluster, dockerHost: env.DOCKER_HOST, resources: remaining }, null, 2)}\n`;
+    const next = recording
+      .catch(() => {})
+      .then(async () => {
+        const temporary = `${journal}.tmp`;
+        await writeFile(temporary, content, { mode: 0o600 });
+        await rename(temporary, journal);
+      });
+    recording = next;
+    return next;
   };
 
-  async function inspect(kind, name) {
+  async function inspect(kind, name, invoke = docker) {
     try {
-      return JSON.parse((await docker([kind, "inspect", name])).stdout)[0];
+      return JSON.parse((await invoke([kind, "inspect", name])).stdout)[0];
     } catch (error) {
       // A transport/permission failure is not evidence of absence.
       const detail = error.stderr?.trim() ?? "";
@@ -97,8 +164,26 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
     }
   }
 
+  async function create(name, args, options) {
+    lifetime.throwIfAborted();
+    const resource = resources.find((entry) => entry.name === name);
+    resource.uncertain = true;
+    try {
+      await record();
+      lifetime.throwIfAborted();
+    } catch (error) {
+      // No command was dispatched, so absence can safely retire this reservation.
+      delete resource.uncertain;
+      throw error;
+    }
+    await docker(args, options);
+    delete resource.uncertain;
+    await record();
+  }
+
   async function reserve(kind, name) {
     assert.equal(await inspect(kind, name), undefined, `Fixture resource already exists: ${name}`);
+    lifetime.throwIfAborted();
     resources.push({ kind, name });
     await record();
   }
@@ -117,6 +202,7 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
   }
 
   async function prepare() {
+    Object.assign(env, environment);
     assert.equal(
       env.OCC_DEVELOPMENT_CONTAINER_ENGINE,
       "docker",
@@ -151,7 +237,7 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
     const registry = `127.0.0.1:${registryPort}`;
     const registryName = `${prefix}-registry`;
     await reserve("container", registryName);
-    await docker([
+    await create(registryName, [
       "run",
       "--detach",
       "--name",
@@ -180,7 +266,8 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
           // those layers when this lane has no hosted cache credentials.
           ["--builder", "default"];
     const builds = await Promise.allSettled([
-      docker(
+      create(
+        controllerTag,
         [
           "buildx",
           "build",
@@ -201,7 +288,8 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
         ],
         { timeout: 600_000 },
       ),
-      docker(
+      create(
+        baseTag,
         [
           "buildx",
           "build",
@@ -229,7 +317,7 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
     }
     const context = join(directory, "runtime-trust");
     await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
-    await docker([
+    await create(runtimeTag, [
       "buildx",
       "build",
       "--builder",
@@ -259,7 +347,7 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
     const controllerImage = await push(controllerTag);
     const runtimeImage = await push(runtimeTag);
     await reserve("network", network);
-    await docker([
+    await create(network, [
       "network",
       "create",
       "--internal",
@@ -270,7 +358,7 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
       network,
     ]);
     await reserve("container", provider);
-    await docker([
+    await create(provider, [
       "run",
       "--detach",
       "--name",
@@ -298,6 +386,7 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
       "provider listener",
       async () => ({ done: (await events()).some(({ event }) => event === "listening") }),
       60_000,
+      lifetime,
     );
     return {
       DOCKER_HOST: env.DOCKER_HOST,
@@ -327,7 +416,8 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
           ],
           options,
         ),
-      waitFor,
+      waitFor: (description, operation, timeout) =>
+        waitFor(description, operation, timeout, lifetime),
       modelAddress,
       platformNamespace: state.platformNamespace,
       serverFile: `${prefix}.server`,
@@ -373,13 +463,15 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
     };
   }
 
-  async function cleanup() {
+  async function reconcile() {
+    await stop();
     const failures = [];
     for (const resource of [...resources].reverse()) {
       try {
-        const value = await inspect(resource.kind, resource.name);
+        const value = await inspect(resource.kind, resource.name, cleanupDocker);
         if (value) {
           owned(resource, value);
+          delete resource.uncertain;
           if (resource.kind === "network") {
             for (const [id, endpoint] of Object.entries(value.Containers ?? {})) {
               assert.equal(
@@ -387,23 +479,25 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
                 node,
                 "Refusing to disconnect an unrelated network member",
               );
-              const server = await inspect("container", id);
+              const server = await inspect("container", id, cleanupDocker);
               assert.equal(server?.Config?.Labels?.["k3d.cluster"], cluster);
-              await docker(["network", "disconnect", value.Id, id]);
+              await cleanupDocker(["network", "disconnect", value.Id, id]);
             }
           }
           // Remove owned containers with anonymous storage, and image tags
           // without forcing deletion or pruning unowned parent images.
-          await docker([
+          await cleanupDocker([
             resource.kind,
             "rm",
             ...(resource.kind === "container" ? ["--force", "--volumes"] : []),
             ...(resource.kind === "image" ? ["--no-prune"] : []),
             resource.kind === "image" ? resource.name : value.Id,
           ]);
+        } else if (resource.uncertain) {
+          throw new Error(`Creation outcome remains uncertain: ${resource.name}`);
         }
+        await record(resources.filter((entry) => entry !== resource));
         resources.splice(resources.indexOf(resource), 1);
-        await record();
       } catch (error) {
         failures.push(error);
       }
@@ -416,5 +510,81 @@ export function createDevUpModelProvider({ directory, cluster, environment, run 
     }
   }
 
-  return { prepare, route, assertAnswered, cleanup };
+  return {
+    prepare: async () => {
+      lifetime.throwIfAborted();
+      return (preparation ??= admitted(prepare));
+    },
+    route: (stateDirectory) => admitted(() => route(stateDirectory)),
+    assertAnswered: () => admitted(assertAnswered),
+    stop,
+    cleanup: () =>
+      (cleaning ??= reconcile().finally(() => {
+        cleaning = undefined;
+      })),
+  };
+}
+
+// Own the complete real launcher case, because node:test can run after hooks
+// on timeout while the async test body is still producing effects.
+export async function runDevUpModelProviderCase(
+  t,
+  { root, cluster, environment, run = execute },
+  body,
+) {
+  const closing = new AbortController();
+  const signal = AbortSignal.any([t.signal, closing.signal]);
+  const stateDirectory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  const provider = createDevUpModelProvider({
+    directory: join(root, "provider"),
+    cluster,
+    environment,
+    signal,
+    run,
+  });
+  let forcedTermination = false;
+  const command = async (program, args, options = {}) => {
+    signal.throwIfAborted();
+    try {
+      return await run(program, args, {
+        env: environment,
+        ...options,
+        signal,
+        killSignal: "SIGTERM",
+      });
+    } catch (error) {
+      forcedTermination ||= error.forcedTermination === true;
+      throw error;
+    }
+  };
+  const work = Promise.resolve().then(() => {
+    signal.throwIfAborted();
+    return body({ provider, execute: command, signal });
+  });
+  t.after(async () => {
+    closing.abort();
+    await Promise.allSettled([work]);
+    await provider.stop();
+    if (forcedTermination) {
+      throw new Error(`Command required forced termination; recovery state preserved at ${root}.`);
+    }
+    if (existsSync(stateDirectory)) {
+      try {
+        await run(join(repository, "scripts", "dev-down"), [], {
+          env: environment,
+          timeout: 300_000,
+        });
+      } catch (error) {
+        throw new Error(
+          `Development cleanup failed; recovery state preserved at ${stateDirectory}.`,
+          {
+            cause: error,
+          },
+        );
+      }
+    }
+    await provider.cleanup();
+    await rm(root, { recursive: true, force: true });
+  });
+  return work;
 }

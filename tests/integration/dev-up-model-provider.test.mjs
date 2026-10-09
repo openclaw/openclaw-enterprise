@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -15,9 +17,22 @@ const ownerLabel = "dev.openclaw.model-provider-owner";
 
 // A command-boundary engine double: checks fixture orchestration and recovery,
 // never substitutes for Docker storage, hosted image, Kubernetes, or native activation proof.
-async function scenario(t, { failAfterCreate, failRemove, existingRegistry = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-provider-contract-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+async function scenario(
+  t,
+  {
+    failAfterCreate,
+    failAfterRemove,
+    failRemove,
+    existingRegistry = false,
+    signal,
+    beforeCreate,
+    beforeBuild,
+  } = {},
+) {
+  const root = await mkdtemp(join(tmpdir(), "oce-provider-contract-"));
+  const directory = join(root, "provider");
+  await mkdir(directory);
+  t.after(() => rm(root, { recursive: true, force: true }));
   const objects = new Map();
   const calls = [];
   const environment = {
@@ -70,11 +85,13 @@ async function scenario(t, { failAfterCreate, failRemove, existingRegistry = fal
       // acknowledgement is lost after the engine has materialized the object.
       const journal = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
       assert.ok(journal.resources.some((resource) => resource.name === name));
-      objects.set(name, {
+      const object = {
         Id: `id-${name}`,
         Config: { Labels: { [key]: value } },
         Labels: { [key]: value },
-      });
+      };
+      await beforeCreate?.({ name, object, options });
+      objects.set(name, object);
       if (failAfterCreate && !failedCreate) {
         failedCreate = true;
         throw new Error("creation acknowledgement lost");
@@ -83,6 +100,7 @@ async function scenario(t, { failAfterCreate, failRemove, existingRegistry = fal
     }
     if (args[0] === "buildx") {
       const name = flag("--tag");
+      await beforeBuild?.({ name, options });
       const labels = {};
       for (let index = 0; index < args.length; index += 1) {
         if (args[index] === "--label") {
@@ -129,6 +147,10 @@ async function scenario(t, { failAfterCreate, failRemove, existingRegistry = fal
         assert.equal(args.at(-1), object.Id, "remove the inspected container ID");
       }
       objects.delete(name);
+      if (failAfterRemove && !failedRemove) {
+        failedRemove = true;
+        throw new Error("deletion acknowledgement lost");
+      }
       return output("");
     }
     throw new Error(`Unexpected fixture operation: ${command} ${args.join(" ")}`);
@@ -137,10 +159,13 @@ async function scenario(t, { failAfterCreate, failRemove, existingRegistry = fal
     directory,
     cluster: "owned-cluster",
     environment,
+    signal,
     run,
   });
   return {
     fixture,
+    root,
+    run,
     directory,
     calls,
     objects,
@@ -209,6 +234,7 @@ test("provider prepares a scoped immutable image pair and requires a completed t
 test("provider reconciles a creation whose acknowledgement was lost", async (t) => {
   const { fixture, directory, objects } = await scenario(t, {
     failAfterCreate: true,
+    failAfterRemove: true,
   });
   await assert.rejects(fixture.prepare(), /acknowledgement lost/);
   assert.equal(objects.size, 1);
@@ -216,8 +242,9 @@ test("provider reconciles a creation whose acknowledgement was lost", async (t) 
     JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources.length,
     1,
   );
-  await fixture.cleanup();
+  await assert.rejects(fixture.cleanup(), /recovery journal retained/);
   assert.equal(objects.size, 0);
+  await fixture.cleanup();
   assert.deepEqual(
     JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
     [],
@@ -362,4 +389,243 @@ test("provider retains ownership obligations when the engine cannot be inspected
   faults.inspect = false;
   await fixture.cleanup();
   assert.equal(objects.size, 0);
+});
+
+test("cleanup drains admitted image builds before reconciling their reservations", async (t) => {
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const signals = [];
+  const { fixture, objects, directory, calls } = await scenario(t, {
+    beforeBuild: async ({ options }) => {
+      signals.push(options.signal);
+      if (signals.length === 2) {
+        started.resolve();
+      }
+      // A dispatched engine effect can finish despite client cancellation.
+      await release.promise;
+    },
+    failRemove: "-registry",
+  });
+  const preparing = fixture.prepare().catch((error) => error);
+  await started.promise;
+  const cleaning = fixture.cleanup().catch((error) => error);
+  const early = await Promise.race([cleaning.then(() => true), delay(40).then(() => false)]);
+  const reserved = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+  release.resolve();
+  await preparing;
+  const cleanupError = await cleaning;
+  t.diagnostic(
+    JSON.stringify({
+      cleanupSettledWhileBuildsPending: early,
+      objectsAfterSettlement: objects.size,
+    }),
+  );
+  assert.equal(early, false, "cleanup must join both dispatched builds");
+  assert.equal(reserved.resources.length, 4, "pending build obligations must remain durable");
+  assert.ok(
+    signals.every((signal) => signal?.aborted),
+    "commands receive cancellation",
+  );
+  assert.match(cleanupError.message, /recovery journal retained/);
+  assert.equal(objects.size, 1, "only the failed registry removal remains");
+  const remaining = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+  assert.equal(remaining.resources.length, 1);
+  const creates = calls.filter(({ args }) => args[0] === "run" || args[0] === "buildx").length;
+  await fixture.cleanup();
+  assert.equal(objects.size, 0);
+  await assert.rejects(fixture.prepare(), { name: "AbortError" });
+  await assert.rejects(fixture.route(directory), { name: "AbortError" });
+  assert.equal(
+    calls.filter(({ args }) => args[0] === "run" || args[0] === "buildx").length,
+    creates,
+  );
+});
+
+test("cancelled creation remains journaled until its late outcome can be reconciled", async (t) => {
+  const controller = new AbortController();
+  let late;
+  const { fixture, objects, directory, calls } = await scenario(t, {
+    signal: controller.signal,
+    beforeCreate: async (creation) => {
+      late = creation;
+      controller.abort();
+      throw new Error("creation response lost during cancellation");
+    },
+  });
+  await assert.rejects(fixture.prepare(), /response lost/);
+  await assert.rejects(fixture.cleanup(), /recovery journal retained/);
+  const journal = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+  assert.deepEqual(journal.resources, [{ kind: "container", name: late.name, uncertain: true }]);
+  const count = calls.length;
+  await assert.rejects(fixture.route(directory), { name: "AbortError" });
+  await assert.rejects(fixture.prepare(), { name: "AbortError" });
+  assert.equal(calls.length, count, "cancellation closes admission before any command");
+  // The adapter now exposes the delayed result of that same create, without replay.
+  objects.set(late.name, late.object);
+  objects.set("unrelated", { Id: "unrelated", Config: { Labels: {} } });
+  await fixture.cleanup();
+  assert.deepEqual([...objects.keys()], ["unrelated"]);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
+    [],
+  );
+  assert.equal(calls.filter(({ args }) => args[0] === "run").length, 1);
+});
+
+test("cleanup before prepare permanently closes provider admission", async (t) => {
+  const { fixture, directory, calls } = await scenario(t);
+  await fixture.cleanup();
+  await assert.rejects(fixture.prepare(), { name: "AbortError" });
+  await assert.rejects(fixture.route(directory), { name: "AbortError" });
+  assert.equal(calls.length, 0);
+});
+
+test("Node timeout teardown joins the actual launcher case owner and rejects later work", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-provider-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const trace = join(directory, "trace.jsonl");
+  const root = join(directory, "case");
+  const child = join(directory, "timeout.test.mjs");
+  const helper = new URL("../helpers/dev-up-model-provider.mjs", import.meta.url).href;
+  // Run a genuinely timed-out node:test in a subprocess so its expected
+  // cancellation does not cancel this suite. The actual owner and command
+  // executor run here; no Docker/Kubernetes executable is invoked.
+  await writeFile(
+    child,
+    `
+import assert from "node:assert/strict";
+import test from "node:test";
+import { appendFileSync, mkdirSync, existsSync } from "node:fs";
+import { runDevUpModelProviderCase } from ${JSON.stringify(helper)};
+const trace = ${JSON.stringify(trace)};
+const root = ${JSON.stringify(root)};
+const mark = (event) => appendFileSync(trace, JSON.stringify(event) + "\\n");
+mkdirSync(root);
+test("deliberate cancellation", { timeout: 500 }, async (t) => {
+  const scope = { signal: t.signal, after: (cleanup) => t.after(async () => {
+    mark("teardown-start");
+    await cleanup();
+    mark("teardown-end");
+  }) };
+  await runDevUpModelProviderCase(scope, {
+    root, cluster: "owned", environment: { OCC_DEVELOPMENT_STATE_DIRECTORY: root + "/state" },
+  }, async ({ execute, provider }) => {
+    try {
+      await execute(process.execPath, ["-e", \`
+        const { appendFileSync } = require("node:fs");
+        const mark = (event) => appendFileSync(\${JSON.stringify(trace)}, JSON.stringify(event) + "\\\\n");
+        process.on("SIGTERM", () => setTimeout(() => { mark("process-settled"); process.exit(0); }, 100));
+        mark("command-started");
+        setInterval(() => {}, 1000);
+      \`]);
+      assert.fail("the in-flight command must reject cancellation");
+    } catch (error) {
+      assert.equal(error.code, "ABORT_ERR");
+    }
+    assert.equal(existsSync(root), true, "recovery files survive until the body settles");
+    await assert.rejects(async () => execute(process.execPath, ["-e", "process.exit(73)"]), { name: "AbortError" });
+    await assert.rejects(provider.route(root), { name: "AbortError" });
+    mark("body-settled");
+  });
+});
+`,
+  );
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  await assert.rejects(
+    execute(process.execPath, ["--test", child], { env, timeout: 10_000 }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stdout, /cancelled 1/);
+      return true;
+    },
+  );
+  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n").map(JSON.parse), [
+    "command-started",
+    "teardown-start",
+    "process-settled",
+    "body-settled",
+    "teardown-end",
+  ]);
+  assert.equal(existsSync(root), false);
+});
+
+test("cleanup retries journal persistence without replaying completed removals", async (t) => {
+  const { fixture, directory, objects, calls } = await scenario(t);
+  await fixture.prepare();
+  const journal = await readFile(join(directory, "resources.json"), "utf8");
+  const temporary = join(directory, "resources.json.tmp");
+  await mkdir(temporary);
+  await assert.rejects(fixture.cleanup(), /recovery journal retained/);
+  assert.equal(objects.size, 0);
+  assert.equal(await readFile(join(directory, "resources.json"), "utf8"), journal);
+  const removals = calls.filter(({ args }) => args[1] === "rm").length;
+  await rm(temporary, { recursive: true });
+  await fixture.cleanup();
+  assert.equal(calls.filter(({ args }) => args[1] === "rm").length, removals);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
+    [],
+  );
+});
+
+test("launcher case keeps recovery files after provider cleanup failure and permits cleanup retry", async (t) => {
+  const { runDevUpModelProviderCase } = await import("../helpers/dev-up-model-provider.mjs");
+  const { root, run, directory, environment, objects } = await scenario(t, {
+    failRemove: "-registry",
+  });
+  environment.OCC_DEVELOPMENT_STATE_DIRECTORY = join(root, "state");
+  let cleanup;
+  const scope = {
+    signal: new AbortController().signal,
+    after: (operation) => {
+      cleanup = operation;
+    },
+  };
+  await runDevUpModelProviderCase(
+    scope,
+    { root, cluster: "owned-cluster", environment, run },
+    async ({ provider }) => {
+      await provider.prepare();
+    },
+  );
+  await assert.rejects(cleanup(), /recovery journal retained/);
+  assert.equal(existsSync(root), true);
+  assert.equal(objects.size, 1);
+  assert.equal(
+    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources.length,
+    1,
+  );
+  await cleanup();
+  assert.equal(objects.size, 0);
+  assert.equal(existsSync(root), false);
+});
+
+test("launcher case preserves recovery files after forced process termination", async (t) => {
+  const { runDevUpModelProviderCase } = await import("../helpers/dev-up-model-provider.mjs");
+  const root = await mkdtemp(join(tmpdir(), "oce-provider-forced-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let cleanup;
+  const scope = {
+    signal: new AbortController().signal,
+    after: (operation) => {
+      cleanup = operation;
+    },
+  };
+  await assert.rejects(
+    runDevUpModelProviderCase(
+      scope,
+      {
+        root,
+        cluster: "owned",
+        environment: { OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "state") },
+      },
+      async ({ execute }) => {
+        await execute(process.execPath, ["-e", 'process.kill(process.pid, "SIGKILL")']);
+      },
+    ),
+    { signal: "SIGKILL" },
+  );
+  await assert.rejects(cleanup(), /forced termination; recovery state preserved/);
+  assert.equal(existsSync(root), true);
 });
