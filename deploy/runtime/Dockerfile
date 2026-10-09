@@ -172,6 +172,29 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
     node /tmp/build-runtime-assets.mjs package /source /out \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
+# Spread the runtime root over four layers of similar compressed size (about
+# 100 MB each; the Codex binary alone is 109 MB). A cached build fetches layers
+# in parallel but each at about 18 MB/s, and as one 356 MB layer this took
+# about 20 s. The runtime stage copies the parts back to the same paths with the
+# same modes, so the assembled tree and its inventory are unchanged.
+FROM openclaw-runtime-assets AS openclaw-runtime-layers
+WORKDIR /source
+RUN set -eu; \
+    move() { \
+      layer="/layers/$1"; path="$2"; parent="$(dirname "$path")"; \
+      mkdir -p "$layer/$parent"; \
+      chmod --reference=. "$layer"; \
+      while [ "$parent" != . ]; do \
+        chmod --reference="$parent" "$layer/$parent"; parent="$(dirname "$parent")"; \
+      done; \
+      mv "$path" "$layer/$path"; \
+    }; \
+    set -- node_modules/.pnpm/@openai+codex@*-linux-*/node_modules/@openai/codex/vendor/*/bin/codex; \
+    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo "Expected one Codex platform binary" >&2; exit 1; fi; \
+    move codex-binary "$1"; \
+    move codex "${1%%/node_modules/@openai/codex/*}"; \
+    move dist dist
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 
 ARG TARGETARCH
@@ -203,7 +226,10 @@ RUN --mount=type=secret,id=build-ca,required=false \
     /usr/local/bin/gh --version | grep '^gh version 2.100.0 '
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
-COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
+COPY --from=openclaw-runtime-layers /source/ /app/node_modules/openclaw/
+COPY --from=openclaw-runtime-layers /layers/dist/ /app/node_modules/openclaw/
+COPY --from=openclaw-runtime-layers /layers/codex/ /app/node_modules/openclaw/
+COPY --from=openclaw-runtime-layers /layers/codex-binary/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \
     && ln -s openclaw/node_modules/ws node_modules/ws \
