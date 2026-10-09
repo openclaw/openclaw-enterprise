@@ -66,6 +66,29 @@ const WRAPPER_ERROR_LINES: ReadonlySet<string> = new Set([
   "Harness model authentication probe failed.",
 ]);
 
+// Known plain-text lines of OpenClaw's node host (`src/node-host/runner.ts` upstream),
+// which the dedicated Harness prints to stderr. They stay `text` records but carry a
+// level, so a level floor hides reconnect chatter instead of keeping it as `unknown`.
+// Longest prefixes first; matched at the start of the trimmed line.
+const NODE_HOST_LEVELS: readonly (readonly [string, RuntimeLogLevel])[] = [
+  ["node host gateway permanently rejected connection", "error"],
+  ["node host gateway connect failed:", "warn"],
+  ["node host gateway closed (", "warn"],
+  ["node host gateway reconnect paused", "warn"],
+  ["node host gateway endpoint persistence failed:", "warn"],
+  ["node host gateway connected:", "info"],
+  ["[node-host] ", "info"],
+];
+
+function textLevel(trimmed: string): RuntimeLogLevel {
+  for (const [prefix, value] of NODE_HOST_LEVELS) {
+    if (trimmed.startsWith(prefix)) {
+      return value;
+    }
+  }
+  return "unknown";
+}
+
 // Operational keys only. Anything else, and every free-text or payload key
 // (`args`, `payload`, `body`, `prompt`, `messages`, `content`, `text`, `transcript`,
 // `headers`, `env`), never leaves OCC.
@@ -543,7 +566,7 @@ function classify(line: string, block: JsonBlock): Classified {
   if (WRAPPER_ERROR_LINES.has(trimmed)) {
     return { type: "line", kind: "wrapper", level: "error", message: trimmed };
   }
-  return { type: "line", kind: "text", level: "unknown", message: text };
+  return { type: "line", kind: "text", level: textLevel(trimmed), message: text };
 }
 
 function parsesAlone(trimmed: string): boolean {
