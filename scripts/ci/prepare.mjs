@@ -2625,6 +2625,12 @@ async function prepareFile({ lane, file, statePath, template }) {
   }
   await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
+  // Do-not-merge proof: a forced preparation failure.
+  if (relativeFile === "tests/conformance/audit.test.mjs") {
+    throw new Error(
+      `proof: forced preparation failure for ${relativeFile}\nAuthorization: Bearer proofproofproof0123\nmirror https://proof:notasecret123@example.invalid/repo\nlast line of the message`,
+    );
+  }
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.

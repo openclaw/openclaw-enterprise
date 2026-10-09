@@ -1063,3 +1063,13 @@ test("Namespace deletion refuses an otherwise agent-free Namespace with Configur
   );
   assert.equal((await controller.getNamespace(administrator, namespace.id)).status, "provisioning");
 });
+
+// Do-not-merge proof: hang past the runner timeout with output.
+test("proof: hangs past the runner timeout", async () => {
+  console.log("proof: Authorization: Bearer proofproofproof0123");
+  for (let index = 0; index < 600; index += 1) {
+    console.log(`proof output line ${index}`);
+  }
+  console.error("proof: waiting for a reply that never comes");
+  await new Promise(() => setInterval(() => {}, 1_000));
+});
