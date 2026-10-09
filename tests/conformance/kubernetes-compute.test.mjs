@@ -8,7 +8,6 @@ import {
   readdir,
   readFile,
   rm,
-  symlink,
   writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
