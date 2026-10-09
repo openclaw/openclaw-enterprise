@@ -31,8 +31,13 @@ type fakeOCC struct {
 
 func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	key := request.Method + " " + request.URL.Path
+	requested := key
+	if request.URL.RawQuery != "" {
+		// Responses are keyed by path; the record keeps the query so tests can assert it.
+		requested += "?" + request.URL.RawQuery
+	}
 	fake.mu.Lock()
-	fake.requested = append(fake.requested, key)
+	fake.requested = append(fake.requested, requested)
 	fake.mu.Unlock()
 	data, ok := fake.responses[key]
 	if !ok {
@@ -104,6 +109,7 @@ func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
 		{[]string{"--namespace", testNamespaceID, "preset", "delete", "default-codex"}, "occ preset list"},
 		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, "occ agent revisions"},
 		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, "occ credential-source list"},
+		{[]string{"--namespace", testNamespaceID, "service-account", "delete", "--force", "ci-bot"}, "occ service-account list"},
 		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_1"}, "occ agent list"},
 		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "get", testAgentID, "openai"}, "occ credential-source list"},
 	}
@@ -200,6 +206,91 @@ func TestPresetCommandsListShowAndDeleteNamespacePresets(t *testing.T) {
 	}
 	if out != "Deleted preset "+presetID+".\n" || !slices.Equal(requested, []string{"DELETE " + collection + "/" + presetID}) {
 		t.Fatalf("delete printed %q after %v", out, requested)
+	}
+}
+
+func TestServiceAccountDeleteForceReportsTheUnrevokedToken(t *testing.T) {
+	const accountID = "sa_66666666-6666-4666-8666-666666666666"
+	path := "/namespaces/" + testNamespaceID + "/service-accounts/" + accountID
+
+	// Without --force the CLI sends no query and prints the ordinary deletion.
+	out, requested, err := runOCC(t, map[string]string{"DELETE " + path: ""},
+		"--namespace", testNamespaceID, "service-account", "delete", accountID)
+	if err != nil {
+		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	if out != "Deleted service account "+accountID+".\n" || !slices.Equal(requested, []string{"DELETE " + path}) {
+		t.Fatalf("delete printed %q after %v", out, requested)
+	}
+
+	// --force where a Backend revoked the token as usual: OCC answers 204, same output.
+	out, requested, err = runOCC(t, map[string]string{"DELETE " + path: ""},
+		"--namespace", testNamespaceID, "service-account", "delete", "--force", accountID)
+	if err != nil {
+		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	if out != "Deleted service account "+accountID+".\n" || !slices.Equal(requested, []string{"DELETE " + path + "?force=true"}) {
+		t.Fatalf("forced delete printed %q after %v", out, requested)
+	}
+
+	// --force with no Backend to revoke the token: OCC reports it, and the CLI warns.
+	unrevoked := map[string]string{
+		"DELETE " + path: `{"id":"` + accountID + `","namespaceId":"` + testNamespaceID + `","revocation":"skipped","backendId":"chatgpt"}`,
+	}
+	var warnings bytes.Buffer
+	fake := &fakeOCC{responses: unrevoked}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	command := New(&stdout, &warnings)
+	command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile,
+		"--namespace", testNamespaceID, "service-account", "delete", "--force", accountID})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "Deleted service account "+accountID+"; its access token was not revoked.\n" {
+		t.Fatalf("unexpected table output %q", stdout.String())
+	}
+	if !strings.Contains(warnings.String(), "revoke it at the provider") ||
+		!strings.Contains(warnings.String(), `ChatGPT Backend "chatgpt"`) {
+		t.Fatalf("expected a revocation warning, got %q", warnings.String())
+	}
+
+	out, _, err = runOCC(t, unrevoked,
+		"--namespace", testNamespaceID, "-o", "json", "service-account", "delete", "--force", accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	if err := json.Unmarshal([]byte(out), &shown); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if shown["deleted"] != true || shown["id"] != accountID || shown["revocation"] != "skipped" || shown["backendId"] != "chatgpt" {
+		t.Fatalf("unexpected structured output %v", shown)
+	}
+
+	// A refusal stays an error: --force never hides one.
+	_, _, err = runOCC(t, map[string]string{},
+		"--namespace", testNamespaceID, "service-account", "delete", "--force", accountID)
+	if err == nil {
+		t.Fatal("expected the API refusal to fail the command")
+	}
+}
+
+func TestServiceAccountListShowsNamespaceAccounts(t *testing.T) {
+	const accountID = "sa_66666666-6666-4666-8666-666666666666"
+	out, _, err := runOCC(t, map[string]string{
+		"GET /namespaces/" + testNamespaceID + "/service-accounts": `[{"id":"` + accountID + `","namespaceId":"` + testNamespaceID + `","name":"ci-bot"}]`,
+	}, "--namespace", testNamespaceID, "service-account", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, accountID) || !strings.Contains(out, "ci-bot") {
+		t.Fatalf("expected the account in the list:\n%s", out)
 	}
 }
 

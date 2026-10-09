@@ -13,7 +13,10 @@ normalized Secret bindings, and server-generated `cfg_` identity are persisted b
 [PostgreSQL platform state](../../../packages/occ/src/state/postgres-state.ts);
 the live configuration document is not duplicated into Configuration metadata.
 OCC owns API-level native Configuration validation before it calls the selected
-bundled or installed Configuration Driver. The Driver owns backing document
+bundled or installed Configuration Driver: model provider settings, and
+`requireDeployableRoster` in
+[the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
+an `agents` roster every deployment refuses with deployment's own text. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
@@ -84,7 +87,8 @@ bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged. Compute then
-checks the Harness authentication binding and, through optional
+checks the Harness authentication binding (Kubernetes Compute also runs the shared
+`requireOpenClawRoster`, then dedicated OpenClaw's `main` Agent rules) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
 a setting every preparation would refuse with `409`, naming the setting and never
 its value, before a revision exists. OCC freezes

@@ -394,7 +394,9 @@ test("node selectors get the same verdict from preflight and the chart", { skip:
     [{ "Example.com/zone": "east" }, false],
     [{ "example.com/": "east" }, false],
     [{ "example.com/a/b": "east" }, false],
-    [{ [`${"a".repeat(64)}.example/zone`]: "east" }, false],
+    [{ [`${"a".repeat(64)}.example/zone`]: "east" }, true],
+    [{ [`${"a".repeat(253)}/zone`]: "east" }, true],
+    [{ [`${"a".repeat(254)}/zone`]: "east" }, false],
   ];
   for (const [nodeSelector, accepted] of selectors) {
     assertParity({
@@ -654,7 +656,10 @@ test(
       [label63, true],
       [`${label63}.${label63}.${label63}.${"a".repeat(61)}`, true],
       [`${label63}.${label63}.${label63}.${"a".repeat(62)}`, false],
-      ["a".repeat(64), false],
+      // Kubernetes admits a long single-segment DNS-subdomain name.
+      ["a".repeat(64), true],
+      ["a".repeat(253), true],
+      ["a".repeat(254), false],
       ["Occ-password", false],
       ["occ_password", false],
       ["occ-password-", false],

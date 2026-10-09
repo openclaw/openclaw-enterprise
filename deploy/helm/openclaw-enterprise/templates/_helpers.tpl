@@ -235,15 +235,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
 {{- end -}}
-{{- /* prepare-bootstrap-volume is_dns_subdomain: at most 253 characters, each label a DNS label of at most 63. */ -}}
+{{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
 {{- $claimName := toString .Values.bootstrap.password.claimName -}}
 {{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
 {{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
-{{- end -}}
-{{- range $label := splitList "." $claimName -}}
-{{- if gt (len $label) 63 -}}
-{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
-{{- end -}}
 {{- end -}}
 {{- if or (not .Values.bootstrap.serviceKey) (not .Values.bootstrap.serviceKey.fileName) -}}
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
@@ -306,9 +301,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $name := index $parts 1 -}}
 {{- if or (ne (len $parts) 2) (gt (len $prefix) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $prefix)) (gt (len $name) 63) (not (regexMatch $labelName $name)) -}}
 {{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
-{{- end -}}
-{{- range $label := splitList "." $prefix -}}
-{{- if gt (len $label) 63 -}}{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}{{- end -}}
 {{- end -}}
 {{- else if or (gt (len $key) 63) (not (regexMatch $labelName $key)) -}}
 {{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}

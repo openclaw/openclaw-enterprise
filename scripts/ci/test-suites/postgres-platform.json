@@ -126,7 +126,8 @@
     {
       "path": "tests/integration/postgres-service-account-deletion.test.mjs",
       "expectedTests": [
-        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects"
+        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
+        "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account"
       ]
     },
     {

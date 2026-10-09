@@ -12,6 +12,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   authenticatedHeaders,
@@ -447,6 +448,149 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   const updated = await request(context.app, "PATCH", item, { body: { values: local } });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
   assert.deepEqual(updated.body.data.values, local);
+});
+
+test("Configuration save refuses an agents roster every deployment refuses, with deployment's text", async () => {
+  // Deployment runs the real Kubernetes Compute roster rules, as production admission does.
+  const kubernetes = createTestKubernetesComputeDriver("compute-roster-integration");
+  const computeDriver = createReadyComputeDriver("compute-configuration-integration", {
+    implementation: "integration-compute-substrate",
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+  });
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  // A selected model and runtime, so deployment reaches the roster rules.
+  const defaults = {
+    model: "openai/gpt-4.1",
+    models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+  };
+  const withAgents = (agents) => ({ agents: { defaults, ...agents } });
+  const valid = withAgents({});
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Roster consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "roster-key");
+  const deploy = () =>
+    request(context.app, "POST", `/namespaces/${namespace.id}/agents/${agent.body.data.id}/deploy`);
+  // A row an older release saved, written past OCC as that release's create would have.
+  const storeAsOlderRelease = async (values) => {
+    const stored = configurationDriver
+      .storedConfigurations()
+      .find(({ id }) => id === configurationId);
+    await configurationDriver.update({ ...stored, values });
+  };
+
+  const gatewayId = (path) =>
+    `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
+  // One shape per rule. Every topology's OpenClaw Gateway rejects each (finding 874).
+  for (const [values, message] of [
+    [{ agents: "x" }, "Configuration setting agents must be an object."],
+    [{ agents: { defaults: [] } }, "Configuration setting agents.defaults must be an object."],
+    [
+      withAgents({ entries: [] }),
+      "Configuration setting agents.entries must be an object keyed by Agent ID.",
+    ],
+    [
+      withAgents({ entries: { main: null } }),
+      "Configuration setting agents.entries.main must be an object.",
+    ],
+    [
+      withAgents({ list: [{ id: "main" }] }),
+      "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+    ],
+    [
+      withAgents({ list: [], entries: { main: {} } }),
+      "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+    ],
+    [withAgents({ entries: { "main!": {} } }), gatewayId('agents.entries["main!"]')],
+    [
+      withAgents({ ownership: "explicit", entries: { main: {}, Main: {} } }),
+      "The OpenClaw Gateway normalizes agents.entries.main and agents.entries.Main to the same Agent ID: rename one.",
+    ],
+    [
+      withAgents({ entries: { main: { default: true } } }),
+      "The OpenClaw Gateway rejects agents.entries.main.default: remove it.",
+    ],
+    [
+      withAgents({ ownership: "shared", entries: { main: {} } }),
+      'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.',
+    ],
+    [
+      withAgents({ entries: { main: {}, helper: {} } }),
+      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
+    ],
+    [
+      withAgents({ ownership: "explicit" }),
+      'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.',
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, label);
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST", label);
+    assert.equal(rejected.body.error.message, message, label);
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, label);
+    assert.equal(replaced.body.error.message, message, label);
+    const unchanged = await request(context.app, "GET", item);
+    assert.deepEqual(unchanged.body.data, created.body.data, label);
+
+    // An existing row with the shape still reads, and deployment refuses it as before, with the
+    // text the save gives.
+    await storeAsOlderRelease(values);
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, label);
+    assert.deepEqual(read.body.data.values, values, label);
+    const deployed = await deploy();
+    assert.equal(deployed.status, 400, label);
+    assert.equal(deployed.body.error.code, "INVALID_REQUEST", label);
+    assert.equal(deployed.body.error.message, message, label);
+    // Only a write that keeps the shape is refused: replacing it with a valid roster saves.
+    const kept = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(kept.status, 400, label);
+    assert.equal(kept.body.error.message, message, label);
+    await storeAsOlderRelease(valid);
+  }
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+  await storeAsOlderRelease(withAgents({ entries: { main: {}, helper: {} } }));
+  const fixed = withAgents({ ownership: "explicit", entries: { main: {}, helper: {} } });
+  const repaired = await request(context.app, "PATCH", item, { body: { values: fixed } });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.values, fixed);
+
+  // Rules that depend on the topology stay at deployment: only dedicated OpenClaw serves main,
+  // so these save (embedded OpenClaw and Codex deploy them; see kubernetes-compute.test.mjs).
+  // An empty agents.list beside an empty roster is valid everywhere.
+  for (const values of [
+    withAgents({ entries: { helper: {} } }),
+    withAgents({ ownership: "explicit", entries: { main: {}, _main: {} } }),
+    withAgents({
+      ownership: "explicit",
+      entries: { main: {}, helper: {} },
+      defaults: { ...defaults, sessionStore: { agentId: "helper" } },
+    }),
+    withAgents({ list: [] }),
+  ]) {
+    const saved = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body.data.values, values);
+  }
 });
 
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {

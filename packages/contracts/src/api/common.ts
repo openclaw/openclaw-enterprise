@@ -163,6 +163,19 @@ export const DeploymentParams = Type.Object(
   { additionalProperties: false },
 );
 
+/** Query strings are not coerced; boolean values are exact text. */
+export const ServiceAccountDeleteQuery = Type.Object(
+  {
+    force: Type.Optional(
+      Type.Union([Type.Literal("true"), Type.Literal("false")], {
+        description:
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 /** Query strings are not coerced; numeric and boolean values are exact decimal text. */
 export const AgentRuntimeLogsQuery = Type.Object(
   {
@@ -958,6 +971,7 @@ export type IAMServicePrincipalParams = Type.Static<typeof IAMServicePrincipalPa
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
+export type ServiceAccountDeleteQuery = Type.Static<typeof ServiceAccountDeleteQuery>;
 export type AgentRuntimeLogsQuery = Type.Static<typeof AgentRuntimeLogsQuery>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
 export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;
