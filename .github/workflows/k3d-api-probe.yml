@@ -15,13 +15,14 @@ env:
 
 jobs:
   probe:
-    name: probe ${{ matrix.copy }}
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    name: probe ${{ matrix.runner }} ${{ matrix.copy }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        copy: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        runner: [blacksmith-32vcpu-ubuntu-2404, ubuntu-22.04]
+        copy: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -59,6 +60,23 @@ jobs:
           ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null; }
           sip=$(ip_of "$server"); lbip=$(ip_of "$cluster-serverlb")
           echo "server=$server port=$port server_ip=$sip lb_ip=$lbip" > "$out/targets.txt"
+          {
+            echo "lb ulimit -n: $(docker exec "$cluster-serverlb" sh -c 'ulimit -n' 2>&1)"
+            echo "lb nproc: $(docker exec "$cluster-serverlb" nproc 2>&1)"
+            docker exec "$cluster-serverlb" sh -c 'for p in $(pgrep nginx); do grep "open files" /proc/$p/limits; done' 2>&1
+            docker exec "$cluster-serverlb" grep -E 'worker_' /etc/nginx/nginx.conf 2>&1
+            echo "dockerd limits: $(grep 'open files' /proc/$(pidof dockerd)/limits 2>&1)"
+            docker info --format 'docker {{.ServerVersion}} cgroup {{.CgroupVersion}} {{.KernelVersion}}' 2>&1
+          } >> "$out/targets.txt"
+          lbpid=$(docker inspect -f '{{.State.Pid}}' "$cluster-serverlb")
+          (
+            while true; do
+              n=$(sudo nsenter -t "$lbpid" -n ss -Htn state established 2>/dev/null | wc -l)
+              tw=$(sudo nsenter -t "$lbpid" -n ss -Htn state time-wait 2>/dev/null | wc -l)
+              echo "$(date -u +%H:%M:%S.%3N) lb_established=$n lb_time_wait=$tw"
+              sleep 1
+            done
+          ) >> "$out/conns.log" 2>&1 &
           probe() { curl -sk -o /dev/null -w '%{http_code}' --max-time 2 "https://$1/readyz" 2>/dev/null; echo "/$?"; }
           prev=""
           while true; do
@@ -79,7 +97,7 @@ jobs:
           lane: k3d-fixture-configuration
           profile: k3d
           node-version: ${{ env.NODE_VERSION }}
-          artifact-prefix: probe-${{ matrix.copy }}
+          artifact-prefix: probe-${{ matrix.runner }}-${{ matrix.copy }}
           static-checks: "false"
       - name: Report API watcher
         if: always()
@@ -93,8 +111,12 @@ jobs:
           grep -v -E ' exec_(create|start|die)' "$out/events.log" 2>/dev/null | grep -E ' (die|kill|stop|restart|oom|start|destroy|disconnect|connect) ' | tail -n 80 || true
           echo "=== server log errors and warnings"
           grep -E ' E[0-9]{4} | W[0-9]{4} |level=(error|fatal|warning)|panic|Shutting|signal|leader|apiserver exited|Starting k3s' "$out/server.log" 2>/dev/null | grep -v -i -E 'token|password|secret' | tail -n 200 || true
-          echo "=== serverlb log"
-          grep -i -E 'error|warn|upstream|reload|signal|exit' "$out/serverlb.log" 2>/dev/null | tail -n 60 || true
+          echo "=== serverlb log (after the config dump)"
+          awk '/=======================================$/ { start = NR } { line[NR] = $0 } END { for (i = start + 1; i <= NR; i++) print line[i] }' "$out/serverlb.log" 2>/dev/null | tail -n 150 || true
+          echo "serverlb log lines: $(wc -l < "$out/serverlb.log" 2>/dev/null)"
+          echo "=== serverlb connections (max and per-second around drops)"
+          sort -t= -k2 -n "$out/conns.log" 2>/dev/null | tail -n 3 || true
+          cat "$out/conns.log" 2>/dev/null | awk 'NR % 5 == 1' | head -n 60 || true
           echo "=== kernel"
           sudo dmesg -T 2>/dev/null | grep -i -E 'oom|conntrack|nf_|killed|segfault|link|veth|br-' | tail -n 60 || true
           echo "=== server.log size $(wc -l < "$out/server.log" 2>/dev/null)"
