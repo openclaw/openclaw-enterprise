@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import dns from "node:dns/promises";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
@@ -1051,7 +1052,7 @@ function buildRendered(profile, parsed, diagnostics) {
             ),
           }),
       modelDiscoveryCidrs:
-        profile.name === "codex"
+        profile.name === "codex" && codex.modelDiscoveryCidrs !== undefined
           ? stringArray(codex, ["codex", "modelDiscoveryCidrs"], diagnostics, {
               validate: (value) => isIpv4Cidr(value, 32),
               description: "an IPv4 /32 CIDR",
@@ -1463,6 +1464,51 @@ function buildRendered(profile, parsed, diagnostics) {
   return { values, installation };
 }
 
+async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
+  const plugin = profile.installation.drivers.plugin;
+  if (
+    plugin.id !== "codex-plugin" ||
+    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
+  ) {
+    return;
+  }
+  const hosts = ["auth.openai.com", "chatgpt.com"];
+  diagnostics.prerequisites.push(
+    "Verify API Pods can reach auth.openai.com and chatgpt.com on HTTPS using their actual DNS and translated destinations before testing hosted discovery in the Console.",
+  );
+  if (parsed.codex.modelDiscoveryCidrs !== undefined) {
+    if (values.api.modelDiscoveryCidrs.length === 0) {
+      diagnostics.warnings.push(
+        "codex.modelDiscoveryCidrs is explicitly empty: supply external API HTTPS policy for auth.openai.com and chatgpt.com; Helm grants no discovery egress.",
+      );
+    }
+    return;
+  }
+  // Independent resolvers ignore process-level DNS settings unless copied. Keep
+  // those settings while bounding queries; explicit operator CIDRs stay offline.
+  const resolver = new dns.Resolver({ timeout: 1500, tries: 1 });
+  resolver.setServers(dns.getServers());
+  const answers = await Promise.allSettled(hosts.map((host) => resolver.resolve4(host)));
+  const addresses = [];
+  answers.forEach((answer, index) => {
+    if (answer.status === "rejected") {
+      diagnostics.errors.push(
+        `Hosted Codex discovery could not resolve IPv4 addresses for ${hosts[index]}. Rerender with DNS access or supply codex.modelDiscoveryCidrs with reviewed IPv4 /32 destinations.`,
+      );
+    } else {
+      addresses.push(...answer.value);
+    }
+  });
+  if (diagnostics.errors.length === 0) {
+    values.api.modelDiscoveryCidrs = [...new Set(addresses)]
+      .sort()
+      .map((address) => `${address}/32`);
+    diagnostics.warnings.push(
+      "Hosted discovery egress is a DNS snapshot from the renderer host. Verify it matches API Pod destinations, and rerender then upgrade Helm when addresses change.",
+    );
+  }
+}
+
 async function writePreflight(outDir, profile, diagnostics, output = {}) {
   const preflight = {
     ok: diagnostics.errors.length === 0,
@@ -1494,6 +1540,10 @@ const [profile, rawInput] = await Promise.all([
 ]);
 const parsed = buildInput(rawInput, diagnostics);
 const { values, installation } = buildRendered(profile, parsed, diagnostics);
+
+if (diagnostics.errors.length === 0) {
+  await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
+}
 
 if (diagnostics.errors.length === 0) {
   const installationYaml = renderYaml(installation);

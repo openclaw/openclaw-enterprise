@@ -19,7 +19,14 @@ drivers:
 ```
 
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
-using a PAT or a Secret containing one. Select the hardcoded OpenAI catalog to
+using a PAT or a Secret containing one. Hosted discovery also requires API Pod
+HTTPS access to `auth.openai.com` and `chatgpt.com`. The
+[Codex installation profile](../../guides/deploy/installation-profiles.md#hosted-discovery-egress)
+renders the existing Helm egress setting alongside driver selection. The driver
+does not change Kubernetes networking; manual YAML must configure that setting
+or an equivalent cluster policy separately.
+
+Select the hardcoded OpenAI catalog to
 browse without a discovery credential or provider catalog requests:
 
 ```yaml

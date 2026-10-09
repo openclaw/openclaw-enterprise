@@ -5,8 +5,9 @@ OpenClaw Enterprise install: a Helm values overlay and the Installation startup
 YAML mounted into the controller. Use a profile when you want the standard
 OpenClaw or Codex defaults without editing the production examples by hand.
 
-Profiles only render configuration for an already prepared environment. They do
-not create clusters, Secrets, databases, DNS, certificates, hosted plugin
+Profiles render configuration for an already prepared environment. Hosted Codex
+discovery resolves its HTTPS destinations unless you supply their CIDRs.
+Profiles do not create clusters, Secrets, databases, DNS, certificates, hosted plugin
 credentials, ChatGPT service accounts, repository registries, or Slack consumers.
 
 ## Choose a profile
@@ -132,16 +133,12 @@ casing fails preflight without emitting deployable files.
 }
 ```
 
-For the `codex` profile, merge the reviewed Codex seccomp profile and model
-discovery egress into the base input:
+For the `codex` profile, add the reviewed Codex seccomp profile to the base input:
 
 ```json
 {
   "runtime": {
     "codexSeccompProfile": "openclaw/codex-0.160.0-<profile-sha256>.json"
-  },
-  "codex": {
-    "modelDiscoveryCidrs": ["198.51.100.20/32"]
   }
 }
 ```
@@ -171,6 +168,27 @@ To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup.
+
+### Hosted discovery egress
+
+The Codex profile selects hosted `codex-plugin` discovery. When
+`codex.modelDiscoveryCidrs` is absent, the renderer resolves `auth.openai.com`
+and `chatgpt.com` through the operator host's DNS and writes their IPv4 `/32`
+addresses to Helm `api.modelDiscoveryCidrs`. The existing chart policy grants
+only that release's API Pods TCP 443 to those addresses. It grants nothing to
+Gateway or Harness Pods.
+
+This is a DNS snapshot taken during rendering. Before treating discovery as
+ready, verify the addresses match the API Pods' DNS and translated destinations,
+then test **Load plugins** in the Console with an authorized PAT. Rerender and
+upgrade Helm when the addresses change; the renderer does not refresh a live
+policy.
+
+To use reviewed addresses instead, supply `codex.modelDiscoveryCidrs` as a list
+of IPv4 `/32` hosts. The renderer preserves that list and makes no discovery DNS
+queries. An explicit empty list preserves external egress management: configure
+your cluster's policy to allow the API Pods HTTPS to both hosts. An omitted list
+requires DNS access; failure leaves both deployable YAML files absent.
 
 ### External sign-in and trusted proxies
 
@@ -310,6 +328,8 @@ the install as ready:
   `runtimeProxyUrl` and `directoryProxyUrl` inputs.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
+  Verify API HTTPS connectivity using the [rendered discovery egress](#hosted-discovery-egress);
+  credentials alone do not make the catalog reachable.
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed
