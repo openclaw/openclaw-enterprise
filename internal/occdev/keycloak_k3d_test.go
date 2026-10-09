@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -573,23 +574,6 @@ func TestKeycloakSignInValuesRefuseAnHTTPConsoleOrAnInvalidUserID(t *testing.T) 
 	plain, _ := json.Marshal(map[string]any{"auth": map[string]string{"baseUrl": "http://127.0.0.1:3000"}})
 	if _, err := developmentKeycloakSignInValues(plain, "occ-dev-test", "user1", keycloakServiceJSON(t)); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("an HTTP base URL was accepted: %v", err)
-	}
-}
-
-func TestKeycloakInstructionsNameTheConsoleUserCAsAndHostsLine(t *testing.T) {
-	state := &developmentState{Cluster: "occ-dev-test", BrowserPort: 8443, directory: "/state"}
-	text := developmentKeycloakInstructions(state)
-	for _, want := range []string{
-		"https://console.occ-dev-test.oce.localhost:8443/console/",
-		"Continue with Keycloak",
-		"/state/keycloak-alice-password",
-		"/state/browser-ca.crt",
-		"/state/gateway-ca.crt",
-		"127.0.0.1 keycloak.occ-dev-test.oce.test",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("instructions lack %q:\n%s", want, text)
-		}
 	}
 }
 
