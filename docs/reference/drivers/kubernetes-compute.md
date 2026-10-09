@@ -33,13 +33,11 @@ Detailed operator contracts:
 
 ## Existing split-layout installations
 
-An in-place upgrade from separate Gateway and Harness namespaces is not supported.
-API and worker startup preflight refuses a single-cluster installation containing
-an `oce-gateways-<hash>` storage namespace without the tenant discovery label.
-This check runs before tenant reconciliation; it does not move or delete runtime
-resources. The experimental two-cluster profile retains its separate target.
-
-Before replacing the controller images, inspect the existing storage targets:
+Releases before #925 kept each Namespace's Gateways, Gateway state and canonical
+Secrets in a separate `oce-gateways-<hash>` namespace. In a single cluster, API
+and worker startup preflight refuses such a storage namespace until it carries
+the tenant discovery label. The check changes nothing. Inspect the storage
+targets before replacing the controller images:
 
 ```sh
 kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
@@ -48,13 +46,13 @@ kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespa
 In a single cluster, a row with an empty `NAMESPACE` column is a split-layout
 tenant. The two-cluster profile's control-cluster rows are expected.
 
-No migration moves split-layout tenants. Export, delete and re-create them
-through OCC with the steps in the
-[breaking-change notice](../../guides/deploy/breaking-changes.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade);
-chat history and Harness workspace state are not carried over. Do not delete
-the old namespace, remove its storage-role label or add a tenant label to
-bypass preflight: the Gateway's private state and UID-bound credential
-references would not move.
+Adopt each tenant in place with the
+[split-layout upgrade](../../guides/deploy/split-layout-upgrade.md):
+the storage namespace becomes the tenant namespace and keeps its Secrets,
+Configurations and Gateway state, and the old namespace's claims and Agent
+Secrets move into it. Compute accepts the `oce-gateways-<hash>` name as a tenant
+namespace only while it keeps its own storage label. Do not add the tenant label
+by hand: the old namespace's claims, routes and transport Secrets would not move.
 
 ## Requirements
 

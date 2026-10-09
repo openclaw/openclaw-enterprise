@@ -863,6 +863,47 @@ test("Kubernetes Compute defaults to the Compose control plane", async (t) => {
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });
 
+for (const controlPlane of ["compose", "kubernetes"]) {
+  for (const [reason, cluster] of [
+    ["33-character name", `occ-dev-${"a".repeat(25)}`],
+    ["trailing hyphen", "occ-dev-example-"],
+  ]) {
+    test(`${controlPlane} Kubernetes startup rejects ${reason} before any effects`, async (t) => {
+      const fixture = await createFixture(t);
+      await prepareLifecycleCommands(fixture);
+      const resourcesBefore = await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8");
+
+      // The compiled CLI owns validation. Existing inert commands record any
+      // engine or resource access; no Installation server is needed for refusal.
+      const result = spawnSync(fixture.cli, ["dev", "up"], {
+        cwd: fixture.fixtureRepository,
+        env: {
+          ...fixture.env,
+          OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+          OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
+          OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
+          OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
+        },
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+
+      assert.equal(result.error, undefined);
+      assert.equal(result.signal, null);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /invalid OCC_DEVELOPMENT_KUBERNETES_CLUSTER/);
+      assert.ok(result.stderr.includes(JSON.stringify(cluster)));
+      assert.match(result.stderr, /at most 32 characters/);
+      assert.match(result.stderr, /end with a lowercase letter or digit/);
+      await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+      assert.deepEqual(await readJsonLines(fixture.env.SAFETY_LOG), []);
+      assert.deepEqual(await readJsonLines(fixture.dockerLog), []);
+      assert.deepEqual(await readJsonLines(fixture.occLog), []);
+      assert.equal(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8"), resourcesBefore);
+    });
+  }
+}
+
 test("Compose Kubernetes startup rejects missing Node before creating resources", async (t) => {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture);

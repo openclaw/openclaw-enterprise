@@ -77,7 +77,8 @@
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
-    "tests/conformance/split-layout-tenants.test.mjs"
+    "tests/conformance/split-layout-tenants.test.mjs",
+    "tests/conformance/split-layout-adopt.test.mjs"
   ],
   "files": [
     {
@@ -321,6 +322,9 @@
     },
     {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
+    },
+    {
+      "path": "tests/conformance/split-layout-adopt.test.mjs"
     }
   ]
 }

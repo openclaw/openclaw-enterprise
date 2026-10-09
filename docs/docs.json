@@ -451,6 +451,10 @@
                     "label": "Breaking Changes"
                   },
                   {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
                   },
