@@ -127,12 +127,11 @@ The CLI creates one k3d cluster, then:
 Agent Sandbox runs in `agent-sandbox-system`; OCC creates tenant Workspaces,
 Sandbox resources and Agent Pods in separate OCC-owned `oce-*` Namespaces.
 
-If Agent Sandbox rollout fails, startup attempts to write bounded operational
-metadata to error output before rollback: controller-owned status, image
-identities and Warning reasons.
-Messages, environment values and controller logs are excluded. Capture failures
-are marked; the original rollout error and cleanup remain unchanged. This does
-not diagnose or repair the underlying failure.
+If Agent Sandbox rollout fails, startup attempts to write bounded operational metadata
+on error output before rollback: controller-owned status, image identities and
+Warning reasons. Failures are marked; messages, environment values and logs are
+excluded. The original error and cleanup remain unchanged. This neither
+diagnoses nor repairs the failure.
 
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL, OCC and its
 Kubernetes worker in Compose. This OpenShell profile installs the pinned private
@@ -140,13 +139,13 @@ Envoy route in k3d, mounts its service key and public CA only into the Compose
 controller and `worker-kubernetes`, and records the node hostname and Envoy
 NodePort in the Installation. Do not also run manual hybrid routing.
 
-The first start requires network access. To use reviewed local assets instead,
+First startup requires network access. To use reviewed local assets instead,
 set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
-To choose the host engine explicitly:
+To choose the host engine:
 
 ```bash
 export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman
