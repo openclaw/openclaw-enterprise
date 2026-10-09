@@ -29,11 +29,11 @@ See [two-cluster transport](../testing/two-cluster-local.md) for CP/DP routing.
 - `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
   setup state; `apps/controller/src/worker.ts` passes it to Compute on deployment.
 
-Live access requires the Agent's private HTTPRoute and native gateway.
-Operators configure Envoy Gateway, native trust, and network restrictions through
-[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); see the
-[routing contract](../reference/gateway-routing.md) for transport, credentials,
-the default hostname and cert-manager CA, and existing issuers.
+Live access requires the Agent's private HTTPRoute and native gateway. Configure
+Envoy Gateway, trust, and network restrictions through
+[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); the
+[routing contract](../reference/gateway-routing.md) covers credentials, hostnames,
+and CAs.
 
 ## Flow
 
@@ -323,9 +323,8 @@ replays it. The native client closes in the operation's cleanup path.
 - A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
   reload the Console create form and resubmit. A create response alone
   does not prove runtime initialization; verify active revision and live content.
-- Structural and Driver checks do not replace
-  the [required real-workflow proof](../../specs/plans/34-agent-workspace-files-setup.md#verification)
-  for first use, retry, and redeploy.
+- First use, retry, and redeploy require
+  [real-workflow proof](../../specs/plans/34-agent-workspace-files-setup.md#verification).
 - For `503 DEPENDENCY_UNAVAILABLE`, check the Compute routing settings and key
   mount, then the Gateway, Certificate, SecurityPolicy, and HTTPRoute status.
   Check DNS/CA trust and exact NetworkPolicy peers before changing native auth.
@@ -334,9 +333,9 @@ replays it. The native client closes in the operation's cleanup path.
 - An authenticated native upgrade failure can indicate missing trusted-proxy
   configuration, a simultaneous token, a loopback real IP, or absent native
   identity scopes. Do not fix it by inventing a forwarded address.
-- [Testing](../testing/README.md) separates API conformance, Helm rendering, and the
-  real Envoy/cert-manager/native-runtime proof. A calculated URL, ready proxy,
-  or rendered chart does not establish file writes or model consumption.
+- [Testing](../testing/README.md) distinguishes fixture and runtime proof. A
+  calculated URL, ready proxy, or rendered chart does not establish file writes
+  or model consumption.
 
 ## Related docs
 
