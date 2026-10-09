@@ -52,7 +52,7 @@ access, or native model execution.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
+| Build base                                   | `docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0` |
 | OpenClaw source commit                       | `90d30a1178a79dddd92e6190b66b95d89dfb3ca8`                                                                   |
 | Source archive SHA-256                       | `c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.160.0`                                                                                                    |
@@ -66,9 +66,13 @@ packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive. Its pinned
 `node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
-Python, and process utilities. Build compilers stay in the full Bookworm stages.
+Python, and process utilities. Both bases apply available Debian package updates
+during the build, including updates published after the pinned Node images.
+Build compilers stay in the full Bookworm stages.
 The repository credential client stage needs only Node and pnpm, so it builds on the
-slim base too.
+slim base too. It compiles only the client's own sources without a type check, so
+other controller changes keep it cached; the service stage builds the full,
+type-checked workspace.
 The build selects upstream required bundled plugins plus Codex and Slack before
 installing dependencies for the target architecture with lifecycle
 scripts enabled and runs upstream postinstall, plugin pruning, import-closure,

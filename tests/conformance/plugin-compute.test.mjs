@@ -117,6 +117,23 @@ async function readRuntimeChannelChecksFromHandler(handler) {
   return readStatusFromHandlerAsync(handler, "/openclaw/runtime/diagnostics");
 }
 
+async function readReadyStatusFromHandler(handler) {
+  let body = "";
+  let status;
+  await handler(
+    { method: "GET", url: "/readyz" },
+    {
+      writeHead(value) {
+        status = value;
+      },
+      end(chunk = "") {
+        body += chunk;
+      },
+    },
+  );
+  return { status, body };
+}
+
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000016",
   name: "Plugin compute tenant",
@@ -2678,6 +2695,7 @@ test("gateway runtime status maps native Slack channel status without provider d
   let holdChannelStatusResponse = false;
   let pendingChannelSignal;
   let rpcTimeout;
+  let gatewayReadyStatus = 503;
   const sandbox = {
     AbortController,
     AbortSignal,
@@ -2714,6 +2732,10 @@ test("gateway runtime status maps native Slack channel status without provider d
           createServer(handler) {
             statusHandler = handler;
             return { listen() {} };
+          },
+          get(_options, callback) {
+            callback({ statusCode: gatewayReadyStatus, resume() {} });
+            return { on() {}, destroy() {} };
           },
         };
       }
@@ -2781,6 +2803,9 @@ test("gateway runtime status maps native Slack channel status without provider d
   const ready = await readRuntimeStatusFromHandler(statusHandler);
   assert.equal(ready.revisionId, revisionId);
   assert.equal(channelStatusCalls, 0);
+  assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 503, body: "" });
+  gatewayReadyStatus = 200;
+  assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 200, body: "" });
   const assertSlackDiagnostics = async (status, expected, description) => {
     channelStatus = status;
     const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
@@ -4574,6 +4599,10 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
       ["plugin-status", 18791],
     ],
   );
+  assert.deepEqual(container.readinessProbe, {
+    httpGet: { path: "/readyz", port: "plugin-status" },
+    periodSeconds: 2,
+  });
 });
 
 for (const withBroker of [false, true]) {

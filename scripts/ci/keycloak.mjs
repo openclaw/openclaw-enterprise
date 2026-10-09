@@ -151,13 +151,18 @@ async function createCertificates(directory, execFile) {
   return { ca, leaves };
 }
 
-async function resolvesOnlyToLoopback(lookupAll) {
+/** The resolver's answer for the Keycloak name, as text for the prepare log. */
+async function resolverAnswer(lookupAll) {
   try {
-    const addresses = await lookupAll(keycloakHost);
-    return addresses.length === 1 && addresses[0].address === "127.0.0.1";
-  } catch {
-    return false;
+    const addresses = (await lookupAll(keycloakHost)).map(({ address }) => address);
+    return { loopbackOnly: addresses.length === 1 && addresses[0] === "127.0.0.1", addresses };
+  } catch (error) {
+    return { loopbackOnly: false, addresses: [], error: error.code ?? error.message };
   }
+}
+
+function describeAnswer({ addresses, error }) {
+  return error === undefined ? `[${addresses.join(", ")}]` : `no answer (${error})`;
 }
 
 function hostsLineFor(resource) {
@@ -362,10 +367,16 @@ export async function prepareKeycloak({
   const { ca, leaves } = await step("certificates", () => createCertificates(directory, execFile));
 
   await step("hosts", async () => {
-    // A `::1`-first answer against a loopback-only publication would flake.
-    if (await resolvesOnlyToLoopback(lookupAll)) {
+    // A `::1`-first answer against a loopback-only publication would flake. The log records
+    // each runner image's resolver behaviour (docs/testing/keycloak.md).
+    const answer = await resolverAnswer(lookupAll);
+    if (answer.loopbackOnly) {
+      log(`Keycloak hosts: ${keycloakHost} resolves to 127.0.0.1; no /etc/hosts line added.`);
       return;
     }
+    log(
+      `Keycloak hosts: ${keycloakHost} resolves to ${describeAnswer(answer)}; adding an /etc/hosts line.`,
+    );
     resource.hostsLine = hostsLineFor(resource);
     await saveState();
     await execFile("sudo", [
@@ -376,9 +387,10 @@ export async function prepareKeycloak({
       "sh",
       resource.hostsLine,
     ]);
-    if (!(await resolvesOnlyToLoopback(lookupAll))) {
+    const added = await resolverAnswer(lookupAll);
+    if (!added.loopbackOnly) {
       throw new Error(
-        `${keycloakHost} still does not resolve to exactly 127.0.0.1; /etc/hosts is not consulted first.`,
+        `${keycloakHost} still resolves to ${describeAnswer(added)}, not exactly 127.0.0.1; /etc/hosts is not consulted first.`,
       );
     }
   });

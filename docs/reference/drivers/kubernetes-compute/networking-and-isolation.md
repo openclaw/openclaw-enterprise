@@ -77,9 +77,9 @@ required-header and device auto-approval settings retain their separate purposes
 
 An optional [loopback password](storage-and-credentials.md#runtime-credentials)
 supports operator verification; it does not change the gateway's authentication mode.
-Readiness uses a Pod-local HTTP request to
-`127.0.0.1:$OPENCLAW_GATEWAY_PORT/readyz`; TLS terminates at Envoy, so native
-readiness probes remain unchanged. Docker and SSH default to managed password
+Kubernetes sends `GET /readyz` to the private runtime status port. Its empty
+`200` or `503` preserves each runtime's existing readiness gates. Docker and SSH
+default to managed password
 authentication and also support explicit trusted proxy.
 
 Operators must verify that the configured CIDRs contain the proxy's actual

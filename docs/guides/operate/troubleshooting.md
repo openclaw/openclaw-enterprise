@@ -290,10 +290,10 @@ not prove an Agent has deployed or can run a model.
 ## An Agent's Gateway or Harness Pod stays unready
 
 Run `kubectl describe pod <pod-name>` in the Agent's tenant namespace. Each
-`Readiness probe failed:` event names the step that is not ready, such as
-`plugin runtime phase is starting` or `Gateway /readyz unavailable: ECONNREFUSED`.
-When the startup wrapper holds a failed check, the event adds it, for example
-`; startup check model-probe failed with AUTHENTICATION_FAILED`. See
+`Readiness probe failed:` event reports the private HTTP endpoint's status or a
+connection failure. A `503` means the runtime's native, plugin, authentication,
+or identity gate has not passed. Check the container's startup-phase logs for
+the failing stage. See
 [Harness authentication](../../reference/harness-execution.md#harness-authentication)
 for the probe codes.
 

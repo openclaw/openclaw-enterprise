@@ -108,8 +108,9 @@ API composition, including development, and worker startup call
 `KubernetesComputeDriver.preflight` before reconciliation. `KubernetesComputeDriver.validateConfiguration`
 first rejects native Gateway or derived sandbox listener ports overlapping private
 runtime status TCP/18791. Single-cluster
-preflight checks every storage-namespace page and refuses legacy split targets
-without changing labels or state.
+preflight checks every storage-namespace page and refuses split targets without
+the tenant label. Resolution accepts an adopted `oce-gateways-<hash>` tenant
+only beside its storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
@@ -200,8 +201,9 @@ preparation, or preparing/activating that predecessor, clears its record.
 Both PVCs survive downtime; recovery retries or creates a revision. New exclusive
 revisions supersede old reconciliation/maintenance without automatic rollback; see
 [production revision stages](../reference/drivers/compute.md#production-revision-stages).
-Dedicated Codex and dedicated OpenClaw must complete a bounded native
-authentication/model probe before their Harness becomes ready.
+Kubelet probes private `/readyz` on runtime-backed workloads. Gates remain:
+Gateway plugin/native status, Codex plugin state and authenticated app-server
+WebSocket, or dedicated OpenClaw identity. Responses are bodyless `200` or `503`.
 While first-deploy [workspace setup](workspace-files.md) is pending, embedded
 preparation starts the replacement Gateway itself before activation. If the Gateway
 of a revision that never served (its Service still selects no Pod) is unready,
@@ -324,6 +326,10 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 - 2026-10-10 00:29: Reserve private status TCP/18791 before native listeners start. (authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
+- 2026-10-09 18:44: Resolve an adopted split-layout storage namespace as the tenant namespace only while it keeps its storage label. (fix-533-adopt)
+
+- 2026-10-08 14:19: Move Kubernetes runtime readiness to private HTTP with unchanged gates. (authoring-run/5a25b09c-b1c6-4dd2-b281-8b10a847e8b9 - aac339d52e472dd96489599dc1818da414abf556)
+
 - 2026-10-08 02:42: Align the admitted native Agent workspace and Gateway file-transfer binding with OpenShell's approved data mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - a8d2969355bd3c0478337e16a01e267ad3607595)
 
 - 2026-10-08 02:38: Consume the Driver-owned native workspace path so OpenShell file operations reach the admitted mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - e23d7dc5bf63ca103d6c7dec76d36ced9e1fbf5f)
@@ -357,11 +363,5 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 - 2026-09-30 10:30: Repair a never-served unready embedded Gateway during redeploy with pending workspace setup. (fix-dogfood-1)
 
 - 2026-09-30 09:54: Correct dedicated replacement: the worker stops the predecessor Gateway before preparation, so redeploys interrupt service. (authoring-run/a37a9c9b-9e94-4bd2-88c5-dfa5c5f94d12 - 90899dc55ab7)
-
-- 2026-09-28 02:55: Trace dedicated native OpenClaw on paired node hosts with full-facet Sandbox provisioning. (oce-pr-440-sync - e2b739f51f89)
-
-- 2026-09-25 18:25: Document candidate Gateway bootstrap during dedicated recovery from an unready predecessor. (authoring-run/9b15ee1e-3767-4dd0-8d9a-56ad2087dcb5 - 7b2345a3cd6e78b9c7c8bae530f3379db56be443)
-
-- 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

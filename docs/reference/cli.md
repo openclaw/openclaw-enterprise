@@ -107,6 +107,9 @@ For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
 unreadable rows; if the Agent itself is unreadable, it skips all status reads
 and explains why on stderr. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
+`service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
+explicit zero is refused before output-file creation or API issuance.
+
 Commands take IDs, not names. The CLI rejects a value without the expected
 prefix, such as `ns_` or `agt_`, and names the list command that shows the ID.
 

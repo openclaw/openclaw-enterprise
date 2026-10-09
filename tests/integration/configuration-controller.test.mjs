@@ -572,8 +572,8 @@ test("Configuration save refuses an agents roster every deployment refuses, with
   assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
   assert.deepEqual(repaired.body.data.values, fixed);
 
-  // Rules that depend on the topology stay at deployment: only dedicated OpenClaw serves main,
-  // so these save (embedded OpenClaw and Codex deploy them; see kubernetes-compute.test.mjs).
+  // Rules that depend on the topology stay at deployment: only dedicated execution serves main,
+  // so these save (embedded OpenClaw deploys them; see kubernetes-compute.test.mjs).
   // An empty agents.list beside an empty roster is valid everywhere.
   for (const values of [
     withAgents({ entries: { helper: {} } }),

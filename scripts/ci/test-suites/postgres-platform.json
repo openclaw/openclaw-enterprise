@@ -113,6 +113,7 @@
       "path": "tests/integration/postgres-presets.test.mjs",
       "expectedTests": [
         "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
+        "shipped Preset API preserves contract-sized templates through PostgreSQL",
         "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
       ]
     },

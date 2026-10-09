@@ -145,7 +145,7 @@ entry. The message names the setting and the rule. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
 Rules that depend on the topology stay at deployment, because a Configuration
-does not fix one: dedicated OpenClaw's `main` Agent rules, for example. Agent
+does not fix one: dedicated execution's `main` Agent rules, for example. Agent
 deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
@@ -251,6 +251,7 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 
 ## Changelog
 
+- 2026-10-09 19:20: Dedicated Codex deployment applies the `main` Agent rules too. (fix-969, finding 969)
 - 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's message; topology-dependent rules stay at deployment. (q35-roster-save, finding 874)
 
 - 2026-09-01 08:47: Link Installation Provider definitions separately from native Agent Configuration. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)

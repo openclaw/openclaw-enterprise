@@ -253,7 +253,7 @@ writes must pass the [CSRF checks](authentication.md). The Agent must have an
 active revision and a reachable gateway.
 
 Embedded OpenClaw sole rosters follow the Gateway-announced default ID.
-Dedicated execution and other rosters retain the explicit main target.
+Other rosters retain the explicit main target; dedicated deployment requires it.
 
 `PUT` accepts one `content` field:
 

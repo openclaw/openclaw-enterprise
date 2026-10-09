@@ -10,6 +10,34 @@ you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-09: Dedicated Codex deployment requires the main Agent
+
+**What breaks.** Since #1972, Kubernetes Compute applies dedicated OpenClaw's
+`main` Agent rules to dedicated Codex. Deployment answers `400` naming the
+setting when the Configuration has:
+
+- `agents.entries` without a `main` entry, for example
+  `Dedicated Codex serves the main Agent: add agents.entries.main, or rename an entry to main.`
+- `agents.defaults.sessionStore.agentId` or `agents.defaults.systemAgent.agentId`
+  set to another Agent.
+- an `agents.entries` key that is not canonical, such as `_helper`.
+
+The Gateway serves the Harness workspace only to `main`. Without a `main` entry,
+workspace file reads and writes answered `503`; with another default Agent,
+chats ran as an Agent other than the one the files page edits.
+
+**Who is affected.** Dedicated Codex Agents whose Configuration matches one of
+these. No bundled Preset does. Running workloads are not changed, but until the
+Agent is deployed again with a fixed Configuration, re-preparing its active
+revision reports the same refusal and skips repair. Embedded OpenClaw and SSH
+Compute are unchanged.
+
+**How to tell.** Check the Agent's Configuration for the settings above.
+
+**Steps.** Rename the entry to `main` (or add `agents.entries.main`), set or
+remove the named `agentId`, rename a non-canonical key, save the Configuration,
+and deploy the Agent again. _untested_
+
 ## 2026-10-09: Configuration save refuses Agent rosters every deployment refuses
 
 **What breaks.** Since #1959, Configuration create and update
@@ -158,8 +186,9 @@ and 4 for every Agent it moves.
 
 **What breaks.** Since #925 (`dd344a97c`), a single-cluster Installation keeps
 each Namespace's Gateways and Harnesses in one tenant namespace. Releases before
-it kept Gateways in a separate `oce-gateways-<hash>` namespace. The current API
-and worker refuse to start while such a namespace exists, and the
+it kept Gateways, their state and the canonical Secrets in a separate
+`oce-gateways-<hash>` namespace. The current API and worker refuse to start
+while such a namespace lacks the tenant label, and the
 [image upgrade helper](production-upgrade.md) stops at its startup preflight
 (`Existing split-layout Gateway storage prevents this single-cluster upgrade`)
 before it changes anything. See
@@ -178,119 +207,12 @@ kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespa
 
 A row with an empty `NAMESPACE` column is a split-layout tenant.
 
-**What you lose.** No migration moves the old namespaces, so their tenants are
-exported, deleted and re-created under new IDs. A deleted Namespace's name stays
-reserved, so each Namespace comes back under a new name. These come back:
-Secrets (you supply the values again), Configurations that an Agent uses,
-Presets, credential sources, Roles, access bindings, service accounts (without
-issued credentials) and Agents. Agents that were running are deployed again,
-and a copy of each running Agent's Harness workspace can be put back. These do
-not come back:
-
-- chat history and other Gateway state (the copy keeps the transcripts for
-  reference; loading them into the new Gateway is untested);
-- Agent revision history and bindings to old revisions;
-- group, Installation-wide and resource-less bindings (re-create them by hand);
-- issued service-account credentials and Agent runtime credentials;
-- the old IDs and Namespace names, so update anything outside OCE that uses them.
-
-Accounts, Installation service keys and the audit history stay in the database.
-
-**Steps.** Tested on a 2026-09-28 release Installation with three Namespaces
-and three Agents: the commands took about two minutes, plus the two image
-releases (about 35 seconds each). Run them from a checkout of the target
-release, with `occ` set up for the old release as an administrator (`OCC_URL`,
-`OCC_SERVICE_KEY_FILE`, `OCC_CA_BUNDLE`) and `kubectl` for the cluster. The
-script talks to OCC only. Keep every file below private: they hold
-Configurations, workspace files, transcripts and Secret values.
-
-1. Export every Namespace from the old release:
-
-   ```bash
-   node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
-   ```
-
-   If a successful API response is malformed or lacks its data envelope, export
-   exits nonzero without writing a bundle. Restore the API response path and
-   rerun export, then check its Namespace inventory before continuing.
-
-   It reads `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md` only where
-   [workspace routing](workspace-routing.md) is configured and the Agent runs.
-   Step 2 copies the whole workspace instead.
-
-2. Copy each running Agent's Harness workspace and Gateway state:
-
-   ```bash
-   ARCHIVE=/secure/occ/tenant-archive
-   mkdir -m 700 -p "$ARCHIVE"
-   kubectl get pods -A -l openclaw.dev/agent --field-selector status.phase=Running -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.metadata.labels.openclaw\.dev/workload-role} {.metadata.labels.openclaw\.dev/agent}{"\n"}{end}' |
-   while read -r ns pod role agent; do
-     case $role in
-       gateway) paths='.openclaw/state .openclaw/agents/main/agent .openclaw/media .openclaw/agents/main/sessions' ;;
-       agent) paths='workspace .codex/generated_images' ;;
-       *) continue ;;
-     esac
-     kubectl -n "$ns" exec "$pod" -c "$role" -- tar -C /home/node --ignore-failed-read \
-       --exclude=codex-home --exclude='.oce-workspace-setup.*' -cf - $paths \
-       >"$ARCHIVE/$agent-$role.tar" </dev/null || echo "failed: $agent $role"
-   done
-   ```
-
-3. Write the Secret values to a `0600` file such as
-   `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
-   Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
-   `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Delete the tenants on the old release. The command refuses if a Namespace
-   gained an Agent or Secret after the export, or if the export could not read an
-   Agent's workspace files; once step 2 has the copy, add
-   `--allow-unread-workspace-files`:
-
-   ```bash
-   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json \
-     --yes --allow-unread-workspace-files
-   kubectl get namespaces -l openclaw.dev/gateway-namespace
-   ```
-
-   Continue when no `oce-gateways-*` namespace is left. A Configuration that no
-   Agent uses is not exported and blocks its Namespace's delete; the error says
-   how to find and delete it. Then run `discard` again.
-
-5. [Upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
-   and the runtime as usual. The preflight now passes.
-6. Re-create the tenants under new Namespace names. `--skip` leaves out a
-   Namespace you no longer need, such as an unused `default`:
-
-   ```bash
-   node scripts/split-layout-tenants.mjs import --bundle /secure/occ/tenants.json \
-     --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json \
-     --rename team-a=team-a-2 --skip default
-   ```
-
-   It creates the Namespaces and exits `3` until they are `ready`.
-   [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
-   for each one, then run the same command again. The ID map records every old
-   and new ID, so a rerun after any failure resumes. Exit `4` lists what needs a
-   hand: Agents whose deploy failed, such as a service-account Agent without an
-   issued credential, and access bindings it could not re-create.
-
-7. Put each Harness workspace back once the new Agent's Harness Pod runs:
-
-   ```bash
-   for tarball in "$ARCHIVE"/*-agent.tar; do
-     old=$(basename "$tarball" -agent.tar)
-     new=$(jq -r --arg old "$old" '.ids[$old] // empty' /secure/occ/tenant-ids.json)
-     [ -n "$new" ] || { echo "skipped: $old was not imported"; continue; }
-     read -r ns pod < <(kubectl get pods -A --field-selector status.phase=Running \
-       -l "openclaw.dev/agent=$new,openclaw.dev/workload-role=agent" \
-       -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}')
-     [ -n "${pod:-}" ] || { echo "skipped: $new has no running Harness"; continue; }
-     kubectl -n "$ns" exec -i "$pod" -c agent -- tar -C /home/node --no-overwrite-dir -xf - <"$tarball" \
-       && echo "restored $old -> $new" || echo "failed: $old -> $new"
-   done
-   ```
-
-8. Check the Agents (`occ agent list`) and re-issue any service-account
-   credentials.
+**Steps.** Adopt each tenant in place with the
+[split-layout upgrade](split-layout-upgrade.md): each `oce-gateways-<hash>`
+namespace becomes its tenant's namespace, and IDs, Namespace names, revisions,
+Secrets, service-account credentials, chat history and Harness workspaces all
+stay. Tenants that can't be adopted use the export fallback on the same page,
+which re-creates them under new IDs.
 
 ## 2026-10-01: released dedicated Agents fail to redeploy
 

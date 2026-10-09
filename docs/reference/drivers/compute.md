@@ -162,9 +162,9 @@ unavailable; Drivers unable to collect safe evidence should omit the method.
 ### Optional runtime status and logs
 
 `describeAgentRuntime(binding, signal, options)` returns Pod status, restarts,
-Events and log sources of a revision, or one source without Events. A terminated
-container reports its current exit as `lastTermination`; otherwise that field
-reports the prior exit.
+the newest 100 Events per Pod and log sources of a revision, or one source without Events.
+A terminated container reports its current exit as `lastTermination`; otherwise
+that field reports the prior exit.
 `readAgentRuntimeLogs(binding, request)` returns bounded **raw** lines from a
 listed Pod. Drivers re-check ownership and raise
 `RuntimeLogsForbiddenByClusterError` for a cluster `403`; OCC [redacts and bounds](../../guides/topics/agent-logs.md) output. Without them,
