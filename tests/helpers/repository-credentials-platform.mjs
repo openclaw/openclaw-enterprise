@@ -17,6 +17,7 @@ import {
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
+import { followContainerLog } from "./container-log-capture.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -831,6 +832,39 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
       return matches[0];
     });
   }
+  // Follows the gateway container's log so a failed wait can attach it after the
+  // Pod is gone (finding 795: a stopped gateway once took 29 s to exit).
+  function followGatewayLog(pod) {
+    const agent = pod.metadata.labels["openclaw.dev/agent"];
+    const read = async (...args) =>
+      JSON.parse(
+        (
+          await execute("kubectl", kubectlArguments(selection, [...args, "-o", "json"]), {
+            timeout: 15_000,
+          })
+        ).stdout,
+      ).items;
+    const follow = followContainerLog({
+      args: kubectlArguments(selection, [
+        "logs",
+        "--follow",
+        "--timestamps",
+        "-n",
+        placement,
+        pod.metadata.name,
+        "-c",
+        "gateway",
+      ]),
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C.UTF-8" },
+      target: { namespace: placement, pod: pod.metadata.name, container: "gateway" },
+      snapshot: async () => ({
+        pods: await read("get", "pods", "-n", placement, "-l", `openclaw.dev/agent=${agent}`),
+        events: await read("get", "events", "-n", placement),
+      }),
+    });
+    scope.after(() => follow.stop());
+    return follow;
+  }
   async function podNode(pod, script, input) {
     return execute(
       "kubectl",
@@ -1002,6 +1036,7 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     request,
     createAgent,
     readyPod,
+    followGatewayLog,
     expediteWork,
     tool,
     podNode,

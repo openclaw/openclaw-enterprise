@@ -25,6 +25,22 @@ COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentia
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
 RUN corepack pnpm credentials:build
+# Assemble the runtime's credential client as one tree with fixed modes and
+# timestamps. The runtime copies it onto / as its last layer, so a client change
+# rebuilds only that layer and every builder writes the same bytes. With a fixed
+# SOURCE_DATE_EPOCH (CI image lanes) the runtime image ID then matches too.
+COPY deploy/runtime/bin .build/runtime-client/opt/oce/repository-credentials/bin
+RUN set -eu; \
+    client=.build/runtime-client/opt/oce/repository-credentials; \
+    cp .build/repository-credentials/client/package.json "$client/package.json"; \
+    cp -R .build/repository-credentials/client/dist "$client/dist"; \
+    chmod 0755 .build/runtime-client/opt .build/runtime-client/opt/oce; \
+    chmod -R a+rX "$client"; \
+    chmod 0555 "$client/bin/gh"; \
+    test -f "$client/dist/drivers/repo/github/credentials/client/router.js"; \
+    test -f "$client/dist/drivers/repo/github/credentials/client/native-git.js"; \
+    test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
+    find .build/runtime-client -exec touch -h -d @0 {} +
 
 # Build the service from the same checkout as the runtime client. Keep the
 # service closure separate from the Agent runtime and its unprivileged client.
@@ -187,6 +203,8 @@ WORKDIR /app
 RUN node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 16) throw new Error(`OpenClaw Enterprise runtime images require Node.js 24.16+; found ${process.version}.`);'
 
 RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
+# Version checks use throwaway state directories: gh writes a random device ID
+# and Codex a randomly named arg0 directory, which would otherwise ship.
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
@@ -200,7 +218,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
     install -m 0755 "gh_2.100.0_linux_${architecture}/bin/gh" /usr/local/bin/gh; \
     rm -rf /tmp/gh_2.100.0*; \
     /usr/bin/git --version; \
-    /usr/local/bin/gh --version | grep '^gh version 2.100.0 '
+    gh_state="$(mktemp -d)"; \
+    XDG_STATE_HOME="$gh_state" /usr/local/bin/gh --version | grep '^gh version 2.100.0 '; \
+    rm -rf "$gh_state"
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
@@ -231,21 +251,15 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && test "$(stat -c '%U:%G:%a' /home/node/.codex/generated_images)" = "node:node:700" \
   && node /app/openclaw.mjs --version \
   && node -e 'if (typeof require("ws") !== "function") throw new Error("Runtime WebSocket dependency unavailable")' \
-  && test "$(codex --version)" = "codex-cli ${OPENAI_CODEX_VERSION}" \
+  && codex_home="$(mktemp -d)" \
+  && test "$(CODEX_HOME="$codex_home" codex --version)" = "codex-cli ${OPENAI_CODEX_VERSION}" \
+  && rm -rf "$codex_home" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
   && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime \
   && rm /tmp/build-runtime-assets.mjs
 
-COPY --from=repository-client-build /build/.build/repository-credentials/client/package.json /opt/oce/repository-credentials/package.json
-COPY --from=repository-client-build /build/.build/repository-credentials/client/dist /opt/oce/repository-credentials/dist
-COPY deploy/runtime/bin /opt/oce/repository-credentials/bin
-RUN chmod -R a+rX /opt/oce/repository-credentials \
-    && chmod 0555 /opt/oce/repository-credentials/bin/gh \
-    && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js \
-    && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js \
-    && test -x /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks/pre-push \
-    && /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
+RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 
 ARG OPENCLAW_COMMIT
 ARG OCC_BUILD_REVISION=""
@@ -253,5 +267,8 @@ LABEL org.openclaw.image.revision=${OPENCLAW_COMMIT}
 RUN node -e 'const fs = require("node:fs"); const provenance = JSON.parse(fs.readFileSync("/opt/oce/runtime/provenance.json", "utf8")); if (!/^[a-f0-9]{40}$/.test(process.argv[1]) || provenance.commit !== process.argv[1]) throw new Error("OpenClaw label must match packaged provenance");' "$OPENCLAW_COMMIT"
 LABEL org.opencontainers.image.revision=${OCC_BUILD_REVISION}
 RUN node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision || null}));' "$OCC_BUILD_REVISION"
+
+# Keep this last: a client change then rebuilds only this layer (see repository-client-build).
+COPY --from=repository-client-build /build/.build/runtime-client/ /
 
 USER node

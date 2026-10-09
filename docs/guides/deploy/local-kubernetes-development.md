@@ -176,7 +176,10 @@ set absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup; parent
 paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).
 `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds k3d
 readiness and each later startup wait. A cluster timeout triggers owned-resource
-rollback; follow the printed cleanup instruction if state is retained. Startup
+rollback; follow the printed cleanup instruction if state is retained. A failed
+exclusive key-file write removes its partial output so you can retry after
+resolving the filesystem error. Existing destination files are never removed;
+if removal itself fails, the error reports both failures. Startup
 refuses an existing state directory or cluster. To pick up source changes,
 [rebuild the running services](#rebuild-after-a-source-edit); cleanup is for
 discarding the Installation. The state directory remains mode `0700`; generated

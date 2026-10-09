@@ -293,6 +293,14 @@ test("development admission fails closed outside explicit loopback-only developm
     createFixture({ development: { trustedCidrs: ["not-a-cidr"] } }),
     /IPv4 CIDR/,
   );
+  // "08" is prefix 8, and "010" is decimal 10. Production trusted proxies refuse both.
+  for (const cidr of ["192.168.0.0/08", "10.0.0.010/32", "10.0.0.0/032"]) {
+    await assert.rejects(
+      createFixture({ development: { trustedCidrs: [cidr] } }),
+      /IPv4 CIDR/,
+      cidr,
+    );
+  }
 
   const fixture = await createFixture();
   const remote = await request(fixture.app, "/installation/bootstrap", {

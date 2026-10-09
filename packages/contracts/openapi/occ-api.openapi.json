@@ -692,6 +692,16 @@
                     "type": "string"
                   },
                   {
+                    "const": "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+                    "description": "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+                    "description": "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
+                    "type": "string"
+                  },
+                  {
                     "const": "REPOSITORY_OPTIONS_UNAVAILABLE",
                     "description": "Only repository-option discovery is unavailable after Agent create authorization. An Agent without repository bindings may be submitted and is authorized again. Other dependency failures do not carry this meaning.",
                     "type": "string"
@@ -14264,7 +14274,7 @@
                       },
                       { "type": "null" }
                     ],
-                    "description": "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it."
+                    "description": "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -16680,6 +16690,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16846,6 +16857,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16929,7 +16941,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Get the withdrawal state of a credential source for an Agent's active revision",
+        "summary": "Get the withdrawal state of a credential source for an Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" }

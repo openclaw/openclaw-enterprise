@@ -16,7 +16,7 @@
     "requireEnv": ["NODE_BASE_IMAGE"],
     "nodeBaseImage": true
   },
-  "fileConcurrency": 2,
+  "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
@@ -43,7 +43,8 @@
     {
       "path": "tests/integration/docker-compute-token-retry.test.mjs",
       "expectedTests": [
-        "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries"
+        "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries",
+        "Docker Namespace deletion cleans up owned containers after its network is removed"
       ]
     },
     {
@@ -70,6 +71,7 @@
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
       "expectedTests": [
+        "database CA mounts stay distinct from active production volume mounts",
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
@@ -77,7 +79,8 @@
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
-        "private Envoy Gateway routing preserves explicit hostnames and external CA trust"
+        "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
+        "Collector exporter ports preserve decimal meaning in Kubernetes YAML"
       ]
     },
     {

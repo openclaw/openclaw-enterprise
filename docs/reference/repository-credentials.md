@@ -293,7 +293,9 @@ unsupported. Other links, human text and unrelated metadata remain unchanged.
 
 Ordinary Git uses `/usr/bin/git`, which owns commands, identity, hooks, aliases,
 remotes, push URLs, worktrees and native user settings. The client neither parses
-Git arguments nor creates a temporary HOME.
+Git arguments nor creates a temporary HOME. The shared Git/gh executor preserves
+numeric exit codes; signal termination returns `128 + signal number`, including
+130 for SIGINT and 143 for SIGTERM.
 
 For each generation, native preparation validates public manifest/session metadata,
 identities, paths and file custody, then writes private aggregate `gitconfig`

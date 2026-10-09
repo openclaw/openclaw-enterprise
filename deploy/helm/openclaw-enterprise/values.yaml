@@ -190,7 +190,8 @@ gatewayRouting:
   envoyHttpsTargetPort: 10443
   sandbox:
     enabled: false
-    # A dedicated wildcard domain outside the OCE session cookie domain.
+    # A dedicated wildcard domain outside the OCE session cookie domain, at most
+    # 214 characters so agent-<32 hex>.<domain> fits the 253-character limit.
     domain: ""
     # Existing wildcard HTTPS certificate in the release namespace.
     tlsSecretName: ""

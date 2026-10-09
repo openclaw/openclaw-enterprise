@@ -184,6 +184,7 @@ export async function runEmbeddedGatewayProbe(
   t,
   { mode, delayMs = 0, cpus, memory, until, limitMs, stress, afterStop },
 ) {
+  const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
   const material = await createProbeMaterial(t, gateway.configuration);
   const suffix = randomBytes(6).toString("hex");
@@ -315,7 +316,7 @@ export async function runEmbeddedGatewayProbe(
     for (;;) {
       const snapshot = await collect();
       if (until(snapshot, containerName)) {
-        return { containerName, snapshot };
+        return { containerName, snapshot, setupMs: startedAt - scenarioStartedAt };
       }
       if (!snapshot.running) {
         const error = new assert.AssertionError({

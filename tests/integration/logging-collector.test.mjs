@@ -1344,6 +1344,17 @@ test(
                 plane: "execution",
                 kubernetesStatus: 403,
               }),
+              // A dependency 503's class, message and causes stay in local logs.
+              line({
+                severity: "WARN",
+                event: "http.dependency_unavailable",
+                requestId,
+                method: "POST",
+                route: `/api/${canary}`,
+                errorClass: "DependencyUnavailableError",
+                message: `The Kubernetes Secret create failed ${canary}.`,
+                causes: [{ errorClass: "ApiException", code: 500 }],
+              }),
               // A failed audit write keeps the Agent's IDs; the error stays local.
               line({
                 severity: "WARN",
@@ -1462,6 +1473,7 @@ test(
           "event.name": "agent_runtime_credentials.cluster_denied",
           "request.id": requestId,
         }),
+        api("WARN", { "event.name": "http.dependency_unavailable", "request.id": requestId }),
         api("WARN", {
           "event.name": "native_admin.websocket_audit_failed",
           "occ.namespace.id": namespaceId,

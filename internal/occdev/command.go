@@ -29,6 +29,9 @@ type runner struct {
 	// automaticNodeResolver is the host upstream resolver that startup chose for
 	// the k3d node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER was unset.
 	automaticNodeResolver string
+	// legacyNATUnconfirmed records that the preflight could not confirm the
+	// host's legacy iptables nat table, so a k3d failure names it.
+	legacyNATUnconfirmed bool
 }
 
 func newRunner(opts Options) *runner {

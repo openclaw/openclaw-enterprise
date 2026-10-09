@@ -17,6 +17,12 @@ const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
 
+// The pinned Kubernetes driver, not policy.process, owns workload identity.
+// This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
+// NVIDIA/OpenShell 021400be8af471f8669369e679de3e18cf0bd672
+// crates/openshell-driver-kubernetes/src/config.rs:309,513-545.
+export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
+
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
 // thread rollouts. Skills no longer arrive through the workspace PVC.
 const requiredWorkspaceMounts = Object.freeze([
@@ -948,6 +954,16 @@ export function createOpenShellKubernetesFixture({
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);
     assert.notEqual(container.securityContext?.runAsUser, 0);
+    assert.equal(
+      container.securityContext?.runAsUser ?? pod.spec.securityContext?.runAsUser,
+      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.uid,
+      "OpenShell workload identity must match the fixture's private-storage owner.",
+    );
+    assert.equal(
+      container.securityContext?.runAsGroup ?? pod.spec.securityContext?.runAsGroup,
+      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.gid,
+      "OpenShell workload group must match the fixture's private-storage owner.",
+    );
   }
 
   async function assertGatewayBootstrapPolicies(namespace) {

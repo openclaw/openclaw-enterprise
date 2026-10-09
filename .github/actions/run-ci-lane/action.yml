@@ -74,7 +74,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -203,11 +203,12 @@ runs:
         retention-days: 7
     - name: Upload cluster diagnostics
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      # Setup failures and every k3d file's Agent namespace activity; lanes
-      # without a cluster write no report.
+      # Setup failures, failed files' details and every k3d file's Agent
+      # namespace activity; a lane with none writes no report. One per attempt,
+      # so a passing rerun cannot replace a failed attempt's report.
       if: always()
       with:
-        name: diagnostics-${{ inputs.artifact-prefix }}-${{ inputs.lane }}
+        name: diagnostics-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
         path: ${{ runner.temp }}/state/${{ inputs.lane }}.json.diagnostics.json
         overwrite: true
         if-no-files-found: ignore

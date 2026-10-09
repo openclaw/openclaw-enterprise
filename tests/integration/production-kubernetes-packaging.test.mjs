@@ -8,7 +8,12 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  createKubernetesComputeDriver,
+  PLUGIN_RUNTIME_STATUS_PORT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 import {
   renderProductionChart,
@@ -256,6 +261,42 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
+  const longestLabel = "a".repeat(63);
+  const longestDomain = [longestLabel, longestLabel, "a".repeat(22), longestLabel].join(".");
+  const overlongDomain = [longestLabel, longestLabel, "a".repeat(23), longestLabel].join(".");
+  const hostnameLimitDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(61)].join(".");
+  assert.equal(longestDomain.length, 214);
+  assert.equal(overlongDomain.length, 215);
+  assert.equal(hostnameLimitDomain.length, 253);
+  assert.equal(`agent-${"0".repeat(32)}.${longestDomain}`.length, 253);
+  const longest = await resources(
+    (await render({ ...sandboxValues, "gatewayRouting.sandbox.domain": longestDomain })).stdout,
+  );
+  assert.equal(
+    longest
+      .find((item) => item.kind === "Gateway")
+      .spec.listeners.find((item) => item.name === "sandbox").hostname,
+    `*.${longestDomain}`,
+  );
+  for (const domain of [
+    "a..b.com",
+    "example.com-",
+    "example.-com",
+    `${"a".repeat(64)}.test`,
+    "localhost",
+  ]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must be a DNS hostname/,
+    );
+  }
+  for (const domain of [overlongDomain, hostnameLimitDomain]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must not exceed 214 characters, leaving room for the agent-<32 hex>\. prefix/,
+    );
+  }
   await assert.rejects(
     render({
       ...sandboxValues,
@@ -265,6 +306,64 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     /sandbox requires gatewayRouting.enabled/,
   );
 });
+
+test(
+  "gateway routing refuses fractional YAML ports before emitting resources",
+  tooling,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-routing-ports-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const valuesFile = join(directory, "ports.yaml");
+    const routingValues = {
+      ...gatewayRoutingValues,
+      "gatewayRouting.sandbox.enabled": "true",
+      "gatewayRouting.sandbox.domain": "previews.example.test",
+      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "public-ingress",
+    };
+    // Values files preserve numeric scalars; --set passes a fractional value as a string.
+    for (const [key, value] of [
+      ["tenantGatewayPort", 8080.5],
+      ["envoyHttpsTargetPort", 10443.5],
+      ["sandbox.listenerPort", 8443.5],
+    ]) {
+      const field = key.startsWith("sandbox.")
+        ? `  sandbox:\n    listenerPort: ${value}\n`
+        : `  ${key}: ${value}\n`;
+      await writeFile(valuesFile, `gatewayRouting:\n${field}`);
+      await assert.rejects(
+        render(routingValues, { valuesFiles: [valuesFile] }),
+        ({ code, stderr }) => code !== 0 && stderr.includes(`gatewayRouting.${key}`),
+        key,
+      );
+    }
+    await writeFile(
+      valuesFile,
+      "gatewayRouting:\n  tenantGatewayPort: 8081\n  envoyHttpsTargetPort: 10444\n  sandbox:\n    listenerPort: 8444\n",
+    );
+    const rendered = await resources(
+      (await render(routingValues, { valuesFiles: [valuesFile] })).stdout,
+    );
+    assert.equal(
+      rendered
+        .find((item) => item.kind === "Gateway")
+        .spec.listeners.find((item) => item.name === "sandbox").port,
+      8444,
+    );
+    const policies = rendered.filter((item) => item.kind === "NetworkPolicy");
+    for (const expected of [8081, 10444, 8444]) {
+      assert.ok(
+        policies.some((policy) =>
+          [...(policy.spec.ingress ?? []), ...(policy.spec.egress ?? [])].some((rule) =>
+            rule.ports?.some((port) => port.port === expected),
+          ),
+        ),
+        `NetworkPolicy port ${expected}`,
+      );
+    }
+  },
+);
 
 // Evaluate the selector-only, numeric-port ingress rules rendered by this chart.
 // This checks additive policy semantics, not live CNI enforcement.
@@ -311,6 +410,69 @@ function chartAllowsIngress(objects, destination, source, port, protocol = "TCP"
     )
   );
 }
+
+test(
+  "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
+  tooling,
+  async () => {
+    const sandboxValues = {
+      ...gatewayRoutingValues,
+      "gatewayRouting.sandbox.enabled": "true",
+      "gatewayRouting.sandbox.domain": "previews.example.test",
+      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "public-ingress",
+    };
+    const compute = (gatewayPort, sandbox) => {
+      const options = conformanceKubernetesOptions({
+        gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      });
+      // Routed Compute takes no direct gateway clients.
+      const { gatewayClients, ...network } = options.network;
+      return createKubernetesComputeDriver({
+        ...options,
+        network: { ...network, gatewayPort },
+        gatewayRouting: {
+          gatewayName: "oce-agent-gateways",
+          gatewayNamespace: "openclaw-system",
+          envoyNamespace: "envoy-gateway-system",
+          ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+        },
+      });
+    };
+    // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
+    // what controller startup refuses instead of installing a controller that cannot start.
+    for (const [gatewayPort, sandbox, refused] of [
+      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
+      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
+      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
+      [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
+      [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
+      [8080, true, false],
+    ]) {
+      const row = JSON.stringify({ gatewayPort, sandbox });
+      const chartValues = {
+        ...(sandbox ? sandboxValues : gatewayRoutingValues),
+        "gatewayRouting.tenantGatewayPort": String(gatewayPort),
+      };
+      if (refused) {
+        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
+        await assert.rejects(
+          render(chartValues),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes("gatewayRouting.tenantGatewayPort") &&
+            stderr.includes(`reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`),
+          row,
+        );
+      } else {
+        assert.doesNotThrow(() => compute(gatewayPort, sandbox), row);
+        await render(chartValues);
+      }
+    }
+  },
+);
 
 test(
   "two-cluster packaging separates remote API identities without optional services",
@@ -578,6 +740,218 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.deepEqual(bootstrapClaim.spec.accessModes, ["ReadWriteOnce"]);
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
+
+test(
+  "production Helm custom Gateway hostname follows the loaded Compute contract",
+  tooling,
+  async (t) => {
+    const { loadInstallationConfiguration } =
+      await import("../../apps/controller/src/composition/installation-config.ts");
+    const directory = await mkdtemp(join(tmpdir(), "occ-control-hostname-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const example = loadYaml(
+      (await readFile(new URL("installation.yaml", productionExamples), "utf8")).replace(
+        "<actual-proxy-source-cidr>",
+        "192.0.2.10/32",
+      ),
+    );
+    const installationPath = join(directory, "installation.yaml");
+    const invalid = [
+      "Bad_Host",
+      "proxy.example.test:443",
+      "https://proxy.example.test",
+      "proxy..example.test",
+      `${"a".repeat(64)}.test`,
+      `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(62)}`,
+    ];
+    const valid = [
+      "proxy.example.test",
+      `${"a".repeat(63)}.test`,
+      `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(61)}`,
+      "",
+      undefined,
+    ];
+    for (const hostname of [...invalid, ...valid]) {
+      const configuration = structuredClone(example);
+      if (hostname === undefined) {
+        delete configuration.drivers.compute.configuration.gatewayRouting.hostname;
+      } else {
+        configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
+      }
+      await writeFile(installationPath, JSON.stringify(configuration));
+      const load = () =>
+        loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: installationPath },
+        });
+      const helmValues =
+        hostname === undefined
+          ? gatewayRoutingValues
+          : { ...gatewayRoutingValues, "gatewayRouting.hostname": hostname };
+      if (invalid.includes(hostname)) {
+        await assert.rejects(
+          load(),
+          /Gateway routing hostname must be a DNS hostname without a port or path/,
+        );
+        await assert.rejects(
+          render(helmValues),
+          ({ stderr }) =>
+            stderr.includes(
+              "gatewayRouting.hostname must be a DNS hostname without a port or path",
+            ),
+          hostname,
+        );
+        continue;
+      }
+      const loaded = await load();
+      const objects = await resources((await render(helmValues)).stdout);
+      const gateway = objects.find((object) => object.kind === "Gateway");
+      const envoy = objects.find((object) => object.kind === "EnvoyProxy");
+      const certificate = objects.find(
+        (object) => object.kind === "Certificate" && !object.spec.isCA,
+      );
+      const routing = loaded.installation.drivers.compute.configuration.gatewayRouting;
+      const expected =
+        hostname ||
+        `${envoy.spec.provider.kubernetes.envoyService.name}.${routing.envoyNamespace}.svc`;
+      assert.equal(
+        gateway.spec.listeners.find((listener) => listener.name === "https").hostname,
+        expected,
+      );
+      assert.deepEqual(certificate.spec.dnsNames, [expected]);
+      assert.equal(routing.hostname, hostname);
+    }
+  },
+);
+
+test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set",
+        "gatewayRouting.gatewayName=Bad_Name",
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        "gatewayRouting.gatewayName= oce-agent-gateways ",
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  const sixtyFour = "a".repeat(64);
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        `gatewayRouting.gatewayName=${sixtyFour}`,
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  const sixtyThree = "a".repeat(63);
+  const { stdout } = await execute(
+    helm,
+    [
+      "template",
+      "oce",
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      "deploy/examples/production/values.yaml",
+      "--set-string",
+      `gatewayRouting.gatewayName=${sixtyThree}`,
+    ],
+    { cwd: repository, maxBuffer: 2_000_000 },
+  );
+  const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+  assert.equal(gateway?.metadata.name, sixtyThree);
+});
+
+test(
+  "the execution chart refuses a harness Gateway name or Envoy namespace Compute refuses",
+  tooling,
+  async () => {
+    const template = (field, value) =>
+      execute(
+        helm,
+        [
+          "template",
+          "oce",
+          "deploy/helm/openclaw-execution",
+          "--set",
+          "routing.hostname=agents.example.invalid",
+          "--set",
+          "routing.gatewayClassName=private-envoy-gateway",
+          "--set",
+          "routing.tlsSecretName=agents-tls",
+          "--set",
+          "routing.controlPlaneCidrs[0]=198.51.100.0/24",
+          "--set-string",
+          `routing.${field}=${value}`,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    // Compute validateGatewayName: a DNS subdomain, at most 63 characters (a label value).
+    for (const gatewayName of ["Bad_Name", "-gateways", "gateways-", "a..b", "a".repeat(64)]) {
+      await assert.rejects(
+        template("gatewayName", gatewayName),
+        /routing\.gatewayName must be a DNS-safe Kubernetes resource name of at most 63 characters/,
+        gatewayName,
+      );
+    }
+    // Compute isKubernetesNamespaceName: a DNS label, at most 63 characters, no dots.
+    for (const envoyNamespace of ["Envoy", "envoy.system", "-envoy", "envoy-", "a".repeat(64)]) {
+      await assert.rejects(
+        template("envoyNamespace", envoyNamespace),
+        /routing\.envoyNamespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+        envoyNamespace,
+      );
+    }
+    for (const gatewayName of ["gateways.example", "a".repeat(63)]) {
+      const gateways = await resources((await template("gatewayName", gatewayName)).stdout);
+      assert.equal(
+        gateways.find((object) => object.kind === "Gateway")?.metadata.name,
+        gatewayName,
+      );
+    }
+    const envoyNamespace = "a".repeat(63);
+    const envoy = await resources((await template("envoyNamespace", envoyNamespace)).stdout);
+    assert.ok(envoy.some((object) => object.metadata?.namespace === envoyNamespace));
+  },
+);
 
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await execute(
@@ -1702,6 +2076,50 @@ test(
   },
 );
 
+test("the chart refuses repository backend IDs the controller refuses", tooling, async () => {
+  const message =
+    /repositoryCredentials\.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
+  for (const backendId of [
+    " github-primary",
+    "github-primary ",
+    "github-primary\nmore",
+    "a".repeat(201),
+    "\uFEFFgithub-primary",
+    "github-primary\uFEFF",
+  ]) {
+    await assert.rejects(
+      render(repositoryCredentialValues, {
+        strings: { "repositoryCredentials.backendId": backendId },
+      }),
+      message,
+      JSON.stringify(backendId),
+    );
+  }
+  await assert.rejects(
+    render(repositoryCredentialValues, {
+      strings: { "repositoryCredentials.backendId": "😀".repeat(101) },
+    }),
+    /repositoryCredentials\.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound/,
+    "101 emoji",
+  );
+  for (const backendId of ["github-primary", "😀".repeat(100)]) {
+    const objects = await resources(
+      (
+        await render(repositoryCredentialValues, {
+          strings: { "repositoryCredentials.backendId": backendId },
+        })
+      ).stdout,
+    );
+    const broker = objects
+      .find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
+      )
+      .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
+    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], backendId, backendId);
+  }
+});
+
 test("the chart refuses installation names the bootstrap Job refuses", tooling, async () => {
   const message =
     /installation\.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
@@ -2344,6 +2762,77 @@ test(
   },
 );
 
+test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
+  const optionalFeatures = {
+    ...repositoryCredentialValues,
+    ...gatewayRoutingValues,
+    ...chatgptValues,
+    "executionCluster.enabled": "true",
+    "executionCluster.apiKubeconfigSecretName": "execution-api",
+    "executionCluster.workerKubeconfigSecretName": "execution-worker",
+    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+  };
+  for (const features of [
+    {},
+    optionalFeatures,
+    { "bootstrap.password.mountPath": "/custom/bootstrap" },
+  ]) {
+    const objects = await resources((await render(features)).stdout);
+    // Derive the existing mounts from shipped workloads, independently of the validation list.
+    const paths = new Set(
+      objects
+        .filter(
+          (object) =>
+            ["Deployment", "Job"].includes(object.kind) &&
+            ["api", "worker", "initialization"].includes(
+              object.metadata.labels["app.kubernetes.io/component"],
+            ),
+        )
+        .flatMap((object) => [
+          ...(object.spec.template.spec.initContainers ?? []),
+          ...object.spec.template.spec.containers,
+        ])
+        .filter((container) => ["api", "worker", "migration", "bootstrap"].includes(container.name))
+        .flatMap((container) => (container.volumeMounts ?? []).map((mount) => mount.mountPath)),
+    );
+    assert.ok(paths.size > 0);
+    for (const mountPath of paths) {
+      await assert.rejects(
+        render({ ...features, ...databaseCaValues, "database.caMountPath": mountPath }),
+        /database.caMountPath.*distinct/,
+        mountPath,
+      );
+    }
+  }
+  // Paths reserved by optional features remain available when those features are disabled.
+  for (const mountPath of [
+    "/etc/openclaw/execution",
+    "/etc/openclaw/repository-registry",
+    "/etc/openclaw/repository-ca",
+    "/var/run/secrets/kubernetes.io/serviceaccount",
+    "/run/openclaw/repository-control",
+    "/etc/openclaw/gateway-api-key",
+    "/etc/openclaw/gateway-ca",
+    "/etc/openclaw/chatgpt",
+    "/custom/database-ca",
+  ]) {
+    await render({ ...databaseCaValues, "database.caMountPath": mountPath });
+  }
+  const ordinary = (await render()).stdout;
+  await render({
+    ...externalGatewayRoutingValues,
+    ...databaseCaValues,
+    "database.caMountPath": "/etc/openclaw/gateway-ca",
+  });
+  // The repository sidecar's private mounts do not occur in a database client.
+  for (const mountPath of ["/etc/openclaw/repository-inputs", "/run/openclaw/repository-private"]) {
+    await render({ ...optionalFeatures, ...databaseCaValues, "database.caMountPath": mountPath });
+  }
+  for (const mountPath of ["/etc/openclaw/installation", "/var/lib/openclaw/bootstrap"]) {
+    assert.equal((await render({ "database.caMountPath": mountPath })).stdout, ordinary);
+  }
+});
+
 test(
   "optional database CA Secret mounts into every production database client",
   tooling,
@@ -2829,6 +3318,80 @@ test(
   },
 );
 
+test("the chart refuses administrator emails the bootstrap Job refuses", tooling, async () => {
+  const message = /bootstrap\.adminEmail must contain a valid administrator email/;
+  for (const email of [
+    "",
+    " ",
+    "not-an-email",
+    "a@b",
+    "a@b.",
+    "a@.com",
+    "a@b c.com",
+    "a@b\u00A0c.com",
+    "a@b\u000Bc.com",
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.adminEmail": email } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(email),
+    );
+  }
+  for (const email of [
+    "admin@example.invalid",
+    " Admin@Example.COM ",
+    "a@b.com ",
+    "\nadmin@example.com",
+    "\uFEFFadmin@example.com",
+    "\u0085a@b.com",
+  ]) {
+    const { stdout } = await render({}, { strings: { "bootstrap.adminEmail": email } });
+    const objects = await resources(stdout);
+    const job = objects.find(
+      (object) =>
+        object.kind === "Job" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    );
+    const value = job.spec.template.spec.containers
+      .find((container) => container.name === "bootstrap")
+      .env.find((entry) => entry.name === "OCC_BOOTSTRAP_ADMIN_EMAIL").value;
+    assert.equal(value, email);
+  }
+});
+
+test("the chart refuses bootstrap claim names the volume helper refuses", tooling, async () => {
+  const message =
+    /bootstrap\.password\.claimName must be a DNS subdomain of at most 253 characters/;
+  const longLabel = "a".repeat(64);
+  const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+  for (const claimName of [
+    "Bootstrap",
+    "claim_name",
+    "claim-",
+    `.claim`,
+    longLabel,
+    `${"a".repeat(254)}`,
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.password.claimName": claimName } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(claimName),
+    );
+  }
+  const { stdout } = await render({}, { strings: { "bootstrap.password.claimName": longest } });
+  const objects = await resources(stdout);
+  const job = objects.find(
+    (object) =>
+      object.kind === "Job" &&
+      object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+  );
+  const claim = job.spec.template.spec.volumes.find(
+    (volume) => volume.name === "bootstrap-password-output",
+  ).persistentVolumeClaim.claimName;
+  assert.equal(claim, longest);
+  assert.equal(longest.length, 253);
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
@@ -3005,6 +3568,7 @@ test(
     for (const image of [
       `registry.example/controller@sha256:${"A".repeat(64)}`,
       `registry.example/controller@SHA256:${"a".repeat(64)}`,
+      `registry.example.invalid/foo+bar@sha256:${"a".repeat(64)}`,
     ]) {
       await assert.rejects(
         render({ "images.controller": image }),
@@ -3016,8 +3580,23 @@ test(
         image,
       );
     }
+    const underscored = `registry.example.invalid/foo_bar@sha256:${"a".repeat(64)}`;
+    assert.match((await render({ "images.controller": underscored })).stdout, /foo_bar@sha256:/);
   },
 );
+
+test("the chart refuses a relative bootstrap mount path the Job refuses", tooling, async () => {
+  const message = /bootstrap\.password\.mountPath must be an absolute path/;
+  for (const mountPath of ["bootstrap", "./bootstrap", " bootstrap"]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.password.mountPath": mountPath } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(mountPath),
+    );
+  }
+  const { stdout } = await render();
+  assert.match(stdout, /value: "\/var\/lib\/openclaw\/bootstrap\/initial-admin-password"/);
+});
 
 test(
   "Gateway membership selectors keep a numeric-looking route label a string",
@@ -3542,5 +4121,437 @@ test(
       name: serviceName,
       type: "ClusterIP",
     });
+  },
+);
+
+test("Helm rejects worker timings the worker process rejects", tooling, async () => {
+  for (const [key, value] of [
+    ["worker.pollIntervalMs", "0"],
+    ["worker.pollIntervalMs", "abc"],
+    ["worker.leaseDurationMs", "1.5"],
+    ["worker.maxAttempts", "-1"],
+    ["worker.convergenceTimeoutMs", "9007199254740993"],
+  ]) {
+    await assert.rejects(render({ [key]: value }), /must be a positive safe integer/);
+  }
+  const rendered = await render({ "worker.pollIntervalMs": "010" });
+  assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
+});
+
+test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-worker-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const valuesFile = join(directory, "worker.yaml");
+  await writeFile(valuesFile, "worker:\n  convergenceTimeoutMs: 1800000\n", { mode: 0o600 });
+  const rendered = await render({}, { valuesFiles: [valuesFile] });
+  assert.match(rendered.stdout, /name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1800000"/);
+  assert.doesNotMatch(rendered.stdout, /OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1\.8e\+06"/);
+});
+
+test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", tooling, async () => {
+  const field = "logging.collector.exporter.port";
+  for (const value of ["03100", "0443", "010", "00080", "0", "65536", "18446744073709551617"]) {
+    await assert.rejects(
+      render(productionCollectorValues, { strings: { [field]: value } }),
+      /logging\.collector\.exporter\.port must be an integer TCP port from 1 to 65535/,
+      `Must refuse noncanonical or out-of-range exporter port: ${value}`,
+    );
+  }
+  for (const value of ["1", "3100", "65535"]) {
+    const objects = await resources(
+      (await render(productionCollectorValues, { strings: { [field]: value } })).stdout,
+    );
+    const policy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-collector-egress",
+    );
+    assert.deepEqual(policy.spec.egress.at(-1).ports, [{ protocol: "TCP", port: Number(value) }]);
+  }
+  const numeric = await resources(
+    (await render({ ...productionCollectorValues, [field]: 3100 })).stdout,
+  );
+  assert.deepEqual(
+    numeric
+      .find(({ metadata }) => metadata.name === "openclaw-enterprise-collector-egress")
+      .spec.egress.at(-1).ports,
+    [{ protocol: "TCP", port: 3100 }],
+  );
+});
+
+test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
+  const collector = {
+    "logging.collector.enabled": "true",
+    "logging.collector.image":
+      "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
+    "logging.collector.configSecretName": "occ-otel-collector-config",
+    "logging.collector.envSecretName": "occ-otel-collector-exporter",
+    "logging.collector.exporter.cidr": "203.0.113.10/32",
+  };
+  for (const isUpgrade of [false, true]) {
+    const options = { isUpgrade };
+    for (const [field, value] of [
+      ["logging.collector.state.sizeLimit", "foo"],
+      ["logging.collector.tmp.sizeLimit", "10MiB"],
+      ["resources.requests.cpu", "foo"],
+      ["logging.collector.resources.limits.memory", "10MiB"],
+    ]) {
+      await assert.rejects(render({ ...collector, [field]: value }, options), (error) => {
+        assert.ok(error.stderr.includes(`${field} must be a Kubernetes quantity`));
+        return true;
+      });
+    }
+    const rendered = await render(collector, options);
+    assert.match(rendered.stdout, /sizeLimit: "128Mi"/);
+    assert.match(rendered.stdout, /sizeLimit: "64Mi"/);
+
+    // Numeric YAML quantities must not be mistaken for missing or non-string values.
+    const numeric = await resources(
+      (
+        await render(
+          { ...collector, "resources.requests.cpu": 0, "resources.limits.cpu": 1 },
+          options,
+        )
+      ).stdout,
+    );
+    const api = numeric.find(
+      (object) =>
+        object.kind === "Deployment" &&
+        object.metadata?.labels?.["app.kubernetes.io/component"] === "api",
+    );
+    assert.equal(api.spec.template.spec.containers[0].resources.requests.cpu, 0);
+    assert.equal(api.spec.template.spec.containers[0].resources.limits.cpu, 1);
+
+    // Decimal E is exa; uppercase K is not a suffix. Exponent and binary forms stay.
+    await assert.rejects(
+      render({ "resources.requests.memory": "1K" }, options),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({ ...collector, "logging.collector.resources.requests.memory": "1K" }, options),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({ ...collector, "logging.collector.state.sizeLimit": "1K" }, options),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({ "resources.requests.memory": "1KI" }, options),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const accepted = await render(
+      {
+        ...collector,
+        "resources.requests.memory": "1E",
+        "logging.collector.resources.requests.memory": "1E",
+        "logging.collector.state.sizeLimit": "1E",
+      },
+      options,
+    );
+    assert.match(accepted.stdout, /memory: 1E/);
+    assert.match(accepted.stdout, /sizeLimit: "1E"/);
+    const preserved = await render(
+      {
+        "resources.requests.memory": "1e3",
+        "resources.limits.memory": "1E3",
+        "resources.requests.cpu": "1k",
+        "resources.limits.cpu": "1Ki",
+      },
+      options,
+    );
+    assert.match(preserved.stdout, /memory: "1e3"/);
+    assert.match(preserved.stdout, /memory: "1E3"/);
+    assert.match(preserved.stdout, /cpu: 1k/);
+    assert.match(preserved.stdout, /cpu: 1Ki/);
+
+    // UnmarshalJSON trims spaces on the raw JSON text. Escaped tabs stay rejected.
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.cpu": "  foo " } }),
+      /resources\.requests\.cpu must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": " 1K " } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "\t64Mi" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const padded = await render(collector, {
+      ...options,
+      strings: {
+        "resources.requests.cpu": " 100m ",
+        "resources.limits.memory": " 1E ",
+        "logging.collector.resources.requests.memory": " 64Mi ",
+        "logging.collector.state.sizeLimit": " 128Mi ",
+        "logging.collector.tmp.sizeLimit": " 32Mi ",
+      },
+    });
+    assert.match(padded.stdout, /cpu: ["'] 100m ["']/);
+    assert.match(padded.stdout, /memory: ["'] 1E ["']/);
+    assert.match(padded.stdout, /memory: ["'] 64Mi ["']/);
+    assert.match(padded.stdout, /sizeLimit: " 128Mi "/);
+    assert.match(padded.stdout, /sizeLimit: " 32Mi "/);
+
+    // ParseQuantity treats a missing numerator as zero. Bare Pi has an empty numeric token.
+    const zeros = await render(collector, {
+      ...options,
+      strings: {
+        "resources.requests.cpu": "m",
+        "resources.limits.cpu": "+",
+        "resources.requests.memory": ".",
+        "logging.collector.state.sizeLimit": "m",
+      },
+    });
+    assert.match(zeros.stdout, /cpu: m$/m);
+    assert.match(zeros.stdout, /cpu: \+$/m);
+    assert.match(zeros.stdout, /memory: \.$/m);
+    assert.match(zeros.stdout, /sizeLimit: "m"/);
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "Pi" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const withDigit = await render(
+      {},
+      { ...options, strings: { "resources.requests.memory": "1Pi" } },
+    );
+    assert.match(withDigit.stdout, /memory: 1Pi/);
+
+    // sizeLimit is optional. Null clears the chart default and must stay YAML null on install and upgrade.
+    const clearedLimits = await render(
+      {
+        ...collector,
+        "logging.collector.state.sizeLimit": "null",
+        "logging.collector.tmp.sizeLimit": "null",
+      },
+      options,
+    );
+    const clearedVolumes = (await resources(clearedLimits.stdout)).find(
+      (object) =>
+        object.kind === "DaemonSet" && object.metadata?.name === "openclaw-enterprise-collector",
+    ).spec.template.spec.volumes;
+    assert.equal(
+      clearedVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      null,
+    );
+    assert.equal(
+      clearedVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      null,
+    );
+    const stateCleared = await resources(
+      (await render({ ...collector, "logging.collector.state.sizeLimit": "null" }, options)).stdout,
+    );
+    const stateVolumes = stateCleared.find((object) => object.kind === "DaemonSet").spec.template
+      .spec.volumes;
+    assert.equal(
+      stateVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      null,
+    );
+    assert.equal(
+      stateVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      "64Mi",
+    );
+    const tmpCleared = await resources(
+      (await render({ ...collector, "logging.collector.tmp.sizeLimit": "null" }, options)).stdout,
+    );
+    const tmpVolumes = tmpCleared.find((object) => object.kind === "DaemonSet").spec.template.spec
+      .volumes;
+    assert.equal(
+      tmpVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      "128Mi",
+    );
+    assert.equal(
+      tmpVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      null,
+    );
+    await assert.rejects(
+      render(
+        {
+          ...collector,
+          "logging.collector.state.sizeLimit": "null",
+          "logging.collector.tmp.sizeLimit": "10MiB",
+        },
+        options,
+      ),
+      /logging\.collector\.tmp\.sizeLimit must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(
+        {
+          ...collector,
+          "logging.collector.state.sizeLimit": "foo",
+          "logging.collector.tmp.sizeLimit": "null",
+        },
+        options,
+      ),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+
+    // resources: null clears defaults. Indexing that absent map used to abort the render.
+    const cleared = await render(
+      {
+        ...collector,
+        resources: "null",
+        "logging.collector.resources": "null",
+      },
+      options,
+    );
+    assert.match(cleared.stdout, /sizeLimit: "128Mi"/);
+    assert.doesNotMatch(cleared.stdout, /cpu: 100m/);
+    assert.doesNotMatch(cleared.stdout, /memory: 128Mi/);
+    await assert.rejects(
+      render(
+        { ...collector, resources: "null" },
+        { ...options, strings: { "logging.collector.resources.requests.memory": "foo" } },
+      ),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+  }
+});
+
+test(
+  "the chart refuses control-plane node selectors the volume helper refuses",
+  tooling,
+  async () => {
+    const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
+    const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
+    for (const [key, value, message] of [
+      ["oce-role", "not valid", valueMessage],
+      ["oce-role", "-control", valueMessage],
+      ["oce-role", "control.", valueMessage],
+      ["oce-role", "a".repeat(64), valueMessage],
+      ["a-", "control", keyMessage],
+      ["bad key", "control", keyMessage],
+    ]) {
+      await assert.rejects(
+        render({}, { strings: { [`controlPlane.nodeSelector.${key}`]: value } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        `${key}=${value}`,
+      );
+    }
+    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const selectorValues = join(directory, "selector.yaml");
+    await writeFile(
+      selectorValues,
+      "controlPlane:\n  nodeSelector:\n    Example.com/role: control\n",
+    );
+    await assert.rejects(
+      render({}, { valuesFiles: [selectorValues] }),
+      ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
+    );
+    await rm(directory, { recursive: true, force: true });
+    const { stdout } = await render(
+      {},
+      {
+        strings: {
+          "controlPlane.nodeSelector.oce-role": "control",
+          "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
+          "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
+          "controlPlane.nodeSelector.edge": "a_b.c-d",
+        },
+      },
+    );
+    assert.match(stdout, /oce-role: control/);
+    assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
+    // Kubernetes allows empty label values; charts before #1848 rendered them.
+    assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
+    assert.match(stdout, /edge: a_b\.c-d/);
+  },
+);
+
+test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
+  const template = (...values) =>
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-execution",
+        "--set",
+        "routing.gatewayClassName=private-envoy-gateway",
+        "--set",
+        "routing.tlsSecretName=agents-tls",
+        "--set-json",
+        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+        ...values,
+      ],
+      { cwd: repository, maxBuffer: 2_000_000 },
+    );
+  await assert.rejects(
+    template("--set", "routing.hostname=Bad_Host"),
+    /routing\.hostname must be a DNS hostname without a port or path/,
+  );
+  // --set reads these as a number and a boolean; the chart names the field instead of failing in len.
+  for (const hostname of ["123", "true"]) {
+    await assert.rejects(
+      template("--set", `routing.hostname=${hostname}`),
+      /routing\.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string/,
+      hostname,
+    );
+  }
+  for (const hostname of ["123", "agents.example.invalid"]) {
+    const { stdout } = await template("--set-string", `routing.hostname=${hostname}`);
+    const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+    assert.equal(gateway?.spec.listeners[0].hostname, hostname);
+  }
+});
+
+test(
+  "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
+  tooling,
+  async () => {
+    const template = (...values) =>
+      execute(
+        helm,
+        [
+          "template",
+          "oce",
+          "deploy/helm/openclaw-execution",
+          "--set",
+          "routing.hostname=agents.example.invalid",
+          "--set",
+          "routing.gatewayClassName=private-envoy-gateway",
+          "--set",
+          "routing.tlsSecretName=agents-tls",
+          "--set-json",
+          'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+          ...values,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    const proxyPolicy = async (stdout) =>
+      (await resources(stdout)).find(
+        (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",
+      );
+    // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
+    // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
+    for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
+      await assert.rejects(
+        template("--set", `routing.envoyHttpsTargetPort=${port}`),
+        /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,
+        port,
+      );
+    }
+    for (const port of [1, 65535]) {
+      const policy = await proxyPolicy(
+        (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
+      );
+      assert.equal(policy?.spec.ingress[0].ports[0].port, port);
+    }
+    // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
+    for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
+      await assert.rejects(
+        template("--set-string", `dns.namespace=${namespace}`),
+        /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+        namespace,
+      );
+    }
+    const namespace = "a".repeat(63);
+    const policy = await proxyPolicy(
+      (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
+    );
+    assert.equal(
+      policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+      namespace,
+    );
   },
 );

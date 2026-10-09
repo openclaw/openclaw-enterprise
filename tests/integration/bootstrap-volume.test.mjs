@@ -8,6 +8,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
+
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
@@ -191,6 +193,31 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
     ),
     /--node-selector must use KEY=VALUE/,
   );
+  // Empty values are allowed; nonempty values still follow the label-value rule.
+  for (const selector of ["pool=-a", "pool=a-", "pool=a b", `pool=${"a".repeat(64)}`]) {
+    await assert.rejects(
+      execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "ctx",
+          "--namespace",
+          "openclaw-system",
+          "--claim",
+          "claim",
+          "--image",
+          image,
+          "--node-selector",
+          selector,
+        ],
+        base,
+      ),
+      /--node-selector value must be a Kubernetes label value/,
+      selector,
+    );
+  }
 });
 
 test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it only after verified success", async (t) => {
@@ -416,9 +443,73 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
       "--image",
       image,
       ...keys.flatMap((key) => ["--node-selector", `${key}=${key}`]),
+      // Kubernetes allows empty label values, as the chart does.
+      "--node-selector",
+      "node-role.kubernetes.io/infra=",
     ],
     { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
   );
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
-  assert.deepEqual(manifest.spec.nodeSelector, Object.fromEntries(keys.map((key) => [key, key])));
+  assert.deepEqual(manifest.spec.nodeSelector, {
+    ...Object.fromEntries(keys.map((key) => [key, key])),
+    "node-role.kubernetes.io/infra": "",
+  });
+});
+
+test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", async (t) => {
+  const { directory, kubeconfig, statePath } = await fixture(t);
+  const locale = await rangeWideningLocale();
+  if (!locale) {
+    t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");
+    return;
+  }
+  const base = {
+    cwd: repository,
+    env: { PATH: `${directory}:${process.env.PATH}`, LANG: locale, LC_ALL: locale },
+  };
+  const argumentsFor = (overrides) => {
+    const values = {
+      namespace: "openclaw-system",
+      claim: "claim",
+      image,
+      ...overrides,
+    };
+    return [
+      "--kubeconfig",
+      kubeconfig,
+      "--context",
+      "ctx",
+      "--namespace",
+      values.namespace,
+      "--claim",
+      values.claim,
+      "--image",
+      values.image,
+      ...(values.selector ? ["--node-selector", values.selector] : []),
+    ];
+  };
+  for (const [overrides, message] of [
+    [{ namespace: "ä" }, /--namespace must be a DNS label/],
+    [{ namespace: "openclaw-ß" }, /--namespace must be a DNS label/],
+    [{ claim: "ä" }, /--claim must be a DNS subdomain/],
+    [{ claim: "é.example" }, /--claim must be a DNS subdomain/],
+    [{ claim: "claim-٣" }, /--claim must be a DNS subdomain/],
+    [
+      { image: `registry.example.invalid/contrôleur@sha256:${"a".repeat(64)}` },
+      /--image must be an approved immutable SHA-256 image reference/,
+    ],
+    [
+      { image: `registry.example.invalid/controller@sha256:${"é".repeat(64)}` },
+      /--image must be an approved immutable SHA-256 image reference/,
+    ],
+    [{ selector: "pool=ä" }, /--node-selector value must be a Kubernetes label value/],
+    [{ selector: "é.example/pool=a" }, /--node-selector key must be a Kubernetes label key/],
+  ]) {
+    await assert.rejects(execute(helper, argumentsFor(overrides), base), (error) => {
+      assert.match(error.stderr, message);
+      return true;
+    });
+  }
+  // Every refusal happens before kubectl runs.
+  await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
 });

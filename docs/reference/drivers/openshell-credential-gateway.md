@@ -50,7 +50,9 @@ drivers:
 `binaries` is required and closed: a nonempty list of absolute executable paths
 inside the Harness image. OpenShell releases a credential only to requests made
 by those binaries. Use the exact native Codex executable, not a wrapper script.
-A stale path fails closed at the Codex startup model probe.
+A stale path fails the Codex startup model probe: the deployment fails with
+`RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
+rejects the missing credential, and the active revision keeps serving.
 
 `toolBinaries` is optional: a nonempty list of absolute paths inside the Sandbox
 image that may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent)
@@ -66,7 +68,9 @@ binary keeps access; to cut it at once, withdraw the source or delete it. During
 a controller rollout, replicas with different lists may rewrite a profile in
 turn; the last write wins. Removing `toolBinaries` entirely blocks
 registrations, updates, deployments, and repairs of `bearer-token` sources,
-because OpenShell treats an empty binary list as any binary. Existing providers
+because OpenShell treats an empty binary list as any binary. Registration,
+update, and deployment requests then answer `409 RESOURCE_CONFLICT` naming the
+fix. Existing providers
 and profiles stay until you withdraw or delete them; status and deletion keep
 working.
 
@@ -150,7 +154,8 @@ OpenShell cannot delete a Workspace that still holds profiles.
 
 For a revision, `attachForRevision` brings each source's profile up to date and
 returns its provider name. It fails when two of the revision's sources would use
-the same environment variable. The
+the same environment variable, and the worker then fails the deployment with
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
@@ -160,7 +165,10 @@ the Sandbox's placeholders then stop resolving, even in running processes.
 OpenShell reports `REVOKED` only after the Sandbox supervisor reports a running
 process with the provider removed. A Sandbox with no running process, for
 example one still provisioning or crash-looping, reports `WaitingForProcess`,
-which stays `pending`. A missing Sandbox reports `absent`.
+which stays `pending`. A missing Sandbox reports `absent`. A `recheck` first
+calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
+the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
+and only a listed provider is detached again.
 
 In the running Sandbox, the Harness environment holds only an
 `openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
@@ -235,14 +243,14 @@ Driver startup integration covers Backend membership and selection rules.
 | `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                     |
 | `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                       |
 | `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                              |
-| Registering `bearer-token` returns `404` for an unsupported type                                  | Configure `toolBinaries`.                                                                                        |
+| Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                        |
 | A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                            |
-| Deployment fails because two sources use the same environment variable                            | Give each source bound to the Agent a distinct `env_var`.                                                        |
+| Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.           |
 | Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables. |
 | Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                     |
 | Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                |
 | The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                             |
-| Codex startup fails its model probe                                                               | Confirm `binaries` names the exact Codex executable and that Codex trusts the Sandbox CA.                        |
+| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the exact Codex executable, Codex trusts the Sandbox CA, and the key is valid.          |
 
 ## Related
 

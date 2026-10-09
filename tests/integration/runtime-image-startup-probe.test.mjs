@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, freemem, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
@@ -19,6 +19,10 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "../helpers/runtime-model-probe-certificates.mjs";
+import {
+  modelProbeDiagnostic,
+  recordModelProbeMeasurement,
+} from "../helpers/runtime-model-probe-observation.mjs";
 import {
   execute,
   image,
@@ -203,11 +207,115 @@ function startupProbeWrapper(kind) {
   };
 }
 
+const probeEvents = new Set(["openclaw.model_probe", "codex.model_probe"]);
+const providerEvents = new Set([
+  "connection",
+  "secure",
+  "tls-error",
+  "request",
+  "prewarm",
+  "turn-answered",
+  "turn-closed",
+]);
+
+// The container's CPU accounting at failure (cgroup v2): usage, throttling and
+// pressure show whether the wrapper got the CPU its probe cap assumes.
+async function containerCpu(containerName) {
+  try {
+    // Kernels without pressure accounting have no cpu.pressure; read what exists.
+    const { stdout } = await runDocker(
+      [
+        "exec",
+        containerName,
+        "sh",
+        "-c",
+        "cd /sys/fs/cgroup && for f in cpu.max cpu.stat cpu.pressure; do [ -r $f ] && printf '%s: ' $f && cat $f; done; true",
+      ],
+      { timeout: 10_000 * imageSmokeTimeoutMultiplier },
+    );
+    const text = stdout.trim();
+    return text === ""
+      ? "unavailable"
+      : text
+          .split(/\s*\n\s*/)
+          .join("; ")
+          .slice(0, 600);
+  } catch {
+    return "unavailable";
+  }
+}
+
+// Where an unsettled scenario's time went. It leads the failure message, so the
+// job log's first 600 characters name the probe's outcome; the lane's
+// diagnostics report keeps the whole message. Wrapper times (probe, stages,
+// phases) count from wrapper start; provider times from container start.
+async function startupProbeEvidence(scenario, snapshot, loop) {
+  const entries = jsonLogEntries(snapshot.output);
+  const failures = snapshot.events.filter(
+    (event) => event.event === "observe" && event.key === "runtimeFailure",
+  );
+  return {
+    probe: entries
+      .filter(({ event }) => probeEvents.has(event))
+      .map(({ event, attempt, code, elapsedMs, capMs, cpuWaitMs, cause }) => ({
+        event,
+        attempt,
+        code,
+        elapsedMs,
+        capMs,
+        cpuWaitMs,
+        cause,
+      })),
+    stages: Object.fromEntries(
+      entries
+        .filter(({ event }) => event === "openclaw.model_probe_stage")
+        .map(({ stage, elapsedMs }) => [stage, elapsedMs]),
+    ),
+    provider: snapshot.events
+      .filter(({ event }) => providerEvents.has(event))
+      .map(({ event, ms, turn, transport, path, code }) =>
+        [`${event}@${ms}`, turn ? "turn" : undefined, transport, path, code]
+          .filter((value) => typeof value === "string")
+          .join(" "),
+      ),
+    runtimeFailure: failures.at(-1) && { value: failures.at(-1).value, ms: failures.at(-1).ms },
+    phases: snapshot.phases.map(({ phase, outcome, sinceStartMs }) =>
+      [phase, outcome, sinceStartMs].filter((value) => value !== undefined).join(" "),
+    ),
+    poll: {
+      count: loop.polls,
+      slowestMs: loop.slowestMs,
+      elapsedMs: Date.now() - loop.startedAt,
+    },
+    host: {
+      load: loadavg().map((value) => Math.round(value * 100) / 100),
+      cpus: availableParallelism(),
+      freeMemMb: Math.round(freemem() / 1_048_576),
+    },
+    cpu: snapshot.running ? await containerCpu(scenario.containerName) : "exited",
+  };
+}
+
+// The scenario's failure: evidence first, then the raw wrapper output and
+// provider events. The structured diagnostic survives the job log's cut too.
+function startupProbeFailure(headline, reason, evidence, snapshot) {
+  const error = new assert.AssertionError({
+    message:
+      `${headline}\nevidence: ${JSON.stringify(evidence)}\n${snapshot.output}\n` +
+      JSON.stringify(snapshot.events),
+  });
+  // Locate the failure at the caller's throw, not inside this helper.
+  Error.captureStackTrace(error, startupProbeFailure);
+  error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, undefined, reason);
+  return error;
+}
+
 // Runs one wrapper start against the stand-in provider. `mode` is the
 // provider's behaviour: "answer" after `delayMs`, "reject" with HTTP 401, or
 // "hang". `until` returns true once the scenario has what it needs to check;
 // `act`, if given, then runs against the live containers.
 async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act }) {
+  const scenarioStartedAt = Date.now();
   const wrapper = startupProbeWrapper(kind);
   const material = await createStartupProbeMaterial(t, wrapper.readiness);
   if (wrapper.configuration !== undefined) {
@@ -324,10 +432,15 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
       ms: event.at - startedAt,
     }));
     const output = `${native.stdout}\n${native.stderr}`;
+    const entries = jsonLogEntries(output);
     return {
       events,
       output,
-      phases: jsonLogEntries(output).filter(({ event }) => event === "runtime.startup_phase"),
+      phases: entries.filter(({ event }) => event === "runtime.startup_phase"),
+      // Only the embedded Gateway's OpenClaw probe writes these.
+      probe: entries.find(({ event }) => event === "openclaw.model_probe"),
+      probeStage: entries.filter(({ event }) => event === "openclaw.model_probe_stage").at(-1)
+        ?.stage,
       running: running === "true",
       exitCode: Number(exitCode),
       finishedAt: running === "true" ? undefined : containerStartedAt(finished.join(" ")),
@@ -337,12 +450,17 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
   const scenario = {
     containerName,
     startedAt,
+    setupMs: startedAt - scenarioStartedAt,
     wrapper,
     collect,
     first: (events, predicate) => events.find(predicate),
   };
+  const loop = { polls: 0, slowestMs: 0, startedAt: Date.now() };
   for (;;) {
+    const pollStartedAt = Date.now();
     const snapshot = await collect();
+    loop.polls += 1;
+    loop.slowestMs = Math.max(loop.slowestMs, Date.now() - pollStartedAt);
     if (await until(snapshot, scenario)) {
       if (act !== undefined) {
         await act(scenario, snapshot);
@@ -350,12 +468,21 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
       return { ...scenario, snapshot: await collect() };
     }
     if (!snapshot.running) {
-      assert.fail(`The ${kind} wrapper exited early (${snapshot.exitCode}).\n${snapshot.output}`);
+      const evidence = await startupProbeEvidence(scenario, snapshot, loop);
+      throw startupProbeFailure(
+        `The ${kind} wrapper exited early (${snapshot.exitCode}).`,
+        "wrapper-exited",
+        evidence,
+        snapshot,
+      );
     }
     if (Date.now() > deadline) {
-      assert.fail(
-        `The ${kind} startup probe scenario did not settle.\n${snapshot.output}\n` +
-          JSON.stringify(snapshot.events),
+      const evidence = await startupProbeEvidence(scenario, snapshot, loop);
+      throw startupProbeFailure(
+        `The ${kind} startup probe scenario did not settle.`,
+        "outer-timeout",
+        evidence,
+        snapshot,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -446,6 +573,10 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     delayMs,
     until: readyOrFailed,
   });
+  if (kind === "gateway") {
+    // The case name assumes gatewayStartupProbeCpuLimit stays at one core.
+    recordModelProbeMeasurement(t, "gateway-1cpu-answer", run);
+  }
   assertStartupReady(run);
   await withStartupProbeEvidence(run, async () => {
     const { events, phases } = run.snapshot;

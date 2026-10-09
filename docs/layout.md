@@ -24,7 +24,9 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 Within `internal/occcli/`, `cli.go` assembles the command tree and resource
 commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
 `agent_runtime.go` owns runtime inspection, revision selection for runtime reads,
-and log polling; `output.go` owns terminal presentation.
+and log polling. `agent_runtime_output.go` owns runtime log text, notices, and Pod
+diagnostics. `output.go` owns resource tables, structured output, and shared
+formatting helpers.
 
 ## Source ownership
 

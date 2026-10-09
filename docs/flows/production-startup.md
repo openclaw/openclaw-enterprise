@@ -1,25 +1,20 @@
 ---
 created: 2026-08-25
-updated: "2026-10-05"
-last_updated_session: "authoring-run/54e33467-f3d2-4f4e-afad-952157ec12f0"
+updated: "2026-10-09"
+last_updated_session: "authoring-run/0d8da3d8-474a-4801-9887-230406a6b7bd"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Production startup begins after an operator supplies approved images,
-PostgreSQL credentials, authentication material, trusted Installation startup
-YAML, network policy inputs, and protected bootstrap storage. The supported path
-prepares a fresh bootstrap PVC, installs the Helm chart, waits for the private
-API and worker, then proves authenticated `/installation` access with the
-retrieved bootstrap service key. This flow ends at control-plane access; tenant
-Agent deployment and model-backed TUI proof are later flows.
+The operator prepares a fresh protected bootstrap PVC, installs Helm with
+approved images, PostgreSQL/authentication credentials, trusted Installation
+YAML and network policy inputs, waits for private API and worker readiness, then
+authenticates `/installation` with the retrieved service key. Tenant Agent
+deployment and model-backed TUI proof follow separately.
 
-For the operator commands, use the [deployment guide](../guides/deploy.md). The
-chart owns migration/bootstrap ordering and controller readiness. It does not
-provision cloud infrastructure, publish images, create TLS, retrieve keys, or
-prepare application Secrets automatically.
+Use the [deployment guide](../guides/deploy.md) for operator commands.
 
 ## Entry Points
 
@@ -122,6 +117,11 @@ and the later dependency, collector, Slack proxy, and Envoy policies allow
 UDP/TCP ports `53` and `5353` to the configured DNS peer; see the
 [Helm DNS contract](../reference/settings/production.md#required-production-controller-environment).
 
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` refuses fractional
+routing ports and custom hostnames Compute rejects. Empty
+hostnames keep Service DNS derivation; Gateway listeners and Certificate SANs
+use that hostname.
+
 The Helm initialization hook preserves the full release name and shortens its
 suffix to Kubernetes' 63-character limit. Both containers mount
 `database.caSecretName` read-only when configured. Migration uses the migrator
@@ -180,18 +180,18 @@ no `preStop` hook, since no peer takes its traffic; a request still running afte
 failed close logs `shutdown.failed` and exits `1`. A log ending at
 `shutdown.started` means the grace period cut the drain off.
 
-When `controlPlane.nodeSelector` is non-empty, the chart places the API and
-worker Pods with that selector. The same selector applies to the initialization
-Job (migration and bootstrap), so all four stay on a reviewed control-plane node
-pool.
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
-that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
-so the credential-checking private proxy stays on the trusted pool.
-Empty chart defaults omit the field for clusters that do
-not label a dedicated control-plane pool. When `database.caSecretName` is set,
-API and worker also mount the CA Secret read-only at `database.caMountPath`.
-Tenant gateway and Agent placement remain in the selected Compute Driver
-configuration.
+Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
+on reviewed control-plane nodes; empty defaults omit it.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
+to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
+proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
+
+`database.caSecretName` selects read-only CA mounts at `database.caMountPath`
+for all four database clients.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` rejects equality with
+another active client mount, including bootstrap output. Disabled optional
+features reserve no paths; disabling the CA leaves its path unused. Kubernetes
+requires unique mount paths within each container.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -323,9 +323,13 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 
 ## Changelog
 
+- 2026-10-09 23:51: Refuse custom Gateway hostnames Compute rejects during production configuration loading. (authoring-run/0d8da3d8-474a-4801-9887-230406a6b7bd - 5b9dd76c497c1b552a2651ee4b984978cdef0a93)
+
+- 2026-10-09 22:25: Refuse database CA paths that duplicate active database-client mounts before Kubernetes admission. (codex/01a12074-7896-7f63-99fe-9f42e9041d02 - 7f358117e)
+
+- 2026-10-09 21:04: Refuse fractional routing ports before Helm emits Kubernetes resources. (authoring-run/b1433176-2fef-435b-bc30-c52bc7fa09e4 - 78677c21f)
 - 2026-10-05 12:10: Bound initialization hook names for valid long Helm releases. (authoring-run/54e33467-f3d2-4f4e-afad-952157ec12f0 - 4cda6515736280ca39f0fbe92cff78194b2c3638)
 - 2026-10-05 06:59: Preserve bootstrap Pod namespace strings. (01a0f9e4-a0bf-76f1-acdb-e6b55ada490a - 66a4a07028fd0a08c29ea80e8f95cadc48a74932)
-
 - 2026-10-05: Name Preset file failures `PRESET_FILE_INVALID`.
 - 2026-10-04: Poll the startup probe every second.
 - 2026-10-04: Time API startup phases in `listening`.

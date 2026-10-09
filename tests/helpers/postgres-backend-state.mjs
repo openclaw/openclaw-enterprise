@@ -144,41 +144,6 @@ export async function cleanupNamespaces(pool, namespaceIds) {
   });
 }
 
-export async function cleanupBackendFixtures(pool, namespaceId, cleanup) {
-  if (
-    [cleanup.serviceAccountIds, cleanup.agentIds, cleanup.revisionIds].every(
-      (ids) => ids.length === 0,
-    )
-  ) {
-    return;
-  }
-  await inTransaction(pool, async (client) => {
-    await client.query(
-      `UPDATE occ.controller_work
-       SET state = 'failed_permanent',
-           claim_token = NULL,
-           lease_expires_at = NULL,
-           completed_at = clock_timestamp(),
-           reason_code = 'TEST_FIXTURE_CLEANUP',
-           updated_at = clock_timestamp()
-       WHERE namespace_id = $1
-         AND revision_id = ANY($2::text[])
-         AND state IN ('queued', 'claimed')`,
-      [namespaceId, cleanup.revisionIds],
-    );
-    await client.query(
-      `UPDATE occ.agents
-       SET backend_id = NULL, harness_auth = NULL, active_revision_id = NULL
-       WHERE namespace_id = $1 AND id = ANY($2::text[])`,
-      [namespaceId, cleanup.agentIds],
-    );
-    await client.query(
-      "DELETE FROM occ.service_accounts WHERE namespace_id = $1 AND id = ANY($2::text[])",
-      [namespaceId, cleanup.serviceAccountIds],
-    );
-  });
-}
-
 function trackNamespaces(context, pool, close) {
   const namespaceIds = new Set();
   context.after(async () => {

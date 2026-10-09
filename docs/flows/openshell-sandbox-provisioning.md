@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-05
-last_updated_session: authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d
+updated: 2026-10-09
+last_updated_session: authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -144,21 +144,21 @@ retains recovery state.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
 
-Kubernetes Compute reconciles quota, limits, and baseline NetworkPolicies before
-calling `SandboxDriver.ensureNamespace`. The Driver first checks
-`gateway.workspaceMode`. Managed mode returns an unsupported-mode error before
-using the Kubernetes client or Gateway. Operator mode applies the configured
-namespace label, workspace-chart resources, and provider NetworkPolicies, in
-that order, then calls the Gateway health RPC. If configured, namespace-local
-readiness observations happen before that health check; the development
-operator instead supplies the central Gateway endpoint directly.
+Compute establishes quota, limits and baseline NetworkPolicies before
+`SandboxDriver.ensureNamespace`. Managed mode rejects before Kubernetes or
+Gateway use. Operator mode applies namespace labels, workspace-chart resources
+and provider NetworkPolicies, then checks health; optional namespace-local
+readiness comes first. Development uses the central Gateway endpoint.
 
-The Driver derives the Workspace name from Compute's physical Kubernetes
-namespace name. It reads the Workspace, creates it when missing, or rereads it
-after a concurrent `ALREADY_EXISTS`. Adoption requires the expected name, OCC
-Namespace ID label, managed-by label, and active phase. Any conflict fails the
-Namespace operation. Kubernetes Compute uses `oce-` plus a 15-character digest
-so the same name satisfies OpenShell v0.1.3-pre.2's 19-character limit.
+`apps/controller/src/backends/openshell.ts:clientForNamespace` passes raw
+endpoints, including bracketed IPv6, unchanged to the gRPC client. HTTP
+origins keep port 80 explicit; HTTPS and nondefault ports retain their behavior.
+
+The Driver uses Compute's physical namespace name for the Workspace. It reads
+it, creates it if missing, or rereads after concurrent `ALREADY_EXISTS`.
+Adoption requires its expected name, OCC Namespace ID label, managed-by label
+and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
+15-character digest fits OpenShell's 19-character limit.
 
 ### 2. Derive the provider-owned Harness request
 
@@ -364,6 +364,10 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
+
+- 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 
 - 2026-10-05 16:17: Documented version-fenced workspace-node setup renewal through the revision provider and supervisor refresh. (authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d - fd9a082e2587432bde6282748a82e3025a64fd1a)
 

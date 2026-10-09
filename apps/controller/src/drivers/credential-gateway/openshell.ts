@@ -11,7 +11,7 @@ import type {
   CredentialSourceStatus,
   CredentialSourceType,
 } from "@openclaw-enterprise/contracts";
-import { ScopeViolationError } from "@openclaw-enterprise/occ";
+import { CredentialSourceRevisionError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
@@ -485,7 +485,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       // Two sources cannot place their placeholders in the same Sandbox variable.
       for (const name of Object.values(type.credentials(source.config))) {
         if (environment.has(name)) {
-          throw new ScopeViolationError(
+          throw new CredentialSourceRevisionError(
+            "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
             "Two credential sources bound to the revision use the same environment variable.",
           );
         }
@@ -544,6 +545,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const provider = openShellProviderName(context.sourceId);
     const sandbox = context.sandbox.resourceName;
+    if (context.recheck === true) {
+      // A recorded revocation needs a new detach only if the Sandbox lists the provider again,
+      // for example after a create that OpenShell accepted before the withdrawal landed after it.
+      const existing = await client.getSandbox({ name: sandbox, workspace }, context.signal);
+      if (existing === undefined) {
+        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+      }
+      const providers = existing.spec?.providers;
+      if (!Array.isArray(providers) || !providers.includes(provider)) {
+        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
+      }
+    }
     // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
     const detached = await client.detachSandboxProvider(
       workspace,
