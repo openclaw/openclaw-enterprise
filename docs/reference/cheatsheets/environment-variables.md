@@ -108,6 +108,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
 - `OCC_DEVELOPMENT_BROWSER_PORT` — Published HTTPS browser port on host loopback; default: `8443`.
+- `OCC_DEVELOPMENT_SIGN_IN` — Unset or `keycloak`; Kubernetes-only profile without OpenShell runs a development Keycloak on host `127.0.0.1:443`.
 - `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` — Compose bridge allowed to reach the development API.
 - `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR` — Single private forwarding IP; supplied automatically for rootful macOS Podman.
 - `OCC_DEVELOPMENT_CONFIGURATION_ROOT` — Absolute path to the development filesystem Configuration Driver's root.
