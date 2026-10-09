@@ -283,7 +283,9 @@ test(
           return new Promise((resolveRequest, reject) => {
             const request = https.request(
               {
-                signal,
+                // Bound the whole request, including body consumption, to its owner
+                // and an absolute deadline even if the peer keeps sending data.
+                signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
                 hostname: "127.0.0.1",
                 port: browserPort,
                 servername: browserHost,
@@ -296,13 +298,20 @@ test(
                 },
               },
               (response) => {
-                response.resume();
+                let body = "";
+                response.setEncoding("utf8");
+                response.on("data", (chunk) => {
+                  body += chunk;
+                });
                 response.on("error", reject);
-                response.on("end", () => resolveRequest(response));
+                response.on("end", () =>
+                  resolveRequest({
+                    statusCode: response.statusCode,
+                    headers: response.headers,
+                    body,
+                  }),
+                );
               },
-            );
-            request.setTimeout(10_000, () =>
-              request.destroy(new Error("browser request timed out")),
             );
             request.on("error", reject);
             request.end(options.body);
@@ -357,13 +366,13 @@ test(
         ).data.key;
         const request = async (path, options = {}) => {
           signal.throwIfAborted();
-          const response = await fetch(`http://127.0.0.1:${apiPort}${path}`, {
+          // Native HTTPS uses the verified Console publication without following redirects.
+          const response = await browserRequest(path, {
             ...options,
             headers: { "x-api-key": serviceKey, "content-type": "application/json" },
-            signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
           });
-          assert.equal(response.status, 200);
-          return response.json();
+          assert.equal(response.statusCode, 200);
+          return JSON.parse(response.body);
         };
         const presets = await request(`/namespaces/${namespace.id}/presets`);
         assert.deepEqual(presets.data.map(({ name }) => name).sort(), [
@@ -391,14 +400,13 @@ test(
         rendered.configuration.values.gateway.controlUi.enabled = false;
         const post = async (path, body, expected) => {
           signal.throwIfAborted();
-          const response = await fetch(`http://127.0.0.1:${apiPort}${path}`, {
+          const response = await browserRequest(path, {
             method: "POST",
             headers: { "x-api-key": serviceKey, "content-type": "application/json" },
             body: JSON.stringify(body),
-            signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
           });
-          assert.equal(response.status, expected, `Unexpected status for ${path}`);
-          return response.json();
+          assert.equal(response.statusCode, expected, `Unexpected status for ${path}`);
+          return JSON.parse(response.body);
         };
         const secret = await post(
           `/namespaces/${namespace.id}/secrets`,
