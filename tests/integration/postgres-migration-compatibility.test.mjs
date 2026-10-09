@@ -1987,7 +1987,8 @@ test(
         const data = prefix ? await canonicalData(db) : undefined;
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
-        // 0051's final GRANT runs after it dropped both withdrawal triggers.
+        // 0051's GRANT follows both withdrawal-trigger drops; 0052's follows
+        // the runtime-role column, constraint, index, function and trigger.
         await historyAdmin(
           db,
           db.name,
