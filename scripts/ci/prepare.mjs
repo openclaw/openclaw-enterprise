@@ -2243,29 +2243,37 @@ async function prepareLane({ lane, statePath }) {
       const fixture = await timedPreparation(name, "fixture-image-import", () =>
         importFixtureImage(resolvedStatePath, state, cluster, built),
       );
-      // Fixture suites use the same local-only image. Keep it active on
-      // every node so kubelet image garbage collection cannot remove it.
-      await timedPreparation(name, "fixture-image-pin", () =>
-        pinFixtureImageInK3d(cluster, fixture.image),
-      );
-      // The suites restart this controller when enabling shared storage. Verify
-      // replacement scheduling after image imports consume the runner's disk.
-      await execFile(
-        process.env.OCC_KUBECTL_BIN ?? "kubectl",
-        [
-          "--kubeconfig",
-          cluster.kubeconfig,
-          "--context",
-          cluster.context,
-          "--namespace",
-          "kube-system",
-          "rollout",
-          "restart",
-          "deployment/local-path-provisioner",
-        ],
-        { timeoutMs: 10_000 },
-      );
-      await timedPreparation(name, "fixture-storage-verify", () => verifyFixtureStorage(cluster));
+      // The pin and the storage check are independent; run them together.
+      await prepareTogether([
+        // Fixture suites use the same local-only image. Keep it active on
+        // every node so kubelet image garbage collection cannot remove it.
+        () =>
+          timedPreparation(name, "fixture-image-pin", () =>
+            pinFixtureImageInK3d(cluster, fixture.image),
+          ),
+        // Verify that the storage controller can still be scheduled after the
+        // image import consumed the runner's disk.
+        async () => {
+          await execFile(
+            process.env.OCC_KUBECTL_BIN ?? "kubectl",
+            [
+              "--kubeconfig",
+              cluster.kubeconfig,
+              "--context",
+              cluster.context,
+              "--namespace",
+              "kube-system",
+              "rollout",
+              "restart",
+              "deployment/local-path-provisioner",
+            ],
+            { timeoutMs: 10_000 },
+          );
+          await timedPreparation(name, "fixture-storage-verify", () =>
+            verifyFixtureStorage(cluster),
+          );
+        },
+      ]);
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
@@ -2285,59 +2293,108 @@ async function prepareLane({ lane, statePath }) {
         OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
         OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
       };
-      const [cluster, built, , fixture] = await timedPreparation(name, "cluster-build-pull", () =>
-        prepareTogether([
-          () => ensureK3dCluster(resolvedStatePath, state),
-          async () => {
-            await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
-            return buildRuntimeImages(resolvedStatePath, state, {
-              controller: true,
-              nodeBaseImage: inputs.NODE_BASE_IMAGE,
-              localStore: true,
-            });
-          },
-          () =>
-            prepareTogether(
-              Object.entries(externalImages)
-                .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
-                .map(
-                  ([variable, image]) =>
-                    () =>
-                      ensureDockerSourceImage(state, image, variable),
-                ),
-              2,
+      // Each step starts once, when its first consumer asks for it.
+      const once = (operation) => {
+        let started;
+        return () => (started ??= operation());
+      };
+      const createCluster = once(() =>
+        timedPreparation(name, "k3d-create", () => ensureK3dCluster(resolvedStatePath, state)),
+      );
+      const pullNodeBase = once(() =>
+        ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE"),
+      );
+      const buildController = once(() =>
+        timedPreparation(name, "controller-image-build", async () => {
+          await pullNodeBase();
+          return buildRuntimeImages(resolvedStatePath, state, {
+            controller: true,
+            nodeBaseImage: inputs.NODE_BASE_IMAGE,
+            localStore: true,
+          });
+        }),
+      );
+      const pullExternal = once(() =>
+        prepareTogether(
+          Object.entries(externalImages)
+            .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
+            .map(
+              ([variable, image]) =>
+                () =>
+                  ensureDockerSourceImage(state, image, variable),
             ),
-          () => buildFixtureImage(resolvedStatePath, state),
-        ]),
+          2,
+        ),
+      );
+      const buildFixture = once(() => buildFixtureImage(resolvedStatePath, state));
+      // Keep imports into this cluster serial: images that share layers may
+      // contend for the same containerd content. The chain starts as soon as
+      // the cluster is ready and takes the controller image last, so the
+      // pulled and fixture images import while the controller still builds
+      // (about 20 s of a 100 s prepare on hosted runners). Each import still
+      // verifies the immutable reference through CRI on every node.
+      const importWorkloadImages = async () => {
+        const cluster = await createCluster();
+        const imports = [
+          [
+            "OCC_TEST_KUBERNETES_IMAGE",
+            async () => {
+              const fixture = await importFixtureImage(
+                resolvedStatePath,
+                state,
+                cluster,
+                await buildFixture(),
+              );
+              await pinFixtureImageInK3d(cluster, fixture.image);
+              return fixture.image;
+            },
+          ],
+          ...Object.entries(externalImages).map(([variable, image]) => [
+            variable,
+            async () => {
+              await (image === inputs.NODE_BASE_IMAGE ? pullNodeBase() : pullExternal());
+              return (await registerImageInK3d(resolvedStatePath, state, cluster, image, variable))
+                .reference;
+            },
+          ]),
+          [
+            "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+            async () => {
+              const image = (await buildController()).env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+              return (
+                await registerImageInK3d(
+                  resolvedStatePath,
+                  state,
+                  cluster,
+                  image,
+                  "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+                )
+              ).reference;
+            },
+          ],
+        ];
+        const references = {};
+        for (const [variable, importImage] of imports) {
+          progress(name, `Importing ${variable}.`);
+          references[variable] = await importImage();
+        }
+        return { cluster, references };
+      };
+      const [{ cluster, references }] = await timedPreparation(
+        name,
+        "cluster-build-pull-import",
+        () =>
+          prepareTogether([
+            () => timedPreparation(name, "workload-image-imports", importWorkloadImages),
+            createCluster,
+            buildController,
+            pullExternal,
+            buildFixture,
+          ]),
       );
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      // Keep imports into this cluster serial: images that share layers may
-      // contend for the same containerd content. The pulls and
-      // builds above overlap. Each import still verifies the immutable
-      // reference through CRI on every node.
-      await timedPreparation(name, "workload-image-imports", () =>
-        prepareTogether(
-          [
-            async () => {
-              env.OCC_TEST_KUBERNETES_IMAGE = (
-                await importFixtureImage(resolvedStatePath, state, cluster, fixture)
-              ).image;
-              await pinFixtureImageInK3d(cluster, env.OCC_TEST_KUBERNETES_IMAGE);
-            },
-            ...Object.entries({
-              OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-              ...externalImages,
-            }).map(([variable, image]) => async () => {
-              progress(name, `Importing ${variable}.`);
-              env[variable] = (
-                await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
-              ).reference;
-            }),
-          ],
-          1,
-        ),
-      );
+      Object.assign(env, references);
       break;
     }
     case "k3d-observability-demo": {

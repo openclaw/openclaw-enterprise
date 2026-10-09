@@ -251,6 +251,24 @@ install_browser_dependencies() {
   fi
 }
 
+# The installers write separate files under bin_dir, so download them
+# together (about 9 s serially on hosted runners). Wait for each one and fail
+# if any failed.
+install_together() {
+  local installer
+  local pids=()
+  local failed=0
+  for installer in "$@"; do
+    "${installer}" &
+    pids+=("$!")
+  done
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || failed=1
+  done
+  return "${failed}"
+}
+
 require_node
 
 case "${profile}" in
@@ -267,22 +285,15 @@ case "${profile}" in
     ;;
   images)
     require_docker
-    install_helm
-    install_yq
+    install_together install_helm install_yq
     ;;
   k3d)
     require_docker
-    install_kubectl
-    install_k3d
-    install_helm
-    install_yq
+    install_together install_kubectl install_k3d install_helm install_yq
     ;;
   full)
     require_docker
-    install_kubectl
-    install_k3d
-    install_helm
-    install_yq
+    install_together install_kubectl install_k3d install_helm install_yq
     ;;
   workflows)
     install_actionlint
