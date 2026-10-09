@@ -126,10 +126,9 @@ them.
 ### Experimental Codex OAuth PoC
 
 The `codex-oauth` type requires OpenShell's upstream `GetProviderCredentials`
-RPC, a supervisor with identity-bound JWT placeholder alias support, and its
-matching static sandbox launcher. The gateway can use the upstream image; the
-supervisor resolves the JWT aliases. Select `credential_refresh` on this Backend
-to offer the source. The repository's default pinned images do not provide this
+RPC and a matching supervisor and static sandbox launcher. Use upstream images;
+the supervisor resolves identity-bound JWT aliases. Select `credential_refresh`
+on this Backend to offer the source. The repository's default pinned images do not provide this
 complete integration. See
 [OAuth test setup](../../testing/openshell-oauth.md) for revision and image selection.
 
@@ -149,16 +148,14 @@ to satisfy retrieval and durably retains successor tokens. Only access credentia
 enter the callback, never the Console. Cancellation cannot guarantee server-side
 refresh stops. Revisions reuse the source's account metadata and placeholder.
 
-The Sandbox wraps its issued placeholder as a JWT while OpenShell enforces
-provider identity, revocation, endpoint binding, and expiry. Selected runtime
-plugins remain unsupported; directory discovery does not prove execution. See
+The Sandbox wraps its issued stable-handle placeholder in OpenShell's documented
+JWT alias format for Codex's local account metadata. OpenShell replaces the whole
+alias and enforces provider identity, revocation, endpoint binding, and expiry.
+Selected runtime plugins remain unsupported; directory discovery does not prove execution. See
 [OAuth storage](kubernetes-compute/codex-oauth-storage.md).
 
 #### WIP boundaries
 
-- **JWT placeholders.** The Sandbox wrapper requires the supervisor's forked alias resolver.
-  Align with upstream support while preserving provider identity and the
-  Harness's `chatgptAuthTokens` contract.
 - **Connection recovery and metadata.** Grant configuration and account metadata
   are separate writes; interrupted handoff may require reconnecting. Metadata
   is a login-time snapshot, so account changes require a new login and revision.

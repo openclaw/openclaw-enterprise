@@ -1105,8 +1105,8 @@ try {
 // The supervisor supplies the identity-bound placeholder only when it launches the
 // workload. Keep that identity in the JWT alias so rotation preserves the binding
 // and withdrawal still revokes it. Account claims come from the trusted attachment.
-// TODO(upstream JWT placeholders): align this wrapper with the supported upstream
-// format. The local fork resolves this alias; stock pinned supervisors do not.
+// Use OpenShell's documented alias format; the supervisor replaces the entire JWT
+// with the credential. Its claims provide local metadata, not injection authority.
 const OPENSHELL_CHATGPT_AUTH_BOOTSTRAP = String.raw`{
   const placeholder = process.env.CODEX_ACCESS_TOKEN;
   const binding = typeof placeholder === "string"

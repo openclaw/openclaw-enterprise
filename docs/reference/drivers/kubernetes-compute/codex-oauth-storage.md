@@ -13,8 +13,8 @@ Codex device authorization; the Gateway supplies usable access tokens for
 configuration and external-auth attachments.
 Its paired Sandbox must inject live credentials for inference and hosted-app
 requests. The experimental OpenShell `codex-oauth` source requires the
-[gateway API and custom supervisor](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
-It is not supported by the stock pinned OpenShell images.
+[upstream gateway and supervisor support](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
+The repository's default pinned OpenShell images do not provide this complete flow.
 
 Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 The Console keeps the **Experimental** label and reports unavailable sign-in when

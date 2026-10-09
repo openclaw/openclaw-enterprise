@@ -1,18 +1,31 @@
 # Test experimental OpenShell OAuth
 
 Verify the [experimental Codex OAuth source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc)
-with an upstream OpenShell gateway, an alias-enabled supervisor, and dedicated Codex. Use an owned, disposable
+with upstream OpenShell components and dedicated Codex. Use an owned, disposable
 environment; this procedure does not establish production support.
 
 ## Prepare the custom images and trust
 
-Use an OpenShell gateway implementing upstream `GetProviderCredentials`, added
-in revision `4c1b16a4a104581fb0afe8675feff34f00cc2ca8`. The official gateway image
-for that revision supplies this RPC. Full Harness proof also needs a supervisor
-with [JWT-placeholder alias support](https://github.com/stevenlee-oai/OpenShell/pull/1)
-and its matching static sandbox launcher. Select the gateway and Workspace Helm
-charts for the chosen gateway revision. The
-[development launcher](openshell.md#start-a-reusable-development-environment)
+Select upstream development build `0.1.4-dev.8+g0ccc6b9a0`, source revision
+`0ccc6b9a053fdaf47700e91c1b8ed858f2afed4f`, for the gateway, supervisor, and
+static sandbox launcher. Use immutable image digests and gateway/Workspace Helm
+charts from that revision. This build includes operator `GetProviderCredentials`
+from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
+resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
+
+| Component               | Immutable image                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:a7e25cb0bb2856a0a740e2cdc6c4a16ef552fa32ebe3d38f2e16c543bf36b027`    |
+| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:1ed8740b7fc48225f0e102ed83c990cf2ce63c33a837e6aaaefaf9d3c4959fe0` |
+| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:68d5d6486760b4547cc3e988d9d68d8a750ad264267c011d96b24274f0134fe5`    |
+
+OCE keeps its JWT wrapper: Codex needs the local account claims, while the
+supervisor replaces the whole alias with the live credential. Stable-handle
+aliases already worked upstream across rotation. #4390 fixes revision-alias
+resolution after cache eviction and corrects `EndpointMismatch` reporting for
+disallowed endpoints; it does not add JWT parsing or change refresh ownership.
+
+The [development launcher](openshell.md#start-a-reusable-development-environment)
 still imports its stock OpenShell image pins: selecting local charts alone does
 not select those binaries. Import the selected images into the owned cluster and
 set their immutable references through `gateway.image`, `supervisor.image`, and
@@ -77,8 +90,9 @@ records an immutable reference. For real-runtime tests, follow the
 and set `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 `OCC_TEST_KUBERNETES_AGENT_IMAGE` to the imported digest reference.
 
-When OpenShell's ordinary OIDC issuer uses a private CA, also use a chart that
-preserves the gateway image's public roots: `server.oidc.caConfigMapName` selects
+When OpenShell's ordinary OIDC issuer uses a private CA, retain the chart
+adjustment that preserves the gateway image's public roots; the selected upstream
+chart still needs it. `server.oidc.caConfigMapName` selects
 the issuer bundle through `SSL_CERT_FILE`, alongside
 `SSL_CERT_DIR=/etc/ssl/certs`. An issuer-only file without the public roots can
 allow OIDC login while breaking refresh at a public OAuth token endpoint.
