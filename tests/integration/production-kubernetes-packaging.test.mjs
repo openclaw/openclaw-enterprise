@@ -2611,6 +2611,77 @@ test(
   },
 );
 
+test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
+  const optionalFeatures = {
+    ...repositoryCredentialValues,
+    ...gatewayRoutingValues,
+    ...chatgptValues,
+    "executionCluster.enabled": "true",
+    "executionCluster.apiKubeconfigSecretName": "execution-api",
+    "executionCluster.workerKubeconfigSecretName": "execution-worker",
+    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+  };
+  for (const features of [
+    {},
+    optionalFeatures,
+    { "bootstrap.password.mountPath": "/custom/bootstrap" },
+  ]) {
+    const objects = await resources((await render(features)).stdout);
+    // Derive the existing mounts from shipped workloads, independently of the validation list.
+    const paths = new Set(
+      objects
+        .filter(
+          (object) =>
+            ["Deployment", "Job"].includes(object.kind) &&
+            ["api", "worker", "initialization"].includes(
+              object.metadata.labels["app.kubernetes.io/component"],
+            ),
+        )
+        .flatMap((object) => [
+          ...(object.spec.template.spec.initContainers ?? []),
+          ...object.spec.template.spec.containers,
+        ])
+        .filter((container) => ["api", "worker", "migration", "bootstrap"].includes(container.name))
+        .flatMap((container) => (container.volumeMounts ?? []).map((mount) => mount.mountPath)),
+    );
+    assert.ok(paths.size > 0);
+    for (const mountPath of paths) {
+      await assert.rejects(
+        render({ ...features, ...databaseCaValues, "database.caMountPath": mountPath }),
+        /database.caMountPath.*distinct/,
+        mountPath,
+      );
+    }
+  }
+  // Paths reserved by optional features remain available when those features are disabled.
+  for (const mountPath of [
+    "/etc/openclaw/execution",
+    "/etc/openclaw/repository-registry",
+    "/etc/openclaw/repository-ca",
+    "/var/run/secrets/kubernetes.io/serviceaccount",
+    "/run/openclaw/repository-control",
+    "/etc/openclaw/gateway-api-key",
+    "/etc/openclaw/gateway-ca",
+    "/etc/openclaw/chatgpt",
+    "/custom/database-ca",
+  ]) {
+    await render({ ...databaseCaValues, "database.caMountPath": mountPath });
+  }
+  const ordinary = (await render()).stdout;
+  await render({
+    ...externalGatewayRoutingValues,
+    ...databaseCaValues,
+    "database.caMountPath": "/etc/openclaw/gateway-ca",
+  });
+  // The repository sidecar's private mounts do not occur in a database client.
+  for (const mountPath of ["/etc/openclaw/repository-inputs", "/run/openclaw/repository-private"]) {
+    await render({ ...optionalFeatures, ...databaseCaValues, "database.caMountPath": mountPath });
+  }
+  for (const mountPath of ["/etc/openclaw/installation", "/var/lib/openclaw/bootstrap"]) {
+    assert.equal((await render({ "database.caMountPath": mountPath })).stdout, ordinary);
+  }
+});
+
 test(
   "optional database CA Secret mounts into every production database client",
   tooling,
@@ -4207,7 +4278,7 @@ test(
 );
 
 test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
-  await assert.rejects(
+  const template = (...values) =>
     execute(
       helm,
       [
@@ -4215,16 +4286,91 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
         "oce",
         "deploy/helm/openclaw-execution",
         "--set",
-        "routing.hostname=Bad_Host",
-        "--set",
         "routing.gatewayClassName=private-envoy-gateway",
         "--set",
         "routing.tlsSecretName=agents-tls",
         "--set-json",
         'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+        ...values,
       ],
-      { cwd: repository },
-    ),
+      { cwd: repository, maxBuffer: 2_000_000 },
+    );
+  await assert.rejects(
+    template("--set", "routing.hostname=Bad_Host"),
     /routing\.hostname must be a DNS hostname without a port or path/,
   );
+  // --set reads these as a number and a boolean; the chart names the field instead of failing in len.
+  for (const hostname of ["123", "true"]) {
+    await assert.rejects(
+      template("--set", `routing.hostname=${hostname}`),
+      /routing\.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string/,
+      hostname,
+    );
+  }
+  for (const hostname of ["123", "agents.example.invalid"]) {
+    const { stdout } = await template("--set-string", `routing.hostname=${hostname}`);
+    const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+    assert.equal(gateway?.spec.listeners[0].hostname, hostname);
+  }
 });
+
+test(
+  "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
+  tooling,
+  async () => {
+    const template = (...values) =>
+      execute(
+        helm,
+        [
+          "template",
+          "oce",
+          "deploy/helm/openclaw-execution",
+          "--set",
+          "routing.hostname=agents.example.invalid",
+          "--set",
+          "routing.gatewayClassName=private-envoy-gateway",
+          "--set",
+          "routing.tlsSecretName=agents-tls",
+          "--set-json",
+          'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+          ...values,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    const proxyPolicy = async (stdout) =>
+      (await resources(stdout)).find(
+        (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",
+      );
+    // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
+    // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
+    for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
+      await assert.rejects(
+        template("--set", `routing.envoyHttpsTargetPort=${port}`),
+        /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,
+        port,
+      );
+    }
+    for (const port of [1, 65535]) {
+      const policy = await proxyPolicy(
+        (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
+      );
+      assert.equal(policy?.spec.ingress[0].ports[0].port, port);
+    }
+    // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
+    for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
+      await assert.rejects(
+        template("--set-string", `dns.namespace=${namespace}`),
+        /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+        namespace,
+      );
+    }
+    const namespace = "a".repeat(63);
+    const policy = await proxyPolicy(
+      (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
+    );
+    assert.equal(
+      policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+      namespace,
+    );
+  },
+);

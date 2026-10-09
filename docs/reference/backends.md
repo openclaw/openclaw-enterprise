@@ -137,7 +137,8 @@ backend:
 
 Its closed `configuration` accepts:
 
-- `endpoint`: `host:port`, or an `http` or `https` origin without credentials,
+- `endpoint`: `host:port` (bracket IPv6 literals, such as `[2001:db8::1]:8080`),
+  or an `http` or `https` origin without credentials,
   path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
   `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted

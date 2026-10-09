@@ -1253,7 +1253,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   private async removeNetwork(name: string): Promise<void> {
-    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204]);
+    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204, 404]);
   }
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {

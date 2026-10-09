@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -124,6 +132,7 @@ function render(
   profile,
   input,
   directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
+  root = repository,
 ) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
@@ -140,7 +149,7 @@ function render(
         "--out-dir",
         directory,
       ],
-      { cwd: repository, encoding: "utf8" },
+      { cwd: root, encoding: "utf8" },
     );
   } catch (error) {
     error.profileRendererOutput = `${error.stdout ?? ""}${error.stderr ?? ""}`;
@@ -563,6 +572,75 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
     `${error.stdout ?? ""}${error.stderr ?? ""}`,
     /repositoryCredentials\.serviceConfigSecretName must use a dedicated Secret distinct from chatgpt/,
   );
+});
+
+function withGitHubSignIn(input, github) {
+  const {
+    agentNativeAdminDomain: _domain,
+    sharedCookieDomain: _cookieDomain,
+    ...controlPlane
+  } = input.controlPlane;
+  return {
+    ...input,
+    controlPlane: { ...controlPlane, recoveryUserId: "recovery-admin_1", github },
+  };
+}
+
+test(
+  "preflight refuses sign-in Secrets that ChatGPT or repository credentials use, as Helm does",
+  { skip: helmSkip },
+  () => {
+    const input = managedCodexInput({ repository: repositoryConfiguration() });
+    const accepted = render("codex", withGitHubSignIn(input, {}));
+    assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+    helmTemplate(accepted);
+    for (const secretName of [
+      "occ-chatgpt-admin",
+      "occ-repository-service-config",
+      "occ-repository-app-key",
+      "occ-repository-tls",
+      "occ-repository-public-ca",
+    ]) {
+      assertPreflightFailure(
+        "codex",
+        withGitHubSignIn(input, { secretName }),
+        /controlPlane\.github\.secretName must name a dedicated Secret/,
+      );
+      // The same name placed over the accepted values makes the chart refuse it too.
+      const override = join(accepted.directory, `github-${secretName}.json`);
+      writeFileSync(override, JSON.stringify({ auth: { github: { secretName } } }));
+      const error = renderError(() => helmTemplate(accepted, [override]));
+      assert.match(
+        `${error.stdout ?? ""}${error.stderr ?? ""}`,
+        /auth\.github credentials must use a (dedicated Secret|Secret distinct from repositoryCredentials)/,
+      );
+    }
+    // Without managed ChatGPT accounts the chart does not reserve that Secret name.
+    const unmanaged = render(
+      "codex",
+      withGitHubSignIn(codexInput(), { secretName: "occ-chatgpt-admin" }),
+    );
+    assert.equal(unmanaged.summary.ok, true, unmanaged.preflight.errors.join("\n"));
+    helmTemplate(unmanaged);
+  },
+);
+
+test("preflight refuses lone surrogates, which Helm cannot parse in values.yaml", () => {
+  const cases = [
+    [{ adminEmail: "a\ud800@b.c" }, /controlPlane\.adminEmail must be well-formed Unicode text/],
+    [{ gatewayClassName: "e\udc00g" }, /controlPlane\.gatewayClassName must be well-formed/],
+    [
+      { dns: { namespace: "kube-system", podLabels: { "k8s\ud800": "kube-dns" } } },
+      /controlPlane\.dns\.podLabels keys must be well-formed Unicode text/,
+    ],
+  ];
+  for (const [override, expected] of cases) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, ...override } }),
+      expected,
+    );
+  }
 });
 
 test("label values that YAML 1.1 would retype stay strings", () => {
@@ -1105,6 +1183,63 @@ test(
     assert.match(helmTemplate(nativeAdmin), /name: OCC_AUTH_TRUSTED_PROXY_PRESET/);
   },
 );
+
+// Operators render from a plain checkout: installation-profiles.md asks for `pnpm install`
+// only with native admin, whose public suffix check loads tldts. Copy the sources the renderer
+// can import, without any node_modules, into a directory outside the repository.
+function checkoutWithoutDependencies() {
+  const root = mkdtempSync(join(tmpdir(), "oce-profile-checkout-"));
+  const sources = [
+    "package.json",
+    "scripts/render-installation-profile.mjs",
+    "deploy/profiles",
+    "apps/controller/package.json",
+    "apps/controller/src",
+    ...readdirSync(join(repository, "packages"))
+      // Skip leftovers of a branch switch, such as a directory holding only node_modules.
+      .filter((name) => existsSync(join(repository, "packages", name, "package.json")))
+      .flatMap((name) => [`packages/${name}/package.json`, `packages/${name}/src`]),
+  ];
+  for (const source of sources) {
+    cpSync(join(repository, source), join(root, source), {
+      recursive: true,
+      filter: (path) => !path.split(sep).includes("node_modules"),
+    });
+  }
+  return root;
+}
+
+test("profiles render without installed dependencies unless native admin is on", (t) => {
+  const root = checkoutWithoutDependencies();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const [profile, input] of [
+    ["openclaw", externalSignInInput()],
+    ["codex", codexInput({ controlPlane: externalSignInInput().controlPlane })],
+  ]) {
+    const directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    let output;
+    try {
+      output = render(profile, input, directory, root);
+    } catch (error) {
+      assert.fail(`${profile} render failed without node_modules:\n${error.profileRendererOutput}`);
+    }
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.match(output.values, /agentNativeAdmin:\n {2}enabled: false\n/);
+  }
+
+  // Native admin needs the API's public suffix list, so it asks for the install, with a preflight.
+  const directory = mkdtempSync(join(tmpdir(), "oce-profile-native-admin-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const error = renderError(() => render("openclaw", baseInput(), directory, root));
+  assert.match(
+    error.profileRendererOutput,
+    /controlPlane\.sharedCookieDomain needs the public suffix list: run pnpm install first\./,
+  );
+  const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+  assert.equal(preflight.ok, false);
+  assert.equal(existsSync(join(directory, "values.yaml")), false);
+});
 
 test("preflight warns, without failing, when no trusted proxy is set", () => {
   const github = render("openclaw", externalSignInInput());

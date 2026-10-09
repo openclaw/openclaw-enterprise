@@ -1,8 +1,8 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { readFile, realpath } from "node:fs/promises";
-import { createRequire, findPackageJSON } from "node:module";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { findPackageJSON } from "node:module";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ComputeDriver,
   ConfigurationDriver,
@@ -33,28 +33,96 @@ interface LoadedDriverPackage {
 
 const PACKAGE_NAME = /^(?:@[a-zA-Z0-9][a-zA-Z0-9._~-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._~-]*$/;
 
-function importEntrypoint(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
+const INVALID_EXPORT_TARGET = Symbol("invalid package export target");
 
-  const conditions = value as Record<string, unknown>;
-  if (Object.hasOwn(conditions, ".")) {
-    return importEntrypoint(conditions["."]);
-  }
-  for (const [condition, target] of Object.entries(conditions)) {
-    if (condition !== "import" && condition !== "node" && condition !== "default") {
-      continue;
+type ExportTarget = URL | null | undefined | typeof INVALID_EXPORT_TARGET;
+
+// Node's default conditions for `import()` (no --conditions, --no-addons or
+// --no-experimental-require-module flags; the controller sets none).
+const IMPORT_CONDITIONS: ReadonlySet<string> = new Set([
+  "node",
+  "import",
+  "module-sync",
+  "node-addons",
+  "default",
+]);
+
+// Node refuses ".", ".." and "node_modules" segments, including percent-encoded letters.
+const INVALID_TARGET_SEGMENT =
+  /(?:^|\\|\/)(?:(?:\.|%2e)(?:\.|%2e)?|(?:n|%6e|%4e)(?:o|%6f|%4f)(?:d|%64|%44)(?:e|%65|%45)(?:_|%5f)(?:m|%6d|%4d)(?:o|%6f|%4f)(?:d|%64|%44)(?:u|%75|%55)(?:l|%6c|%4c)(?:e|%65|%45)(?:s|%73|%53))(?:\\|\/|$)/i;
+
+function isArrayIndex(key: string): boolean {
+  const index = Number(key);
+  return String(index) === key && index >= 0 && index < 0xffff_ffff;
+}
+
+/**
+ * Node's PACKAGE_TARGET_RESOLVE for the package root under import conditions: a
+ * "." key is a condition name here, so only the top level selects a subpath.
+ */
+function exportTarget(target: unknown, manifestUrl: URL, path: string): ExportTarget {
+  if (typeof target === "string") {
+    if (!target.startsWith("./") || INVALID_TARGET_SEGMENT.test(target.slice(2))) {
+      return INVALID_EXPORT_TARGET;
     }
-    const selected = importEntrypoint(target);
-    if (selected !== undefined) {
-      return selected;
+    // URL parsing drops tabs and newlines, so containment is checked after it.
+    const resolved = new URL(target, manifestUrl);
+    return resolved.pathname.startsWith(new URL(".", manifestUrl).pathname)
+      ? resolved
+      : INVALID_EXPORT_TARGET;
+  }
+  if (Array.isArray(target)) {
+    // Invalid targets and unmatched conditions fall through to the next entry; the
+    // result is the last null or invalid entry when none selects a file.
+    let last: ExportTarget = target.length === 0 ? null : undefined;
+    for (const item of target) {
+      const resolved = exportTarget(item, manifestUrl, path);
+      if (resolved instanceof URL) {
+        return resolved;
+      }
+      if (resolved !== undefined) {
+        last = resolved;
+      }
+    }
+    return last;
+  }
+  if (target === null) {
+    return null;
+  }
+  if (typeof target !== "object") {
+    return INVALID_EXPORT_TARGET;
+  }
+  const conditions = target as Record<string, unknown>;
+  const keys = Object.getOwnPropertyNames(conditions);
+  if (keys.some(isArrayIndex)) {
+    throw new Error(`${path}.package exports must not contain numeric condition keys.`);
+  }
+  for (const key of keys) {
+    if (IMPORT_CONDITIONS.has(key)) {
+      const resolved = exportTarget(conditions[key], manifestUrl, path);
+      if (resolved !== undefined) {
+        return resolved;
+      }
     }
   }
   return undefined;
+}
+
+/** Node's PACKAGE_EXPORTS_RESOLVE for the "." subpath. */
+function rootExportTarget(exports: unknown, manifestUrl: URL, path: string): ExportTarget {
+  if (exports !== null && typeof exports === "object" && !Array.isArray(exports)) {
+    const keys = Object.getOwnPropertyNames(exports);
+    const subpaths = keys.filter((key) => key.startsWith("."));
+    if (subpaths.length > 0 && subpaths.length < keys.length) {
+      throw new Error(`${path}.package exports must not mix subpath and condition keys.`);
+    }
+    if (subpaths.length > 0) {
+      return Object.hasOwn(exports, ".")
+        ? exportTarget((exports as Record<string, unknown>)["."], manifestUrl, path)
+        : undefined;
+    }
+  }
+  return exportTarget(exports, manifestUrl, path);
 }
 
 export async function loadDriverPackage(
@@ -132,17 +200,34 @@ export async function loadDriverPackage(
   ) {
     throw new Error(`${path}.package must be pinned to its exact installed production version.`);
   }
-  const exportedEntrypoint = importEntrypoint(installedManifest.exports);
-  if (exportedEntrypoint === undefined || !exportedEntrypoint.startsWith("./")) {
+  const exported = rootExportTarget(
+    installedManifest.exports,
+    pathToFileURL(installedManifestPath),
+    path,
+  );
+  if (!(exported instanceof URL)) {
     throw new Error(`${path}.package must declare an exported compiled ESM entry.`);
+  }
+  // Node then loads exactly the selected file: no extension, directory or main lookup.
+  if (/%2f|%5c/i.test(exported.pathname)) {
+    throw new Error(`${path}.package export target must not encode a path separator.`);
+  }
+  let targetPath: string;
+  try {
+    targetPath = fileURLToPath(exported);
+  } catch {
+    throw new Error(`${path}.package export target has malformed percent encoding.`);
+  }
+  const target = await stat(targetPath).catch(() => undefined);
+  if (target?.isDirectory() === true) {
+    throw new Error(`${path}.package export target must be a file, not a directory.`);
   }
   let entryPath: string;
   try {
-    entryPath = await realpath(
-      createRequire(pathToFileURL(ownerPath)).resolve(
-        resolve(dirname(installedManifestPath), exportedEntrypoint),
-      ),
-    );
+    if (target?.isFile() !== true) {
+      throw new Error("The selected export target is not a file.");
+    }
+    entryPath = await realpath(targetPath);
   } catch {
     throw new Error(`${path}.package selects an unavailable compiled ESM entry.`);
   }

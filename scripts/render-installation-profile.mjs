@@ -7,13 +7,22 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKubernetesNamespaceName } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
-import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
+import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+// A Kubernetes object name such as a PVC: a DNS subdomain of at most 253 characters whose
+// labels are at most 63, as the chart and prepare-bootstrap-volume check it.
+function isDnsSubdomainName(value) {
+  return (
+    value.length <= 253 &&
+    dnsSubdomain.test(value) &&
+    value.split(".").every((label) => label.length <= 63)
+  );
+}
 // Kubernetes Service names are DNS-1035 labels. The chart refuses any other
 // repositoryCredentials.serviceName.
 const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
@@ -38,9 +47,10 @@ function isLiteralIpv4ProxyUrl(value) {
 }
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
-// Google hosted domains, as the API's domainPattern and the chart accept them.
-// A DNS hostname whose last label starts with a digit, or a name longer than
-// 253 characters, is not one of those domains.
+// Google hosted domains in the shape the API's domainPattern and the chart accept after
+// they trim and lowercase the entry. Preflight accepts only the trimmed, lowercase spelling.
+// A DNS hostname whose last label starts with a digit, or a name longer than 253
+// characters, is not one of those domains.
 const googleHostedDomain =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -159,7 +169,14 @@ function yamlScalar(value) {
     ) {
       return value;
     }
-    return JSON.stringify(value);
+    // JSON escapes only C0 controls. Inside a double-quoted scalar Helm's YAML parser folds a
+    // raw U+0085 into a space and refuses raw DEL, the other C1 controls, U+FFFE and U+FFFF.
+    // U+2028, U+2029 and U+FEFF are YAML line-break and byte-order characters. Escape them
+    // all so Helm reads the exact string preflight checked.
+    return JSON.stringify(value).replace(
+      /[\u007f-\u009f\u2028\u2029\ufeff\ufffe\uffff]/g,
+      (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
@@ -402,10 +419,11 @@ function labelMap(source, path, diagnostics, { nonempty = true, emptyValues = fa
   return value;
 }
 
-// Match the control-plane selector contract in Helm and prepare-bootstrap-volume.
-// Kubernetes allows empty label values, as in `node-role.kubernetes.io/infra: ""`.
-function controlPlaneNodeSelector(source, diagnostics) {
-  const path = ["controlPlane", "nodeSelector"];
+// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
+// controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
+// runtime selectors in Installation configuration follow it too. Kubernetes allows empty
+// label values, as in `node-role.kubernetes.io/infra: ""`.
+function nodeSelector(source, path, diagnostics) {
   const labels = labelMap(source, path, diagnostics, { emptyValues: true });
   const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
   for (const [key, value] of Object.entries(labels)) {
@@ -418,18 +436,17 @@ function controlPlaneNodeSelector(source, diagnostics) {
       labelName.exec(name)?.[0] !== name ||
       (prefix !== undefined &&
         (prefix.length > 253 ||
-          /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.exec(prefix)?.[0] !==
-            prefix ||
+          dnsSubdomain.exec(prefix)?.[0] !== prefix ||
           prefix.split(".").some((label) => label.length > 63)))
     ) {
-      diagnostics.errors.push("controlPlane.nodeSelector keys must be Kubernetes label keys.");
+      diagnostics.errors.push(`${path.join(".")} keys must be Kubernetes label keys.`);
     }
     if (
       typeof value === "string" &&
       value !== "" &&
       (value.length > 63 || labelName.exec(value)?.[0] !== value)
     ) {
-      diagnostics.errors.push("controlPlane.nodeSelector values must be Kubernetes label values.");
+      diagnostics.errors.push(`${path.join(".")} values must be Kubernetes label values.`);
     }
   }
   return labels;
@@ -548,6 +565,13 @@ function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, dia
   }
 }
 
+// A Kubernetes Namespace name: a DNS label of at most 63 characters. The chart selects API
+// client and DNS peers by kubernetes.io/metadata.name, which only ever holds such a name.
+const namespaceRule = {
+  validate: isKubernetesNamespaceName,
+  description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
+};
+
 function clientSelectors(source, diagnostics) {
   if (!Array.isArray(source.apiClients) || source.apiClients.length === 0) {
     diagnostics.errors.push("controlPlane.apiClients must be a nonempty list.");
@@ -561,6 +585,7 @@ function clientSelectors(source, diagnostics) {
         current,
         ["controlPlane", "apiClients", String(index), "namespace"],
         diagnostics,
+        namespaceRule,
       ),
       podLabels: labelMap(
         current,
@@ -839,7 +864,28 @@ function section(source, key, diagnostics, required = true) {
   return record(value, key, diagnostics);
 }
 
+// YAML has no escape for a lone UTF-16 surrogate, so Helm cannot parse a values.yaml that
+// carries one and no consumer accepts it.
+function wellFormedText(value, path, diagnostics) {
+  if (typeof value === "string") {
+    if (!value.isWellFormed()) {
+      diagnostics.errors.push(`${path} must be well-formed Unicode text.`);
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((entry, index) => wellFormedText(entry, `${path}[${index}]`, diagnostics));
+  } else if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) {
+      const keyPath = path === "" ? key : `${path}.${key}`;
+      if (!key.isWellFormed()) {
+        diagnostics.errors.push(`${path || "input"} keys must be well-formed Unicode text.`);
+      }
+      wellFormedText(entry, keyPath, diagnostics);
+    }
+  }
+}
+
 function buildInput(rawInput, diagnostics) {
+  wellFormedText(rawInput, "", diagnostics);
   const input = record(rawInput, "input", diagnostics);
   closed(
     input,
@@ -1007,6 +1053,45 @@ function buildInput(rawInput, diagnostics) {
   };
 }
 
+// The chart's dedicated-Secret rule for sign-in credentials (auth.github, auth.google and
+// auth.oidc): each provider's Secret must differ from the installation, database and auth
+// Secrets (left at the chart defaults here), the ChatGPT Backend and gateway API key Secrets,
+// the repository broker Secrets, and the Secret of each provider checked before it.
+const chartSecretNames = ["occ-installation-startup", "occ-database", "occ-auth"];
+const signInSecretDefaults = {
+  github: "occ-github-login",
+  google: "occ-google-login",
+  oidc: "occ-oidc-login",
+};
+function signInSecretsDedicated(values, diagnostics) {
+  const repository = values.repositoryCredentials;
+  const taken = [
+    ...chartSecretNames,
+    ...(values.backend?.chatgpt?.enabled ? [values.backend.chatgpt.secretName] : []),
+    values.gatewayRouting.apiKeySecretName,
+    ...(repository.enabled
+      ? [
+          repository.serviceConfigSecretName,
+          repository.appKeySecretName,
+          repository.tlsSecretName,
+          repository.publicCaSecretName,
+        ]
+      : []),
+  ];
+  for (const [name, fallback] of Object.entries(signInSecretDefaults)) {
+    if (values.auth[name] === undefined) {
+      continue;
+    }
+    const secretName = values.auth[name].secretName ?? fallback;
+    if (taken.includes(secretName)) {
+      diagnostics.errors.push(
+        `controlPlane.${name}.secretName must name a dedicated Secret; ${secretName} holds other credentials.`,
+      );
+    }
+    taken.push(secretName);
+  }
+}
+
 function buildRendered(profile, parsed, diagnostics) {
   const {
     controlPlane,
@@ -1029,10 +1114,12 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: (value) => value.length <= 53 && dnsSubdomain.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
-  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics, {
-    validate: isKubernetesNamespaceName,
-    description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
-  });
+  const namespace = asString(
+    controlPlane,
+    ["controlPlane", "namespace"],
+    diagnostics,
+    namespaceRule,
+  );
   // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
     validate: isName,
@@ -1103,10 +1190,8 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
   const envoyNamespace =
-    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, {
-      validate: isKubernetesNamespaceName,
-      description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
-    }) ?? "envoy-gateway-system";
+    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
+    "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
   const managedSlackProxyEnabled = asBoolean(
     channels,
@@ -1182,6 +1267,10 @@ function buildRendered(profile, parsed, diagnostics) {
           controlPlane,
           ["controlPlane", "bootstrapPasswordClaimName"],
           diagnostics,
+          {
+            validate: isDnsSubdomainName,
+            description: "a PVC name: a DNS subdomain of at most 253 characters",
+          },
         ),
       },
     },
@@ -1247,10 +1336,12 @@ function buildRendered(profile, parsed, diagnostics) {
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
         ? {}
-        : { nodeSelector: controlPlaneNodeSelector(controlPlane, diagnostics) }),
+        : {
+            nodeSelector: nodeSelector(controlPlane, ["controlPlane", "nodeSelector"], diagnostics),
+          }),
     },
     dns: {
-      namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics),
+      namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics, namespaceRule),
       podLabels: labelMap(dns, ["controlPlane", "dns", "podLabels"], diagnostics),
     },
     gatewayRouting: {
@@ -1404,8 +1495,12 @@ function buildRendered(profile, parsed, diagnostics) {
               ["runtime", "gatewayStorageClassName"],
               diagnostics,
             ),
-            nodeSelector: labelMap(runtime, ["runtime", "nodeSelector"], diagnostics),
-            gatewayNodeSelector: labelMap(runtime, ["runtime", "gatewayNodeSelector"], diagnostics),
+            nodeSelector: nodeSelector(runtime, ["runtime", "nodeSelector"], diagnostics),
+            gatewayNodeSelector: nodeSelector(
+              runtime,
+              ["runtime", "gatewayNodeSelector"],
+              diagnostics,
+            ),
             transportSecretPrefix: asString(
               runtime,
               ["runtime", "transportSecretPrefix"],
@@ -1537,7 +1632,12 @@ function buildRendered(profile, parsed, diagnostics) {
         pattern: digestImage,
         description: "an immutable image reference with a SHA-256 digest",
       }),
-      backendId: asString(repository, ["repository", "backendId"], diagnostics),
+      // Installation startup checks a GitHub Backend ID with isBackendId, then bounds it to
+      // 200 UTF-16 code units for repository bindings; the chart checks both.
+      backendId: asString(repository, ["repository", "backendId"], diagnostics, {
+        validate: (value) => isBackendId(value) && value.length <= 200,
+        description: `a Backend ID: ${NAME_RULE}, and at most 200 UTF-16 code units`,
+      }),
       registryConfigMapName: asString(
         repository,
         ["repository", "registryConfigMapName"],
@@ -1588,6 +1688,8 @@ function buildRendered(profile, parsed, diagnostics) {
       port: 8443,
     };
   }
+
+  signInSecretsDedicated(values, diagnostics);
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",

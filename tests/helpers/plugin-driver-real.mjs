@@ -366,6 +366,7 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
             namespaceId: account.namespaceId,
             serviceAccountId: account.id,
             secretRef,
+            accessToken: imported.accessToken,
           }),
         );
         const result = await controller.transact((unit) =>

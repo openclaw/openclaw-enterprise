@@ -1206,13 +1206,21 @@ const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
     },
   },
 });
+const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)?$";
+const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
+const POD_LABELS_SCHEMA = {
+  type: "object",
+  minProperties: 1,
+  additionalProperties: { type: "string", maxLength: 63, pattern: POD_LABEL_VALUE_PATTERN },
+};
+
 const WORKLOAD_PEER_SCHEMA = Object.freeze({
   type: "object",
   required: ["namespace", "podLabels"],
   additionalProperties: false,
   properties: {
     namespace: { type: "string" },
-    podLabels: { type: "object", additionalProperties: { type: "string" } },
+    podLabels: POD_LABELS_SCHEMA,
   },
 });
 
@@ -1221,6 +1229,16 @@ function required(value: unknown, description: string): string {
     throw new ConfigurationFailure(`${description} must be explicitly configured.`);
   }
   return value;
+}
+
+/** Whether an account's credential Secret holds exactly this token (constant-time compare). */
+function storesServiceAccountToken(
+  secret: ManagedKubernetesObject<"Secret">,
+  accessToken: string,
+): boolean {
+  const stored = Buffer.from(secret.data?.[SERVICE_ACCOUNT_TOKEN_KEY] ?? "");
+  const requested = Buffer.from(Buffer.from(accessToken).toString("base64"));
+  return stored.length === requested.length && timingSafeEqual(stored, requested);
 }
 
 /** The wait before retry `attempt + 1`: exponential with jitter, or the server's
@@ -1383,7 +1401,12 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
   if (asRecord(value) === undefined) {
     throw new ConfigurationFailure(`${description} is required.`);
   }
-  required(value.namespace, `${description} namespace`);
+  // NetworkPolicies select the peer on kubernetes.io/metadata.name, which only ever holds a
+  // Namespace name; anything else matches nothing, or is not even a valid label value.
+  validateKubernetesNamespaceName(
+    required(value.namespace, `${description} namespace`),
+    `${description} namespace`,
+  );
   const labels = asRecord(value.podLabels);
   if (labels === undefined || Object.keys(labels).length === 0) {
     throw new ConfigurationFailure(`${description} Pod labels cannot be empty.`);
@@ -1392,6 +1415,23 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
     required(key, `${description} label key`);
     if (typeof label !== "string") {
       throw new ConfigurationFailure(`${description} labels must be strings.`);
+    }
+    const parts = key.split("/");
+    const name = parts.at(-1) ?? "";
+    const prefix = parts.length === 2 ? parts[0] : undefined;
+    if (
+      parts.length > 2 ||
+      name.length === 0 ||
+      name.length > 63 ||
+      !POD_LABEL_VALUE.test(name) ||
+      (prefix !== undefined && !isKubernetesResourceName(prefix))
+    ) {
+      throw new ConfigurationFailure(`${description} label keys must be Kubernetes label keys.`);
+    }
+    if (label.length > 63 || !POD_LABEL_VALUE.test(label)) {
+      throw new ConfigurationFailure(
+        `${description} label values must be Kubernetes label values.`,
+      );
     }
   }
 }
@@ -2416,7 +2456,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 properties: {
                   hostname: { type: "string" },
                   namespace: { type: "string" },
-                  podLabels: { type: "object", additionalProperties: { type: "string" } },
+                  podLabels: POD_LABELS_SCHEMA,
                   port: { type: "integer" },
                 },
               },
@@ -3862,9 +3902,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // Someone else's object under this name: nothing of this create's is stored.
       return;
     }
-    const stored = Buffer.from(existing.data?.[SERVICE_ACCOUNT_TOKEN_KEY] ?? "");
-    const requested = Buffer.from(Buffer.from(accessToken).toString("base64"));
-    if (stored.length !== requested.length || !timingSafeEqual(stored, requested)) {
+    if (!storesServiceAccountToken(existing, accessToken)) {
       // The account's Secret, but not this request's token: not this create's either.
       return;
     }
@@ -3891,13 +3929,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  /**
+   * Removes the account's credential Secret. Account deletion passes no token and removes the
+   * Secret the account owns. A failed issuance's compensation passes its own token: it runs
+   * after the transaction's ROLLBACK released the account row lock, so another issuance may
+   * already have stored its Secret under this same deterministic name (finding 944). It then
+   * deletes the Secret only while it holds that token, with uid and resourceVersion
+   * preconditions, and leaves another token's Secret alone.
+   */
   async deleteServiceAccountCredential(input: {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly secretRef: { readonly name: string; readonly key: string };
+    readonly accessToken?: string;
   }): Promise<void> {
     const namespaceId = required(input.namespaceId, "ServiceAccount Namespace ID");
     const serviceAccountId = required(input.serviceAccountId, "ServiceAccount ID");
+    const accessToken =
+      input.accessToken === undefined
+        ? undefined
+        : required(input.accessToken, "ServiceAccount access token");
     const name = `service-account-${sha256Hex(serviceAccountId, 32)}`;
     if (input.secretRef.name !== name || input.secretRef.key !== SERVICE_ACCOUNT_TOKEN_KEY) {
       throw new OwnershipFailure("Refusing another ServiceAccount's credential Secret.");
@@ -3909,25 +3960,60 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     this.verifyGatewayNamespace(tenant, { namespaceId });
-    const existing = await this.getOwned("Secret", name, namespace, {
-      namespaceId,
-      serviceAccountId,
-    });
+    const existing = await this.get("Secret", name, namespace);
     if (existing === undefined) {
       return;
     }
+    try {
+      this.verifyOwnership(existing, { namespaceId, serviceAccountId });
+    } catch (error) {
+      if (accessToken === undefined) {
+        throw error;
+      }
+      // Someone else's object under this name: a compensation leaves it alone, as the
+      // failed-create cleanup does.
+      return;
+    }
     const clients = await this.clients(namespace.plane);
-    await this.request(
-      () =>
-        clients.core.deleteNamespacedSecret({
-          name,
-          namespace: namespace.name,
-          ...(existing.metadata.uid === undefined
-            ? {}
-            : { body: { preconditions: { uid: existing.metadata.uid } } }),
-        }),
-      { mutating: true },
-    );
+    if (accessToken === undefined) {
+      await this.request(
+        () =>
+          clients.core.deleteNamespacedSecret({
+            name,
+            namespace: namespace.name,
+            ...(existing.metadata.uid === undefined
+              ? {}
+              : { body: { preconditions: { uid: existing.metadata.uid } } }),
+          }),
+        { mutating: true },
+      );
+      return;
+    }
+    if (!storesServiceAccountToken(existing, accessToken)) {
+      // Another issuance's Secret: this request's own is already gone.
+      return;
+    }
+    const { uid, resourceVersion } = existing.metadata;
+    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+      throw new DependencyUnavailableError(
+        "The ServiceAccount credential Secret has no exact identity to delete.",
+      );
+    }
+    try {
+      await this.request(
+        () =>
+          clients.core.deleteNamespacedSecret({
+            name,
+            namespace: namespace.name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        { mutating: true },
+      );
+    } catch (error) {
+      if (numericErrorStatus(error) !== 404) {
+        throw error;
+      }
+    }
   }
 
   async ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult> {

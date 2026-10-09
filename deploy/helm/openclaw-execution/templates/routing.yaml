@@ -2,6 +2,10 @@
 {{- if or (not $r.hostname) (not $r.gatewayClassName) (not $r.tlsSecretName) (not $r.controlPlaneCidrs) }}
 {{- fail "routing requires hostname, GatewayClass, TLS Secret, and observed control-plane source CIDRs" }}
 {{- end }}
+{{- /* YAML and --set read an all-digit or true/false hostname as a number or boolean, which len cannot measure. */ -}}
+{{- if not (kindIs "string" $r.hostname) }}
+{{- fail "routing.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string" }}
+{{- end }}
 {{- /* Compute validateDnsHostname refuses the same harness routing hostname at startup. */ -}}
 {{- if or (gt (len $r.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $r.hostname)) }}
 {{- fail "routing.hostname must be a DNS hostname without a port or path" }}
@@ -13,6 +17,14 @@
 {{- /* Compute isKubernetesNamespaceName refuses the same harness Envoy namespace at startup. */ -}}
 {{- if or (gt (len (toString $r.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $r.envoyNamespace))) }}
 {{- fail "routing.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
+{{- end }}
+{{- /* Compute validatePort refuses the same Envoy HTTPS target port at startup. Sprig int truncates 10443.5, so check the spelling first. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $r.envoyHttpsTargetPort))) (lt (int $r.envoyHttpsTargetPort) 1) (gt (int $r.envoyHttpsTargetPort) 65535) }}
+{{- fail "routing.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" }}
+{{- end }}
+{{- /* The harness proxy egress selects the DNS peer by its kubernetes.io/metadata.name label, which holds a Namespace name. */ -}}
+{{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) }}
+{{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
 {{- end }}
 {{- if not (has $r.serviceType (list "ClusterIP" "LoadBalancer")) }}
 {{- fail "routing.serviceType must be ClusterIP or LoadBalancer" }}

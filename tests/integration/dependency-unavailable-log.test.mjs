@@ -267,3 +267,93 @@ test("dependency log fields keep only the class and code of a bounded cause chai
   });
   assert.deepEqual(dependencyUnavailableLogFields(credentialLike).causes, [{}]);
 });
+
+// Fake values, assembled so no complete token shape appears in the source.
+const FAKE = "Abcdefghij0123456789Abcdefghij012345";
+const CREDENTIAL_MESSAGES = [
+  `Upstream sent ${["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJmYWtlIn0", "c2lnbmF0dXJl"].join(".")}.`,
+  `Header Authorization: Basic ${Buffer.from("fake-user:fake-pass").toString("base64")}`,
+  "Header authorization: basic ZmFrZTpmYWtl",
+  ...["ghs", "ghu", "ghr", "ghp", "gho"].map((prefix) => `Clone with ${prefix}_${FAKE} failed.`),
+  `Slack answered for ${["xoxb", "1234567890", "fakefakefake"].join("-")}.`,
+  ...["client_secret", "refresh_token", "id_token", "code", "apikey", "X-Amz-Signature"].map(
+    (name) => `Fetch https://idp.example.test/token?a=1&${name}=fake-value failed.`,
+  ),
+  "Connect postgres://fake-user:pa/ss@db.example.test:5432/occ failed.",
+  "Connect postgres://fake-user@db.example.test/occ failed.",
+  "Connect host=db.example.test user=occ password=fake-pass failed.",
+  "Connect Server=db.example.test;Uid=occ;Pwd=fake-pass; failed.",
+  "Token exchange body grant_type=refresh_token&refresh_token=fake-value was refused.",
+];
+// Representative renderings of the interpolating construction sites found by the audit of
+// DependencyUnavailableError and its subclasses, plus prose that names credentials.
+const BENIGN_MESSAGES = [
+  "ChatGPT Admin API POST request was unavailable.",
+  "ChatGPT Admin API DELETE request failed with HTTP 503.",
+  "The Kubernetes Secret create failed.",
+  "The Kubernetes Secret replace outcome is unknown after timeout.",
+  "The Kubernetes Secret delete was cancelled.",
+  "The Kubernetes ConfigMap create outcome is unknown after timeout.",
+  "The exact AgentRevision gateway could not apply its workspace node (WORKSPACE_NODE_FAILED).",
+  "OpenShell accepted deletion of Sandbox sbx-0123abcd but did not finish it within 30 s.",
+  "OpenShell CreateSandbox failed with gRPC status 14: connection refused",
+  "OpenShell GetSandbox failed: TypeError",
+  "The selected secret Driver is unavailable.",
+  "Persisted saved configuration is invalid.",
+  "Persisted AgentRevision plugin state is invalid.",
+  "The Agent runtime credential Kubernetes namespace is unavailable.",
+  "Basic authentication with the registry failed.",
+  "Uses basic OpenShell sandboxing.",
+  "Basic ServiceAccount token projection failed.",
+  "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.",
+  "Fetch https://registry.example.test/v2/token?scope=pull failed.",
+  "Cluster https://kubernetes.default.svc:443/api answered 503.",
+];
+
+test("dependency log fields withhold common token, URL and connection-string credentials", () => {
+  for (const message of CREDENTIAL_MESSAGES) {
+    const fields = dependencyUnavailableLogFields(new DependencyUnavailableError(message));
+    assert.equal(fields.message, WITHHELD_ERROR_TEXT, message);
+  }
+  for (const message of BENIGN_MESSAGES) {
+    const fields = dependencyUnavailableLogFields(new DependencyUnavailableError(message));
+    assert.equal(fields.message, message);
+  }
+  // A cause code shaped like a token is dropped; an ordinary code is kept.
+  const error = new DependencyUnavailableError("Outage.");
+  error.cause = Object.assign(new Error("x"), {
+    code: `ghs_${FAKE}`,
+    cause: Object.assign(new Error("y"), {
+      code: ["xoxb", "1234567890", "fakefakefake"].join("-"),
+      cause: Object.assign(new Error("z"), { code: "ECONNRESET" }),
+    }),
+  });
+  assert.deepEqual(dependencyUnavailableLogFields(error).causes, [{}, {}, { code: "ECONNRESET" }]);
+});
+
+test("dependency log fields check a bounded prefix of a long message", () => {
+  // Inputs that made the URL pattern scan quadratically before the check was bounded.
+  for (const message of [
+    "a.".repeat(500_000),
+    "a://b:".repeat(200_000),
+    `${"x".repeat(1_000_000)} Bearer abcdefghijklmnopqrstuvwxyz`,
+  ]) {
+    const started = performance.now();
+    const fields = dependencyUnavailableLogFields(new DependencyUnavailableError(message));
+    const elapsedMs = performance.now() - started;
+    assert.ok(elapsedMs < 1_000, `${message.slice(0, 12)}: ${elapsedMs} ms`);
+    assert.equal(fields.message, message.slice(0, 512));
+  }
+  // A credential that starts before the cut and runs far past it is still withheld.
+  const straddling = `${"c".repeat(500)} Bearer ${"t".repeat(5_000)}`;
+  assert.equal(
+    dependencyUnavailableLogFields(new DependencyUnavailableError(straddling)).message,
+    WITHHELD_ERROR_TEXT,
+  );
+  // Padding collapses before the bound, so it cannot push a credential's end past the check.
+  const padded = `x${" ".repeat(2_025)}postgres://fake-user:fake-pass@db.example.test/occ`;
+  assert.equal(
+    dependencyUnavailableLogFields(new DependencyUnavailableError(padded)).message,
+    WITHHELD_ERROR_TEXT,
+  );
+});

@@ -41,8 +41,12 @@ the exact Configuration `inspectExact` finds, a failed delete recreates the prev
 one only when it is gone, and a failed update restores the stored generation. When
 that check cannot read the backend, the request fails as a rollback failure (503).
 A Driver without `inspectExact`, such as the filesystem development Driver, compensates
-only a write it saw succeed. A write still in flight, or another change that lands
-between the check and the compensation, is not covered.
+only a write it saw succeed. Compensations run after the failed transaction released
+its row locks, so delete and update compensations first re-read the metadata row and
+act only while it is unchanged: a Configuration another request deleted or updated
+in the meantime is left as that request committed it. If that re-read fails, the
+compensation proceeds as before. A write still in flight, or
+another change that lands between that re-read and the compensation, is not covered.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use

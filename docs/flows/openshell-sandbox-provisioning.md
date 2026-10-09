@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-09
-last_updated_session: authoring-run/00c633dc-791f-424e-bb95-be4fc3df2941
+last_updated_session: authoring-run/5ae13556-ffd9-4db8-baa6-2da633914a35
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -106,8 +106,7 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-`openshell` Backend binds Gateway, Sandbox and native-Codex Credential
-Gateway; credential-source profiles govern egress, not Sandbox policy.
+Credential-source profiles govern egress, not Sandbox policy.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
 Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects
@@ -130,15 +129,14 @@ draining does not terminate arbitrary descendants. Error-output writes ignore
 failures; writer latency/durability are outside the subprocess budget. Capture
 neither retries nor diagnoses the failure.
 
-After Helm, `network.providerHarness` records the exact Gateway
-ClusterIP, Pod selector and TCP/8080. The Agent Gateway uses that IP only to alias
-the advertised hostname, preserving HTTP Host for routing; NetworkPolicy admits
-only those Pods and port.
+After Helm, `network.providerHarness` records Gateway
+ClusterIP, Pod selector and TCP/8080. The Agent Gateway aliases only the advertised hostname to that IP, preserving
+HTTP Host for routing. NetworkPolicy admits only those Pods/port.
 
 Compose hosts PostgreSQL, OCC and its k3d worker; Kubernetes-only uses
 `oce-system` and in-cluster authentication. Both install private Envoy routing
 and operator Workspaces, limiting Gateway access to API, worker, supervisor
-callbacks and dedicated Agent Gateways. See the
+callbacks and dedicated Agent Gateways. See
 [local deployment guides](../guides/deploy/local-kubernetes-development.md).
 
 Cleanup validates recorded engine/state before deleting the named cluster and
@@ -154,10 +152,9 @@ Gateway use. Operator mode applies namespace labels, workspace-chart resources
 and provider NetworkPolicies, then checks health; optional namespace-local
 readiness comes first. Development uses the central Gateway endpoint.
 
-`apps/controller/src/backends/openshell.ts:clientForNamespace` supplies the
-endpoint to `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts`.
-HTTP origins retain port 80 instead of inheriting gRPC's 443; nondefault ports,
-HTTPS and raw targets retain their behavior.
+`apps/controller/src/backends/openshell.ts:clientForNamespace` passes raw
+endpoints, including bracketed IPv6, unchanged to the gRPC client. HTTP
+origins keep port 80 explicit; HTTPS and nondefault ports retain their behavior.
 
 The Driver uses Compute's physical namespace name for the Workspace. It reads
 it, creates it if missing, or rereads after concurrent `ALREADY_EXISTS`.
@@ -370,9 +367,13 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 ## Changelog
 
+- 2026-10-09 16:29: Preserve both documentation histories. (authoring-run/5ae13556-ffd9-4db8-baa6-2da633914a35 - 3864e5ccbcc851d5ecf60cfbcbbb39bfdae2a520)
+
 - 2026-10-09 15:59: Tighten setup prose; preserve diagnostic boundaries. (authoring-run/00c633dc-791f-424e-bb95-be4fc3df2941 - 331b551741fed846aa139515e16efd0d12bf091a)
 
 - 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
+
+- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 

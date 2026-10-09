@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  OpenShellGateway,
+  createOpenShellBackend,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -2417,4 +2421,71 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     /managed workspace mode is not implemented; cannot observe a Harness/,
   );
   assert.deepEqual(observed, []);
+});
+
+test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer can reach", async (t) => {
+  const grpc = controllerRequire("@grpc/grpc-js");
+  const loader = controllerRequire("@grpc/proto-loader");
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, enums: String },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  let healthCalls = 0;
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      healthCalls += 1;
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  // A real IPv6 listener and the native SDK establish address compatibility, not live OpenShell.
+  const port = await new Promise((resolve, reject) =>
+    server.bindAsync("[::1]:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+      error ? reject(error) : resolve(value),
+    ),
+  );
+  t.after(() => new Promise((resolve) => server.tryShutdown(resolve)));
+  for (const endpoint of [`[::1]:${port}`, `http://[::1]:${port}`]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    const runtime = await loadInstallationFile(t, configuration);
+    const backend = createOpenShellBackend(runtime.installation.backend[0]);
+    try {
+      await backend.client.clientForNamespace("ipv6-tenant").health(AbortSignal.timeout(2000));
+    } finally {
+      backend.client.close();
+    }
+  }
+  assert.equal(healthCalls, 2);
+  for (const endpoint of [
+    "[::1]:0",
+    "[::1]:65536",
+    "[::1]:999999",
+    "[::1%]:8080",
+    "[not-an-ip]:8080",
+    "[127.0.0.1]:8080",
+    "[::1:8080",
+    "::1]:8080",
+    "[::1]:8080/",
+    "[::1]:8080?query",
+  ]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    await assert.rejects(
+      loadInstallationFile(t, configuration),
+      /configuration.endpoint must be host:port or an http or https origin/,
+      endpoint,
+    );
+  }
+  for (const endpoint of [
+    "gateway.example.test:8080",
+    "127.0.0.1:8080",
+    "http://gateway.example.test",
+    "http://127.0.0.1:80",
+  ]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    await loadInstallationFile(t, configuration);
+  }
 });

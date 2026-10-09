@@ -451,6 +451,115 @@ test("a Configuration delete that applied but answered an error restores the Con
   assert.equal(recreated.length, 1);
 });
 
+test("a failed Configuration delete leaves a delete committed after its rollback alone", async () => {
+  const { configurationDriver, controller, namespace, state } = await fixture();
+  inspectExactly(configurationDriver);
+  const configuration = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: { model: "raced" },
+  });
+  const deleteConfiguration = configurationDriver.delete;
+  const inspectExact = configurationDriver.inspectExact;
+  const create = configurationDriver.create;
+  const recreated = [];
+  configurationDriver.create = async (next) => {
+    recreated.push(next);
+    return create(next);
+  };
+
+  // Request A's delete never applies. Its compensation runs after ROLLBACK released the row
+  // lock, and request B deletes the same Configuration and commits before A inspects it. A
+  // must not recreate a ConfigMap whose metadata is gone (finding 945).
+  configurationDriver.delete = async () => {
+    configurationDriver.delete = deleteConfiguration;
+    throw new Error("synthetic Configuration outage");
+  };
+  configurationDriver.inspectExact = async (next) => {
+    configurationDriver.inspectExact = inspectExact;
+    await controller.deleteConfiguration(administrator, namespace.id, configuration.id);
+    return inspectExact(next);
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.equal(configurationDriver.stored(configuration), undefined);
+  assert.deepEqual(recreated, []);
+  await assert.rejects(
+    controller.getConfiguration(administrator, namespace.id, configuration.id),
+    ScopeViolationError,
+  );
+
+  // When that re-read fails too (the outage that failed the request), the compensation
+  // proceeds as before: a delete that applied gets its ConfigMap back (finding 916).
+  const kept = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: { model: "kept" },
+  });
+  recreated.length = 0;
+  const read = state.read;
+  configurationDriver.delete = async (reference) => {
+    configurationDriver.delete = deleteConfiguration;
+    await deleteConfiguration(reference);
+    state.read = async () => {
+      state.read = read;
+      throw new Error("synthetic state outage");
+    };
+    throw new Error("synthetic Configuration delete response loss");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, kept.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.equal(state.read, read);
+  assert.deepEqual(configurationDriver.stored(kept), kept);
+  assert.deepEqual(recreated, [kept]);
+});
+
+test("a failed Configuration update leaves an update committed after its rollback alone", async () => {
+  const { configuration, configurationDriver, controller, namespace } = await fixture();
+  const reference = { id: configuration.id, namespaceId: namespace.id };
+  const update = configurationDriver.update;
+  const read = configurationDriver.read;
+  const updateInput = (model) => ({
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values: { model },
+  });
+
+  // Request A's replace never applies. Before its compensation reads the stored generation,
+  // request B updates the same Configuration and commits generation 2. A must not roll B's
+  // committed document back to generation 1 under metadata that says 2.
+  configurationDriver.update = async () => {
+    configurationDriver.update = update;
+    configurationDriver.read = async (next) => {
+      configurationDriver.read = read;
+      await controller.updateConfiguration(administrator, updateInput("committed"));
+      return read(next);
+    };
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput("failed")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  const stored = await configurationDriver.read(reference);
+  assert.equal(stored.generation, 2);
+  assert.deepEqual(stored.values, { model: "committed" });
+  assert.deepEqual(
+    await controller.getConfiguration(administrator, namespace.id, configuration.id),
+    stored,
+  );
+});
+
 test("native Configuration documents remain bound to their exact Namespace", async () => {
   const { controller, namespace } = await fixture();
   const otherNamespace = await controller.createNamespace(administrator, {

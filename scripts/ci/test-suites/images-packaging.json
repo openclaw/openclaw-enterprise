@@ -71,6 +71,7 @@
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
       "expectedTests": [
+        "database CA mounts stay distinct from active production volume mounts",
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",

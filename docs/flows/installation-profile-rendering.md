@@ -92,8 +92,12 @@ syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
 when set, `controlPlane.envoyNamespace` to be Kubernetes namespace names: DNS
 labels of at most 63 characters, with no dots. The Compute driver applies the
 same rule to `gatewayNamespace` and `envoyNamespace`, and the chart to
-`gatewayRouting.envoyNamespace`. A dot, a slash, an uppercase letter, or a longer
-name fails before any deployable file is written. The shared `digestImage` check in `buildRendered`
+`gatewayRouting.envoyNamespace`. `controlPlane.apiClients[].namespace` and
+`controlPlane.dns.namespace` follow the same rule, as the chart does for
+`api.clients` and `dns`: NetworkPolicies select those peers by
+`kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a
+slash, an uppercase letter, or a longer name fails before any deployable file
+is written. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 `controllerDigestImage` additionally applies the chart and bootstrap-volume
@@ -119,11 +123,20 @@ scraper selectors. Invalid values therefore fail before `values.yaml` or
 and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
 `client-id` and `client-secret` defaults when only one key is overridden, so those
 collisions also fail before deployment files are written.
+`signInSecretsDedicated` applies the chart's dedicated-Secret rule: each enabled
+provider's Secret, default or explicit, must differ from the installation,
+database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
+repository broker Secrets when enabled, and every provider checked before it.
 
-`scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
-`controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
-Kubernetes label-key and label-value rules (values may be empty). Invalid placement labels
-fail preflight without deployment files; legal YAML lookalike values remain strings.
+`scripts/render-installation-profile.mjs:nodeSelector` checks
+`controlPlane.nodeSelector`, `runtime.nodeSelector` and
+`runtime.gatewayNodeSelector` against the chart and bootstrap-volume helper's
+Kubernetes label-key and label-value rules (values may be empty). Compute copies
+the runtime selectors into Pod specs, where Kubernetes applies the same rule.
+Invalid placement labels fail preflight without deployment files; legal YAML
+lookalike values remain strings. The bootstrap password claim name must be a DNS
+subdomain, and a repository Backend ID must follow the Backend ID rule within
+200 UTF-16 code units, as in the chart.
 
 ### 4. Build Helm values
 
@@ -205,7 +218,10 @@ those exact bytes with SHA-256, and sets `controlPlane.installationChecksum` in
 and `preflight.json`. Helm reads values with YAML 1.1 rules, so the writer
 quotes any string key or value that could resolve to a boolean, null, number, or
 timestamp (for example a `no`, `on`, `1e3`, or `0x1f` label value) or that starts
-with a YAML indicator such as `@`. On validation failure, it writes only `preflight.json`
+with a YAML indicator such as `@`. Quoted strings escape DEL, C1 controls (Helm folds
+U+0085 into a space and refuses the others), U+2028, U+2029, U+FEFF, U+FFFE and
+U+FFFF; preflight refuses lone UTF-16 surrogates, which YAML cannot spell.
+On validation failure, it writes only `preflight.json`
 with `ok:false`, lists only that report in `outputs`, and exits nonzero.
 Input-loading failures exit without a preflight report.
 
@@ -220,8 +236,10 @@ activation, and repository registry creation need separate evidence.
 
 - Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
   CLI and inspect generated profile output.
-- `tests/integration/profile-preflight-chart-parity.test.mjs` runs each trusted
-  proxy CIDR case through the renderer, `helm template` and the API parser.
+- `tests/integration/profile-preflight-chart-parity.test.mjs` runs trusted proxy
+  CIDRs, namespaces, node selectors, sign-in Secret names and keys, controller
+  images, claim names, Backend IDs and free-text values through the renderer and
+  `helm template`, plus the API parser or Compute where they apply.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
   missing or unsupported input was supplied; `values.yaml` and
   `installation.yaml` are intentionally absent.
@@ -248,21 +266,21 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
-- 2026-10-09 21:03: Validate controller image references before emitting profile files. (authoring-run/9a3fd823-79af-431c-b422-44c0ba255013 - b62cf404ed354079e1c51b64a1e664b3c66c0262)
+- 2026-10-09: Apply the chart's sign-in Secret, runtime node selector, claim name and Backend ID rules, and escape characters Helm's YAML parser changes.
 
-- 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
+- 2026-10-09 21:03: Validate controller image references before emitting profile files. (authoring-run/9a3fd823-79af-431c-b422-44c0ba255013 - b62cf404ed354079e1c51b64a1e664b3c66c0262)
 
 - 2026-10-09 20:06: Validate transport Secret prefixes before rendering Installation configuration. (authoring-run/8b675a82-44c5-4fc1-a404-dad5edd03858 - cd468c23101b201b3969fa1a4077a18042d3396b)
 
 - 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
 
+- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
+
+- 2026-10-09: Check API client and DNS peer namespaces as DNS labels of at most 63 characters.
+
 - 2026-10-09: Check gateway and Envoy namespaces as DNS labels of at most 63 characters.
 
 - 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
-
-- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
-
-- 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 
 - 2026-10-09: Refuse Google hosted domains the chart and API refuse.
 

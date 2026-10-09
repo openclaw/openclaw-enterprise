@@ -248,16 +248,25 @@ if (command === "docker" || command === "podman") {
     state.tag = args[args.indexOf("-t") + 1];
     finish();
   }
-  // The cache-only probe reports each image's config digest. In the
-  // engine-holds-images scenario the engine already has both images.
+  // The cache-only probe reports each image's config digest. In the engine-*
+  // scenarios the cache resolves to images the engine may hold: engine-holds-images
+  // holds both; the others fail one step of the probe.
   const heldImages = { controller: "sha256:" + "d".repeat(64), runtime: "sha256:" + "e".repeat(64) };
   const absentImage = "sha256:" + "f".repeat(64);
   if (equals(args.slice(0, 4), ["buildx", "build", "--output", "type=image,push=false,store=false"])) {
     assert.equal(args[4], "--provenance=false");
     assert.equal(args.includes("--load") || args.includes("--cache-to"), false);
     const role = args.includes("--target") ? "controller" : "runtime";
-    writeFileSync(args[args.indexOf("--metadata-file") + 1], JSON.stringify({
-      "containerimage.config.digest": scenario === "engine-holds-images"
+    const metadata = args[args.indexOf("--metadata-file") + 1];
+    if (scenario === "engine-bad-metadata") {
+      // Unparsable for the controller, no image digest for the runtime.
+      writeFileSync(metadata, role === "controller" ? "{" : JSON.stringify({
+        "containerimage.config.digest": "sha256:not-a-digest",
+      }));
+      finish();
+    }
+    writeFileSync(metadata, JSON.stringify({
+      "containerimage.config.digest": scenario.startsWith("engine-")
         ? heldImages[role]
         : absentImage,
     }));
@@ -265,8 +274,24 @@ if (command === "docker" || command === "podman") {
   }
   if (equals(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"]) &&
       [...Object.values(heldImages), absentImage].includes(args[4])) {
-    if (scenario === "engine-holds-images") finish(args[4] + "\n");
+    if (scenario === "engine-inspect-hung") await hang();
+    if (scenario === "engine-inspect-failed") {
+      process.stderr.write("Cannot connect to the Docker daemon\n");
+      process.exit(1);
+    }
+    // The engine holds another image under the reference (a different ID).
+    if (scenario === "engine-holds-different") finish("sha256:" + "a".repeat(64) + "\n");
+    if (scenario.startsWith("engine-")) finish(args[4] + "\n");
     process.stderr.write("Error response from daemon: No such image: " + args[4] + "\n");
+    process.exit(1);
+  }
+  if (
+    scenario === "engine-tag-failed" &&
+    args[0] === "tag" &&
+    args.length === 3 &&
+    Object.values(heldImages).includes(args[1])
+  ) {
+    process.stderr.write("Error response from daemon: synthetic tag failure\n");
     process.exit(1);
   }
   if (scenario === "engine-holds-images" && args[0] === "tag" && args.length === 3) {
@@ -1508,6 +1533,80 @@ test("image lanes tag the engine's copy when the restored cache resolves to an i
   const cleaned = commands.cleanup();
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });
+
+for (const { scenario, outcome, env = {} } of [
+  {
+    scenario: "engine-holds-different",
+    outcome: { controller: "different", runtime: "different" },
+  },
+  {
+    scenario: "engine-bad-metadata",
+    outcome: { controller: "probe-failed", runtime: "unresolved" },
+  },
+  {
+    scenario: "engine-inspect-failed",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+  },
+  {
+    scenario: "engine-inspect-hung",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+    env: { OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000" },
+  },
+  {
+    scenario: "engine-tag-failed",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+  },
+  // The probe's temporary directory cannot be created.
+  {
+    scenario: "engine-holds-images",
+    outcome: { controller: "probe-failed", runtime: "probe-failed" },
+    env: { RUNNER_TEMP: "/nonexistent/oce-ci-prepare-runner-temp" },
+  },
+]) {
+  test(`image lanes build when the engine image probe cannot reuse: ${scenario} ${JSON.stringify(env)}`, async (t) => {
+    const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
+      GITHUB_ACTIONS: "true",
+      GITHUB_EVENT_NAME: "pull_request",
+      OCC_CI_IMAGE_CACHE: "1",
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
+      ...env,
+    });
+    const prepared = commands.prepare();
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const calls = (await commands.commands()).filter(({ command }) => command === "docker");
+    // Both images build and load as if no probe had run.
+    const builds = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
+    assert.equal(builds.length, 2);
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    for (const { args } of builds) {
+      const tag = args[args.indexOf("-t") + 1];
+      const tagged = state.resources.find(({ kind, name }) => kind === "image-tag" && name === tag);
+      assert.equal(tagged?.status, "ready", tag);
+    }
+    for (const [role, expected] of Object.entries(outcome)) {
+      assert.match(
+        prepared.stderr,
+        new RegExp(`"stage":"${role}-image-reuse","outcome":"${expected}"`),
+        role,
+      );
+    }
+    // Only a probe that failed at the tag itself tried to tag.
+    assert.equal(
+      calls.filter(({ args }) => args[0] === "tag").length,
+      scenario === "engine-tag-failed" ? 2 : 0,
+    );
+    if (env.RUNNER_TEMP !== undefined) {
+      // No probe build ran without a metadata directory.
+      assert.equal(
+        calls.filter(({ args }) => args.includes("type=image,push=false,store=false")).length,
+        0,
+      );
+    }
+    const cleaned = commands.cleanup();
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+  });
+}
 
 const warmCacheEnv = {
   GITHUB_ACTIONS: "true",

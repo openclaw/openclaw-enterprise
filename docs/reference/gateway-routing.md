@@ -212,7 +212,8 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.                                                                              |
 
 Routing ports must be decimal integers from `1` to `65535`, without leading
-zeros. The sandbox listener must also be at least `1024` and differ from
+zeros. With the sandbox enabled, `tenantGatewayPort` stops at `65534`, because
+the sandbox backend takes the next port. The sandbox listener must also be at least `1024` and differ from
 `envoyHttpsTargetPort`. Helm refuses fractional YAML numbers before rendering
 Gateway and NetworkPolicy resources.
 

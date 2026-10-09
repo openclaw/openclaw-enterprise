@@ -1026,7 +1026,7 @@ func (r *runner) copyAndVerifyKubernetesKey(ctx context.Context, state *developm
 	if err := exclusiveWrite(temporary, data, 0600); err != nil {
 		return "", nil, err
 	}
-	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second})
+	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second, Context: ctx})
 	if err != nil {
 		return "", nil, err
 	}

@@ -19,7 +19,10 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "../helpers/runtime-model-probe-certificates.mjs";
-import { modelProbeDiagnostic } from "../helpers/runtime-model-probe-observation.mjs";
+import {
+  modelProbeDiagnostic,
+  recordModelProbeMeasurement,
+} from "../helpers/runtime-model-probe-observation.mjs";
 import {
   execute,
   image,
@@ -312,6 +315,7 @@ function startupProbeFailure(headline, reason, evidence, snapshot) {
 // "hang". `until` returns true once the scenario has what it needs to check;
 // `act`, if given, then runs against the live containers.
 async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act }) {
+  const scenarioStartedAt = Date.now();
   const wrapper = startupProbeWrapper(kind);
   const material = await createStartupProbeMaterial(t, wrapper.readiness);
   if (wrapper.configuration !== undefined) {
@@ -446,6 +450,7 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
   const scenario = {
     containerName,
     startedAt,
+    setupMs: startedAt - scenarioStartedAt,
     wrapper,
     collect,
     first: (events, predicate) => events.find(predicate),
@@ -568,6 +573,10 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     delayMs,
     until: readyOrFailed,
   });
+  if (kind === "gateway") {
+    // The case name assumes gatewayStartupProbeCpuLimit stays at one core.
+    recordModelProbeMeasurement(t, "gateway-1cpu-answer", run);
+  }
   assertStartupReady(run);
   await withStartupProbeEvidence(run, async () => {
     const { events, phases } = run.snapshot;

@@ -47,7 +47,7 @@
       "count": 1
     }
   },
-  "packages/contracts/src/api/common.ts": {
+  "packages/contracts/src/api/plain-text.ts": {
     "no-control-regex": {
       "count": 1
     }

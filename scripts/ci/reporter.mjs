@@ -61,6 +61,9 @@ function safeMeasurement(message) {
   } catch {
     return undefined;
   }
+  if (isRecord(value) && value.kind === "runtime-model-probe") {
+    return safeModelProbeMeasurement(value);
+  }
   if (
     !isRecord(value) ||
     value.kind !== "kubelet-volume-refresh" ||
@@ -83,6 +86,54 @@ function safeMeasurement(message) {
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
   };
+}
+
+const modelProbeMeasurementCases = new Set([
+  "gateway-500m-answer",
+  "gateway-500m-hang",
+  "gateway-500m-contended",
+  "gateway-1cpu-answer",
+]);
+const modelProbeMeasurementCodes = new Set([
+  "READY",
+  "MODEL_PROBE_TIMEOUT",
+  "MODEL_PROBE_CPU_STARVED",
+  "MODEL_PROBE_FAILED",
+  "AUTHENTICATION_FAILED",
+  "UNAVAILABLE",
+]);
+const modelProbeMeasurementTimes = [
+  "elapsedMs",
+  "capMs",
+  "cpuWaitMs",
+  "setupMs",
+  "probeDoneMs",
+  "readyMs",
+];
+
+// A Gateway model probe's timing (finding 936). Times are whole milliseconds
+// up to an hour, or null when the run did not reach that point.
+function safeModelProbeMeasurement(value) {
+  if (!modelProbeMeasurementCases.has(value.case)) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    case: value.case,
+    code: modelProbeMeasurementCodes.has(value.code)
+      ? value.code
+      : value.code === null
+        ? null
+        : "other",
+  };
+  for (const key of modelProbeMeasurementTimes) {
+    const time = value[key];
+    if (time !== null && !(Number.isInteger(time) && time >= -60_000 && time <= 3_600_000)) {
+      return undefined;
+    }
+    measurement[key] = time;
+  }
+  return measurement;
 }
 
 const safeRuntimeImageStockBrokerStages = new Set([

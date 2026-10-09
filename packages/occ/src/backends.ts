@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { isIP } from "node:net";
 import type {
   Driver,
   BackendDefinition,
@@ -152,6 +153,12 @@ function validGatewayEndpoint(value: unknown): boolean {
     return false;
   }
   if (!value.includes("://")) {
+    if (value.startsWith("[") || value.includes("]")) {
+      const ipv6 = /^\[([^\]]+)\]:([0-9]{1,5})$/.exec(value);
+      return (
+        ipv6 !== null && isIP(ipv6[1]!) === 6 && Number(ipv6[2]) >= 1 && Number(ipv6[2]) <= 65535
+      );
+    }
     return /^[^/:]+:[0-9]{1,5}$/.test(value);
   }
   try {

@@ -274,7 +274,9 @@ without quotes or assignment.
 In both database URLs, replace placeholders and preserve required TLS options. For managed PostgreSQL roots supplied through
 `database.caSecretName`, set `sslmode=verify-full` and `sslrootcert` to the
 mounted CA file in both URLs: `/etc/openclaw/database-ca/ca.pem` with the
-example mount settings, otherwise `<database.caMountPath>/<database.caKey>`. Start query parameters with `?` and
+example mount settings, otherwise `<database.caMountPath>/<database.caKey>`.
+With a CA Secret, Helm requires a path distinct from bootstrap and active
+API/worker mounts. Start query parameters with `?` and
 join further ones with `&`. Generate the auth secret for a
 new Installation; this command refuses to overwrite an existing file:
 

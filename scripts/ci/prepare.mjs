@@ -916,18 +916,21 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
 // image from the BuildKit cache without exporting its layers, then tag the
 // engine's image if it has the same ID. The ID is the digest of a config that
 // names every layer's content digest, so the tagged image is the one the build
-// would load. Lanes that export the cache, and any probe failure, build as
-// before.
+// would load. Lanes that export the cache, and any probe failure (a timeout, an
+// engine error, unreadable metadata, a failed tag), build as before. The log
+// says "absent" only when the engine reports no such image, "different" when it
+// holds another image under that reference, and "probe-failed" otherwise.
 async function reuseEngineImage(state, role, args, tag) {
   if (args[0] !== "buildx" || !args.includes("--load") || args.includes("--cache-to")) {
     return false;
   }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   const started = performance.now();
-  const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
+  let directory;
   let outcome = "unresolved";
   let image;
   try {
+    directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
     const metadata = join(directory, "metadata.json");
     await execFile(
       docker,
@@ -951,23 +954,34 @@ async function reuseEngineImage(state, role, args, tag) {
     }
     image = id;
     // Under Docker's containerd image store the engine reports a manifest
-    // digest here instead, so the comparison fails safe and the lane builds.
-    const held = await execFile(docker, ["image", "inspect", "--format", "{{.Id}}", id]).then(
-      ({ stdout }) => stdout.trim(),
-      () => "",
-    );
-    if (held !== id) {
+    // digest here instead, so the comparison fails safe, the log says
+    // "different", and the lane builds.
+    let held;
+    try {
+      held = (
+        await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", id])
+      ).stdout.trim();
+    } catch (error) {
+      if (!/No such (?:image|object)|image not known/i.test(error.stderr ?? "")) {
+        throw error;
+      }
       outcome = "absent";
       return false;
     }
-    await execFile(docker, ["tag", id, tag]);
+    if (held !== id) {
+      outcome = "different";
+      return false;
+    }
+    await boundedImageCommand(["tag", id, tag]);
     outcome = "reused";
     return true;
   } catch {
     outcome = "probe-failed";
     return false;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    if (directory !== undefined) {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
     progress(
       state.lane,
       JSON.stringify({

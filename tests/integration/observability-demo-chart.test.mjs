@@ -176,3 +176,50 @@ for (const value of ["407", "true", "null", "1e3"]) {
     },
   );
 }
+
+test(
+  "demo chart refuses selector namespaces that no Kubernetes Namespace can have",
+  await helmAvailable(),
+  async () => {
+    const render = (overrides) =>
+      execute(
+        helm,
+        [
+          "template",
+          "demo",
+          "deploy/helm/openclaw-observability-demo",
+          ...[
+            "occ.namespace=openclaw-system",
+            "occ.release=oce",
+            "cluster.cidrs[0]=10.43.0.1/32",
+            "grafana.adminSecretName=grafana-admin",
+            "grafana.clients[0].namespace=operator-tools",
+            "grafana.clients[0].podLabels.app=operator",
+          ].flatMap((value) => ["--set", value]),
+          ...overrides.flatMap((value) => ["--set-string", value]),
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    // NetworkPolicies select each of these on kubernetes.io/metadata.name, which holds a
+    // Namespace name: a DNS label of at most 63 characters. Anything else selects nothing.
+    for (const path of ["occ.namespace", "dns.namespace", "grafana.clients[0].namespace"]) {
+      await render([`${path}=${"a".repeat(63)}`]);
+      for (const namespace of [
+        "kube.system",
+        "Kube-System",
+        "a".repeat(64),
+        "-system",
+        "system-",
+      ]) {
+        await assert.rejects(
+          render([`${path}=${namespace}`]),
+          ({ stderr }) =>
+            stderr.includes(
+              `${path} must be a Kubernetes namespace name (a DNS label of at most 63 characters)`,
+            ),
+          `${path}=${namespace}`,
+        );
+      }
+    }
+  },
+);

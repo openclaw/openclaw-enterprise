@@ -269,9 +269,16 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $client.namespace) (not $client.podLabels) -}}
 {{- fail (printf "api.clients[%d] requires an exact namespace and nonempty Pod selector" $index) -}}
 {{- end -}}
+{{- /* NetworkPolicies select these peers by kubernetes.io/metadata.name, which holds a Namespace name: a DNS label of at most 63 characters. */ -}}
+{{- if or (gt (len (toString $client.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $client.namespace))) -}}
+{{- fail (printf "api.clients[%d].namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" $index) -}}
+{{- end -}}
 {{- end -}}
 {{- if or (not .Values.dns.namespace) (not .Values.dns.podLabels) -}}
 {{- fail "dns requires an exact namespace and nonempty Pod selector" -}}
+{{- end -}}
+{{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) -}}
+{{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}
 {{- if hasKey .Values.database "cidr" -}}{{- fail "database.cidr is retired; configure database.cidrs with explicit IPv4 /32 hosts" -}}{{- end -}}
 {{- if hasKey .Values.cluster "cidr" -}}{{- fail "cluster.cidr is retired; configure cluster.cidrs with explicit IPv4 /32 hosts" -}}{{- end -}}
@@ -318,6 +325,26 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if or (eq .Values.database.caKey ".") (eq .Values.database.caKey "..") (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.database.caKey)) -}}
 {{- fail "database.caKey must be a simple basename" -}}
+{{- end -}}
+{{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
+{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
+{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/etc/openclaw/repository-ca" "/var/run/secrets/kubernetes.io/serviceaccount" "/run/openclaw/repository-control") -}}
+{{- end -}}
+{{- if .Values.gatewayRouting.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-api-key" -}}
+{{- if or (not .Values.gatewayRouting.issuerRef.name) .Values.gatewayRouting.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-ca" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
+{{- end -}}
+{{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
+{{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
 {{- end -}}
 {{- if or (eq .Values.installation.secretName .Values.database.secretName) (eq .Values.installation.secretName .Values.auth.secretName) -}}

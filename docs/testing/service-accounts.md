@@ -79,7 +79,9 @@ this workspace removes only that account, a lost reply deletes nothing, and a
 retried delete completes. An invalid credential reply revokes only a credential
 it places under the requested account in this workspace.
 `tests/conformance/kubernetes-compute.test.mjs` checks that a failed token Secret
-create deletes only an account-owned Secret with the request's token.
+create deletes only an account-owned Secret with the request's token, and that a
+failed issuance's compensation keeps the Secret a later issuance stored under the
+same name.
 
 Its Backend regression uses built-in fetch and real HTTPS connections against a
 loopback TLS server with a test-owned certificate. An unfinished 429, 503 or
