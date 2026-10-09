@@ -235,6 +235,15 @@ func (client *Client) UpdateCredentialSource(
 	)
 }
 
+// RotateCredentialSource forces a refresh-type source to mint a new token.
+func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "credential-sources", sourceID, "rotate"},
+		nil,
+	)
+}
+
 // WithdrawAgentCredentialSource revokes a credential source from an Agent's active revision.
 func (client *Client) WithdrawAgentCredentialSource(namespaceID, agentID, sourceID string) (any, error) {
 	return client.send(

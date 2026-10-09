@@ -2750,7 +2750,8 @@ test("gateway runtime status maps native Slack channel status without provider d
             typeof error.retryable === "boolean" &&
             (error.retryAfterMs === undefined ||
               (Number.isInteger(error.retryAfterMs) && error.retryAfterMs >= 0)),
-          async callGatewayFromCli(method, options, params, { signal }) {
+          async callGatewayFromCli(method, options, params, { signal, sharedStateMode }) {
+            assert.equal(sharedStateMode, "read-only");
             assert.equal(method, "channels.status");
             assert.deepEqual(plain(params), { channel: "slack", probe: true, timeoutMs: 5000 });
             channelStatusCalls += 1;
@@ -3418,6 +3419,8 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                 },
                 spawn(_command, args, options) {
                   assert.ok(args.includes("app-server"));
+                  // Plugin reviewer validation must observe the admitted model, not a native default.
+                  assert.ok(args.includes('model="gpt-4.1"'));
                   const tokenDigest = args[args.indexOf("--ws-token-sha256") + 1];
                   assert.equal(tokenDigest, sha256("fixture-transport-token"));
                   assert.equal(Object.hasOwn(options.env, "APP_SERVER_TOKEN"), false);

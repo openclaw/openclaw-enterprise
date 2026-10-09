@@ -190,6 +190,7 @@ spec:
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:
+            {{- include "openclaw.resourceRequirements" (dict "name" "resources" "requirements" $.Values.resources) }}
             {{- toYaml $.Values.resources | nindent 12 }}
           env:
             - name: NODE_ENV
@@ -417,6 +418,7 @@ spec:
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:
+            {{- include "openclaw.resourceRequirements" (dict "name" "resources" "requirements" $.Values.resources) }}
             {{- toYaml $.Values.resources | nindent 12 }}
           ports:
             - name: repository-tls

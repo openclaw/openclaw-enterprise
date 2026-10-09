@@ -84,13 +84,10 @@ async function assertNoAgentNamed(pool, namespaceId, name, label) {
   assert.equal(result.rows[0].count, 0, label);
 }
 
-async function expectBackendConflict(operation, pattern) {
+async function expectBackendConflict(operation, pattern, name = "ResourceConflictError") {
   await assert.rejects(
     operation,
-    (error) =>
-      // A Harness authentication refusal at deploy names itself after authorization.
-      (error?.name === "ResourceConflictError" || error?.name === "ResourceStateConflictError") &&
-      (pattern === undefined || pattern.test(error.message)),
+    (error) => error?.name === name && (pattern === undefined || pattern.test(error.message)),
   );
 }
 
@@ -345,6 +342,7 @@ test(
           resolveApprovedHarness,
         ),
       /configured model and topology/,
+      "ResourceStateConflictError",
     );
     await assertNoRevision(
       fixture.pool,
@@ -478,6 +476,7 @@ test(
             resolveApprovedHarness,
           ),
         /configured model and topology/,
+        "ResourceStateConflictError",
       );
       assert.deepEqual(await admissionCounts(), beforeNativeAttempts, source.kind);
     }
@@ -616,5 +615,116 @@ test(
       "cross-Namespace account ownership must be rejected before an Agent is persisted",
     );
     await fixture.cleanup(targetNamespace, sourceNamespace);
+  },
+);
+
+test(
+  "PostgreSQL Agent provisioning admits a managed PAT source only with an issued access token matching its Backend",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createBackendFixture(context);
+    const controller = createBackendController(fixture, { nativeWorkerSupport: "custom-image" });
+    // These stubs only pass the provisioning capability gates; Harness authentication admission
+    // (the code under test) stays real. No worker runs, so no runtime or Configuration effect may.
+    Object.assign(controller.selectedDriver("compute"), {
+      agentProvisioning: { executionModes: ["dedicated"] },
+      requiresAgentRuntimeCredentials: true,
+      validateAgentProvisioning() {},
+      async provisionAgentRuntimeCredentials() {
+        assert.fail("Provisioning admission must not provision runtime credentials.");
+      },
+      async getAgentRuntimeCredentialStatus() {
+        return { transportConfigured: false };
+      },
+    });
+    Object.assign(controller.selectedDriver("configuration"), {
+      async createExact() {
+        assert.fail("Provisioning admission must not create a Configuration.");
+      },
+      async inspectExact() {
+        assert.fail("Provisioning admission must not inspect a Configuration.");
+      },
+    });
+    const provision = (namespace, account, label) =>
+      controller.provisionAgent(fixture.actor.id, {
+        namespaceId: namespace.id,
+        requestId: `req_${randomUUID()}`,
+        name: `${label}-${randomUUID().slice(0, 8)}`,
+        executionMode: "dedicated",
+        backendId,
+        configuration: { kind: "agent", values: createHarnessConfiguration("codex", "gpt-4.1") },
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+        },
+      });
+    const pendingWork = async (namespace) =>
+      (
+        await fixture.pool.query(
+          "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id = $1",
+          [namespace.id],
+        )
+      ).rows[0].count;
+
+    // The exact issued account with a matching Backend binding is admitted as a PAT snapshot.
+    const exactNamespace = await createReadyNamespace(fixture, "provisioning-exact");
+    const account = await createAccessTokenServiceAccount(
+      fixture.state,
+      exactNamespace.id,
+      "provisioning-exact",
+    );
+    await seedBackendBinding(fixture.pool, account);
+    const accepted = await provision(exactNamespace, account, "provisioning-exact");
+    assert.equal(accepted.provisioning.status, "queued", JSON.stringify(accepted));
+    assert.equal(await pendingWork(exactNamespace), 1);
+    await fixture.cleanup(exactNamespace);
+
+    for (const scenario of [
+      {
+        label: "api-key-credential",
+        credential: { kind: "api_key", secretRef: { name: "provider-api-key", key: "api-key" } },
+        binding: {},
+        message: /requires an issued account access-token credential/,
+        expectedErrorName: "ResourceStateConflictError",
+      },
+      {
+        label: "workspace-mismatch",
+        binding: { workspaceId: alternateWorkspaceId },
+        message: /does not match its Backend/,
+      },
+      {
+        label: "credential-not-issued",
+        binding: { credentialIssued: false },
+        message: /does not match its Backend/,
+      },
+    ]) {
+      const namespace = await createReadyNamespace(fixture, scenario.label);
+      const brokenAccount = await createAccessTokenServiceAccount(
+        fixture.state,
+        namespace.id,
+        scenario.label,
+      );
+      if (scenario.credential !== undefined) {
+        await fixture.state.transact((unit) =>
+          unit.serviceAccounts.updateCredential(
+            namespace.id,
+            brokenAccount.id,
+            scenario.credential,
+          ),
+        );
+      }
+      await seedBackendBinding(fixture.pool, brokenAccount, scenario.binding);
+      await expectBackendConflict(
+        () => provision(namespace, brokenAccount, scenario.label),
+        scenario.message,
+        scenario.expectedErrorName,
+      );
+      assert.equal(
+        await pendingWork(namespace),
+        0,
+        `${scenario.label} must roll back its provisioning record`,
+      );
+      await fixture.cleanup(namespace);
+    }
   },
 );

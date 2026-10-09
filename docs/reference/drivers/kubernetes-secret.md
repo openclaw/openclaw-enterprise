@@ -299,7 +299,9 @@ metadata cleanup after OCC verifies the stored backend identity.
   grant IAM authority.
 - **Secret operation returns `503`:** Check Kubernetes authentication, TLS,
   tenant namespace readiness, API RoleBinding, and whether the backend object
-  still has exact OCC labels and annotations.
+  still has exact OCC labels and annotations. A message naming a fix instead means the
+  Secret was stored through a previously selected Secret Driver; see the
+  [SecretDriver lifecycle](secret.md#lifecycle).
 - **Configuration update is rejected:** Confirm every binding references a
   Secret in the same Namespace and that the caller has `operate` on every
   selected Secret, including retained bindings when PATCH omits `secretBindings`.

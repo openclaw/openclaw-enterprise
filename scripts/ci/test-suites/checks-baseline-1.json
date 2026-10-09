@@ -43,6 +43,7 @@
     "tests/conformance/openshell-gateway-wire.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
+    "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.mjs",
     "tests/integration/secret-driver-startup.test.mjs",
     "tests/conformance/kubernetes-configuration.test.mjs",
@@ -177,6 +178,9 @@
       "path": "tests/conformance/openshell-codex-device.test.mjs"
     },
     {
+      "path": "tests/conformance/openshell-harness-status.test.mjs"
+    },
+    {
       "path": "tests/conformance/platform-state-memory.test.mjs"
     },
     {
@@ -216,7 +220,8 @@
       "path": "tests/integration/presets-controller.test.mjs"
     },
     {
-      "path": "tests/integration/profile-renderer.test.mjs"
+      "path": "tests/integration/profile-renderer.test.mjs",
+      "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
       "path": "tests/integration/bootstrap-output.test.mjs"

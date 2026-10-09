@@ -11,6 +11,7 @@ import {
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 // This opt-in proof uses the real OpenShell server, credential backend, refresh engine,
@@ -82,7 +83,11 @@ test(
       id: "openshell",
       implementation: "openshell",
       configuration: { endpoint, rootCertificatePath, requestTimeoutMs: 30_000, auth, operatorTls },
-      drivers: { sandbox: "sandbox", credential_gateway: "credential-gateway-openshell" },
+      drivers: {
+        sandbox: "sandbox",
+        credential_gateway: "credential-gateway-openshell",
+        credential_refresh: "credential-refresh-openshell",
+      },
     });
     const deniedClient = new GrpcOpenShellGatewayClient({
       endpoint,
@@ -96,6 +101,23 @@ test(
     const credentialKey = "CODEX_ACCESS_TOKEN";
     const profileId = "oce-codex-oauth";
     const signal = AbortSignal.timeout(120_000);
+    const driver = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/local/bin/codex"] },
+      { backend },
+    );
+    const refreshDriver = new OpenShellCredentialRefreshDriver({}, { backend });
+    const context = {
+      signal,
+      namespace: { id: workspace, name: workspace },
+      source: {
+        id: sourceId,
+        namespaceId: workspace,
+        driverId: driver.id,
+        type: "codex-oauth",
+        config: {},
+        secrets: {},
+      },
+    };
     let providerCreated = false;
     let profileCreated = false;
     let workspaceCreated = false;
@@ -105,6 +127,7 @@ test(
       try {
         const cleanup = AbortSignal.timeout(30_000);
         if (providerCreated) {
+          await refreshDriver.removeRefresh({ ...context, signal: cleanup });
           await client.deleteProvider(workspace, name, cleanup);
         }
         if (profileCreated) {
@@ -166,6 +189,12 @@ test(
             authStyle: "bearer",
             headerName: "authorization",
             refresh: {
+              strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+              scopes: [],
+              material: [
+                { name: "client_id", required: true, secret: false },
+                { name: "refresh_token", required: true, secret: true },
+              ],
               tokenUrl: required("OCE_OPENSHELL_OAUTH_TEST_TOKEN_URL"),
               refreshBeforeSeconds: 60,
             },
@@ -203,27 +232,22 @@ test(
     );
     providerCreated = true;
     const configured = await client.configureProviderRefresh(
-      workspace,
-      name,
-      credentialKey,
       {
-        client_id: "oauth-poc-client",
-        refresh_token: `oauth-poc-refresh-initial-${randomUUID()}`,
+        workspace,
+        provider: name,
+        credentialKey,
+        strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+        material: {
+          client_id: "oauth-poc-client",
+          refresh_token: `oauth-poc-refresh-initial-${randomUUID()}`,
+        },
+        requestId: randomUUID(),
+        expirationTime: initialExpirationTime,
       },
-      initialExpirationTime,
       signal,
     );
     assert.equal(configured.status, "configured");
 
-    const driver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend },
-    );
-    const context = {
-      signal,
-      namespace: { id: workspace, name: workspace },
-      source: { id: sourceId, namespaceId: workspace, driverId: driver.id, type: "codex-oauth" },
-    };
     const fingerprint = async ({ accessToken, accountId }) => {
       assert.equal(accountId, "poc-account");
       return createHash("sha256").update(accessToken).digest("hex");
@@ -250,10 +274,7 @@ test(
 
     // The issuer rejects reuse of the old refresh token. A second successful rotation proves
     // OpenShell persisted and used the replacement refresh token without OCE supplying it again.
-    assert.equal(
-      (await client.rotateProviderCredential(workspace, name, credentialKey, signal)).status,
-      "refreshed",
-    );
+    assert.equal((await refreshDriver.rotate(context, randomUUID())).state, "ready");
     const second = await driver.withSourceToken(context, fingerprint);
     assert.notEqual(first, second);
     assert.deepEqual(

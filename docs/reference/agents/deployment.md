@@ -64,8 +64,17 @@ An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
 alongside its required `configurationId`. Omission preserves the current value;
 `harnessAuth: null` clears authentication and `backendId: null` clears the
 Backend. Existing revisions retain their immutable placement, auth binding, and
-Backend association.
-See the
+Backend association. For the current `harnessAuth` source, an update checks only
+the caller's grant (Secret or credential source `operate`, account `read`) and
+reads no record. After the Installation selects another Secret Driver or
+Credential Gateway, an update can still omit, clear, or replace the old binding;
+naming it again fails with `503`, and so does deploying with it. For a Secret,
+that `503`, like creating an Agent with one, says to bind a Secret stored
+through the selected driver. The named Configuration's Secret bindings get the
+full check on every update, even when `configurationId` is unchanged: until
+that Configuration's `secretBindings` name Secrets stored through the selected
+driver, updates and deploys fail with `503` and a message that says so.
+Updating that Configuration, or naming another one, resolves it. See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for
 runtime selection, identity boundaries, and activation.
 

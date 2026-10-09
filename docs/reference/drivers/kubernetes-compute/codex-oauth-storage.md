@@ -8,8 +8,9 @@ and authenticated account metadata through
 
 ## Enable device login
 
-Select a Credential Gateway that implements device authorization for Codex, usable
-access-token retrieval for configuration, and the external-auth attachment contract.
+Select paired Credential Gateway and Refresh Drivers. The Refresh Driver owns
+Codex device authorization; the Gateway supplies usable access tokens for
+configuration and external-auth attachments.
 Its paired Sandbox must inject live credentials for inference and hosted-app
 requests. The experimental OpenShell `codex-oauth` source requires the
 [gateway API and custom supervisor](../openshell-credential-gateway.md#experimental-codex-oauth-poc).

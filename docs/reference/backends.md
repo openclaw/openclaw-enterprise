@@ -136,12 +136,14 @@ backend:
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
+      credential_refresh: openshell-refresh
 ```
 
 Its closed `configuration` accepts:
 
 - `endpoint`: `host:port`, or an `http` or `https` origin without credentials,
-  path, query, or fragment.
+  path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
+  `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
@@ -149,8 +151,12 @@ Its closed `configuration` accepts:
 - `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
   an absolute path.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
-  limits how late a timed-out credential registration can land.
-- `rootCertificatePath`: an absolute path to the gateway CA.
+  limits how late a timed-out credential registration can land. Sandbox
+  deletion has its own 120-second bound: OpenShell answers only after the
+  Sandbox Pod terminates, and OCE waits until the Sandbox is gone.
+- `rootCertificatePath`: an absolute path to the gateway CA. An `https`
+  `endpoint` at an IP address sends no TLS server name, so the gateway
+  certificate must carry that IP address.
 - `operatorTls`: optional `{ certificatePath, privateKeyPath }`, both absolute
   paths. Required for OAuth access-token retrieval; requires HTTPS. It opens a
   separate certificate-only channel to the same gateway, using the same server
@@ -164,9 +170,13 @@ Its closed `configuration` accepts:
 Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
 `drivers.credential_gateway` are required and must match the selected bundled
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). One
+[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). The
+optional `drivers.credential_refresh` member must match the selected
+[Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
+refresh state on the gateway's provider records, so the two roles share this
+Backend. One
 OpenShell Backend is supported. Composition builds one gateway client object
-and injects it into both members. It caches ordinary and credential-export
+and injects it into all members. It caches ordinary and credential-export
 clients separately per resolved endpoint. The API and worker each construct it,
 so mount their required credential files there, never in the Harness or Agent
 Gateway. Restart these processes after rotating an operator certificate to replace

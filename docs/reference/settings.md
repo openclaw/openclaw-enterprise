@@ -89,7 +89,9 @@ dedicated Codex execution; embedded OpenClaw remains unsupported for this
 SandboxDriver. The bundled OpenShell Sandbox also requires an `openshell`
 [Backend](backends.md#openshell-gateway) and a matching
 `drivers.credential_gateway` selection of the
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
+[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). An optional
+`drivers.credential_refresh` selection on the same Backend adds the
+[Credential Refresh Driver](drivers/credential-refresh.md) for OAuth2 sources.
 
 For contributor test variables, fixtures, and commands, see the
 [testing guides](../testing/README.md).

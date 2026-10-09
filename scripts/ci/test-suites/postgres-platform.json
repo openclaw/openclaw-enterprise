@@ -137,6 +137,7 @@
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
+        "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",

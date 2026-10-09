@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
-import { cleanupResourceIds } from "./cleanup.mjs";
+import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
+import { withStateLock } from "./state-lock.mjs";
 import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
@@ -355,7 +356,38 @@ function execFile(command, args, options = {}) {
       cwd: options.cwd ?? repositoryRoot,
       env: { ...process.env, ...(options.env ?? {}) },
       stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
+      // Its own process group lets a timeout reach every descendant, not only
+      // the direct child (finding 840).
+      detached: options.processGroup === true,
     });
+    const signalCommand = (signal) => {
+      if (options.processGroup === true && child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // The group is gone; signal the child alone.
+        }
+      }
+      child.kill(signal);
+    };
+    // A separate group no longer receives the terminal's or runner's signals.
+    // Pass them on while the command runs, then let the default action stop us.
+    // Each such command adds one listener per signal; only k3d create uses it.
+    const forwardSignal = (signal) => {
+      stopForwardingSignals();
+      signalCommand(signal);
+      process.kill(process.pid, signal);
+    };
+    const forwardedSignals = options.processGroup === true ? ["SIGINT", "SIGTERM"] : [];
+    const stopForwardingSignals = () => {
+      for (const signal of forwardedSignals) {
+        process.removeListener(signal, forwardSignal);
+      }
+    };
+    for (const signal of forwardedSignals) {
+      process.once(signal, forwardSignal);
+    }
     if (options.input) {
       // A consumer that exits early reports its own status; never crash on EPIPE.
       child.stdin.on("error", () => {});
@@ -367,11 +399,23 @@ function execFile(command, args, options = {}) {
     let timedOut = false;
     let killTimer;
     let timeoutTimer;
+    let abandonTimer;
     if (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
       timeoutTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+        signalCommand("SIGTERM");
+        killTimer = setTimeout(() => {
+          signalCommand("SIGKILL");
+          // A descendant outside the child's group can hold its output pipes
+          // open, and "close" waits for them. Stop waiting after a grace period.
+          // A streamed stdout is only unpiped here; its consumer's own timeout
+          // bounds the consumer.
+          abandonTimer = setTimeout(() => {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish(() => reject(timedOutError(child.exitCode, child.signalCode)));
+          }, 5_000);
+        }, 5_000);
       }, options.timeoutMs);
     }
     let stdout = "";
@@ -406,13 +450,18 @@ function execFile(command, args, options = {}) {
         return;
       }
       settled = true;
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-      }
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
+      stopForwardingSignals();
+      clearTimeout(timeoutTimer);
+      clearTimeout(killTimer);
+      clearTimeout(abandonTimer);
       callback();
+    }
+    function timedOutError(exitCode, signal) {
+      return commandError(`${command} ${args.join(" ")} timed out after ${options.timeoutMs}ms`, {
+        exitCode,
+        signal,
+        timedOut: true,
+      });
     }
     child.on("error", (error) =>
       finish(() => {
@@ -427,13 +476,7 @@ function execFile(command, args, options = {}) {
     child.on("close", (code, signal) => {
       finish(() => {
         if (timedOut) {
-          reject(
-            commandError(`${command} ${args.join(" ")} timed out after ${options.timeoutMs}ms`, {
-              exitCode: code,
-              signal,
-              timedOut: true,
-            }),
-          );
+          reject(timedOutError(code, signal));
         } else if (code === 0) {
           resolve({ stdout, stderr });
         } else {
@@ -1056,27 +1099,25 @@ async function ensureK3dCluster(statePath, state) {
     if (crossNodePluginStatus) {
       await logK3dHost(state, directory, "k3d-host-before");
     }
-    await k3dStage(state, "k3d-create", () =>
-      execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
-        "cluster",
-        "create",
-        cluster,
-        ...(resource.nodeImage ? ["--image", resource.nodeImage] : []),
-        ...(resource.podSecurityAdmissionK3dArgs ?? []),
-        "--servers",
-        "1",
-        "--agents",
-        crossNodePluginStatus ? "1" : "0",
-        ...(sharedStorage ? ["--volume", `${sharedStorage}:/var/lib/rancher/k3s/storage@all`] : []),
-        "--api-port",
-        `127.0.0.1:${apiPort}`,
-        "--kubeconfig-update-default=false",
-        "--kubeconfig-switch-context=false",
-        // Keep failed fixture containers for diagnostics; registered cleanup
-        // owns their deletion after collection, including partial creation.
-        ...(crossNodePluginStatus ? ["--no-rollback"] : []),
-      ]),
-    );
+    await createK3dCluster(statePath, state, resource, [
+      "cluster",
+      "create",
+      cluster,
+      ...(resource.nodeImage ? ["--image", resource.nodeImage] : []),
+      ...(resource.podSecurityAdmissionK3dArgs ?? []),
+      "--servers",
+      "1",
+      "--agents",
+      crossNodePluginStatus ? "1" : "0",
+      ...(sharedStorage ? ["--volume", `${sharedStorage}:/var/lib/rancher/k3s/storage@all`] : []),
+      "--api-port",
+      `127.0.0.1:${apiPort}`,
+      "--kubeconfig-update-default=false",
+      "--kubeconfig-switch-context=false",
+      // Keep failed fixture containers for diagnostics; registered cleanup
+      // owns their deletion after collection, including partial creation.
+      ...(crossNodePluginStatus ? ["--no-rollback"] : []),
+    ]);
     await k3dStage(state, "k3d-kubeconfig", async () => {
       const kubeconfigData = await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
         "kubeconfig",
@@ -1144,7 +1185,7 @@ async function ensureK3dCluster(statePath, state) {
       await logK3dHost(state, directory, "k3d-host-after");
     }
   } catch (error) {
-    if (crossNodePluginStatus) {
+    if (crossNodePluginStatus && !error.k3dDiagnosticsCaptured) {
       await captureK3dDiagnostics({
         execFile,
         cluster: resource,
@@ -1156,6 +1197,67 @@ async function ensureK3dCluster(statePath, state) {
   }
   await markResourceReady(statePath, state, resource);
   return resource;
+}
+
+// Hosted CI creates a cluster, node image pull included, in 26-48 s (284 runs,
+// 2026-10-08: p50 27 s, p99 44 s). A create that never returns once held a lane
+// for 44 minutes until the job timeout (finding 840).
+const k3dCreateTimeoutMs =
+  Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS)
+    : 5 * 60_000;
+const k3dCreateAttempts = 2;
+
+// Bound each create. After a timeout, keep diagnostics, delete what the
+// attempt created, and try once more with the same owned name and directory.
+// The final failure leaves the planned resource for registered cleanup.
+async function createK3dCluster(statePath, state, resource, args) {
+  const k3d = process.env.OPENCLAW_CI_K3D_BIN ?? "k3d";
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await k3dStage(state, "k3d-create", () =>
+        execFile(k3d, args, { timeoutMs: k3dCreateTimeoutMs, processGroup: true }),
+      );
+      return;
+    } catch (error) {
+      if (error.timedOut !== true) {
+        throw error;
+      }
+      const summary =
+        `k3d cluster create ${resource.name} did not finish within ${k3dCreateTimeoutMs} ms ` +
+        `(attempt ${attempt} of ${k3dCreateAttempts})`;
+      progress(state.lane, summary);
+      await captureK3dDiagnostics({
+        execFile,
+        cluster: resource,
+        lane: state.lane,
+        statePath,
+        failure: summary,
+      }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+      if (attempt >= k3dCreateAttempts) {
+        const failure = new Error(
+          `${summary}; giving up. Diagnostics are in ${statePath}.diagnostics.json, and ` +
+            "cleanup removes the partial cluster.",
+          { cause: error },
+        );
+        failure.k3dDiagnosticsCaptured = true;
+        throw failure;
+      }
+      try {
+        await k3dStage(state, "k3d-create-discard", () =>
+          deleteOwnedK3dCluster(resource, {
+            execFile: (command, commandArgs) =>
+              execFile(command, commandArgs, { timeoutMs: 2 * 60_000 }),
+          }),
+        );
+      } catch (discardError) {
+        // Keep the report that names the timeout; cleanup retries the deletion.
+        discardError.message = `${summary}; deleting the partial cluster failed: ${discardError.message}`;
+        discardError.k3dDiagnosticsCaptured = true;
+        throw discardError;
+      }
+    }
+  }
 }
 
 async function waitForPluginStatusProxySource(cluster, destination) {
@@ -1643,8 +1745,11 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
       // The first node failure is the cause; later ones may follow from it.
       firstImportError ??= error;
       // A failed node stops reading. Stop a still-running export so it cannot
-      // block on a full pipe until its timeout.
-      if (save.exitCode === null && save.signalCode === null) {
+      // block on a full pipe until its timeout. Once the export's output has
+      // ended, no node can have stopped it, so the export's own exit decides
+      // whether it failed, even if that exit is not seen yet: a node that reads
+      // a truncated stream to its end can report its failure first.
+      if (!save.stdout.readableEnded && save.exitCode === null && save.signalCode === null) {
         stoppedExport = true;
         save.kill("SIGTERM");
       }
@@ -2521,6 +2626,14 @@ async function prepareFile({ lane, file, statePath, template }) {
   await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
   const resolvedStatePath = normalizeStatePath(statePath);
+  // A test may prepare databases from its own process while the runner prepares and
+  // cleans other files. The lock keeps either side from writing back a stale state.
+  return withStateLock(resolvedStatePath, () =>
+    prepareFileWithState({ name, relativeFile, resolvedStatePath, template }),
+  );
+}
+
+async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
   if (!state && prepare.requiresPreparedStateForFile) {

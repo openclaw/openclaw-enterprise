@@ -21,7 +21,7 @@ paths below are relative to that tag.
 Agents need credentials for models, source control, cloud APIs and registries.
 OCE has delivered model credentials as Kubernetes `secretKeyRef` environment
 entries, putting the real value in the Harness process. The
-[target design](../../docs/design/safeguards.md#secret-access) calls this a temporary
+[target design](../../../docs/design/safeguards.md#secret-access) calls this a temporary
 exception: the Harness should receive only scoped substitutes.
 
 OpenShell keeps credentials out of the workload for every provider type it
@@ -51,7 +51,7 @@ credentials on that hop; clients still verify the service certificate. No
 direct GitHub route may bypass it.
 
 This builds on the deferred `CredentialGatewayDriver` in the
-[archived Sandbox provisioning spec](../.archive/13-sandbox-driver-provisioning.md).
+[archived Sandbox provisioning spec](../../.archive/13-sandbox-driver-provisioning.md).
 
 ## Scope
 
@@ -104,7 +104,7 @@ OpenShell workspace, and any workspace `user` can attach any provider in it
 Add `credential_gateway` to `DRIVER_CAPABILITIES`
 (`packages/contracts/src/index.ts:42`) and an `openshell` Backend type. The
 Backend owns the gateway client and declares both members
-([Backend membership](../../docs/reference/backends.md)):
+([Backend membership](../../../docs/reference/backends.md)):
 
 ```yaml
 backend:
@@ -119,7 +119,7 @@ Kubernetes Compute are selected.
 
 ### Driver interface
 
-The method set matches main's [interface](../../docs/reference/drivers/credential-gateway.md).
+The method set matches main's [interface](../../../docs/reference/drivers/credential-gateway.md).
 
 ```ts
 interface CredentialGatewayDriver extends Driver {
@@ -134,7 +134,6 @@ interface CredentialGatewayDriver extends Driver {
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus>;
-  rotateSource(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   removeSource(context: CredentialSourceContext): Promise<void>;
 
@@ -153,7 +152,7 @@ interface CredentialSourceType {
   readonly type: string; // implementation-defined, for example "openai" or "aws"
   readonly config: readonly CredentialSourceFieldSpec[]; // non-secret inputs
   readonly secrets: readonly CredentialSourceFieldSpec[]; // OCC Secret references
-  readonly rotation: "none" | "external" | "gateway";
+  readonly rotation: "none" | "external" | "refresh";
   readonly harnessAuth?: { readonly modelProvider: string; readonly loginMode: "api_key" };
 }
 
@@ -168,6 +167,10 @@ interface CredentialSourceAttachment {
   readonly ref: string; // opaque; consumed by the paired SandboxDriver
 }
 ```
+
+Refresh configuration, forced rotation, and refresh status belong to a
+separate `credential_refresh` capability; see
+[Credential refresh](credential-refresh.md).
 
 Contract rules:
 
@@ -188,8 +191,6 @@ Contract rules:
   the supervisor poll interval (default 10s) and is not an upstream contract;
   while the supervisor cannot reach the gateway or after a failed refresh,
   credentials and open connections may persist and the receipt stays `pending`.
-  Main's OpenShell `withdraw`, `updateSource` and `rotateSource` throw "not
-  supported yet".
 - `removeSource` is idempotent. OCC, not the Driver, refuses deletion with 409
   while an Agent draft, active revision, or pending deployment references the
   source. A retiring revision's Sandbox is caught only by OpenShell's
@@ -203,15 +204,16 @@ Contract rules:
 `CredentialSource` is a Namespace-scoped OCC resource: name, type, non-secret
 config, OCC Secret references for secret inputs, selected driver ID, and safe
 status. It fills the deferred `SecretBroker` slot in the
-[resource model](../../docs/design/resources.md). Values stay with the Secret Driver
+[resource model](../../../docs/design/resources.md). Values stay with the Secret Driver
 and the credential store, and never enter OCC state, revisions, or audit.
 
-An Agent binds at most one source through `harnessAuth: { method:
-"credential_source", sourceId }`. Admission freezes `{ method, sourceId,
-credentialGatewayId, sourceType, loginMode }` in the revision. The source type's
+An Agent lists every source it uses in `credentialSources`, and
+`harnessAuth: { method: "credential_source", sourceId }` names one listed
+entry. Admission freezes each listed source's `{ sourceId, credentialGatewayId,
+sourceType }` in the revision. The Harness source's
 `harnessAuth.modelProvider` must match the configured model. With a credential
 gateway selected, secret-backed `harnessAuth` methods return 409; there is no
-fallback to environment delivery. Proposed: a list of non-model sources per Agent.
+fallback to environment delivery.
 
 IAM follows existing Secret patterns. Source read and delete are exact-resource
 actions; create is checked on the Namespace. Registration also requires
@@ -237,9 +239,9 @@ one principal; the proposal splits it:
 | Operation                 | Principal | OpenShell RPCs (scope; role)                                                                                                                                                                                |
 | ------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Prepare a Namespace       | Worker    | `GetWorkspace` (`workspace:read`; user), `CreateWorkspace` (`workspace:write`; `platform_admin`), `AddWorkspaceMember` for the API principal as admin and `ListWorkspaceMembers` (`workspace:write`/`read`) |
-| Create or update a source | API       | `GetProviderProfile`, `GetProvider` (`provider:read`), `ImportProviderProfiles`, `UpdateProviderProfiles`, `CreateProvider`, `UpdateProvider`, `ConfigureProviderRefresh` (`provider:write`; admin)         |
-| Rotate a source           | API       | `RotateProviderCredential` (`provider:write`; admin)                                                                                                                                                        |
-| Read source status        | API       | `GetProvider`, `GetProviderRefreshStatus` (`provider:read`; user)                                                                                                                                           |
+| Create or update a source | API       | `GetProviderProfile`, `GetProvider` (`provider:read`), `ImportProviderProfiles`, `UpdateProviderProfiles`, `CreateProvider`, `UpdateProvider` (`provider:write`; admin)                                     |
+| Configure or read refresh | API       | See [Credential refresh](credential-refresh.md#authority)                                                                                                                                                   |
+| Read source status        | API       | `GetProvider` (`provider:read`; user)                                                                                                                                                                       |
 | Provision a revision      | Worker    | `CreateSandbox` with `SandboxSpec.providers` (`sandbox:write`; user)                                                                                                                                        |
 | Read attachment status    | Worker    | `GetSandboxProviderStatus` (`sandbox:read`; user)                                                                                                                                                           |
 | Withdraw one Agent        | Worker    | `DetachSandboxProvider` (`sandbox:write`; user), then `GetSandboxProviderStatus`                                                                                                                            |
@@ -281,7 +283,7 @@ The entrypoint receives only the literal login mode from the source type's
 upstream `codex` profile's ChatGPT-account placeholders have no gateway refresh,
 so Codex CLI refresh would send placeholders in the request body. The Codex
 startup model probe checks the path before readiness
-([Harness execution](../../docs/reference/harness-execution.md)).
+([Harness execution](../../../docs/reference/harness-execution.md)).
 
 ## Trust requirements
 
@@ -360,9 +362,7 @@ API and worker workflow:
   value.
 - Withdraw the source from one Agent. That Agent's next model request fails,
   while a second Agent attached to the same source keeps working.
-- Register `oauth2_client_credentials` and `oauth2_refresh_token` with real
-  in-cluster Keycloak. Call its protected endpoint from the Harness and prove
-  rotation without restart.
+- Refresh types: see [Credential refresh](credential-refresh.md#verification).
 - Prove principal RPC denials, source deletion refusal while attached, and
   Namespace deletion refusal while a source exists.
 - Prove fail-closed cases: an unbound host returns 403, and a direct connection
@@ -372,18 +372,18 @@ API and worker workflow:
 
 ## Documentation
 
-#461 updated the [Drivers](../../docs/design/drivers.md),
-[resources](../../docs/design/resources.md) and
-[Secret access](../../docs/design/safeguards.md#secret-access) design; a new
+#461 updated the [Drivers](../../../docs/design/drivers.md),
+[resources](../../../docs/design/resources.md) and
+[Secret access](../../../docs/design/safeguards.md#secret-access) design; a new
 Credential Gateway reference and the
-[OpenShell SandboxDriver](../../docs/reference/drivers/openshell-sandbox.md),
-[Backends](../../docs/reference/backends.md),
-[Namespaces](../../docs/reference/namespaces.md),
-[Harness execution](../../docs/reference/harness-execution.md) and
-[Secret Driver](../../docs/reference/drivers/secret.md) references; API,
+[OpenShell SandboxDriver](../../../docs/reference/drivers/openshell-sandbox.md),
+[Backends](../../../docs/reference/backends.md),
+[Namespaces](../../../docs/reference/namespaces.md),
+[Harness execution](../../../docs/reference/harness-execution.md) and
+[Secret Driver](../../../docs/reference/drivers/secret.md) references; API,
 permissions and database-entity cheat sheets; the
-[provisioning flow](../../docs/flows/openshell-sandbox-provisioning.md); and
-[OpenShell testing](../../docs/testing/openshell.md).
+[provisioning flow](../../../docs/flows/openshell-sandbox-provisioning.md); and
+[OpenShell testing](../../../docs/testing/openshell.md).
 
 ## Delivery record
 
@@ -394,8 +394,14 @@ placeholder. The current contract is owned by
 [Credential Gateway](https://github.com/openclaw/openclaw-enterprise/blob/ec103d947abb40b21411e5b8bdede7774ae35df1/docs/reference/drivers/credential-gateway.md) and
 [credential sources](https://github.com/openclaw/openclaw-enterprise/blob/ec103d947abb40b21411e5b8bdede7774ae35df1/docs/reference/credential-sources.md).
 
-The gateway copy does not follow Secret changes or grant removal; refresh and
-bounded withdrawal remain future work.
+[#553](https://github.com/openclaw/openclaw-enterprise/pull/553) added `PATCH`
+updates and durable per-Agent withdrawal.
+
+[#851](https://github.com/openclaw/openclaw-enterprise/pull/851) added the
+Agent `credentialSources` list, the static `bearer-token` type, and
+per-requester withdrawal authorization, proven on real OpenShell
+`v0.1.3-pre.2`. Refresh types follow the [Credential refresh](credential-refresh.md)
+proposal.
 
 Hosted evidence: none as of 2026-09-28; the `openshell` full-integration lane
 has not executed on main.

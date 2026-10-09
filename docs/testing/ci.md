@@ -99,6 +99,15 @@ kubeconfig, environment values and Pod specs are excluded. After a failed prepar
 run, local callers must run `node scripts/ci/cleanup.mjs --state <state-file>`.
 Diagnostics explain setup failures without establishing coverage.
 
+In k3d lanes the runner gives each file a private `OPENCLAW_CI_CONTAINER_LOG_DIR`.
+A test that follows a container with `tests/helpers/container-log-capture.mjs`
+writes a record there only when a wait fails: its markers, Pod and event
+snapshots, and the log, waiting up to 60 s for the container to exit.
+`scripts/ci/k3d-diagnostics.mjs:projectContainerLog` keeps at most 1,500 lines,
+redacts environment values and secret shapes in lines and event messages, and
+adds the record to the same report under `containerLogs`. The platform recovery
+test follows its fixture gateway, which logs its drain, across Agent stop.
+
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 
 Routing, OpenShell, and logging have CI preparation contracts. Routing installs

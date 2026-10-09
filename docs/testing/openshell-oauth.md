@@ -17,7 +17,8 @@ set their immutable references through `gateway.image`, `supervisor.image`, and
 `sandboxRuntime.image` before verification.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
-with ordinary bearer authentication, the gateway CA, and separate `operatorTls`
+with its selected `credential_refresh` member, ordinary bearer authentication,
+the gateway CA, and separate `operatorTls`
 certificate/key paths. Enable the gateway's default-off operator authentication
 in its Helm values:
 
@@ -38,9 +39,8 @@ Harness endpoint.
 
 Build the base OCE image from [the runtime Dockerfile](../../deploy/runtime/Dockerfile)
 using its pinned inputs: OpenClaw commit
-`11d3d04a1279781a770f6a6aa09e6322b064b80a`, Codex `0.160.0`, and the pinned
-Node 24 build/runtime bases. The image requires Node 24.16 or newer; the
-verified image ran Node 24.19.0. Keep the frozen lockfile, source checksum, and
+`90d30a1178a79dddd92e6190b66b95d89dfb3ca8`, Codex `0.160.0`, and the pinned
+Node 24 build/runtime bases. Keep the frozen lockfile, source checksum, and
 native filesystem checks. See the [runtime recipe](../../deploy/runtime/README.md).
 
 Set `BASE_RUNTIME_IMAGE` to that locally available immutable image reference and

@@ -21,6 +21,11 @@ keep its dependency installation separate from the root workspace.
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
 
+Within `internal/occcli/`, `cli.go` assembles the command tree and resource
+commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
+`agent_runtime.go` owns runtime inspection, revision selection for runtime reads,
+and log polling; `output.go` owns terminal presentation.
+
 ## Source ownership
 
 | Path                                                      | Responsibility                                                                                               |
@@ -55,6 +60,11 @@ status, and remaining design requirements.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
+
+HTTP error details live in `apps/controller/src/http/error-details.ts`.
+It translates schema failures into detail paths and expected values. `http/errors.ts`
+owns platform-error mapping, response formatting, and removal of request values
+from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
 uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled

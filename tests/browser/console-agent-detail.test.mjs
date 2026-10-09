@@ -4111,6 +4111,15 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
+  // Issued ChatGPT service accounts are a Codex-only PAT source.
+  await page.getByLabel("Authentication source", { exact: true }).waitFor();
+  assert.deepEqual(
+    await page
+      .getByLabel("Authentication source", { exact: true })
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["", "api_key", "runtime"],
+  );
   await page.route(`**${agentPath}`, async (route) => {
     if (route.request().method() !== "PATCH") {
       await route.continue();
@@ -4897,6 +4906,11 @@ test("Credentials saves an issued service account as a PAT source without granti
     ),
     false,
   );
+  // The draft summary names the selected account rather than a Secret.
+  await page.goto(
+    `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+  );
+  await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
 });
 
 test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {

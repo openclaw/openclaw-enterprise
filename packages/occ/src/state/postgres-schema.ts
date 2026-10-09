@@ -5,6 +5,7 @@ import type {
   CredentialSourceState,
   HarnessExecutionMode,
   HarnessAuthBinding,
+  AgentCredentialSourceBinding,
   PluginDesiredState,
   PluginApprovers,
   PresetTemplate,
@@ -276,6 +277,7 @@ export const agents = occSchema.table(
     harnessAuthCredentialSourceId: text("harness_auth_credential_source_id").generatedAlwaysAs(
       sql`CASE WHEN harness_auth->>'method' = 'credential_source' THEN harness_auth->>'sourceId' END`,
     ),
+    credentialSources: jsonb("credential_sources").$type<readonly AgentCredentialSourceBinding[]>(),
     activeRevisionId: text("active_revision_id"),
     desiredRuntimeState: text("desired_runtime_state")
       .$type<AgentDesiredRuntimeState>()
@@ -300,6 +302,13 @@ export const agents = occSchema.table(
       sql`${table.desiredRuntimeState} IN ('running', 'stopped')`,
     ),
     check("agents_status_valid", sql`${table.status} IN ('active', 'deleting')`),
+    check(
+      "agents_harness_credential_source_listed",
+      sql`${table.harnessAuth} IS NULL
+        OR ${table.harnessAuth}->>'method' IS DISTINCT FROM 'credential_source'
+        OR COALESCE(${table.credentialSources}, '[]'::jsonb) @> jsonb_build_array(
+          jsonb_build_object('sourceId', ${table.harnessAuth}->>'sourceId'))`,
+    ),
     check(
       "agents_deleting_is_stopped",
       sql`${table.status} <> 'deleting' OR ${table.desiredRuntimeState} = 'stopped'`,
@@ -496,6 +505,37 @@ export const credentialSources = occSchema.table(
   ],
 );
 
+/** Kept exact by the `agent_credential_sources_are_synchronized` trigger on `agents`. */
+export const agentCredentialSources = occSchema.table(
+  "agent_credential_sources",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    primaryKey({
+      name: "agent_credential_sources_pkey",
+      columns: [table.namespaceId, table.agentId, table.credentialSourceId],
+    }),
+    foreignKey({
+      name: "agent_credential_sources_agent_owner",
+      columns: [table.namespaceId, table.agentId],
+      foreignColumns: [agents.namespaceId, agents.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    foreignKey({
+      name: "agent_credential_sources_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    index("agent_credential_sources_source_idx").on(table.namespaceId, table.credentialSourceId),
+  ],
+);
+
 export const credentialSourceSecrets = occSchema.table(
   "credential_source_secrets",
   {
@@ -623,7 +663,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id'
-          - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'plugins'
+          - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
           - 'repository_credentials') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}

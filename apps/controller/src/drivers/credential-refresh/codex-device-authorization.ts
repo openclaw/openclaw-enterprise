@@ -2,8 +2,11 @@ import type {
   CredentialSourceDeviceAuthorization,
   ExternalChatgptAuth,
 } from "@openclaw-enterprise/contracts";
+import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+export const CODEX_OAUTH_TYPE = "codex-oauth";
+export const CODEX_PROFILE_ID = "oce-codex-oauth";
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 export const CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN";
@@ -16,9 +19,7 @@ type AccountMetadata = Omit<ExternalChatgptAuth, "accessTokenPlaceholder"> & {
 };
 
 interface DeviceTokens {
-  readonly accessToken: string;
   readonly refreshToken: string;
-  readonly expirationTime: string;
   readonly account: AccountMetadata;
 }
 
@@ -79,19 +80,33 @@ export async function startCodexDeviceAuthorization(
     userCode,
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     intervalSeconds: Number.isFinite(interval) ? Math.max(1, interval) : 5,
-    privateState: JSON.stringify({ sourceId, deviceAuthId, userCode }),
+    privateState: JSON.stringify({
+      sourceId,
+      deviceAuthId,
+      userCode,
+      configureRequestId: randomUUID(),
+      rotateRequestId: randomUUID(),
+    }),
   };
 }
 
-export async function pollCodexDeviceAuthorization(
-  sourceId: string,
-  privateState: string,
-  signal: AbortSignal,
-): Promise<DeviceTokens | undefined> {
+export function codexDeviceAuthorizationState(sourceId: string, privateState: string) {
   const state = asRecord(JSON.parse(privateState));
   if (state?.sourceId !== sourceId) {
     throw new Error("Codex device authorization belongs to another credential source.");
   }
+  return {
+    deviceAuthId: required(state.deviceAuthId),
+    userCode: required(state.userCode),
+    configureRequestId: required(state.configureRequestId),
+    rotateRequestId: required(state.rotateRequestId),
+  };
+}
+
+export async function pollCodexDeviceAuthorization(
+  state: ReturnType<typeof codexDeviceAuthorizationState>,
+  signal: AbortSignal,
+): Promise<DeviceTokens | undefined> {
   const response = await fetch("https://auth.openai.com/api/accounts/deviceauth/token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -138,9 +153,7 @@ export async function pollCodexDeviceAuthorization(
     throw new Error("Codex OAuth returned an expired access token or no expiry.");
   }
   return {
-    accessToken,
     refreshToken: required(token.refresh_token),
-    expirationTime: new Date(expiry).toISOString(),
     account: {
       accountId,
       planType,

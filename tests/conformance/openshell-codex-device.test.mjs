@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 
 function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
@@ -11,7 +12,8 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
   const operations = [];
   const http = [];
   let pending = true;
-  let refreshStatus = "configured";
+  let refreshStatus;
+  const rotationRequests = [];
   const expirationTime = new Date(Date.now() + 3_600_000).toISOString();
   const identity = {
     "https://api.openai.com/auth": {
@@ -78,17 +80,20 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
     async getProvider(_workspace, name) {
       return providers.get(name);
     },
-    async updateProviderCredentials(_workspace, _name, credentials) {
-      operations.push("store-access");
-      assert.equal(credentials.CODEX_ACCESS_TOKEN, accessToken);
+    async updateProviderCredentials() {
+      assert.fail("The initial unmanaged access token must not be published.");
     },
-    async configureProviderRefresh(_workspace, _name, key, material) {
+    async configureProviderRefresh(request) {
       operations.push("configure-refresh");
-      assert.equal(key, "CODEX_ACCESS_TOKEN");
-      assert.deepEqual(material, {
+      assert.equal(request.credentialKey, "CODEX_ACCESS_TOKEN");
+      assert.equal(request.strategy, "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN");
+      assert.match(request.requestId, /^[0-9a-f-]{36}$/);
+      assert.deepEqual(request.material, {
         client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
         refresh_token: "synthetic-initial-refresh",
       });
+      refreshStatus = "configured";
+      return { status: refreshStatus };
     },
     async updateProviderConfig(_workspace, name, config) {
       operations.push("store-metadata");
@@ -97,9 +102,10 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
       return updated;
     },
     async getProviderRefreshStatus() {
-      return [{ status: refreshStatus, expirationTime }];
+      return refreshStatus === undefined ? undefined : { status: refreshStatus, expirationTime };
     },
-    async rotateProviderCredential() {
+    async rotateProviderCredential(_workspace, _provider, _key, requestId) {
+      rotationRequests.push(requestId);
       operations.push("rotate");
       if (failRotation) {
         throw new Error("synthetic rotation transport failure");
@@ -112,20 +118,23 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
       return { value: "synthetic-rotated-access", expirationTime };
     },
   };
+  const backend = {
+    drivers: {
+      credential_gateway: "credential-gateway-openshell",
+      credential_refresh: "credential-refresh-openshell",
+    },
+    client: { clientForNamespace: () => client, credentialClientForNamespace: () => client },
+  };
   const driver = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/local/bin/codex"] },
-    {
-      backend: {
-        drivers: { credential_gateway: "credential-gateway-openshell" },
-        client: { clientForNamespace: () => client, credentialClientForNamespace: () => client },
-      },
-    },
+    { backend },
   );
+  const refresh = new OpenShellCredentialRefreshDriver({}, { backend });
   const namespace = { id: "ns-fixture", name: "oauth-fixture" };
   const context = (id) => ({
     namespace,
     signal: AbortSignal.timeout(10_000),
-    source: { id, type: "codex-oauth", namespaceId: namespace.id, driverId: driver.id },
+    source: { id, type: "codex-oauth", namespaceId: namespace.id, driverId: driver.id, config: {} },
   });
   const register = async (id) => {
     const current = context(id);
@@ -134,6 +143,8 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
   };
   return {
     driver,
+    refresh,
+    rotationRequests,
     context,
     register,
     operations,
@@ -154,29 +165,24 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
   const f = fixture(t);
   const owner = await f.register("source-owner");
   const other = await f.register("source-other");
-  const login = await f.driver.startDeviceAuthorization(owner);
+  assert.deepEqual(await f.refresh.refreshStatus(owner), { state: "pending" });
+  const login = await f.refresh.startDeviceAuthorization(owner);
   assert.equal(login.verificationUrl, "https://auth.openai.com/codex/device");
   assert.equal(login.intervalSeconds, 5);
   await assert.rejects(
-    f.driver.pollDeviceAuthorization(other, login.privateState),
+    f.refresh.pollDeviceAuthorization(other, login.privateState),
     /another credential source/,
   );
   assert.equal(f.http.length, 1, "a login handle cannot cross sources before provider exchange");
-  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+  assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "pending",
   });
   assert.deepEqual(f.operations, []);
   f.approve();
-  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+  assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "ready",
   });
-  assert.deepEqual(f.operations, [
-    "store-access",
-    "configure-refresh",
-    "store-metadata",
-    "rotate",
-    "read-usable",
-  ]);
+  assert.deepEqual(f.operations, ["configure-refresh", "store-metadata", "rotate", "read-usable"]);
   const [attachment] = await f.driver.attachForRevision({
     namespace: owner.namespace,
     sources: [owner.source],
@@ -193,7 +199,7 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
   });
   const calls = f.http.length;
   f.operations.length = 0;
-  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+  assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "ready",
   });
   assert.equal(
@@ -202,15 +208,24 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
     "completed-source replay does not redeem the code or original refresh token again",
   );
   assert.deepEqual(f.operations, ["read-usable"]);
+  f.setRefreshStatus(undefined);
+  assert.deepEqual(
+    await f.refresh.refreshStatus(owner),
+    {
+      state: "failed",
+      recoveryAction: "fix_configuration",
+    },
+    "a completed connection cannot return to waiting when its refresh grant disappears",
+  );
 });
 
 test("invalid OAuth token metadata cannot seed an OpenShell credential source", async (t) => {
   const f = fixture(t, { invalidIdToken: true });
   const owner = await f.register("source-owner");
-  const login = await f.driver.startDeviceAuthorization(owner);
+  const login = await f.refresh.startDeviceAuthorization(owner);
   f.approve();
   await assert.rejects(
-    f.driver.pollDeviceAuthorization(owner, login.privateState),
+    f.refresh.pollDeviceAuthorization(owner, login.privateState),
     /invalid token payload/,
   );
   assert.deepEqual(f.operations, [], "validate the trusted bundle before persisting any token");
@@ -219,18 +234,18 @@ test("invalid OAuth token metadata cannot seed an OpenShell credential source", 
 test("configured OAuth material stays pending until the gateway establishes its managed access token", async (t) => {
   const f = fixture(t, { failRotation: true });
   const owner = await f.register("source-owner");
-  const login = await f.driver.startDeviceAuthorization(owner);
+  const login = await f.refresh.startDeviceAuthorization(owner);
   f.approve();
   // Configure and metadata storage succeeded, but the initial rotate RPC never ran.
   // Future expiry from the original OAuth response does not prove managed-token readiness.
   await assert.rejects(
-    f.driver.pollDeviceAuthorization(owner, login.privateState),
+    f.refresh.pollDeviceAuthorization(owner, login.privateState),
     /rotation transport failure/,
   );
-  assert.deepEqual(await f.driver.sourceStatus(owner), { state: "pending" });
+  assert.equal((await f.refresh.refreshStatus(owner)).state, "pending");
   const calls = f.http.length;
   f.allowRotation();
-  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+  assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "ready",
   });
   assert.deepEqual(await f.driver.sourceStatus(owner), { state: "ready" });
@@ -240,14 +255,20 @@ test("configured OAuth material stays pending until the gateway establishes its 
     "resume from gateway-owned refresh material without replaying OAuth",
   );
   assert.equal(f.operations.filter((operation) => operation === "configure-refresh").length, 1);
+  assert.equal(f.rotationRequests.length, 2);
+  assert.equal(
+    f.rotationRequests[0],
+    f.rotationRequests[1],
+    "completion retries preserve the mint request ID",
+  );
 });
 
 test("unfinished OpenShell refresh keeps source and device completion pending", async (t) => {
   const f = fixture(t);
   const owner = await f.register("source-in-progress");
-  const login = await f.driver.startDeviceAuthorization(owner);
+  const login = await f.refresh.startDeviceAuthorization(owner);
   f.approve();
-  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+  assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "ready",
   });
   const exchanges = f.http.length;
@@ -257,10 +278,9 @@ test("unfinished OpenShell refresh keeps source and device completion pending", 
   // completed mint, and a crashed owner may leave one requiring operator recovery.
   for (const phase of ["refresh_in_progress", "refresh_committing"]) {
     f.setRefreshStatus(phase);
-    const status = await f.driver.sourceStatus(owner);
+    const status = await f.refresh.refreshStatus(owner);
     assert.equal(status.state, "pending");
-    assert.match(status.reason, /unfinished.*recovery/);
-    assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+    assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
       status: "pending",
     });
   }
@@ -268,7 +288,7 @@ test("unfinished OpenShell refresh keeps source and device completion pending", 
   assert.deepEqual(f.operations, [], "waiting does not start another rotation or export");
 
   f.setRefreshStatus("refreshed");
-  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+  assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "ready",
   });
   assert.deepEqual(f.operations, ["read-usable"]);

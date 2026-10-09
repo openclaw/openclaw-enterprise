@@ -14,7 +14,7 @@ import {
   conformanceKubernetesOptions,
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -113,9 +113,11 @@ test("Kubernetes preflight rejects an invalid API server version response", asyn
   assert.equal(fixture.namespaceReads(), 0);
 });
 
-test("Kubernetes preflight names the unreachable API server endpoint", async () => {
-  // A just-released loopback port refuses connections.
-  const port = await availablePort();
+test("Kubernetes preflight names the unreachable API server endpoint", async (t) => {
+  // A held loopback port refuses connections; a released one could be taken by a parallel test.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const { port } = refusing;
   const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-preflight-"));
   try {
     const kubeconfigPath = join(directory, "kubeconfig");
@@ -249,7 +251,15 @@ test("Kubernetes preflight without a recorded endpoint keeps the original failur
 // A two-cluster Driver whose execution cluster answers SelfSubjectAccessReviews from
 // `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
 // Pods call verifyExecutionTenantGrants with each component's own identity.
-function executionDriver(review) {
+function executionDriver(
+  review,
+  listNamespace = async ({ labelSelector }) => {
+    assert.equal(labelSelector, "openclaw.dev/namespace");
+    return {
+      items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
+    };
+  },
+) {
   const configured = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
@@ -274,14 +284,7 @@ function executionDriver(review) {
   const driver = createKubernetesComputeDriver(configured);
   const reviews = [];
   driver.executionApiClients = Promise.resolve({
-    core: {
-      async listNamespace({ labelSelector }) {
-        assert.equal(labelSelector, "openclaw.dev/namespace");
-        return {
-          items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
-        };
-      },
-    },
+    core: { listNamespace },
     authorization: {
       async createSelfSubjectAccessReview({ body }) {
         const attributes = body.spec.resourceAttributes;
@@ -331,4 +334,87 @@ test("execution tenant grant check reports an unevaluated review as incomplete",
         "The execution cluster tenant grant review failed: could not evaluate get pods in " +
           "Namespace oce-tenant: webhook authorizer unavailable",
   );
+});
+
+test("execution tenant grant check reads every Namespace page before any review", async () => {
+  const events = [];
+  const pages = {
+    first: {
+      items: [
+        { metadata: { name: "oce-first", labels: { "openclaw.dev/namespace": "ns_a" } } },
+        // An item without a name is not a Namespace to review.
+        { metadata: { labels: { "openclaw.dev/namespace": "ns_unnamed" } } },
+      ],
+      metadata: { _continue: "page-2" },
+    },
+    "page-2": {
+      items: [{ metadata: { name: "oce-second", labels: { "openclaw.dev/namespace": "ns_b" } } }],
+      metadata: {},
+    },
+  };
+  const { driver } = executionDriver(
+    (attributes) => {
+      events.push(`review ${attributes.namespace} ${ruleName(attributes)}`);
+      // oce-first holds the current worker grant; oce-second only the older Pod read.
+      return {
+        allowed: attributes.namespace === "oce-first" || ruleName(attributes) === "get pods",
+      };
+    },
+    async (request) => {
+      events.push(`list ${request._continue ?? "first"}`);
+      assert.equal(request.limit, 100);
+      if (events.filter((event) => event.startsWith("list")).length > 2) {
+        throw new Error("the Namespace list did not advance");
+      }
+      return pages[request._continue ?? "first"];
+    },
+  );
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("worker", { runtimeLogs: true }),
+    (error) =>
+      error.constructor.name === "ConfigurationFailure" &&
+      error.message ===
+        "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods. " +
+          "Upgrade the openclaw-execution chart before this release.",
+  );
+  assert.deepEqual(events, [
+    "list first",
+    "list page-2",
+    "review oce-first get pods",
+    "review oce-first patch pods",
+    "review oce-second get pods",
+    "review oce-second patch pods",
+  ]);
+});
+
+test("execution tenant grant check treats a review without a decision as missing", async () => {
+  // Only an explicit `allowed: true` grants; an empty status is not an allowance.
+  const { driver, reviews } = executionDriver((attributes) =>
+    ruleName(attributes) === "get pods" ? { allowed: true } : {},
+  );
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("worker", { runtimeLogs: false }),
+    (error) =>
+      error.constructor.name === "ConfigurationFailure" &&
+      error.message ===
+        "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods. " +
+          "Upgrade the openclaw-execution chart before this release.",
+  );
+  assert.deepEqual(reviews.map(ruleName), ["get pods", "patch pods"]);
+});
+
+test("execution tenant grant check reports an invalid Namespace list as incomplete", async () => {
+  const { driver, reviews } = executionDriver(
+    () => ({ allowed: true }),
+    async () => ({ items: null }),
+  );
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("api", { runtimeLogs: true }),
+    (error) =>
+      error.constructor === Error &&
+      error.cause?.message === "the Namespace list returned invalid data." &&
+      error.message ===
+        "The execution cluster tenant grant review failed: the Namespace list returned invalid data.",
+  );
+  assert.deepEqual(reviews, []);
 });

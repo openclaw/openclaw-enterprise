@@ -17,6 +17,7 @@ import { composePostgresDevelopment } from "../../apps/controller/src/compositio
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -50,9 +51,7 @@ async function defaultNamespaceRows(pool) {
 }
 
 function createPassiveComputeDriver() {
-  return {
-    id: "compute-production-wireup",
-    capability: "compute",
+  return createReadyComputeDriver("compute-production-wireup", {
     implementation: "production-wireup-memory-compute",
     async preflight() {
       return {
@@ -64,22 +63,7 @@ function createPassiveComputeDriver() {
         ],
       };
     },
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
+  });
 }
 
 function memoryLog() {

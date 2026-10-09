@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-05
-last_updated_session: authoring-run/2afba01b-8db4-41d7-a942-e14bd7f44262
+updated: 2026-10-07
+last_updated_session: authoring-run/9ac89b09-043f-44ba-8069-d0a90859ed7b
 ---
 
 # Agent runtime logs flow
@@ -18,8 +18,9 @@ download is a local file on the reader's device.
 
 - Trigger: `GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/runtime`
   and `GET .../runtime/logs` (optionally `download=true`) from the console Logs
-  tab, `occ agent runtime|logs` (`internal/occcli/cli.go`) or the API. The CLI
-  defaults to the active revision, else the latest revision
+  tab, `occ agent runtime|logs` (`internal/occcli/agent_runtime.go`) or the API.
+  Without `--revision`, the CLI uses a newer revision with Pods when available,
+  otherwise the active revision, otherwise the latest revision
   (`agentRevision`, `latestRevisionID`).
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
   `packages/occ/src/index.ts:OpenClawController.describeAgentRuntime` and
@@ -184,7 +185,7 @@ operator signing in on the tab asks again. Its status message names the
 log-text grants too. On the Gateway source it points to the Harness source while
 no Harness Pod is ready, or to Deployment activity while none exists. The
 CLI's `--follow` loop re-sends the cursor every 2 seconds.
-`internal/occcli/cli.go:runAgentLogs` treats command-context cancellation as a
+`internal/occcli/agent_runtime.go:runAgentLogs` treats command-context cancellation as a
 clean follow exit during both initial revision selection and page polling.
 Without `--follow`, a canceled request remains an error. Driver errors map to
 fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
@@ -224,6 +225,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 05:26: Point CLI runtime reads and log polling to their dedicated source owner; clarify the existing revision selection. (authoring-run/9ac89b09-043f-44ba-8069-d0a90859ed7b - 61590165cdbb)
 
 - 2026-10-05 11:38: Document clean CLI follow cancellation during initial revision lookup with the accompanying fix. (authoring-run/2afba01b-8db4-41d7-a942-e14bd7f44262 - 0698d533b97dc3abe7bef7ff7907a0f4335c3182)
 - 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)

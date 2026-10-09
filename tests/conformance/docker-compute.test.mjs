@@ -1,10 +1,78 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   createDockerDevelopmentComputeDriverFromEnv,
   DockerComputeDriver,
 } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+
+test("Docker preflight rejects an interrupted response and can retry", async () => {
+  // Redirect only the socket address in an isolated child. The real Driver,
+  // Node HTTP client and response stream run against a local fault server.
+  const source = String.raw`
+import assert from "node:assert/strict";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
+let interrupt = true;
+const paths = [];
+const server = http.createServer((request, response) => {
+  assert.equal(request.method, "GET");
+  paths.push(request.url);
+  if (request.url === "/_ping") {
+    response.end("OK");
+  } else if (request.url === "/version" && interrupt) {
+    // Send headers and part of the advertised body before the peer closes.
+    response.writeHead(200, { "content-type": "application/json", "content-length": "100" });
+    response.write('{"Platform":');
+    setTimeout(() => response.destroy(), 10);
+  } else if (request.url === "/version") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ Platform: { Name: "Docker Engine" } }));
+  } else {
+    assert.equal(request.url, "/images/fixture-runtime%3Alocal/json");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  }
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const nativeRequest = http.request;
+http.request = (options, callback) => {
+  assert.equal(options.socketPath, "/var/run/docker.sock");
+  return nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
+};
+syncBuiltinESMExports();
+let timer;
+try {
+  const { DockerComputeDriver } = await import(process.argv[1]);
+  const driver = new DockerComputeDriver({ images: { gateway: "fixture-runtime:local", agent: "fixture-runtime:local" } });
+  const result = await Promise.race([
+    driver.preflight().then(() => ({ status: "resolved" }), (error) => ({ status: "rejected", code: error.code })),
+    new Promise((resolve) => { timer = setTimeout(() => resolve({ status: "pending" }), 1_500); }),
+  ]);
+  assert.equal(result.status, "rejected", "Docker preflight remained pending after an interrupted response");
+  assert.equal(result.code, "ECONNRESET");
+  // A later complete response must still reach image qualification normally.
+  interrupt = false;
+  await driver.preflight();
+  assert.deepEqual(paths, ["/_ping", "/version", "/_ping", "/version", "/images/fixture-runtime%3Alocal/json", "/images/fixture-runtime%3Alocal/json"]);
+} finally {
+  clearTimeout(timer);
+  http.request = nativeRequest;
+  syncBuiltinESMExports();
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const driver = new URL(
+    "../../apps/controller/src/drivers/compute/docker/index.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
+    timeout: 10_000,
+  });
+});
 
 test("Docker Compute logging forwarding configuration accepts only loopback addresses", () => {
   const base = { OCC_DOCKER_RUNTIME_IMAGE: "openclaw-runtime:local" };

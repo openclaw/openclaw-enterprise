@@ -17,7 +17,7 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    Choose **Cancel login** and confirm the sign-in button returns.
 3. Open **ChatGPT login ready for plugin discovery (Experimental)**. Wait for the ready status,
    choose **Configure plugins**, select Calendar, and add it. Choose a model and
-   create the Agent. Inspect the simulated requests: discovery carries a credential-source reference and Agent creation saves its source ID,
+   create the Agent. Inspect the simulated requests: discovery carries a credential-source reference and Agent creation includes that ID in both `harnessAuth` and `credentialSources`,
    never access or refresh tokens. Confirm creation opens the saved draft; deploy it
    separately from Agent detail because guided provisioning does not support credential sources.
 4. Check **ChatGPT login permission denied (Experimental)**, **ChatGPT login exchange failed (Experimental)**,
@@ -40,7 +40,7 @@ The saved credential-source notice stays visible and the authentication source s
 Open **Components/Credentials → Explicit ChatGPT credential replacement (Experimental)**.
 Confirm the saved source is labeled **Credential source** and the ChatGPT replacement
 sign-in notice shows the experimental status. The current source is preserved until a new login completes and the operator
-chooses **Save authentication source**. Deployment remains a separate action.
+chooses **Save authentication source**. Inspect the PATCH: it retains the existing OAuth and tool source entries in `credentialSources` and adds the replacement exactly once. Deployment remains a separate action.
 Clearing a new selection retains the current saved source. The newly created credential source also remains available for separate management.
 
 Capture screenshots of pending, ready, and failure states and a short video of

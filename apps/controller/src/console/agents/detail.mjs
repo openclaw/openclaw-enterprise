@@ -2128,10 +2128,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             return;
           }
           if (!savedAuthentication) {
+            const credentialSources = [...(current.credentialSources ?? [])];
+            if (
+              harnessAuth?.method === "credential_source" &&
+              !credentialSources.some((source) => source.sourceId === harnessAuth.sourceId)
+            ) {
+              credentialSources.push({ sourceId: harnessAuth.sourceId });
+            }
             mutationStarted = true;
             savedAuthentication = await request(path, {
               method: "PATCH",
-              body: { configurationId: agent.configurationId, harnessAuth },
+              body: { configurationId: agent.configurationId, harnessAuth, credentialSources },
             });
             details = null;
           }

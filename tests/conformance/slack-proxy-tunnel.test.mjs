@@ -5,7 +5,7 @@ import { Duplex } from "node:stream";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createSlackProxyServer } from "../../apps/controller/src/slack-proxy.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 import { connectThroughProxy, startSlackProxy } from "../helpers/slack-proxy.mjs";
 
 // The bundled Slack proxy (apps/controller/src/slack-proxy.mjs) relays CONNECT tunnels only.
@@ -303,8 +303,11 @@ test(
 );
 
 test("an unreachable upstream gets 502 and the proxy keeps serving", testOptions, async (t) => {
-  // A just-released port refuses connections until the upstream below takes it.
-  const upstreamPort = await availablePort();
+  // A held port refuses connections until the upstream below takes it. A released port could
+  // be taken by a test running in parallel.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const upstreamPort = refusing.port;
   const { child, port: proxyPort, stderr } = await startSlackProxy(t, { upstreamPort });
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -321,11 +324,28 @@ test("an unreachable upstream gets 502 and the proxy keeps serving", testOptions
     socket.on("error", () => {});
     socket.end("upstream-ready");
   });
-  await new Promise((resolve, reject) => {
-    upstream.once("error", reject);
-    upstream.listen(upstreamPort, "127.0.0.1", resolve);
-  });
+  const listenUpstream = () =>
+    new Promise((resolve, reject) => {
+      upstream.once("error", reject);
+      upstream.listen(upstreamPort, "127.0.0.1", () => {
+        upstream.off("error", reject);
+        resolve();
+      });
+    });
+  // Bind while the port is still held, so nothing can take it in between. Linux allows that
+  // (both sockets set SO_REUSEADDR and the held one does not listen); where the platform
+  // refuses, release the port first.
+  try {
+    await listenUpstream();
+  } catch (error) {
+    if (error.code !== "EADDRINUSE") {
+      throw error;
+    }
+    await refusing.release();
+    await listenUpstream();
+  }
   t.after(() => upstream.close());
+  await refusing.release();
   const tunnel = await openTunnel(t, proxyPort, "slack.com:443");
   assert.match(tunnel.head, established);
   await bound(tunnel.closed, "client close");

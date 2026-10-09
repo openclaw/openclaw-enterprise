@@ -14,6 +14,43 @@ import { waitFor } from "./wait-for.mjs";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
+// Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
+// Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
+// stop, delete or withdrawal. Records each Agent row lock taken first, with its stack.
+function checkClaimLockOrder(worker, violations) {
+  const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
+  worker.state.transactWithQueue = (work, options) =>
+    transactWithQueue((unit, queue) => work(trackLockOrder(unit, violations), queue), options);
+}
+
+function trackLockOrder(unit, violations) {
+  const locked = new Set();
+  const namespaces = {
+    ...unit.namespaces,
+    lockNamespace: async (namespaceId, ...rest) => {
+      const namespace = await unit.namespaces.lockNamespace(namespaceId, ...rest);
+      if (namespace !== undefined) {
+        locked.add(namespaceId);
+      }
+      return namespace;
+    },
+  };
+  const agents = {
+    ...unit.agents,
+    lockAgent: async (namespaceId, agentId, ...rest) => {
+      const agent = await unit.agents.lockAgent(namespaceId, agentId, ...rest);
+      // A lock that matched no row holds nothing.
+      if (agent !== undefined && !locked.has(namespaceId)) {
+        violations.push(
+          new Error(`Agent ${agentId} locked before its Namespace ${namespaceId}`).stack,
+        );
+      }
+      return agent;
+    },
+  };
+  return Object.freeze({ ...unit, namespaces, agents });
+}
+
 // One template per owning test file; importing this helper registers no tests or hooks.
 export function createWorkerRevisionFixtures(testFile) {
   // Each test owns a database (Work claims span one), copied from one migrated template
@@ -120,6 +157,18 @@ export function createWorkerRevisionFixtures(testFile) {
       createdAt: new Date().toISOString(),
     };
     let worker;
+    const lockOrderViolations = [];
+    // A throwing after hook skips every later one, which can leave a worker running and the
+    // file hanging. A hook added while after hooks run goes last, so check from there.
+    context.after(() =>
+      context.after(() =>
+        assert.deepEqual(
+          lockOrderViolations,
+          [],
+          "the worker locked an Agent before its Namespace",
+        ),
+      ),
+    );
     await state.transact((unit) => unit.namespaces.createNamespace(namespace));
     const compute = {
       ...createDevelopmentComputeDriver(),
@@ -156,9 +205,30 @@ export function createWorkerRevisionFixtures(testFile) {
         backendId = null,
         grantHarnessSecret = true,
         auth = "secret",
+        nonModelSources = 0,
       } = {},
     ) {
       const id = `agt_${randomUUID()}`;
+      // Tool sources are ready gateway-held tokens in the same Namespace as the Agent.
+      const credentialSources = [];
+      for (let index = 0; index < nonModelSources; index += 1) {
+        const source = {
+          id: `cs_${randomUUID()}`,
+          namespaceId: namespace.id,
+          name: `${label}-tool-${index}-${randomUUID()}`,
+          type: "bearer-token",
+          config: { host: `api-${index}.example.com`, env_var: `TOOL_TOKEN_${index}` },
+          secrets: {},
+          driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
+          state: "registering",
+          createdAt: new Date().toISOString(),
+        };
+        await state.transact(async (unit) => {
+          await unit.credentialSources.createCredentialSource(source);
+          await unit.credentialSources.markCredentialSourceReady(namespace.id, source.id);
+        });
+        credentialSources.push({ sourceId: source.id });
+      }
       const configurationId = `cfg_${randomUUID()}`;
       let harnessAuth;
       if (auth === "runtime") {
@@ -206,6 +276,11 @@ export function createWorkerRevisionFixtures(testFile) {
           source: { kind: "service_account", namespaceId: namespace.id, id: serviceAccountId },
         };
       }
+      // The list holds every bound source: the Harness source first, then the others.
+      const listedSources = [
+        ...(harnessAuth.method === "credential_source" ? [{ sourceId: harnessAuth.sourceId }] : []),
+        ...credentialSources,
+      ];
       const owner = await state.transact(async (unit) => {
         await unit.configurations.createConfiguration({
           id: configurationId,
@@ -221,12 +296,14 @@ export function createWorkerRevisionFixtures(testFile) {
           configurationId,
           backendId,
           harnessAuth,
+          ...(listedSources.length === 0 ? {} : { credentialSources: listedSources }),
           executionMode,
           servicePrincipalId: `service-agent-${id}`,
           createdAt: new Date().toISOString(),
         });
       });
-      if (harnessAuth.method === "credential_source") {
+      const operatedSources = listedSources.map(({ sourceId }) => sourceId);
+      if (operatedSources.length > 0) {
         // Deployment requires the Agent, like the deploying actor, to operate its source.
         const sourceRoleId = `role-${randomUUID()}`;
         await observerPool.query(
@@ -239,18 +316,20 @@ export function createWorkerRevisionFixtures(testFile) {
             JSON.stringify([{ action: "operate", resourceKind: "credential_source" }]),
           ],
         );
-        await observerPool.query(
-          `INSERT INTO occ.iam_access_bindings
+        for (const sourceId of operatedSources) {
+          await observerPool.query(
+            `INSERT INTO occ.iam_access_bindings
             (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
            VALUES ($1, $2, $3, NULL, $4, 'credential_source', $5)`,
-          [
-            `binding-${randomUUID()}`,
-            namespace.id,
-            owner.servicePrincipalId,
-            sourceRoleId,
-            harnessAuth.sourceId,
-          ],
-        );
+            [
+              `binding-${randomUUID()}`,
+              namespace.id,
+              owner.servicePrincipalId,
+              sourceRoleId,
+              sourceId,
+            ],
+          );
+        }
       }
       if (
         (harnessAuth.method === "api_key" || harnessAuth.method === "codex_pat") &&
@@ -306,6 +385,17 @@ export function createWorkerRevisionFixtures(testFile) {
       } else {
         harnessAuth = { ...owner.harnessAuth, secretDriverId: secretDriver.id };
       }
+      const credentialSources = [];
+      for (const { sourceId } of owner.credentialSources ?? []) {
+        const source = await state.read((view) =>
+          view.credentialSources.findCredentialSource(namespace.id, sourceId),
+        );
+        credentialSources.push({
+          sourceId,
+          credentialGatewayId: source.driverId,
+          sourceType: source.type,
+        });
+      }
       const approvedHarness =
         harness ??
         (owner.executionMode === "dedicated"
@@ -325,6 +415,7 @@ export function createWorkerRevisionFixtures(testFile) {
         compute: { id: compute.id, implementation: compute.implementation },
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
+        ...(credentialSources.length === 0 ? {} : { credentialSources }),
         servicePrincipalId: owner.servicePrincipalId,
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date().toISOString(),
@@ -415,6 +506,7 @@ export function createWorkerRevisionFixtures(testFile) {
         emit,
       });
       database.workers.add(worker);
+      checkClaimLockOrder(worker, lockOrderViolations);
       return worker.start();
     }
 

@@ -17,7 +17,7 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` and `cleanup` members, plus five optional methods.
+required `facets` and `cleanup` members, plus seven optional methods.
 
 | Member                                   | Contract                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -28,6 +28,15 @@ required `facets` and `cleanup` members, plus five optional methods.
 | `cleanup(context)`                       | Required for revision stop, retirement, and Namespace cleanup. Revision cleanup receives the immutable revision; Namespace cleanup omits it.                                                                                                                                                                                    |
 | `harnessResource(context)`               | Optional. Returns the exact Sandbox reference `provisionHarness` creates for a revision, without side effects. Compute needs it to [withdraw a credential source](credential-gateway.md#optional-additions) from a running revision.                                                                                            |
 | `readSandboxLogs(context, request)`      | Optional read of the revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source). |
+
+Two optional methods serve a provider-owned Harness transport.
+`harnessEndpoint(context)` returns the transport for the provisioned Harness, and
+Compute routes the Agent Gateway through it instead of its own Harness Service.
+`harnessStatus(context)`, offered only with `harnessEndpoint`, observes that
+transport with the Agent transport token. It answers `serving` only after an
+authenticated handshake, or `failed` with the Harness's held startup failure,
+which Compute validates and fails the revision with; anything else is `starting`.
+Compute activates only a `serving` Harness.
 
 ### Containment facets
 

@@ -398,7 +398,23 @@
       "idx": 49,
       "version": "7",
       "when": 1787000000050,
-      "tag": "0050_canonical_harness_auth",
+      "tag": "0050_agent_credential_sources",
+      "breakpoints": true,
+      "sha256": "9bf3f1b9675c44f28381dabb8f18c8f57eee14e1a3e71e7c13425c32654b9794"
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1787000000051,
+      "tag": "0051_credential_withdrawal_requester",
+      "breakpoints": true,
+      "sha256": "1fa4bfbbedbfd7347baeb274e9c233d9d40c4db349f35f789ee57f95480c247c"
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1787000000052,
+      "tag": "0052_canonical_harness_auth",
       "breakpoints": true,
       "sha256": "3b16bed29627533127d9ac3c6d62446b28baae5e70d9b4c9d64a4affbbe9910b"
     }
@@ -414,18 +430,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -438,7 +444,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "8f2c6001c201a6c0279ac8313128b947518d5f4170f2fba10424ce1448645eb4",
+    "completed": "0995b2b3a91dec685731006e3f09740776ac93b091eeedcb968b172b7036e065",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -460,7 +466,9 @@
     "preProvisioningConfigurationRelease": "3db47081c1e1f671c51aff211ae1fe560dfffe1f80b2176d16b76838cf8f3b30",
     "preAdministratorCredentialSourceGrants": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516",
     "preCodexPatSources": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516",
-    "preCanonicalHarnessAuth": "1637119b545b917f59933031730a2ad32ba8f47435b3526f179a840e4285ea6f"
+    "preAgentCredentialSources": "1637119b545b917f59933031730a2ad32ba8f47435b3526f179a840e4285ea6f",
+    "preCredentialWithdrawalRequester": "50e7e165459306033af8d6aa074ad8d7df4fc2ff4065ef454b2f3f1a12768577",
+    "preCanonicalHarnessAuth": "eb024f6c9697e8796d9633de0400495f41a2ad2378a2d8d6512feb7b99db9e73"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

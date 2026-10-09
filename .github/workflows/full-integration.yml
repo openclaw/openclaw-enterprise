@@ -9,6 +9,7 @@ on:
         default: docker-model
         type: choice
         options:
+          - qa-matrix
           - docker-model
           - k3d-model
           - gateway-routing
@@ -454,6 +455,7 @@ jobs:
       - k3d-otel
       - helper-timeout
       - logging-collector
+      - qa-matrix
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -486,6 +488,9 @@ jobs:
             }
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
+          } else if (lane === "qa-matrix") {
+            // TODO: move qa-matrix into the `all` list once integration-qa exists.
+            out["qa-matrix"] = needs["qa-matrix"] ?? { result: "missing" };
           }
           for (const name of ["docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "k3d-otel"]) {
             if (lane === "all" || lane === name) {
@@ -500,3 +505,56 @@ jobs:
       - name: Aggregate full suite
         if: needs.preflight.outputs.run_all == 'true'
         run: node scripts/ci/run-tests.mjs aggregate full --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+
+  qa-matrix:
+    name: Shipped Installation QA Matrix
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: [preflight, slack]
+    if: always() && needs.preflight.result == 'success' && (needs.slack.result == 'success' || needs.slack.result == 'skipped') && inputs.lane == 'qa-matrix'
+    timeout-minutes: 240
+    environment: integration-qa
+    env:
+      OCC_TEST_QA_OPENAI_MODEL: ${{ vars.OCC_TEST_QA_OPENAI_MODEL }}
+      OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+      OCC_TEST_QA_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
+      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
+      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}
+      OCC_TEST_CODEX_CALENDAR_PROMPT: ${{ vars.OCC_TEST_CODEX_CALENDAR_PROMPT }}
+      OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Materialize approved QA credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SENDER_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
+          REPOSITORY_OBSERVER_TOKEN: ${{ secrets.REPOSITORY_OBSERVER_TOKEN }}
+          REPOSITORY_REGISTRY_JSON: ${{ secrets.REPOSITORY_REGISTRY_JSON }}
+          REPOSITORY_APP_KEY: ${{ secrets.REPOSITORY_APP_KEY }}
+          REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
+        run: node scripts/ci/qa-matrix-credentials.mjs
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: qa-matrix
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+      - name: Retain QA outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qa-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qa-matrix-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove workflow credential inputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"

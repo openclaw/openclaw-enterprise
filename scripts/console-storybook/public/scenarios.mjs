@@ -2139,7 +2139,7 @@ export const scenarios = {
     pluginCapabilities,
     actions: startOAuthLogin,
     description:
-      "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
+      "The fixture completes login after one poll. Agent creation includes the source in both Harness authentication and its credentialSources list. No access or refresh token appears in this preview.",
     steps: [
       "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
       "Choose a model and create the Agent. Deployment is simulated; credential-service delivery is not proved here.",
@@ -2199,9 +2199,13 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     deployed: true,
     auth: "oauth",
-    actions: [click("Sign in with OAuth")],
+    credentialSources: [{ sourceId: "crs_demo_oauth" }, { sourceId: "crs_demo_tool" }],
     description:
-      "The current Agent login is preserved by default. A completed new login only replaces the saved source when Save authentication source is chosen; deployment remains separate.",
+      "Sign in and save a replacement explicitly. The Agent retains its prior OAuth and tool source bindings while adding the new Harness source; deployment remains separate.",
+    steps: [
+      "Sign in with OAuth, wait for the simulated ready status, then Save authentication source.",
+      "Inspect the PATCH: credentialSources keeps the old OAuth/tool entries and adds the new Harness source once.",
+    ],
   },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",

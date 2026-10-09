@@ -95,8 +95,8 @@ inactive history alone does not retain the source indefinitely.
 ## Use a personal Codex login
 
 Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
-Credential Gateway with device login, warm access-token lookup and external-token
-attachments, plus its paired Sandbox's token injection. The OpenShell PoC requires
+Credential Refresh Driver for device login, a paired Credential Gateway for
+access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
 the [custom gateway and supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc);
 the stock pinned images do not support this flow. There is no installation opt-in flag.
 
@@ -107,7 +107,7 @@ the stock pinned images do not support this flow. There is no installation opt-i
    source `operate` permission. Deployment still requires a successful native
    model probe.
 3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
-   for a warm access token; the token service owns refresh. Another device login
+   for a usable access token; the token service owns refresh. Another device login
    is needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor, save the new
    source, and deploy. Saving a draft does not change the running revision.

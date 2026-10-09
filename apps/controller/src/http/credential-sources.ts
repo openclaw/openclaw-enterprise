@@ -105,6 +105,28 @@ export const credentialSourceHandlers = {
     });
     reply.send({ data: source, meta: { requestId: request.id } });
   },
+  async rotateCredentialSource({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const credentialSourceId = params.credentialSourceId as string;
+    const source = await controller.transact(async (unit) => {
+      const rotated = await controller.rotateCredentialSource(context.actorId, {
+        namespaceId,
+        credentialSourceId,
+      });
+      await unit.audit.append(
+        mutationEvent({ kind: "credential_source", id: credentialSourceId, namespaceId }),
+      );
+      return clientCredentialSource(rotated);
+    });
+    reply.send({ data: source, meta: { requestId: request.id } });
+  },
   async withdrawAgentCredentialSource({
     controller,
     context,

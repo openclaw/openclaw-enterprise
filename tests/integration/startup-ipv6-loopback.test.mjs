@@ -46,6 +46,21 @@ test("development startup accepts bracketed IPv6 loopback auth base URLs", () =>
   }
 });
 
+test("development API and bootstrap accept localhost auth origins", () => {
+  for (const origin of ["http://localhost:3000", "https://localhost:3000"]) {
+    for (const path of ["apps/controller/src/server.mjs", "scripts/bootstrap-installation.mjs"]) {
+      const result = run(path, {
+        OCC_AUTH_BASE_URL: origin,
+        OCC_AUTH_SECRET: "short",
+      });
+      assert.equal(result.status, 1);
+      // This later validation proves the real entrypoint admitted the origin,
+      // without connecting to a database or claiming a complete startup.
+      assert.equal(diagnostic(result, path).code, "AUTH_SECRET_INVALID", `${path}: ${origin}`);
+    }
+  }
+});
+
 test("development startup still rejects nonloopback auth base URLs", () => {
   for (const path of ["apps/controller/src/server.mjs", "scripts/bootstrap-installation.mjs"]) {
     const result = run(path, {

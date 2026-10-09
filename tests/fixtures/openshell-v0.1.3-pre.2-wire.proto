@@ -8,8 +8,8 @@ syntax = "proto3";
 
 package openshell.v1;
 
-import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 service OpenShell {
   rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
@@ -27,6 +27,14 @@ service OpenShell {
       returns (DetachSandboxProviderResponse);
   rpc ImportProviderProfiles(ImportProviderProfilesRequest)
       returns (ImportProviderProfilesResponse);
+  rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest)
+      returns (GetProviderRefreshStatusResponse);
+  rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest)
+      returns (ConfigureProviderRefreshResponse);
+  rpc RotateProviderCredential(RotateProviderCredentialRequest)
+      returns (RotateProviderCredentialResponse);
+  rpc DeleteProviderRefresh(DeleteProviderRefreshRequest)
+      returns (DeleteProviderRefreshResponse);
 }
 
 message HealthRequest {}
@@ -176,7 +184,19 @@ message ObjectMeta {
   string workspace = 7;
 }
 
-message DeleteSandboxResponse {}
+message DeleteSandboxResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+  string sandbox_id = 3;
+}
+
+enum DeletionOutcome {
+  DELETION_OUTCOME_UNSPECIFIED = 0;
+  DELETION_OUTCOME_COMPLETED = 1;
+  DELETION_OUTCOME_ACCEPTED = 2;
+  DELETION_OUTCOME_ALREADY_ABSENT = 3;
+}
 
 // openshell.datamodel.v1.Provider
 message Provider {
@@ -259,6 +279,7 @@ message ProviderProfileCredential {
   string auth_style = 5;
   string header_name = 6;
   string query_param = 7;
+  ProviderCredentialRefresh refresh = 8;
   string path_template = 9;
 }
 
@@ -390,6 +411,146 @@ message SandboxLogLine {
   map<string, string> fields = 7;
 }
 
+enum ProviderCredentialRefreshStrategy {
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_STATIC = 1;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_EXTERNAL = 2;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN = 3;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS = 4;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT = 5;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_AWS_STS_ASSUME_ROLE = 6;
+}
+
+message ProviderCredentialRefreshMaterial {
+  string name = 1;
+  string description = 2;
+  bool required = 3;
+  bool secret = 4;
+}
+
+// Declares that a single refresh operation mints more than one credential.
+// The refresh is attached to a primary credential; each additional output
+// maps a strategy-defined semantic output id to a sibling credential whose
+// env_vars receive the minted value.
+message ProviderCredentialRefreshOutput {
+  string output = 1;      // strategy-defined semantic output id (e.g. "session_token")
+  string credential = 2;  // sibling credential name whose env_vars receive this output
+}
+
+message ProviderCredentialRefresh {
+  reserved 4, 5;
+  reserved "refresh_before_seconds", "max_lifetime_seconds";
+  ProviderCredentialRefreshStrategy strategy = 1;
+  string token_url = 2;
+  repeated string scopes = 3;
+  google.protobuf.Duration refresh_before = 104;
+  google.protobuf.Duration max_lifetime = 105;
+  repeated ProviderCredentialRefreshMaterial material = 6;
+  repeated ProviderCredentialRefreshOutput additional_outputs = 7;
+}
+
+// Stable recovery action for the most recent provider credential refresh
+// failure. Kept after the pre-existing enums so adding it does not renumber
+// their generated descriptors. Clients should use this field instead of
+// parsing last_error.
+enum ProviderCredentialRefreshRecoveryAction {
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_RETRY = 1;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_REAUTHORIZE = 2;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_FIX_CONFIGURATION = 3;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_INVESTIGATE = 4;
+}
+
+message ProviderCredentialRefreshStatus {
+  reserved 6, 7, 8, 13;
+  reserved "expires_at_ms", "next_refresh_at_ms", "last_refresh_at_ms", "last_error_at_ms";
+  string provider = 1;
+  string provider_id = 2;
+  string credential_key = 3;
+  ProviderCredentialRefreshStrategy strategy = 4;
+  string status = 5;
+  google.protobuf.Timestamp expiration_time = 106;
+  // Next automatic refresh time. Absence means no automatic retry is scheduled;
+  // use recovery_action to determine the required recovery workflow.
+  google.protobuf.Timestamp next_refresh_time = 107;
+  google.protobuf.Timestamp last_refresh_time = 108;
+  string last_error = 9;
+  ProviderCredentialRefreshRecoveryAction recovery_action = 10;
+  // Stable gateway-owned failure identifier, for example
+  // "oauth_invalid_grant". This is not provider-controlled prose and
+  // incorporates any recognized top-level OAuth error classification.
+  string failure_code = 11;
+  // A bounded, recognized provider subtype that refines failure_code; clients
+  // do not need a separate provider_error field. Unknown provider-controlled
+  // values are not persisted or returned.
+  string provider_error_subtype = 12;
+  google.protobuf.Timestamp last_error_time = 113;
+}
+
+message GetProviderRefreshStatusRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 3;
+  string provider = 1;
+  string credential_key = 2;
+}
+
+message GetProviderRefreshStatusResponse {
+  repeated ProviderCredentialRefreshStatus credentials = 1;
+}
+
+message ConfigureProviderRefreshRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 7;
+  reserved 6;
+  reserved "expires_at_ms";
+  string provider = 1;
+  string credential_key = 2;
+  ProviderCredentialRefreshStrategy strategy = 3;
+  map<string, string> material = 4;
+  // Additional material names the caller requests be stored as secrets. Every
+  // name must be present in material. The server also classifies secrets from
+  // the authoritative provider profile and refresh strategy.
+  repeated string secret_material_keys = 5;
+  google.protobuf.Timestamp expiration_time = 106;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 8;
+}
+
+message ConfigureProviderRefreshResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message RotateProviderCredentialRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 3;
+  string provider = 1;
+  string credential_key = 2;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 4;
+}
+
+message RotateProviderCredentialResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message DeleteProviderRefreshRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 4;
+  string provider = 1;
+  string credential_key = 2;
+  bool allow_missing = 5;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 6;
+}
+
+message DeleteProviderRefreshResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+}
 
 message ExecSandboxRequest {
   // Workspace scope. Only a named workspace selection is accepted.

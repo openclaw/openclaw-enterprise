@@ -210,6 +210,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
 {{- fail "bootstrap service key and password output file names must be distinct" -}}
 {{- end -}}
+{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
+{{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
+{{- end -}}
 {{- if not .Values.api.clients -}}{{- fail "api.clients must contain exact approved client selectors" -}}{{- end -}}
 {{- range $index, $client := .Values.api.clients -}}
 {{- if or (not $client.namespace) (not $client.podLabels) -}}
@@ -271,7 +275,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
 {{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[0-9]+$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
 {{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- end -}}
@@ -497,6 +501,38 @@ capabilities:
 
 {{- define "openclaw.repositoryCredentials.serviceName" -}}
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
+{{- end -}}
+
+{{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.
+     Preserve its JSON-text whitespace handling without emulating exponent bounds or numeric parsing. */}}
+{{- define "openclaw.quantity" -}}
+{{- $pattern := "^[+-]?([0-9]*(\\.[0-9]*)?)?(([KMGT]i)|[numkMGTPE]|([eE][+-]?[0-9]+))?$|^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)[PE]i$" -}}
+{{- $encoded := toJson (toString .value) -}}
+{{- $quantity := $encoded -}}
+{{- if ge (len $encoded) 2 -}}
+{{- $last := int (sub (len $encoded) 1) -}}
+{{- if and (eq (substr 0 1 $encoded) "\"") (eq (substr $last (len $encoded) $encoded) "\"") -}}
+{{- $quantity = trim (substr 1 $last $encoded) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (eq $quantity "") (not (regexMatch $pattern $quantity)) -}}
+{{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. */}}
+{{- define "openclaw.resourceRequirements" -}}
+{{- if .requirements -}}
+{{- $name := .name -}}
+{{- $requirements := .requirements -}}
+{{- range $section := list "requests" "limits" -}}
+{{- with index $requirements $section -}}
+{{- range $key, $qty := . -}}
+{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "openclaw.repositoryCredentials.clusterDomain" -}}

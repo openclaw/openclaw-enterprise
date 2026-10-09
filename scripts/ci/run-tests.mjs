@@ -711,6 +711,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         );
         return undefined;
       });
+      // The capture names a private directory for the file's container log records.
+      Object.assign(env, agentActivity?.env);
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
@@ -766,7 +768,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   } finally {
     // Capture before cleanup so passing k3d runs keep their Agent Pod timeline.
     // The capture updates the lane's diagnostics file; keep it out of other setup.
-    await setup(async () => agentActivity?.finish());
+    await setup(async () => agentActivity?.finish({ env }));
     if (prepared.cleanup) {
       try {
         await setup(prepared.cleanup);

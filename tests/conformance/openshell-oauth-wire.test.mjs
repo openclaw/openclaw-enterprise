@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -141,7 +142,12 @@ test(
     const cancelled = Promise.withResolvers();
     let rotations = 0;
     const requests = [];
-    const status = { status: "refreshed", expiration_time: expiryWire };
+    const status = {
+      provider,
+      credential_key: key,
+      status: "refreshed",
+      expiration_time: expiryWire,
+    };
     const server = new grpc.Server();
     server.addService(OpenShell.service, {
       ConfigureProviderRefresh(call, callback) {
@@ -228,22 +234,25 @@ test(
     });
     const signal = AbortSignal.timeout(10_000);
     await client.configureProviderRefresh(
-      workspace,
-      provider,
-      key,
-      { client_id: "synthetic-client", refresh_token: "synthetic-refresh" },
-      expiry.toISOString(),
+      {
+        workspace,
+        provider,
+        credentialKey: key,
+        strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+        material: { client_id: "synthetic-client", refresh_token: "synthetic-refresh" },
+        requestId: randomUUID(),
+        expirationTime: expiry.toISOString(),
+      },
       signal,
     );
     assert.equal(requests[0].strategy, "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN");
     assert.equal(requests[0].workspace_scope.workspace, workspace);
     assert.equal(requests[0].credential_key, key);
-    assert.deepEqual(requests[0].secret_material_keys, ["refresh_token"]);
     assert.equal(requests[0].material.refresh_token, "synthetic-refresh");
     assert.equal(requests[0].expiration_time.seconds, String(Math.floor(expiry.getTime() / 1000)));
-    await client.rotateProviderCredential(workspace, provider, key, signal);
+    await client.rotateProviderCredential(workspace, provider, key, randomUUID(), signal);
     assert.equal(
-      (await client.getProviderRefreshStatus(workspace, provider, key, signal))[0].status,
+      (await client.getProviderRefreshStatus(workspace, provider, key, signal)).status,
       "refreshed",
     );
 
@@ -251,7 +260,11 @@ test(
       id: "openshell",
       implementation: "openshell",
       configuration,
-      drivers: { sandbox: "sandbox", credential_gateway: "credential-gateway-openshell" },
+      drivers: {
+        sandbox: "sandbox",
+        credential_gateway: "credential-gateway-openshell",
+        credential_refresh: "credential-refresh-openshell",
+      },
     });
     t.after(() => backend.client.close());
     assert.deepEqual(
@@ -264,11 +277,31 @@ test(
       { binaries: ["/usr/local/bin/codex"] },
       { backend },
     );
+    // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
+    const ipBackend = createOpenShellBackend({
+      id: "openshell-ip",
+      implementation: "openshell",
+      configuration: { ...configuration, endpoint: `https://127.0.0.1:${port}` },
+      drivers: {
+        sandbox: "sandbox",
+        credential_gateway: "credential-gateway-openshell",
+        credential_refresh: "credential-refresh-openshell",
+      },
+    });
+    t.after(() => ipBackend.client.close());
+    const ipDriver = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/local/bin/codex"] },
+      { backend: ipBackend },
+    );
     const context = {
       signal,
       namespace: { id: "namespace", name: workspace },
       source: { id: sourceId, namespaceId: "namespace", driverId: driver.id, type: "codex-oauth" },
     };
+    assert.equal(
+      await ipDriver.withSourceToken(context, async ({ accessToken }) => accessToken),
+      current,
+    );
     const seen = [];
     const consume = async (token) => {
       seen.push(token);

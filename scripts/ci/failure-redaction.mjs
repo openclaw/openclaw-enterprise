@@ -101,6 +101,11 @@ function redactText(text, limit, secrets, root) {
   return result.length > limit ? `${result.slice(0, limit)}... [truncated]` : result;
 }
 
+// Redacts one captured container log line the same way, bounded to `limit`.
+export function redactLogLine(line, secrets, limit) {
+  return redactText(line, limit, secrets, "") ?? "";
+}
+
 // Redacts the reporter's raw `message` and `frame` in one pass over the raw text.
 export function redactFailure(error, secrets, root) {
   if (!error || typeof error !== "object") {

@@ -5,13 +5,11 @@
   },
   "fileConcurrency": 2,
   "parallelFiles": [
+    "tests/integration/postgres-worker-agent-revision.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
     "tests/integration/occ-metrics.test.mjs"
   ],
-  "serialFiles": {
-    "tests/integration/postgres-worker-agent-revision.test.mjs": "prepares a database per test with prepareFile from the test process, which rewrites the lane state file outside the runner's setup queue"
-  },
   "files": [
     {
       "path": "tests/integration/occ-metrics.test.mjs",
@@ -38,9 +36,14 @@
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
         "credential withdrawal work revokes from the active revision without redeploying it",
         "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
+        "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
         "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
         "a deployment retry never re-attaches a source withdrawn while it was finishing",
-        "a withdrawal whose requester lost Agent operate fails once with a denial and no revocation",
+        "a withdrawal reaches a deployment admitted before it, which activates without the source",
+        "a withdrawal reaches the predecessor that runs until its successor's deployment activates",
+        "a withdrawn Harness source fails a deployment admitted before the withdrawal",
+        "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
+        "maintenance keeps re-queuing withdrawals after a withdrawn source loses its Agent grant",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "Agent stop cleans a terminal candidate without an active revision",
         "Agent stop reauthorizes the recorded actor before Compute mutation",

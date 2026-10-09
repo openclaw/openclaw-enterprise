@@ -55,6 +55,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "channel",
   "repo",
   "credential_gateway",
+  "credential_refresh",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -113,7 +114,12 @@ export interface OpenShellBackendDefinition {
   readonly id: string;
   readonly type: "openshell";
   readonly configuration: OpenShellBackendConfiguration;
-  readonly drivers: { readonly sandbox: string; readonly credential_gateway: string };
+  readonly drivers: {
+    readonly sandbox: string;
+    readonly credential_gateway: string;
+    /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
+    readonly credential_refresh?: string;
+  };
 }
 
 export type BackendDefinition =
@@ -304,12 +310,13 @@ export interface CredentialSourceFieldSpec {
 
 /** One entry in a Credential Gateway implementation's catalog. */
 export interface CredentialSourceType {
-  /** Device login initializes this source in the selected Credential Gateway. */
+  /** Device login defers the first mint to the selected Credential Refresh Driver. */
   readonly deviceAuthorization?: { readonly harnessId: string };
   readonly type: string;
   readonly config: readonly CredentialSourceFieldSpec[];
   readonly secrets: readonly CredentialSourceFieldSpec[];
-  readonly rotation: "none" | "external" | "gateway";
+  /** `refresh` types need the Backend's Credential Refresh Driver to mint their tokens. */
+  readonly rotation: "none" | "external" | "refresh";
   readonly harnessAuth?: {
     readonly modelProvider: string;
     readonly loginMode: CredentialSourceLoginMode;
@@ -367,9 +374,24 @@ export interface CredentialWithdrawal {
  * or running. A `pending` withdrawal without one has no attempt queued (attempts ran out or a
  * permanent failure ended them): nothing retries it until the withdraw request is sent again,
  * or revision maintenance, where Compute or repository credentials schedule it, queues one.
+ * Maintenance never re-queues one whose last attempt was denied to its requester.
+ * The API reports the active revision's withdrawal unless another revision that may still run
+ * with the source has a `pending` one, preferring one with no attempt queued.
  */
 export interface CredentialWithdrawalStatus extends CredentialWithdrawal {
   readonly withdrawalInProgress: boolean;
+}
+
+/** A non-model credential source the Agent's Harness may use at its source's endpoints. */
+export interface AgentCredentialSourceBinding {
+  readonly sourceId: string;
+}
+
+/** Private admission metadata for one non-model source frozen into a revision. */
+export interface CredentialSourceSnapshot {
+  readonly sourceId: string;
+  readonly credentialGatewayId: string;
+  readonly sourceType: string;
 }
 
 export type HarnessAuthBinding =
@@ -424,6 +446,8 @@ export type ResolvedHarnessAuth =
 export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
+  /** Non-model sources resolved again at dispatch, in admission order. */
+  readonly credentialSources?: readonly Readonly<CredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
@@ -647,6 +671,7 @@ export interface Agent extends Scope {
   readonly configurationId: string;
   readonly backendId: BackendRef;
   readonly harnessAuth: HarnessAuthBinding | null;
+  readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
@@ -666,6 +691,7 @@ export interface ConfigurationReadError {
     | "repositoryBindings"
     | "repositoryAccess"
     | "harnessAuth"
+    | "credentialSources"
     | "secretBindings"
     | "repositoryCredentials"
     | "configuration";
@@ -673,7 +699,12 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
-  "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess" | "harnessAuth"
+  | "plugins"
+  | "pluginApprovers"
+  | "repositoryBindings"
+  | "repositoryAccess"
+  | "harnessAuth"
+  | "credentialSources"
 >;
 
 export type AgentRead =
@@ -730,6 +761,7 @@ export interface AgentRevision extends Scope {
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryCredentials?: RepositoryRevisionState;
   readonly harnessAuth: HarnessAuthSnapshot;
+  readonly credentialSources?: readonly CredentialSourceSnapshot[];
   readonly servicePrincipalId: string;
   readonly createdAt: string;
 }
@@ -760,6 +792,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     harness: Object.freeze({ ...revision.harness }),
     compute: Object.freeze({ ...revision.compute }),
     harnessAuth: immutableCopy(revision.harnessAuth),
+    ...(revision.credentialSources === undefined
+      ? {}
+      : { credentialSources: immutableCopy(revision.credentialSources) }),
   });
 }
 
@@ -1039,6 +1074,20 @@ export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly requirements: HarnessWorkloadRequirements;
 }
 
+export interface SandboxHarnessStatusContext extends SandboxHarnessContext {
+  /** The Agent transport token the Agent Gateway presents to the Harness. */
+  readonly transportToken: string;
+}
+
+/**
+ * What the provider-owned Harness answers at its endpoint. `failed` carries the Harness's own
+ * held startup failure, unvalidated; Compute validates it like a Compute-owned status port.
+ */
+export type SandboxHarnessStatus =
+  | { readonly state: "starting" }
+  | { readonly state: "serving" }
+  | { readonly state: "failed"; readonly runtimeFailure: unknown };
+
 export interface ComputeLifecycleHooks {
   afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
@@ -1234,6 +1283,8 @@ export interface CredentialSourceInput {
 export interface CredentialSourceStatus {
   readonly state: "ready" | "pending" | "failed" | "absent";
   readonly reason?: string;
+  /** Present for a `refresh` type: the Credential Refresh Driver's view of its tokens. */
+  readonly refresh?: CredentialRefreshStatus;
 }
 
 export interface CredentialRevisionContext extends CredentialGatewayContext {
@@ -1252,6 +1303,11 @@ export interface CredentialWithdrawalContext extends CredentialGatewayContext {
   /** The Sandbox provisioning created for `revision`. */
   readonly sandbox: SandboxResourceRef;
   readonly sourceId: string;
+  /**
+   * Re-checks a withdrawal already recorded `revoked`: the gateway detaches again only when
+   * the Sandbox still lists the source, and otherwise reports `revoked` without a mutation.
+   */
+  readonly recheck?: boolean;
 }
 
 /** Selected identity metadata owned by the trusted Credential Gateway, never caller claims. */
@@ -1284,15 +1340,6 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
-  /** The Gateway owns the provider exchange and tokens; OCC retains only an opaque handle. */
-  startDeviceAuthorization?(
-    context: CredentialSourceContext,
-  ): Promise<CredentialSourceDeviceAuthorization>;
-  /** Ready means the Gateway durably owns the connection; never return tokens to OCC. */
-  pollDeviceAuthorization?(
-    context: CredentialSourceContext,
-    privateState: string,
-  ): Promise<CredentialSourceDeviceAuthorizationResult>;
   /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
   withSourceToken?<T>(
     context: CredentialSourceContext,
@@ -1307,7 +1354,6 @@ export interface CredentialGatewayDriver extends Driver {
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus>;
-  rotateSource(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   /** Idempotent; an already-absent source counts as removed. */
   removeSource(context: CredentialSourceContext): Promise<void>;
@@ -1323,6 +1369,51 @@ export interface CredentialGatewayDriver extends Driver {
    * resolve, `absent` when the Sandbox no longer exists, and `pending` otherwise.
    */
   withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus>;
+}
+
+export interface CredentialRefreshInput {
+  readonly config: Readonly<Record<string, string>>;
+  /** Resolved refresh material keyed by catalog field; never persisted by OCC. */
+  readonly secrets: Readonly<Record<string, string>>;
+  /** A UUID, stable per source and configuration attempt, so a replay is not applied twice. */
+  readonly requestId: string;
+}
+
+export interface CredentialRefreshStatus {
+  readonly state: "pending" | "ready" | "failed";
+  readonly expiresAt?: string;
+  readonly nextRefreshAt?: string;
+  readonly lastRefreshAt?: string;
+  /** Implementation-owned identifier, never provider-controlled text. */
+  readonly failureCode?: string;
+  readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
+}
+
+/**
+ * Mints and re-mints tokens for the paired Credential Gateway's `refresh` sources. OCC drives
+ * only setup, incident rotation, and status; the implementation refreshes before expiry.
+ */
+export interface CredentialRefreshDriver extends Driver {
+  readonly capability: "credential_refresh";
+  /** Owns the private device exchange; OCC retains only an opaque login handle. */
+  startDeviceAuthorization?(
+    context: CredentialSourceContext,
+  ): Promise<CredentialSourceDeviceAuthorization>;
+  /** Ready means refresh custody and the first managed token are established; never returns tokens. */
+  pollDeviceAuthorization?(
+    context: CredentialSourceContext,
+    privateState: string,
+  ): Promise<CredentialSourceDeviceAuthorizationResult>;
+  /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
+  configureRefresh(
+    context: CredentialSourceContext,
+    input: CredentialRefreshInput,
+  ): Promise<CredentialRefreshStatus>;
+  /** Forces one refresh; it does not revoke the previous token at the issuer. */
+  rotate(context: CredentialSourceContext, requestId: string): Promise<CredentialRefreshStatus>;
+  refreshStatus(context: CredentialSourceContext): Promise<CredentialRefreshStatus>;
+  /** Idempotent; deletes the stored refresh material. */
+  removeRefresh(context: CredentialSourceContext): Promise<void>;
 }
 
 export interface SandboxDriver extends Driver {
@@ -1341,6 +1432,12 @@ export interface SandboxDriver extends Driver {
    * Service. Implementations must fail closed until the endpoint is observable and exact.
    */
   harnessEndpoint?(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint>;
+  /**
+   * Observes the provider-owned Harness through the endpoint `harnessEndpoint` returns, with the
+   * Agent transport token. Compute treats only `serving` as ready and fails the revision with a
+   * valid held `runtimeFailure`. `serving` requires an authenticated transport handshake.
+   */
+  harnessStatus?(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus>;
   /**
    * The exact Sandbox `provisionHarness` creates for this revision, derived without effects.
    * Required to revoke credentials from a running revision.
@@ -1767,7 +1864,7 @@ export interface CredentialSourceDeviceAuthorization {
   readonly userCode: string;
   readonly expiresAt: string;
   readonly intervalSeconds: number;
-  /** Opaque Gateway login handle; never an access or refresh token. */
+  /** Opaque Refresh Driver login handle; never an access or refresh token. */
   readonly privateState: string;
 }
 
@@ -1855,11 +1952,13 @@ export interface ComputeDriver extends Driver {
    * Revokes `source` from the revision's paired Sandbox through the selected Credential
    * Gateway. Returns `revoked` only after the gateway confirms revocation, and `absent` when
    * the revision has no Sandbox or attachment left to revoke. Required for withdrawal.
+   * `options.recheck` is passed through to the gateway's withdrawal context.
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
+    options?: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus>;
   prepareRevision(
     revision: AgentRevision,

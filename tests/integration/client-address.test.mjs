@@ -17,6 +17,13 @@ test("trusted proxy settings are off unless configured and refuse misconfigurati
     [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0/8" }, /invalid CIDR/],
     [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "ingress.example.test" }, /invalid CIDR/],
     [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/x" }, /invalid CIDR/],
+    // The chart refuses leading-zero prefixes, so the API must too.
+    [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/08" }, /invalid CIDR: 10\.0\.0\.0\/08/],
+    [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/008" }, /invalid CIDR/],
+    [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.1/032" }, /invalid CIDR/],
+    [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "fd00::/064" }, /invalid CIDR/],
+    [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/8,fd00::/064" }, /invalid CIDR: fd00::\/064/],
+    [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/00" }, /invalid CIDR/],
     [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "0.0.0.0/0" }, /must not trust every address/],
     [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/8,::/0" }, /must not trust every address/],
     [
