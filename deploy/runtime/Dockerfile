@@ -10,11 +10,10 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
-# The credential client build needs only Node and pnpm. The slim runtime base
-# is already in the final image, so a CI build whose controller sources changed
+# The credential builds need only Node and pnpm. The slim runtime base is
+# already in the final image, so a CI build whose controller sources changed
 # does not also fetch the full build base from the layer cache.
-FROM node-runtime-base AS repository-client-build
-
+FROM node-runtime-base AS repository-credentials-deps
 WORKDIR /build
 COPY LICENSE package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/controller/package.json apps/controller/package.json
@@ -26,13 +25,26 @@ COPY packages/utils/package.json packages/utils/package.json
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     corepack pnpm install --frozen-lockfile --ignore-scripts --store-dir=/tmp/pnpm-store \
     && rm -rf /tmp/pnpm-store
-COPY tsconfig.base.json tsconfig.json ./
-COPY packages packages
-COPY apps/controller apps/controller
+
+# The runtime's credential client compiles from its own sources only: the
+# client directory and client-contracts.ts, the only modules the client
+# closure in scripts/build-repository-credentials.mjs accepts. Other controller
+# and package changes then keep this stage cached. tsconfig.client.json keeps
+# the controller's compiler options and turns off only project build outputs
+# (declarations, build info) and the type check; Static Checks and the service
+# build below check types. The emitted files match the full build's
+# (tests/integration/repository-credentials-package.test.mjs).
+FROM repository-credentials-deps AS repository-client-build
+COPY tsconfig.base.json ./
+COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
+COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
+COPY apps/controller/src/drivers/repo/credentials/client-contracts.ts apps/controller/src/drivers/repo/credentials/client-contracts.ts
+COPY apps/controller/src/drivers/repo/github/credentials/client apps/controller/src/drivers/repo/github/credentials/client
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
-RUN corepack pnpm credentials:build
+RUN node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.client.json --pretty false \
+    && node scripts/build-repository-credentials.mjs --client-only
 # Assemble the runtime's credential client as one tree with fixed modes and
 # timestamps. The runtime copies it onto / as its last layer, so a client change
 # rebuilds only that layer and every builder writes the same bytes. With a fixed
@@ -50,12 +62,22 @@ RUN set -eu; \
     test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
     find .build/runtime-client -exec touch -h -d @0 {} +
 
-# Build the service from the same checkout as the runtime client. Keep the
-# service closure separate from the Agent runtime and its unprivileged client.
+# Build the service from the full, type-checked workspace of the same checkout.
+# Keep the service closure separate from the Agent runtime and its unprivileged
+# client.
+FROM repository-credentials-deps AS repository-credentials-build
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages packages
+COPY apps/controller apps/controller
+COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
+COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
+COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
+RUN corepack pnpm credentials:build
+
 FROM node-build-base AS repository-credentials-service
 WORKDIR /app
-COPY --from=repository-client-build /build/.build/repository-credentials/service/package.json ./package.json
-COPY --from=repository-client-build /build/.build/repository-credentials/service/dist ./dist
+COPY --from=repository-credentials-build /build/.build/repository-credentials/service/package.json ./package.json
+COPY --from=repository-credentials-build /build/.build/repository-credentials/service/dist ./dist
 RUN chmod -R a=rX /app
 USER node
 ENTRYPOINT ["node", "/app/dist/repository-credentials.js"]

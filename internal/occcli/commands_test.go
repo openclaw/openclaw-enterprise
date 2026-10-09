@@ -584,6 +584,7 @@ func TestServiceKeyCreateLeavesNoKeyFileWhenItCannotSaveAKey(t *testing.T) {
 
 	// Lifetimes outside 1-365 days and malformed Namespace IDs fail before any request.
 	for _, refused := range []struct{ namespace, flag, message string }{
+		{testNamespaceID, "--expires-in-days=0", "between 1 and 365"},
 		{testNamespaceID, "--expires-in-days=366", "between 1 and 365"},
 		{testNamespaceID, "--expires-in-days=-1", "between 1 and 365"},
 		{"default", "--expires-in-days=1", "OCC_NAMESPACE or --namespace"},

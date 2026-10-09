@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-10-10
-last_updated_session: authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240
+last_updated_session: authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320
 ---
 
 # Agent Presets flow
@@ -117,11 +117,10 @@ the new Namespace. Disabling defaults leaves persisted copies alone.
 
 ### 2. Admit and store a template
 
-`apps/controller/src/index.ts:createFastifyApp` gives Preset POST/PATCH a bounded
-transport budget for 1 MiB templates, JSON escapes and the envelope. Explicit
-overrides remain authoritative. Development/production composition uses route
-defaults; transport overflow returns 413 before normal template, IAM and Driver
-admission.
+`apps/controller/src/index.ts:createFastifyApp` gives Preset POST/PATCH a
+transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
+returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
+the grant get 403 before any body is read.
 
 `packages/occ/src/index.ts:OpenClawController.createPreset`
 
@@ -292,6 +291,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-09 19:46: Authorize Preset writes before reading the body. (authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320 - deeb84b5e)
 
 - 2026-10-10 02:23: Admit contract-sized Preset writes at the HTTP boundary; template limits and mutation checks remain unchanged. (authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 

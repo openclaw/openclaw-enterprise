@@ -417,6 +417,11 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
+/** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
+function authorizesBeforeBody(operation: OccApiRoute): boolean {
+  return operation.operationId === "createPreset" || operation.operationId === "updatePreset";
+}
+
 function operationTarget(
   operation: OccApiRoute,
   installationId: string,
@@ -1840,6 +1845,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       await denial(operation, request, "authorization_denial", context);
       throw failure(403, "FORBIDDEN", "The admitted Namespace does not match.");
     }
+  }
+
+  /**
+   * Preset writes accept bodies up to PRESET_BODY_LIMIT (6 MiB + 8 KiB), far above the
+   * general limit. Their grant check needs only the path and the caller, so it runs here,
+   * in onRequest, before the body is read: a caller without the grant gets the same 403 or
+   * 404 and audit row as when the check ran in the handler, and the controller never
+   * buffers the body. The handler repeats the check in its transaction.
+   */
+  async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    if (!controller) {
+      throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+    const params = request.params as Record<string, string>;
+    await controller.authorizePresetWrite(
+      context.actorId,
+      params.namespaceId as string,
+      operation.operationId === "updatePreset" ? params.presetId : undefined,
+    );
   }
 
   async function perform(
@@ -3811,7 +3839,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
               : {}),
         schema,
-        onRequest: async (request) => admit(request, operation),
+        onRequest: async (request) => {
+          await admit(request, operation);
+          if (authorizesBeforeBody(operation)) {
+            await resolveIdentity(request, operation);
+            await authorizeBeforeBody(request, operation);
+          }
+        },
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
@@ -3831,7 +3865,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
-        preHandler: async (request) => resolveIdentity(request, operation),
+        ...(authorizesBeforeBody(operation)
+          ? {}
+          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => perform(request, reply, operation),
       });
     }

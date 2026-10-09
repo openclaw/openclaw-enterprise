@@ -70,7 +70,9 @@ Python, and process utilities. Both bases apply available Debian package updates
 during the build, including updates published after the pinned Node images.
 Build compilers stay in the full Bookworm stages.
 The repository credential client stage needs only Node and pnpm, so it builds on the
-slim base too.
+slim base too. It compiles only the client's own sources without a type check, so
+other controller changes keep it cached; the service stage builds the full,
+type-checked workspace.
 The build selects upstream required bundled plugins plus Codex and Slack before
 installing dependencies for the target architecture with lifecycle
 scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
