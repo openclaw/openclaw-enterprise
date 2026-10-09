@@ -41,6 +41,7 @@ import {
   NamespaceParams,
   RevisionParams,
   SecretParams,
+  ServiceAccountDeleteQuery,
   ServiceAccountParams,
   UpdateAgentBody,
   UpdateConfigurationBody,
@@ -91,6 +92,7 @@ import {
   CredentialSourceListResponse,
   CredentialWithdrawalResponse,
   ServiceAccountListResponse,
+  ServiceAccountForceDeletionResponse,
   ServiceAccountResponse,
   WorkspaceFileResponse,
   WorkspaceFileUpdateResponse,
@@ -1030,9 +1032,9 @@ export const occApiRoutes = [
     summary: "Delete an exact unreferenced Namespace-owned ServiceAccount",
     tags: ["Service accounts"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: ServiceAccountDeleteQuery,
       params: ServiceAccountParams,
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: { 200: ServiceAccountForceDeletionResponse, 204: Type.Null(), ...mutationErrors },
     },
   },
   {

@@ -84,6 +84,16 @@ export function createOccApi({ baseUrl, headers = {}, fetchImpl = fetch }) {
         `${method} ${path}: HTTP ${result.status} ${code} ${message}`.trim(),
       );
     }
+    if (
+      result.status >= 200 &&
+      result.status < 300 &&
+      result.status !== 204 &&
+      result.data === undefined
+    ) {
+      throw new SplitLayoutError(
+        `${method} ${path}: HTTP ${result.status} returned no data envelope`,
+      );
+    }
     return result;
   }
   return { call, expect };

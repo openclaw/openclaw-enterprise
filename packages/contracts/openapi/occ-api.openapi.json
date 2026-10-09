@@ -27495,6 +27495,18 @@
         "operationId": "deleteServiceAccount",
         "parameters": [
           {
+            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "const": "true", "type": "string" },
+                { "const": "false", "type": "string" }
+              ]
+            }
+          },
+          {
             "in": "path",
             "name": "namespaceId",
             "required": true,
@@ -27514,6 +27526,58 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "backendId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "revocation": {
+                          "const": "skipped",
+                          "description": "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["id", "namespaceId", "revocation"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "A forced deletion removed the account and its credential Secret but could not revoke its issued access token."
+          },
           "204": { "description": "Default Response" },
           "400": {
             "content": {

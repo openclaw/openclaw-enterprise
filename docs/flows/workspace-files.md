@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-03
-last_updated_session: authoring-run/264cfb8c-8627-40cb-8ac4-0b67ef3134dc
+updated: 2026-10-10
+last_updated_session: authoring-run/20e38f57-7665-4641-bd09-f3a162733d69
 ---
 
 # Agent Workspace Files Flow
@@ -293,8 +293,12 @@ hello grants `operator.admin`; reads also accept `operator.read`.
 
 ### 8. Native file access returns a bounded result
 
-The same client invokes `agents.files.get` or `agents.files.set` for native Agent
-`main`. Reads enforce the response content limit and return
+`gateway/workspace-files-client.ts:requestNativeWorkspaceFile` uses Hello's
+`sessionDefaults.defaultAgentId` when embedded OpenClaw composition opts in and native ownership
+is `sole` with `selectionRequired: false`. Other rosters retain the explicit
+`main` target; other callers retain their explicit targets. No roster RPC or
+additional scope is required. The same client invokes `agents.files.get` or
+`agents.files.set`. Reads enforce the response content limit and return
 `{ name, content }`; writes return `{ name, size }`. There is no list, delete,
 compare-and-swap, generic RPC, chat bridge, or PostgreSQL file copy.
 
@@ -345,6 +349,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
 
 - 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
 

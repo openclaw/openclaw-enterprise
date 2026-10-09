@@ -1657,7 +1657,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
-      operation.operationId !== "getAgentDeploymentRuntimeLogs"
+      operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
+      operation.operationId !== "deleteServiceAccount"
     ) {
       throw failure(
         400,

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-05"
-last_updated_session: "authoring-run/0b8bd46b-85c0-4664-8dbd-2ee77cd7b602"
+updated: "2026-10-10"
+last_updated_session: "authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff"
 ---
 
 # Production image upgrade flow
@@ -219,6 +219,18 @@ the checked states and Doctor reported no error. The operator next verifies
 model responses, providers, channels, credentials, workspace continuity, native
 access, and required restore behavior.
 
+### Read-only export after a split-layout refusal
+
+The [split-layout recovery procedure](../guides/deploy/breaking-changes.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
+begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
+Its `createOccApi.expect` requires a data envelope for each successful resource
+response before `exportTenants` assembles the bundle. Malformed JSON, an empty
+body, or a missing data envelope stops export with a nonzero exit before `main`
+writes the bundle; an actual empty collection remains valid. The next owner is
+the operator, who retries the read after restoring the API response path and
+checks the exported inventory before following the recovery procedure. Empty
+204 deletes and explicitly accepted 404 responses retain their existing meaning.
+
 ## Debugging and Verification
 
 - Inspect `server-dry-run.txt` for chart or admission failures before mutation,
@@ -251,6 +263,8 @@ access, and required restore behavior.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 02:10: Require complete successful API responses before publishing the split-layout export bundle. (authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff - 0886f47d05fdeb2fa4359f4840fb77378d643bac)
 
 - 2026-10-07 21:20: Refuse a two-cluster upgrade before quiescence when the execution chart lacks this release's tenant grants. (fix-758)
 

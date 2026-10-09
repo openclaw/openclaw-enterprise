@@ -15665,6 +15665,7 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
     eventError: undefined,
     nodeName: "runtime-logs-node",
     extraEvents: [],
+    containerStatus: undefined,
   };
   const pod = (role) => ({
     apiVersion: "v1",
@@ -15701,6 +15702,7 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
                   },
                 },
               }),
+          ...state.containerStatus,
         },
       ],
     },
@@ -15913,6 +15915,80 @@ test("Kubernetes runtime description reads each plane's Pods and only their own 
     /invalid Pod/,
   );
 });
+
+const previousRuntimeTermination = {
+  reason: "Error",
+  exitCode: 17,
+  finishedAt: new Date("2026-10-09T16:00:00Z"),
+};
+for (const scenario of [
+  {
+    name: "first current exit",
+    state: {
+      terminated: { ...previousRuntimeTermination, startedAt: new Date("2026-10-09T15:59:00Z") },
+    },
+    lastState: {},
+    expected: previousRuntimeTermination,
+  },
+  {
+    name: "newest current exit",
+    state: {
+      terminated: {
+        reason: "Completed",
+        exitCode: 0,
+        finishedAt: new Date("2026-10-09T16:01:00Z"),
+      },
+    },
+    lastState: { terminated: previousRuntimeTermination },
+    expected: { reason: "Completed", exitCode: 0, finishedAt: new Date("2026-10-09T16:01:00Z") },
+  },
+  {
+    name: "running prior exit",
+    state: { running: { startedAt: new Date("2026-10-09T16:01:00Z") } },
+    lastState: { terminated: previousRuntimeTermination },
+    expected: previousRuntimeTermination,
+  },
+  {
+    name: "waiting prior exit",
+    state: { waiting: { reason: "CrashLoopBackOff" } },
+    lastState: { terminated: previousRuntimeTermination },
+    expected: previousRuntimeTermination,
+  },
+  {
+    name: "running without an exit",
+    state: { running: { startedAt: new Date("2026-10-09T16:01:00Z") } },
+    lastState: {},
+    expected: null,
+  },
+  {
+    name: "waiting without an exit",
+    state: { waiting: { reason: "ContainerCreating" } },
+    lastState: {},
+    expected: null,
+  },
+]) {
+  test(`Kubernetes runtime termination status retains ${scenario.name}`, async () => {
+    const fixture = runtimeLogDriverFixture();
+    fixture.state.containerStatus = {
+      state: scenario.state,
+      lastState: scenario.lastState,
+      restartCount: scenario.lastState.terminated === undefined ? 0 : 1,
+      ready: scenario.state.running !== undefined,
+    };
+    const description = await fixture.driver.describeAgentRuntime(
+      fixture.binding,
+      new AbortController().signal,
+    );
+    const expected =
+      scenario.expected === null
+        ? null
+        : { ...scenario.expected, finishedAt: scenario.expected.finishedAt.toISOString() };
+    for (const pod of description.pods) {
+      assert.deepEqual(pod.containers[0].lastTermination, expected, pod.role);
+      assert.equal(pod.containers[0].state, Object.keys(scenario.state)[0]);
+    }
+  });
+}
 
 test("Kubernetes runtime description drops only a settled VolumeBinding conflict", async () => {
   const fixture = runtimeLogDriverFixture();

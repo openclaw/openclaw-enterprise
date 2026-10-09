@@ -3362,16 +3362,9 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
 test("the chart refuses bootstrap claim names the volume helper refuses", tooling, async () => {
   const message =
     /bootstrap\.password\.claimName must be a DNS subdomain of at most 253 characters/;
-  const longLabel = "a".repeat(64);
-  const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
-  for (const claimName of [
-    "Bootstrap",
-    "claim_name",
-    "claim-",
-    `.claim`,
-    longLabel,
-    `${"a".repeat(254)}`,
-  ]) {
+  // This is Kubernetes' 253-character object-name limit, not a DNS hostname limit.
+  const longest = "a".repeat(253);
+  for (const claimName of ["Bootstrap", "claim_name", "claim-", `.claim`, `${"a".repeat(254)}`]) {
     await assert.rejects(
       render({}, { strings: { "bootstrap.password.claimName": claimName } }),
       ({ code, stderr }) => code !== 0 && message.test(stderr),
@@ -4447,6 +4440,7 @@ test(
           "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
           "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
           "controlPlane.nodeSelector.edge": "a_b.c-d",
+          [`controlPlane.nodeSelector.${"a".repeat(253)}/pool`]: "control",
         },
       },
     );
@@ -4455,6 +4449,13 @@ test(
     // Kubernetes allows empty label values; charts before #1848 rendered them.
     assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
     assert.match(stdout, /edge: a_b\.c-d/);
+    const objects = await resources(stdout);
+    const api = objects.find(
+      (object) =>
+        object.kind === "Deployment" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "api",
+    );
+    assert.equal(api.spec.template.spec.nodeSelector[`${"a".repeat(253)}/pool`], "control");
   },
 );
 
