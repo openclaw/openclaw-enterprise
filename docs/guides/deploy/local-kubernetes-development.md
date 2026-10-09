@@ -60,19 +60,16 @@ This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
 OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
-Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.163.0-alpha.1`. If the node's `RuntimeDefault`
-blocks it, the launcher derives the
-[reviewed compatibility profile](codex-sandbox.md) from that node's actual
-policy, installs it only on the owned k3d node, and verifies workspace and
-outside-write boundaries and missing-profile failure. Only dedicated Codex
-containers select the profile; `codex-seccomp-provenance.json` in the private
-state directory records its hashes and node provenance. If the policy, runtime,
-or verification is unsupported, startup fails and rolls back the owned cluster.
-On Ubuntu 24.04, follow
-[local Codex sandbox troubleshooting](../operate/troubleshooting.md#local-codex-sandbox-check-fails).
-The check covers that node and image at startup; after a runtime, kernel, or
-image change, recreate the local installation to repeat it.
+Before bootstrapping, startup checks the Codex `0.163.0-alpha.1` sandbox with
+its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
+launcher derives a [reviewed profile](codex-sandbox.md) from the node's actual
+policy and installs it only on the owned k3d node. Only dedicated Codex
+containers select it. Startup verifies workspace-write and outside-write
+boundaries and missing-profile failure. Private `codex-seccomp-provenance.json`
+records hashes and node provenance. Unsupported policy, runtime, or verification
+fails startup and rolls back the owned cluster. Ubuntu 24.04: see
+[troubleshooting](../operate/troubleshooting.md#local-codex-sandbox-check-fails).
+Recreate the installation after runtime, kernel, or image changes.
 
 To enable GitHub repository credentials during a fresh start, prepare the
 [approved local repository inputs](local-repository-credentials.md#prepare-the-approved-inputs)
