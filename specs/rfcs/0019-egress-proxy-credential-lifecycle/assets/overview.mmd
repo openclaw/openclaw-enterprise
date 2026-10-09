@@ -1,0 +1,41 @@
+---
+title: "Proposed Agent request"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    primaryTextColor: "#25364A"
+    lineColor: "#748798"
+    edgeLabelBackground: "#FFFFFF"
+    clusterBkg: "#FAFBFC"
+    clusterBorder: "#D8DEE6"
+  flowchart:
+    useMaxWidth: false
+    curve: linear
+    nodeSpacing: 22
+    rankSpacing: 24
+    padding: 12
+    diagramPadding: 12
+    subGraphTitleMargin:
+      top: 10
+      bottom: 14
+---
+flowchart LR
+  Agent["<b>Agent workload</b><br/>No provider credentials"]
+  Proxy["<b>Egress Proxy</b><br/>Adds credentials<br/>Protects responses"]
+  OCC["<b>OCC</b><br/>Current authorization"]
+  Provider["<b>Provider</b><br/>GitHub / inference"]
+  Resolver["<b>Credential Resolver</b><br/>Static or warm dynamic"]
+  Agent -. "1. Capture" .-> Proxy
+  Proxy -. "2. Check<br/>4. Final check" .-> OCC
+  Proxy -. "5. Send" .-> Provider
+  Proxy -. "3. Resolve<br/>if needed" .-> Resolver
+  class Agent,Provider external
+  class Proxy action
+  class OCC,Resolver api
+  classDef api fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef action fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef external fill:#F2EDF6,stroke:#A394AF,color:#40354B,stroke-width:1px
+  linkStyle default stroke:#748798,stroke-width:1px

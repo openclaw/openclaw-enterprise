@@ -1,0 +1,45 @@
+---
+title: "Proposed withdrawal and recovery"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 18
+    width: 116
+    height: 44
+    diagramMarginX: 12
+    diagramMarginY: 12
+    messageMargin: 16
+    noteMargin: 8
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant O as Owner
+  participant C as OCC
+  participant S as Trusted sender
+  participant R as Original work owner
+  O->>C: Withdraw access
+  C-->>O: Withdrawal committed
+  S->>C: Check next operation
+  C-->>S: Deny removed access
+  Note over C,S: Unavailable authority also refuses use
+  Note over C,R: Accepted race: a final check can race withdrawal#59;<br/>send may start after acknowledgment
+  Note over S,R: Original deadline still applies<br/>Cancellation is best effort<br/>Timeout does not undo effects
+  S->>R: Preserve uncertain send and attempt evidence
+  Note over C,R: Send, refresh and clone keep their original owner,<br/>deadline and cleanup duties across process replacement
+  R->>R: Reconcile provider effect<br/>or require reauthorization
+  Note over S,R: No blind replay<br/>Preserve late outcomes<br/>Cleanup remains owed
+  R-->>C: Resolved or still-pending evidence
+  C-->>O: Status and outstanding cleanup

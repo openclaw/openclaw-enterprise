@@ -1,0 +1,46 @@
+---
+title: "Proposed request · final check and send"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 18
+    width: 116
+    height: 44
+    diagramMarginX: 12
+    diagramMarginY: 12
+    messageMargin: 16
+    noteMargin: 8
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant A as Caller
+  participant S as Trusted sender
+  participant C as OCC
+  participant P as Provider
+  Note over S,P: After preparation: actual operation is immutable
+  S->>C: Fresh online check
+  Note over S,P: Caller, versioned route, grant and actual operation<br/>Selected material identity/version or explicit absence
+  C-->>S: Allow, deny or unavailable
+  Note over S,P: Policy receives no credential bytes<br/>Do not substitute another operation or material
+  alt Allow, usable material if needed, within deadlines
+    S->>S: Recheck usability,<br/>send-start and original<br/>operation deadlines
+    S->>P: Strip Agent auth,<br/>inject if needed, send once
+    P-->>S: Response, error or stream
+    S-->>A: Safe response,<br/>redaction or refusal
+  else Denied, unavailable, unusable or too late
+    S-->>A: Refuse before send
+  end
+  Note over A,P: Each subrequest, redirect, retry or new operation repeats the checks<br/>Resolve again when needed#59; no provider material or handles enter the Agent

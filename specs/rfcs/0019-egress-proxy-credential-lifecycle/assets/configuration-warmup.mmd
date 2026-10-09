@@ -1,0 +1,46 @@
+---
+title: "Proposed background preparation"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 18
+    width: 116
+    height: 44
+    diagramMarginX: 12
+    diagramMarginY: 12
+    messageMargin: 16
+    noteMargin: 8
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant C as OCC
+  participant L as Lifecycle owner<br/>(Token Service)
+  participant I as Provider issuer
+  participant P as Provider
+  C->>L: Admitted source generation and grant
+  L-->>C: Configuration accepted
+  Note over C,L: Accepted ≠ warm
+  Note over L,P: One owner per family#59; prepare even without requests
+  L->>L: Fence before<br/>rotating-input use
+  Note over L,P: Permitted inputs via Secret Driver<br/>Canonical replacement must not be<br/>overwritten by the bootstrap seed
+  L->>I: Prepare for the exact admitted grant
+  I->>P: Obtain or renew provider material
+  P-->>I: Material or failure
+  I->>I: Validate grant<br/>and expiry
+  I-->>L: Validated material or failure
+  L->>L: Persist replacement<br/>before readiness
+  L-->>C: Warm readiness or failure
+  Note over C,I: Required material not warm within startup bound:<br/>block startup and report status

@@ -1,0 +1,45 @@
+---
+title: "Proposed request · authorize and resolve"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 18
+    width: 116
+    height: 44
+    diagramMarginX: 12
+    diagramMarginY: 12
+    messageMargin: 16
+    noteMargin: 8
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant A as Caller
+  participant S as Trusted sender
+  participant C as OCC
+  participant R as Credential<br/>Resolver
+  A->>S: Authenticated operation
+  S->>S: Capture immutable operation<br/>Select route and grant
+  S->>C: Check caller, operation,<br/>versioned route and grant
+  C-->>S: Allow, deny or unavailable
+  Note over S,C: Deny or unavailable: stop here
+  opt Allowed credentialed operation
+    S->>R: Resolve admitted binding for this use
+    R-->>S: Use-bound handle or refusal
+    Note over S,R: Refusal stops the operation<br/>Cold dynamic material never triggers preparation
+  end
+  Note over S,C: Credential-free egress skips resolution,<br/>not authorization
+  S->>S: Complete transformations<br/>and awaited preparation<br/>Freeze actual operation
+  Note over S,C: Continue to final check<br/>A handle is not send authority
