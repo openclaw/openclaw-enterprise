@@ -931,6 +931,14 @@ async function buildRuntimeImages(
     "--format",
     "{{.Server.Version}}",
   ]);
+  {
+    const listed = await execFile("docker", ["image", "ls", "-a", "--no-trunc", "--format", "{{.ID}} {{.Repository}}:{{.Tag}} {{.Size}} {{.CreatedSince}}"]);
+    process.stderr.write(`[docker-store] images before build\n${listed.stdout}\n`);
+    const info = await execFile("docker", ["info", "--format", "{{.DockerRootDir}} {{.Driver}} {{json .DriverStatus}}"]);
+    process.stderr.write(`[docker-store] ${info.stdout}\n`);
+    const df = await execFile("sh", ["-c", "df -h /var/lib/docker; mount | grep -E 'docker|sticky|vd[b-z]' || true"]);
+    process.stderr.write(`[docker-store] ${df.stdout}\n`);
+  }
   const env = {};
   const resources = [];
   const label =
