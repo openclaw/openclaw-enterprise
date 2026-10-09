@@ -923,7 +923,7 @@ async function buildRuntimeImages(
         probe.push(args[i]);
       }
       const metadata = join(process.env.RUNNER_TEMP ?? ".", `probe-${role}-${randomUUID()}.json`);
-      const at = ["buildx", "build", "--output", "type=image,push=false", "--metadata-file", metadata, ...probe.slice(2)];
+      const at = ["buildx", "build", "--output", "type=image,push=false,store=false", "--provenance=false", "--metadata-file", metadata, ...probe.slice(2)];
       const started = Date.now();
       try {
         const probed = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", at, { timeoutMs: 10 * 60_000 });
@@ -934,7 +934,7 @@ async function buildRuntimeImages(
           await execFile("docker", ["image", "inspect", "--format", "{{.Id}}", config]);
           present = "yes";
         } catch {}
-        process.stderr.write(`[probe] ${role} resolve_ms=${Date.now() - started} config=${config} docker_has_image=${present}\n${probed.stderr}\n`);
+        process.stderr.write(`[probe] ${role} resolve_ms=${Date.now() - started} config=${config} docker_has_image=${present} keys=${Object.keys(meta).join(",")}\n${probed.stderr}\n`);
       } catch (error) {
         process.stderr.write(`[probe] ${role} failed after ${Date.now() - started} ms: ${error.message}\n${error.stderr ?? ""}\n`);
       }
