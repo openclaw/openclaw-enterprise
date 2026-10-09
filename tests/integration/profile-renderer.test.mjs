@@ -605,7 +605,7 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
   );
   const preflight = JSON.parse(readFileSync(join(dns.directory, "preflight.json"), "utf8"));
   assert.equal(preflight.ok, false);
-  assert.match(preflight.errors.join("\n"), /chatgpt\.com/);
+  assert.ok(preflight.errors.join("\n").includes("IPv4 addresses for chatgpt.com."));
   assert.match(preflight.errors.join("\n"), /modelDiscoveryCidrs/);
   assert.match(preflight.errors.join("\n"), /retry|re-?render|supply|set|provide|configure/i);
   assert.equal(existsSync(join(dns.directory, "values.yaml")), false);
