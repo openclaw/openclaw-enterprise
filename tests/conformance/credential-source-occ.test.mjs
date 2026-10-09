@@ -73,6 +73,15 @@ function createTestCredentialGateway(options = {}) {
           secrets: [{ name: "client_secret", required: true }],
           rotation: "refresh",
         },
+        {
+          type: "oauth-refresh-token",
+          config: [{ name: "client_id", required: true }],
+          secrets: [
+            { name: "refresh_token", required: true },
+            { name: "client_secret", required: false },
+          ],
+          rotation: "refresh",
+        },
       ];
     },
     async registerSource(context, input) {
@@ -424,7 +433,18 @@ test("a refresh source is ready only after its first mint, and its material is n
   assert.match(calls[1].input.requestId, UUID);
   assert.match(calls[2].requestId, UUID);
   assert.notEqual(calls[1].input.requestId, calls[2].requestId);
-  assert.deepEqual(source.secrets, { client_secret: secret.ref });
+  assert.deepEqual(source.secrets, {});
+  assert.deepEqual(
+    (await context.controller.readCredentialSource(administrator, context.namespace.id, source.id))
+      .secrets,
+    {},
+  );
+  // Handing custody to the refresh Driver releases the reference, not the user's Secret.
+  assert.equal(
+    (await context.controller.readSecret(administrator, context.namespace.id, secret.id)).id,
+    secret.id,
+  );
+  assert.equal(context.secretDriver.valueFor(secret), "synthetic-client-secret");
   assert.equal(JSON.stringify(source).includes("synthetic-client-secret"), false);
 });
 
@@ -471,8 +491,11 @@ test("a refresh source whose first mint fails is removed from the gateway and fr
 test("rotation needs update on a refresh source, reads no Secret, and refuses static types", async () => {
   const context = await fixture();
   await context.makeReady();
-  const { source } = await refreshSource(context);
+  const { secret, source } = await refreshSource(context);
   const input = { namespaceId: context.namespace.id, credentialSourceId: source.id };
+  // The detached bootstrap Secret may be deleted without ending the Driver's refresh custody.
+  await context.controller.deleteSecret(administrator, context.namespace.id, secret.id);
+  assert.equal(context.secretDriver.has(secret), false);
   await assert.rejects(
     context.controller.rotateCredentialSource(deployer, input),
     AuthorizationDeniedError,
@@ -519,7 +542,7 @@ test("an update reconfigures refresh material and mints again instead of pushing
     credentialSourceId: source.id,
     secrets: { client_secret: replacement.ref },
   });
-  assert.deepEqual(updated.secrets, { client_secret: replacement.ref });
+  assert.deepEqual(updated.secrets, {});
   assert.equal(updated.status.refresh.state, "ready");
   const calls = context.gateway.calls.slice(before);
   assert.deepEqual(
@@ -528,6 +551,85 @@ test("an update reconfigures refresh material and mints again instead of pushing
   );
   assert.deepEqual(calls[0].input.secrets, { client_secret: "replacement-client-secret" });
   assert.equal(JSON.stringify(updated).includes("replacement-client-secret"), false);
+});
+
+test("a refresh update requires explicit material even when old bootstrap references remain", async (t) => {
+  for (const retainedReferences of [false, true]) {
+    await t.test(
+      retainedReferences ? "previously retained references" : "completed handoff",
+      async () => {
+        const context = await fixture();
+        await context.makeReady();
+        const { secret, source } = await refreshSource(context);
+        let sourceId = source.id;
+        if (retainedReferences) {
+          // Model a source registered before bootstrap references were released on success.
+          const stored = await context.state.read((unit) =>
+            unit.credentialSources.findCredentialSource(context.namespace.id, source.id),
+          );
+          const previous = {
+            ...stored,
+            id: `cs_${crypto.randomUUID()}`,
+            name: "previously-registered-refresh-source",
+            secrets: { client_secret: secret.ref },
+          };
+          await context.state.transact((unit) =>
+            unit.credentialSources.createCredentialSource(previous),
+          );
+          await context.gateway.registerSource(
+            { namespace: context.namespace, source: previous },
+            { type: previous.type, config: previous.config, secrets: {} },
+          );
+          sourceId = previous.id;
+        }
+        const gatewayCalls = context.gateway.calls.length;
+        const secretCalls = context.secretDriver.calls.length;
+        await assert.rejects(
+          context.controller.updateCredentialSource(administrator, {
+            namespaceId: context.namespace.id,
+            credentialSourceId: sourceId,
+          }),
+          (error) =>
+            error instanceof ResourceConflictError &&
+            requestFailure(error).status === 409 &&
+            /explicit Secret references/.test(requestFailure(error).message),
+        );
+        assert.equal(context.gateway.calls.length, gatewayCalls);
+        assert.equal(context.secretDriver.calls.length, secretCalls);
+      },
+    );
+  }
+});
+
+test("refresh reauthorization accepts optional material without retaining any Secret references", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const bootstrap = await context.modelSecret();
+  const source = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "oauth-refresh",
+    type: "oauth-refresh-token",
+    config: { client_id: "occ-tools" },
+    secrets: { refresh_token: bootstrap.ref },
+  });
+  const replacement = await context.modelSecret();
+  const clientSecret = await context.modelSecret();
+  const updated = await context.controller.updateCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    credentialSourceId: source.id,
+    secrets: { refresh_token: replacement.ref, client_secret: clientSecret.ref },
+  });
+  assert.equal(updated.status.refresh.state, "ready");
+  assert.deepEqual(updated.secrets, {});
+  assert.deepEqual(
+    (await context.controller.readCredentialSource(administrator, context.namespace.id, source.id))
+      .secrets,
+    {},
+  );
+  for (const secret of [bootstrap, replacement, clientSecret]) {
+    assert.equal(context.secretDriver.has(secret), true);
+    await context.controller.deleteSecret(administrator, context.namespace.id, secret.id);
+  }
 });
 
 test("reading a refresh source reports its refresh status, and deletion removes refresh first", async () => {

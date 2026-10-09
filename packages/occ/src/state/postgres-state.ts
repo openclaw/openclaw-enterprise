@@ -2708,6 +2708,18 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return findCredentialSource(namespaceId, credentialSourceId);
       },
+      clearCredentialSourceSecrets: async (namespaceId, credentialSourceId) => {
+        const current = await findCredentialSource(namespaceId, credentialSourceId);
+        if (current === undefined || current.state !== "ready") {
+          return undefined;
+        }
+        await client.query(
+          `DELETE FROM occ.credential_source_secrets
+           WHERE namespace_id = $1 AND credential_source_id = $2`,
+          [namespaceId, credentialSourceId],
+        );
+        return immutableCopy({ ...current, secrets: {} });
+      },
       markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
         const updated = await client.query(
           `UPDATE occ.credential_sources AS cs SET state = 'ready'

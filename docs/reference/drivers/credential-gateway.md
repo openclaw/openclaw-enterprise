@@ -4,8 +4,9 @@
 
 `CredentialGatewayDriver` holds credentials outside the Agent workload and
 applies them to the Agent's outbound requests. OpenClaw Control Plane (OCC) owns
-the [credential source](../credential-sources.md) record, its Secret references,
-authorization, and Agent bindings. The Driver owns the stored copy of the value,
+the [credential source](../credential-sources.md) record, authorization, and
+Agent bindings. Static sources retain Secret references; refresh sources clear
+them after the first successful mint. The Driver owns the stored copy of the value,
 the source-type catalog, and how a credential reaches a request. The paired
 [SandboxDriver](sandbox.md) consumes the Driver's per-revision attachments when
 it creates the Harness, and [Compute](compute.md) waits for those attachments
@@ -99,7 +100,8 @@ configuration. The interface has no initializer or destructor.
    `registerSource` outside the transaction. A second transaction moves the
    record to `ready` with its audit event. For a `refresh` type, the
    [Credential Refresh Driver](credential-refresh.md#lifecycle) first mints the
-   source's first token. If `registerSource` returns `failed` or
+   source's first token, and that transaction clears the source's Secret
+   references while preserving the Secret objects. If `registerSource` returns `failed` or
    `absent`, OCC calls `removeSource` and deletes the record. If it throws, a
    create may still land, so OCC calls `removeSource` but keeps the record
    `deleting`. OCC finalizes a deletion only 70 seconds after `createdAt`, and a
@@ -130,9 +132,11 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
    `attachmentStatus`. `pending` or a missing status retries reconciliation;
    `failed`, `withheld`, `revoked`, or `absent` fails it. Only `ready` for every
    attachment lets the revision activate.
-6. **Update.** The API locks the source, reads its current or replacement Secret
-   values, and calls `updateSource`. Running Harness processes keep the previous
-   value until they restart.
+6. **Update.** For static sources, the API locks the source, reads its current
+   or replacement Secret values, and calls `updateSource`. Running Harness
+   processes keep the previous value until they restart. Refresh sources require
+   explicit reauthorization material through the
+   [Credential Refresh Driver](credential-refresh.md#lifecycle).
 7. **Withdrawal.** The API records a `pending` withdrawal for the Agent's active
    revision and queues worker work. The worker rechecks `agent:operate`, and
    Compute derives the revision's Sandbox and calls `withdraw` for each pending

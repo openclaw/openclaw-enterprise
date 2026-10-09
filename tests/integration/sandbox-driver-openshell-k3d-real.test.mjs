@@ -2833,17 +2833,23 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
     // A refresh source is ready only once the gateway has minted its first token.
     assert.equal(source.data.status.state, "ready");
     assert.equal(source.data.status.refresh.state, "ready", JSON.stringify(source.data.status));
+    assert.deepEqual(
+      source.data.secrets,
+      {},
+      "successful handoff must release OCC's Secret references",
+    );
     return {
       id: source.data.id,
       type,
       clientId,
       environmentName,
+      bootstrapSecrets: Object.values(secrets),
       url: `http://${tokenEcho.host}:${tokenEcho.port}${path}`,
     };
   };
-  const clientSecret = await secret(keycloak.clientSecret);
   // OpenShell refuses a token endpoint without TLS, so OCC refuses one before any gateway call,
-  // with the not-found response it gives every invalid catalog field.
+  // with the not-found response it gives every invalid catalog field. Use a separate Secret:
+  // an incomplete registration may retain its references until cleanup is retried.
   const plain = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-oauth-plain-${randomUUID()}`,
     type: "oauth2-client-credentials",
@@ -2853,9 +2859,10 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
       token_url: keycloak.tokenUrl.replace(/^https:/, "http:"),
       client_id: keycloakServiceClient,
     },
-    secrets: { client_secret: clientSecret },
+    secrets: { client_secret: await secret(keycloak.clientSecret) },
   });
   assert.equal(plain.status, 404, JSON.stringify(plain.error ?? plain.data));
+  const clientSecret = await secret(keycloak.clientSecret);
   return {
     bound: [
       await register(
@@ -2883,10 +2890,11 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
 /**
  * The running Codex Harness calls the echo service with each OAuth2 placeholder. The echo
  * verifies Keycloak's signature on whatever token OpenShell substituted. The phase proves:
- * - the gateway re-mints a token before expiry and the same running Harness uses it;
- * - a forced rotation through the API mints a new token without a redeploy;
+ * - bootstrap Secrets remain user-owned and can be deleted after handoff;
+ * - the gateway re-mints both tokens after that deletion and the same Harness uses them;
+ * - forced rotations through the API mint new tokens without a redeploy;
  * - a revoked refresh token reports `reauthorize`; an update whose mint fails is a 503 that
- *   keeps the recorded Secret references, and new material restores minting;
+ *   retains no Secret references, and new material restores minting;
  * - deleting an unreferenced source removes its refresh state and provider from OpenShell.
  */
 async function assertRefreshCredentialSources(topology) {
@@ -2901,8 +2909,24 @@ async function assertRefreshCredentialSources(topology) {
   const readRefresh = async (source) => {
     const read = await request("GET", sourcePath(source));
     assert.equal(read.status, 200, JSON.stringify(read.error));
+    assert.deepEqual(read.data.secrets, {});
     return read.data.status.refresh;
   };
+  // Handoff releases references without deleting user-owned Secrets. Removing those Secrets
+  // before renewal proves OpenShell owns the continuing grant, including the client secret
+  // shared by the bound and spare sources.
+  const bootstrapSecrets = new Map(
+    [...refreshSources.bound, refreshSources.unbound].flatMap((source) =>
+      source.bootstrapSecrets.map((ref) => [ref.id, ref]),
+    ),
+  );
+  for (const ref of bootstrapSecrets.values()) {
+    const secretPath = `/namespaces/${namespaceId}/secrets/${ref.id}`;
+    const retained = await request("GET", secretPath);
+    assert.equal(retained.status, 200, JSON.stringify(retained.error));
+    const deleted = await request("DELETE", secretPath);
+    assert.equal(deleted.status, 204, JSON.stringify(deleted.error));
+  }
   const call = async () => {
     const nonce = `OCC-OPENSHELL-OAUTH-${randomUUID()}`;
     const result = await requestCodexTurnFromGatewayPod({
@@ -2934,13 +2958,17 @@ async function assertRefreshCredentialSources(topology) {
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
   };
   // The Sandbox supervisor picks up a re-minted token on its provider poll, every 10 seconds by
-  // default. Turns repeat, a bounded number of times, until the running Harness presents a
-  // token other than `previous` for `source`.
-  const callUntilNewToken = async (key, previous) => {
+  // default. Turns repeat, a bounded number of times, until the running Harness presents
+  // tokens different from both previous JWTs.
+  const callUntilNewTokens = async (previous) => {
     await delay(20_000);
     for (let attempt = 1; ; attempt += 1) {
       const observed = await call();
-      if (observed[key]?.jwt?.jti !== previous || attempt === 4) {
+      if (
+        (observed.cc?.jwt?.jti !== previous.cc.jwt.jti &&
+          observed.rt?.jwt?.jti !== previous.rt.jwt.jti) ||
+        attempt === 4
+      ) {
         return observed;
       }
       await delay(15_000);
@@ -2960,27 +2988,47 @@ async function assertRefreshCredentialSources(topology) {
 
   // Without any OCC call, the gateway re-mints before expiry. The same running Harness, with
   // the same placeholder, then presents the new token.
-  const minted = await readRefresh(clientCredentials);
-  assert.equal(minted.state, "ready");
+  const minted = await Promise.all(refreshSources.bound.map(readRefresh));
+  for (const refresh of minted) {
+    assert.equal(refresh.state, "ready");
+  }
   await waitFor(
-    "the gateway to re-mint the client-credentials token on its own",
+    "the gateway to re-mint both tokens after their bootstrap Secrets were deleted",
     async () => {
-      const refresh = await readRefresh(clientCredentials);
-      return refresh.lastRefreshAt !== minted.lastRefreshAt ? refresh : undefined;
+      const refreshed = await Promise.all(refreshSources.bound.map(readRefresh));
+      return refreshed.every(
+        (refresh, index) =>
+          refresh.state === "ready" && refresh.lastRefreshAt !== minted[index].lastRefreshAt,
+      );
     },
     300_000,
   );
-  const remint = await callUntilNewToken("cc", first.cc.jwt.jti);
+  const remint = await callUntilNewTokens(first);
   assertIssued(remint.cc, clientCredentials);
+  assertIssued(remint.rt, refreshToken);
   assert.notEqual(remint.cc.jwt.jti, first.cc.jwt.jti, "a re-minted token must be new");
+  assert.notEqual(
+    remint.rt.jwt.jti,
+    first.rt.jwt.jti,
+    "a re-minted refresh-token grant must be new",
+  );
 
-  // A forced rotation mints a new token immediately, again without a redeploy.
-  const rotated = await request("POST", `${sourcePath(clientCredentials)}/rotate`);
-  assert.equal(rotated.status, 200, JSON.stringify(rotated.error));
-  assert.equal(rotated.data.status.refresh.state, "ready");
-  const afterRotation = await callUntilNewToken("cc", remint.cc.jwt.jti);
+  // Forced rotations consume only OpenShell's material, again without a redeploy.
+  for (const source of refreshSources.bound) {
+    const rotated = await request("POST", `${sourcePath(source)}/rotate`);
+    assert.equal(rotated.status, 200, JSON.stringify(rotated.error));
+    assert.equal(rotated.data.status.refresh.state, "ready");
+    assert.deepEqual(rotated.data.secrets, {});
+  }
+  const afterRotation = await callUntilNewTokens(remint);
   assertIssued(afterRotation.cc, clientCredentials);
+  assertIssued(afterRotation.rt, refreshToken);
   assert.notEqual(afterRotation.cc.jwt.jti, remint.cc.jwt.jti, "a rotation must mint a new token");
+  assert.notEqual(
+    afterRotation.rt.jwt.jti,
+    remint.rt.jwt.jti,
+    "a refresh-token rotation must mint a new token",
+  );
   // A static source has no issuer; rotating it is refused.
   const staticRotation = await request("POST", `${sourcePath(toolSources[0])}/rotate`);
   assert.equal(staticRotation.status, 409, JSON.stringify(staticRotation.error));
@@ -2996,10 +3044,11 @@ async function assertRefreshCredentialSources(topology) {
   assert.equal(reauthorize.state, "failed", JSON.stringify(reauthorize));
   assert.equal(reauthorize.recoveryAction, "reauthorize");
 
-  // An update whose mint fails is a 503. OCC keeps naming the last material that minted, and
-  // the source keeps reporting the failure for the owner to act on.
+  // An update whose mint fails is a 503. OCC retains no grant references, and the source
+  // keeps reporting the failure for the owner to act on.
   const beforeFailedUpdate = await request("GET", sourcePath(refreshToken));
   assert.equal(beforeFailedUpdate.status, 200, JSON.stringify(beforeFailedUpdate.error));
+  assert.deepEqual(beforeFailedUpdate.data.secrets, {});
   const failedUpdate = await request("PATCH", sourcePath(refreshToken), {
     secrets: { refresh_token: staleRefreshToken },
   });
@@ -3018,6 +3067,7 @@ async function assertRefreshCredentialSources(topology) {
   });
   assert.equal(resigned.status, 200, JSON.stringify(resigned.error));
   assert.equal(resigned.data.status.refresh.state, "ready");
+  assert.deepEqual(resigned.data.secrets, {});
   // Reconfiguring starts a new OpenShell authorization epoch, which revokes the running
   // Sandbox's stable handle, so the reference requires a redeploy. A token minted before the
   // update can stay cached in the Sandbox and remains a valid JWT until it expires; a token

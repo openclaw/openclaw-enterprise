@@ -57,16 +57,19 @@ The request fields are:
   the Namespace does not hold fails with `404`.
 
 OCC rejects unknown fields and missing required fields before it reads any
-Secret. It reads each value through the Secret Driver, sends the values to the
-gateway, and stores only the Secret references. OCC records the source as
-`registering` before the gateway call. If the gateway rejects the registration,
+Secret. It reads each value through the Secret Driver and sends static values
+to the gateway or issuer material to the Credential Refresh Driver. OCC records
+the initial Secret references and sets the source to `registering` before the
+gateway call. If the gateway rejects the registration,
 OCC deletes any copy and the record. If the call fails without an answer, such as
 on a timeout, a copy may still appear later, so the record stays listed as
 `deleting`; send DELETE to remove it.
 
-A `refresh`-type source becomes `ready` only after the gateway mints its first
-token. If the issuer refuses the material or cannot be reached, registration
-fails with `503` naming the Driver's failure code, and OCC removes the source.
+A refresh source becomes `ready` after its first mint. That commit clears its
+references (`secrets: {}`), preserving Secret objects without blocking their
+deletion. The Backend owns current material, including issuer-rotated refresh
+tokens. Issuer refusal or unavailability returns `503` with the Driver's failure
+code, and OCC removes the source.
 
 ## Read and list sources
 
@@ -138,7 +141,10 @@ value, send
 caller needs exact `credential_source:update` and `secret:operate` on every
 Secret the update reads:
 
-- An empty body `{}` re-reads the source's current Secrets.
+- For a static source, an empty body `{}` re-reads its current Secrets.
+- A refresh source requires explicit `secrets` with all required catalog fields.
+  An empty body is rejected before Secret reads or refresh effects; use
+  [rotation](#rotate-a-refresh-source) to mint from the Backend's current material.
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
@@ -147,17 +153,18 @@ Secret the update reads:
 A successful update returns `200` with the source and its live gateway `status`.
 Only a `ready` source can be updated. A gateway failure returns `503` and leaves
 the Secret references unchanged. The gateway is updated before OCC commits, so
-if the request fails after that, repeating the same request converges. If the
-gateway no longer holds a copy (`absent`), the update also returns `503`;
-delete the source and register it again.
+a static-source update can be repeated if its commit fails. Refresh updates
+require the recovery procedure below. If the gateway no longer holds a copy
+(`absent`), the update also returns `503`; delete the source and register it again.
 
 Migration `0048_administrator_credential_source_grants` adds the current
 `credential_source` grants, including `update`, to an unchanged built-in
 Installation administrator Role from an earlier bootstrap. Other Roles keep
 their exact grants; grant `update` through a Namespace Role where needed.
 
-A running Agent keeps the previous value until its Harness restarts, because the
-gateway gives updated values only to new processes. To rotate a key:
+For a static source, a running Agent keeps the previous value until its Harness
+restarts, because the gateway gives updated values only to new processes. To
+rotate a static key:
 
 1. Update the Secret's value (`occ secret update`), or create a replacement
    Secret.
@@ -165,14 +172,17 @@ gateway gives updated values only to new processes. To rotate a key:
    `secrets` if you created a new Secret.
 3. Redeploy each Agent that uses the source.
 
-A `refresh`-type source keeps no static value: an update replaces its refresh
-material and mints a new token, and OCC commits replacement Secret references
-only after that mint succeeds. If the mint fails, the update returns `503`, but
-the gateway keeps the new material; the source stays `ready` and its
-`status.refresh` reports the failure. OCC does not restore the previous
-material. Send `{}` to re-apply the recorded Secrets, or update with corrected
-ones. Running Agents lose the source's token within about 10 seconds of an
-update, even a failed one, and receive none until you redeploy them.
+For refresh reauthorization, use `occ credential-source update ID --file replacement.json`
+with explicit references to fresh material. Successful minting clears the
+references, preserving Secret objects. OCC never implicitly rereads original material.
+
+A failed mint returns `503` and leaves OCC's references unchanged, usually empty,
+but the Backend keeps the new material. The source stays `ready` and
+`status.refresh` reports the failure; OCC restores nothing. After an uncertain
+response, read the status and use `rotate` to retry minting from the Backend's
+current material. Reauthorization requires explicit, newly authorized material: a
+refresh token already handed over may have been consumed. Running Agents need
+a redeploy after reconfiguration, even when its mint failed.
 
 ## Rotate a refresh source
 
@@ -188,7 +198,7 @@ previous token at the issuer, and Agents need no redeploy.
 
 When `status.refresh.recoveryAction` is `reauthorize`, the issuer revoked the
 refresh token. Complete a new sign-in, store its refresh token in a Secret, and
-update the source to reference it.
+update the source with explicit references to the required Secrets.
 
 ## Withdraw a source from an Agent
 
@@ -268,7 +278,9 @@ requires exact `delete` and returns `204`:
   copy. Retry after that window.
 
 While a source exists, including one in `deleting`, its Namespace cannot be
-deleted, and its referenced Secrets cannot be deleted.
+deleted. Any Secret references the source still holds prevent deleting those
+Secrets. Successful refresh handoff clears those references; static sources
+retain them.
 
 ## After a Credential Gateway change
 
@@ -290,15 +302,15 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Errors
 
-| Status                                  | Meaning                                                                                                                                                                                                                                                |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                                                 |
-| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                      |
-| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                                                                 |
-| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                          |
-| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update or rotation, static for a rotation, or changed during the request; the gateway does not offer its type; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver. |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, rotation, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                                             |
-| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway, Credential Refresh Driver, or Secret Driver is unavailable, the gateway call failed, a `refresh` type could not mint a token, or the source was registered through a previously selected gateway.                     |
+| Status                                  | Meaning                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                                                                                                      |
+| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                                                                           |
+| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                                                                                                                      |
+| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                                                                               |
+| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update or rotation, static for a rotation, or changed during the request; a refresh update omits explicit replacement Secrets; the gateway does not offer its type; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver. |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, rotation, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                                                                                                  |
+| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway, Credential Refresh Driver, or Secret Driver is unavailable, the gateway call failed, a `refresh` type could not mint a token, or the source was registered through a previously selected gateway.                                                                          |
 
 ## Related
 

@@ -3993,10 +3993,15 @@ export class OpenClawController {
     // A commit failure leaves the record `registering`; deleting it removes any stored copy.
     const ready = await this.mutate(async (state) => {
       await this.lockNamespace(state, namespace.id);
-      const marked = await state.credentialSources.markCredentialSourceReady(
-        namespace.id,
-        source.id,
-      );
+      let marked = await state.credentialSources.markCredentialSourceReady(namespace.id, source.id);
+      if (marked !== undefined && refresh !== undefined) {
+        // The issuer may already have replaced the bootstrap token. Release its references in
+        // the ready transaction so OCC cannot later replay that material over the current grant.
+        marked = await state.credentialSources.clearCredentialSourceSecrets(
+          namespace.id,
+          source.id,
+        );
+      }
       if (marked !== undefined && audit !== undefined) {
         await state.audit.append(audit(this.credentialSourceMetadata(marked)));
       }
@@ -4069,9 +4074,9 @@ export class OpenClawController {
   }
 
   /**
-   * Pushes current, or replacement, Secret values to the gateway copy. The gateway call runs
-   * under the source lock, like a Secret update; a failed commit leaves the gateway newer, and
-   * repeating the same request converges. Running Harness processes keep the previous value.
+   * Updates static credentials or explicitly replaces refresh material under the source lock.
+   * Only static updates can safely replay the same material after an uncertain outcome;
+   * a successful refresh exchange may already have consumed its bootstrap token.
    */
   async updateCredentialSource(
     principalId: string,
@@ -4104,6 +4109,11 @@ export class OpenClawController {
       }
       const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       const type = await this.credentialSourceType(gateway, source.type);
+      if (type.rotation === "refresh" && input.secrets === undefined) {
+        throw new ResourceStateConflictError(
+          "Replacing refresh material requires explicit Secret references. Use rotate to mint with the current material.",
+        );
+      }
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
       const values = await this.readCredentialSourceSecrets(
@@ -4121,24 +4131,25 @@ export class OpenClawController {
       });
       let status: CredentialSourceStatus;
       if (type.rotation === "refresh") {
-        // A refresh type keeps no static value at the gateway: new material replaces the
-        // refresh configuration, and the next mint proves it before OCC commits the references.
+        // The refresh Driver owns the current grant. Only explicit replacement material may
+        // configure it again; successful handoff never keeps bootstrap references in OCC.
         const refresh = this.credentialRefreshDriver();
         status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
-        if (status.state === "ready") {
-          await this.credentialGatewayOperation(() =>
-            refresh.configureRefresh(context(), {
-              config: source.config,
-              secrets: values,
-              requestId: crypto.randomUUID(),
-            }),
-          );
-          const minted = await this.credentialGatewayOperation(() =>
-            refresh.rotate(context(), crypto.randomUUID()),
-          );
-          assertRefreshMinted(minted);
-          status = { ...status, refresh: minted };
+        if (status.state !== "ready") {
+          throw new DependencyUnavailableError("The Credential Gateway source is not ready.");
         }
+        await this.credentialGatewayOperation(() =>
+          refresh.configureRefresh(context(), {
+            config: source.config,
+            secrets: values,
+            requestId: crypto.randomUUID(),
+          }),
+        );
+        const minted = await this.credentialGatewayOperation(() =>
+          refresh.rotate(context(), crypto.randomUUID()),
+        );
+        assertRefreshMinted(minted);
+        status = { ...status, refresh: minted };
       } else {
         status = await this.credentialGatewayOperation(() =>
           gateway.updateSource(context(), {
@@ -4151,14 +4162,19 @@ export class OpenClawController {
       if (status.state === "failed" || status.state === "absent") {
         throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
       }
-      const updated =
-        input.secrets === undefined
-          ? source
-          : await state.credentialSources.replaceCredentialSourceSecrets(
-              namespace.id,
-              source.id,
-              secretRefs,
-            );
+      let updated: Readonly<CredentialSource> | undefined = source;
+      if (type.rotation === "refresh") {
+        updated = await state.credentialSources.clearCredentialSourceSecrets(
+          namespace.id,
+          source.id,
+        );
+      } else if (input.secrets !== undefined) {
+        updated = await state.credentialSources.replaceCredentialSourceSecrets(
+          namespace.id,
+          source.id,
+          secretRefs,
+        );
+      }
       if (updated === undefined) {
         throw new ResourceStateConflictError("The credential source changed during the update.");
       }

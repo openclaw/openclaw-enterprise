@@ -1,23 +1,20 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-08
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: "2026-10-09"
+last_updated_session: authoring-run/f7c45a46-6f14-42ea-acd8-7f8990a41d89
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-An authorized caller registers a Namespace Secret with the selected Credential
-Gateway, binds the resulting credential source to an Agent, deploys it, can
-update its value or withdraw it from one running Agent, and later deletes the
-source. The API copies the Secret value into the gateway at registration and
-again on each update; OCC stores only metadata and Secret references. Admission
-freezes the source identity in the AgentRevision, and the worker hands the live
-source record to Kubernetes Compute. This flow stops when Compute receives the
-resolved source; the
-[OpenShell Sandbox provisioning flow](openshell-sandbox-provisioning.md) covers
-attachment, provisioning, and readiness.
+An authorized caller registers a credential source, binds and deploys it to an
+Agent, updates or withdraws it, and eventually deletes it. Static sources retain
+Secret references; [refresh sources](credential-source-refresh.md) hand issuer
+material to the Refresh Driver and clear their references after a successful mint.
+Admission freezes source identity in the AgentRevision. The worker passes the
+live record to Compute; the [OpenShell provisioning flow](openshell-sandbox-provisioning.md)
+owns subsequent attachment and readiness.
 
 ## Entry Points
 
@@ -32,6 +29,9 @@ attachment, provisioning, and readiness.
   is `ready`; the caller holds the grants named in each phase.
 
 ## Flow
+
+Static-source registration appears below; [refresh registration](credential-source-refresh.md#flow)
+adds minting and reference cleanup. Binding and deployment are shared.
 
 ```mermaid
 graph TD
@@ -205,20 +205,20 @@ append fails, the record stays `deleting`. Namespace deletion returns
 `packages/occ/src/index.ts:updateCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
-One transaction locks the Namespace and source, authorizes
-`credential_source:update`, and requires a `ready` source of a type the
-catalog offers (`409` otherwise). It validates any
-replacement references against the catalog's Secret fields, authorizes
-`secret:operate` on each Secret it reads, and reads the values with
-`withValue`. It calls `updateSource` with Compute's placement while holding the
-source lock; the OpenShell Driver requires the OCC-owned provider and calls
-`UpdateProvider`. It then replaces the Secret references, and the handler
-appends the audit event in the same transaction. The gateway is updated before
-that transaction commits: a gateway failure rolls back the references, and a
-later failure leaves the gateway newer than OCC until the request is repeated. An `absent` or `failed` gateway
-status returns `503`. The OpenShell Driver rejects empty values because
-`UpdateProvider` merges them into the existing provider. OpenShell gives the new
-value only to processes started after the update.
+For static sources, one transaction locks the Namespace and source, authorizes
+`credential_source:update`, and requires a `ready` source with an offered type
+(`409` otherwise). It validates replacement fields, authorizes `secret:operate`,
+and reads values through `withValue`. Still holding the source lock, it calls
+`updateSource` with Compute's placement; OpenShell verifies provider ownership
+and calls `UpdateProvider`. OCC replaces the references and appends the audit
+event before committing. A gateway failure rolls back references; a later
+failure leaves the gateway newer until the request is repeated. An `absent` or
+`failed` status returns `503`. OpenShell rejects empty values because
+`UpdateProvider` merges values. Only newly started processes receive updates.
+
+[Refresh updates](credential-source-refresh.md#4-update-and-rotation) require
+explicit reauthorization references and clear them after minting, without
+calling `updateSource`.
 
 ### 9. Withdraw a source from an Agent
 
@@ -305,6 +305,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 - [Credential sources](../reference/credential-sources.md)
 - [CredentialGatewayDriver contract](../reference/drivers/credential-gateway.md)
+- [Credential source refresh flow](credential-source-refresh.md)
 - [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md)
 - [Secret storage and delivery](secret-storage-and-delivery.md)
 - [OpenShell Sandbox provisioning](openshell-sandbox-provisioning.md)
@@ -314,6 +315,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 10:38: Distinguish static Secret references from refresh handoff in the accompanying change. (authoring-run/f7c45a46-6f14-42ea-acd8-7f8990a41d89 - 1c6ac12fb)
 
 - 2026-10-08 20:30: Maintenance leaves denied withdrawals for a replay. (fix-853)
 - 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)

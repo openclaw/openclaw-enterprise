@@ -61,6 +61,7 @@ export function bindPlatformUnitOfWork(
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
       "replaceCredentialSourceSecrets",
+      "clearCredentialSourceSecrets",
       "deleteCredentialSource",
       "hasReferences",
       "findCredentialWithdrawal",

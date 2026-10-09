@@ -361,7 +361,7 @@ export const CredentialSourceConfig = Type.Record(
 export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, SecretReference, {
   maxProperties: 16,
   description:
-    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. Refresh sources release these references after a successful handoff without deleting the Secrets.",
 });
 
 export const CreateCredentialSourceBody = Type.Object(
@@ -381,7 +381,7 @@ export const UpdateCredentialSourceBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+      "Updates a static source from its current or replacement Secret references. Replacing refresh material requires explicit Secret references, which are released after a successful mint. Non-secret config is immutable.",
   },
 );
 

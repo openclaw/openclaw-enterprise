@@ -142,7 +142,7 @@ Mirrors each Agent draft's `credential_sources` through a trigger, so the databa
 
 ### `credential_source_secrets`
 
-Links each credential source secret field to the Namespace Secret that supplied it.
+Links a credential source field to its Namespace Secret. Static sources retain these links; refresh sources clear them after successful handoff without deleting the Secrets.
 
 - `namespace_id`
 - `credential_source_id`

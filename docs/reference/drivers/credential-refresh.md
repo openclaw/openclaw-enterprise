@@ -10,8 +10,9 @@ material, obtains an access token from the issuer, and obtains a new one before
 it expires. The Agent keeps the same placeholder throughout, so running
 processes need no restart.
 
-OpenClaw Control Plane (OCC) owns the source record, its Secret references, and
-authorization. The paired [Credential Gateway](credential-gateway.md) owns the
+OpenClaw Control Plane (OCC) owns the source record and authorization. It keeps
+initial Secret references until the first token is minted, then clears them.
+The paired [Credential Gateway](credential-gateway.md) owns the
 source's stored record and applies the current token to the Agent's requests.
 This Driver owns the refresh material and the minted tokens. OCC calls it only to
 set up refresh, to force a rotation, and to read refresh status; it never calls
@@ -69,20 +70,23 @@ destructor.
    resolved Secret values go only to this Driver. After it succeeds, OCC calls
    `configureRefresh` and then `rotate` to mint the first token. Both request IDs
    derive from the source ID, so a replay of the same step is not applied twice.
-   The source becomes `ready` only once `rotate` reports `ready`. On any failure,
-   OCC calls `removeRefresh` and the gateway's `removeSource`, as for a failed
+   The source becomes `ready` only once `rotate` reports `ready`; the same
+   transaction clears its Secret references and appends the audit event. Secret
+   objects remain intact. On any failure, OCC calls `removeRefresh` and the gateway's `removeSource`, as for a failed
    static registration.
 2. **Background refresh.** The Driver re-mints before expiry without OCC. A
    failure appears in the source's status with its recovery action.
-3. **Update.** `PATCH` reads the current or replacement Secret values and calls
-   `configureRefresh`, then `rotate`. OCC commits replacement Secret references
-   only after a `ready` mint. The update is not atomic: after `configureRefresh`
-   succeeds, a failed mint returns `503` but the Driver keeps the new material,
-   and the source stays `ready` with the failure in its status. OCC restores
-   nothing. An update with no `secrets` re-applies the recorded references;
-   otherwise supply corrected Secrets. On OpenShell, running Agents need a
-   redeploy after any update that reaches `configureRefresh`; see its
-   [limits](openshell-credential-gateway.md#limits).
+3. **Update.** `PATCH` requires explicit Secret references containing all
+   required catalog fields. It rejects omitted material before Secret reads or
+   refresh effects, then reads the supplied values and calls `configureRefresh`
+   and `rotate`. After a `ready` mint, OCC clears the source's references without
+   deleting Secret objects. A failed mint returns `503` and leaves the existing
+   references unchanged, but the Driver keeps the new material; OCC restores
+   nothing. After an uncertain outcome, inspect status and use `rotate` with the
+   Driver's current material. Another reconfiguration requires newly authorized
+   material because an issuer may have consumed the submitted refresh token. On
+   OpenShell, running Agents need a redeploy after any update that reaches
+   `configureRefresh`; see its [limits](openshell-credential-gateway.md#limits).
 4. **Rotation.** `POST …/rotate` calls `rotate` for incidents such as a
    suspected token leak. Running Agents keep their placeholder and need no
    redeploy.
@@ -102,13 +106,14 @@ destructor.
 
 ## Troubleshooting
 
-| Symptom                                                      | What to check                                                                                                                                  |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| A refresh type is missing from the catalog                   | Select `drivers.credential_refresh` and declare it on the gateway's Backend.                                                                   |
-| Registration or rotation returns `503` naming a failure code | The issuer refused the material or was unreachable. Read the source's `status.refresh` and follow its `recoveryAction`.                        |
-| `status.refresh.recoveryAction` is `reauthorize`             | The issuer revoked the refresh token. Complete a new sign-in, store the new refresh token in a Secret, and `PATCH` the source to reference it. |
-| `status.refresh.recoveryAction` is `fix_configuration`       | Check the source's `token_url`, `client_id`, `scope`, and client secret against the issuer.                                                    |
-| Rotation returns `409`                                       | The source is static. Update its Secret values instead.                                                                                        |
+| Symptom                                                      | What to check                                                                                                                                                        |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A refresh type is missing from the catalog                   | Select `drivers.credential_refresh` and declare it on the gateway's Backend.                                                                                         |
+| Registration or rotation returns `503` naming a failure code | The issuer refused the material or was unreachable. Read the source's `status.refresh` and follow its `recoveryAction`.                                              |
+| `status.refresh.recoveryAction` is `reauthorize`             | The issuer revoked the refresh token. Complete a new sign-in, store the new refresh token in a Secret, and `PATCH` with explicit references to all required Secrets. |
+| `status.refresh.recoveryAction` is `fix_configuration`       | Check the source's `token_url`, `client_id`, `scope`, and client secret against the issuer.                                                                          |
+| A refresh update omits `secrets`                             | Supply complete explicit Secret references for reauthorization, or use `rotate` to mint from current material.                                                       |
+| Rotation returns `409`                                       | The source is static. Update its Secret values instead.                                                                                                              |
 
 ## Implementations
 
