@@ -107,20 +107,39 @@ export async function pollCodexDeviceAuthorization(
   state: ReturnType<typeof codexDeviceAuthorizationState>,
   signal: AbortSignal,
 ): Promise<DeviceTokens | undefined> {
-  const response = await fetch("https://auth.openai.com/api/accounts/deviceauth/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      device_auth_id: required(state.deviceAuthId),
-      user_code: required(state.userCode),
-    }),
-    signal,
+  const body = JSON.stringify({
+    device_auth_id: required(state.deviceAuthId),
+    user_code: required(state.userCode),
   });
-  if (response.status === 403 || response.status === 404) {
-    await response.body?.cancel();
+  let response: Response;
+  try {
+    response = await fetch("https://auth.openai.com/api/accounts/deviceauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal,
+    });
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!(error instanceof TypeError)) {
+      throw error;
+    }
+    // Fetch failed before acquiring a code. OCC retains the handle and schedules the next poll.
+    return undefined;
+  }
+  signal.throwIfAborted();
+  if (
+    response.status === 403 ||
+    response.status === 404 ||
+    response.status === 429 ||
+    response.status >= 500
+  ) {
+    await response.body?.cancel().catch(() => {});
+    signal.throwIfAborted();
     return undefined;
   }
   const authorization = await responseRecord(response);
+  // From code acquisition onward, errors remain uncertain: never retry a consumed grant.
   const token = await responseRecord(
     await fetch(CODEX_OAUTH_TOKEN_URL, {
       method: "POST",

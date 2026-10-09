@@ -7,7 +7,7 @@ function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
 }
 
-function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
+function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse } = {}) {
   const providers = new Map();
   const operations = [];
   const http = [];
@@ -47,6 +47,9 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
           device_auth_id: "device-fixture",
           user_code: "USER-CODE",
         });
+        if (pollResponse !== undefined) {
+          return pollResponse(init);
+        }
         return pending
           ? new Response(null, { status: 403 })
           : Response.json({
@@ -292,4 +295,30 @@ test("unfinished OpenShell refresh keeps source and device completion pending", 
     status: "ready",
   });
   assert.deepEqual(f.operations, ["read-usable"]);
+});
+
+test("device polling preserves cancellation and rejects a terminal issuer refusal", async (t) => {
+  for (const scenario of ["cancelled", "unauthorized"]) {
+    await t.test(scenario, async (t) => {
+      const cancellation = new AbortController();
+      const f = fixture(t, {
+        pollResponse: () => {
+          if (scenario === "unauthorized") {
+            return new Response(null, { status: 401 });
+          }
+          // Cancellation can race a network failure. It must not become a pending login.
+          cancellation.abort(new Error("synthetic caller cancellation"));
+          throw new TypeError("synthetic polling connection failure");
+        },
+      });
+      const owner = { ...(await f.register("source-owner")), signal: cancellation.signal };
+      const login = await f.refresh.startDeviceAuthorization(owner);
+      await assert.rejects(
+        f.refresh.pollDeviceAuthorization(owner, login.privateState),
+        scenario === "unauthorized" ? /status 401/ : /synthetic/,
+      );
+      assert.equal(f.http.includes("https://auth.openai.com/oauth/token"), false);
+      assert.deepEqual(f.operations, [], "a cancelled or refused poll cannot configure refresh");
+    });
+  }
 });

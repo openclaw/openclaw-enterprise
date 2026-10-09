@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-09
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+last_updated_session: authoring-run/b15140a3-8d21-494c-b7c5-0c2dd362b30f
 ---
 
 # Credential source refresh Flow
@@ -97,8 +97,11 @@ closes the handle without removing the source or replaying its grant.
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
 performs the Codex exchange, configures OpenShell with refresh material, and
-stores trusted account metadata. OpenShell owns future refresh and successor
-persistence. Polling uses existing state after handoff; unfinished refresh stays
+stores trusted account metadata. Before acquiring a code, its issuer polling
+returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC retains
+the handle and its polling interval. Cancellation still aborts, and failures
+from code acquisition onward close the session without replay. OpenShell owns
+future refresh and successor persistence. Polling uses existing state after handoff; unfinished refresh stays
 pending, while a persistent uncertain marker needs operator inspection.
 Ready confirms a usable token. Later revisions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
@@ -177,6 +180,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 13:29: Keep retryable issuer polling pending before code acquisition while preserving the no-replay exchange boundary. (authoring-run/b15140a3-8d21-494c-b7c5-0c2dd362b30f - 69a0a6aaa5b3ba3aecd05d8780024e8d173f3a24)
 
 - 2026-10-09 17:37: Trace Refresh-owned device authorization in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 1c2fbd2bc2953430e3ddaf68882176c6943ea7b2)
 

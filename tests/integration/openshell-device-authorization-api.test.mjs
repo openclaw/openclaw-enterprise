@@ -113,6 +113,13 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   }
   const originalFetch = globalThis.fetch;
   let exchanges = 0;
+  let polls = 0;
+  let loseExchangeResponse = false;
+  const pollFailures = [
+    new Response(null, { status: 429 }),
+    new Response(null, { status: 503 }),
+    new TypeError("synthetic polling connection failure"),
+  ];
   t.mock.method(globalThis, "fetch", async (url, init) => {
     if (new URL(url).hostname === "127.0.0.1") {
       return originalFetch(url, init);
@@ -126,6 +133,14 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       });
     }
     if (url === "https://auth.openai.com/api/accounts/deviceauth/token") {
+      polls += 1;
+      const failure = pollFailures.shift();
+      if (failure instanceof Error) {
+        throw failure;
+      }
+      if (failure !== undefined) {
+        return failure;
+      }
       return Response.json({
         authorization_code: "synthetic-code",
         code_verifier: "synthetic-verifier",
@@ -134,6 +149,10 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     assert.equal(url, "https://auth.openai.com/oauth/token");
     assert.equal(new URLSearchParams(init.body).get("grant_type"), "authorization_code");
     exchanges += 1;
+    if (loseExchangeResponse) {
+      // The issuer may already have consumed its code; this result must not be replayed.
+      throw new TypeError("synthetic lost token-exchange response");
+    }
     return Response.json({
       access_token: initialAccess,
       refresh_token: initialRefresh,
@@ -167,8 +186,24 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   assert.equal(pendingSource.data.status.refresh.state, "pending");
   assert.equal(pendingSource.data.status.refresh.recoveryAction, undefined);
   assert.deepEqual(operations, ["register"], "reading a pending source must not configure or mint");
-  await clock.advance(5000);
   const pollPath = `${path}/${started.data.session.id}/poll`;
+  // These failures precede authorization-code acquisition. Preserve the same login and
+  // source, with OCC's existing interval fence, until the issuer can answer.
+  const failedPolls = pollFailures.length;
+  for (let attempt = 0; attempt < failedPolls; attempt += 1) {
+    await clock.advance(5000);
+    const pending = await fixture.request("POST", pollPath, { body: {} });
+    assert.equal(pending.status, 200, JSON.stringify(pending.body));
+    assert.equal(pending.data.status, "pending");
+    assert.equal(pending.data.session.id, started.data.session.id);
+    assert.equal(polls, attempt + 1);
+    assert.equal(exchanges, 0, "retryable polling must not redeem an authorization code");
+    assert.deepEqual(operations, ["register"], "polling must not configure or mint");
+    const observedPolls = polls;
+    assert.equal((await fixture.request("POST", pollPath, { body: {} })).data.status, "pending");
+    assert.equal(polls, observedPolls, "OCC still throttles repeated polls");
+  }
+  await clock.advance(5000);
   const completed = await fixture.request("POST", pollPath, { body: {} });
   assert.equal(completed.status, 200, JSON.stringify(completed.body));
   assert.equal(completed.data.status, "ready");
@@ -214,6 +249,24 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     agent,
     session,
   ]);
+  // A transport failure after the token POST is a different boundary: cancel the
+  // new login, erase its private state, and never redeem its code a second time.
+  loseExchangeResponse = true;
+  const interrupted = await fixture.request("POST", path, { body: { harnessId: "codex" } });
+  assert.equal(interrupted.status, 200);
+  await clock.advance(5000);
+  const interruptedPath = `${path}/${interrupted.data.session.id}/poll`;
+  const failed = await fixture.request("POST", interruptedPath, { body: {} });
+  assert.equal(failed.status, 503, JSON.stringify(failed.body));
+  assert.equal(exchanges, 2);
+  const failedRecord = await fixture.controller.transact((unit) =>
+    unit.secrets.findSecret(namespace.id, interrupted.data.session.id),
+  );
+  const failedSession = JSON.parse(secrets.valueFor(failedRecord));
+  assert.equal(failedSession.phase, "cancelled");
+  assert.equal(failedSession.privateState, undefined);
+  assert.equal((await fixture.request("POST", interruptedPath, { body: {} })).status, 409);
+  assert.equal(exchanges, 2, "an uncertain token exchange is never replayed");
   for (const credential of [
     initialAccess,
     initialRefresh,
