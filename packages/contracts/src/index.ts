@@ -123,6 +123,8 @@ export interface BackendSummary {
 
 export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
+  /** A selected Credential Gateway requires source-backed model authentication. */
+  readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
   readonly pluginDiscovery?: { readonly credential: "required" | "none" };
   /** Present only when dedicated native OpenClaw can be admitted. */

@@ -3345,8 +3345,10 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pinned runtime", { ready: true });
   const installation = await fixture.request("GET", "/installation");
-  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+  assert.deepEqual(installation.data.capabilities?.nativeWorkers, { support: "pinned-runtime" });
   const { page } = await newPage(t, fixture);
+  // An older server without the capability still disables Dedicated in the client.
+  await routeInstallationWithoutProvisioning(page, fixture);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
@@ -3394,29 +3396,6 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
     "Runtime details · Dedicated",
   );
 
-  // The API refuses the same choice at deploy admission, naming the missing support. The
-  // operator declaration is startup-only: an Agent Configuration cannot carry it in.
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Refused native",
-    { ...nativeValues("refused"), runtime: { nativeWorkerSupport: "custom-image" } },
-    { executionMode: "dedicated" },
-  );
-  const deployed = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.error.code, "INVALID_REQUEST");
-  assert.match(
-    deployed.body.error.message,
-    /required worker placement \(cloudWorkers\.requiredProfile\).*docs-enterprise\.openclaw\.org\/reference\/harness-execution\/#native-worker-support/,
-  );
-  assert.equal(
-    (await fixture.request("GET", "/installation")).data.capabilities?.nativeWorkers,
-    undefined,
-  );
-
   // Bootstrap, the only Installation write, cannot declare the capability either.
   const other = await createConsoleAppFixture(t);
   const declared = await other.request("POST", "/installation/bootstrap", {
@@ -3427,10 +3406,9 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   });
   assert.equal(declared.status, 400, JSON.stringify(declared.body));
   await other.bootstrap();
-  assert.equal(
-    (await other.request("GET", "/installation")).data.capabilities?.nativeWorkers,
-    undefined,
-  );
+  assert.deepEqual((await other.request("GET", "/installation")).data.capabilities?.nativeWorkers, {
+    support: "pinned-runtime",
+  });
 });
 
 test("Agent creation preserves unrelated edited JSON across model changes and resets to the selected template", async (t) => {

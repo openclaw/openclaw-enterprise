@@ -1291,6 +1291,21 @@ Get the singleton Installation
 | `data.capabilities` | `object` | No | — |
 | `data.capabilities.agentProvisioning` | `object` | No | — |
 | `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
+| `data.capabilities.credentialSources` | `object` | No | — |
+| `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "gateway"` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.pluginDiscovery` | `object` | No | — |
@@ -1364,6 +1379,21 @@ Bootstrap the singleton Installation
 | `data.capabilities` | `object` | No | — |
 | `data.capabilities.agentProvisioning` | `object` | No | — |
 | `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
+| `data.capabilities.credentialSources` | `object` | No | — |
+| `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "gateway"` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.pluginDiscovery` | `object` | No | — |
@@ -2259,7 +2289,7 @@ Create a new Agent and queue first-time provisioning
 | `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
-| `harnessAuth` | `object or object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it. |
+| `harnessAuth` | `object or object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission. |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |

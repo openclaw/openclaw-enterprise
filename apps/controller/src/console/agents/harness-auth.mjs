@@ -37,6 +37,9 @@ export function harnessAuthDescription(binding) {
   if (!binding) {
     return "None selected";
   }
+  if (binding.method === "credential_source") {
+    return `Credential Source · ${binding.sourceId}`;
+  }
   if (binding.method === "runtime") {
     return "Operator-managed credentials";
   }
@@ -76,6 +79,9 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     harnessId === "codex" ? element("option", { value: "codex_pat" }, "Service Accounts") : null,
     harnessId === "codex"
       ? element("option", { value: "oauth" }, "ChatGPT OAuth (Experimental)")
+      : null,
+    binding?.method === "credential_source"
+      ? element("option", { value: "credential_source" }, "Credential Source")
       : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     harnessId === "codex"
@@ -272,6 +278,9 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     async readBinding() {
       if (!method.value) {
         return null;
+      }
+      if (method.value === "credential_source") {
+        return { method: "credential_source", sourceId: binding.sourceId };
       }
       if (method.value === "runtime") {
         return { method: "runtime" };

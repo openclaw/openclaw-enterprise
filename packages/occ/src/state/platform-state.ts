@@ -361,7 +361,7 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   deleteCredentialSource(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-  /** True while an Agent draft, active revision, or pending deployment references the source. */
+  /** True while an Agent draft, revision, deployment, or queued/running provisioning references the source. */
   hasReferences(namespaceId: string, credentialSourceId: string): Promise<boolean>;
   /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
   requestCredentialWithdrawal(

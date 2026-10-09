@@ -20,10 +20,11 @@ trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins 
 are insufficient. Presets and edited Configuration JSON retain their settings.
 
 Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
-and full-facet Sandbox provisioning. The pinned runtime lacks this support;
-Console withholds Dedicated until an operator declares a compatible custom image.
-[Sandbox delivery limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-still block initial workspace files and Secret-backed environment projection.
+and full-facet Sandbox provisioning. The pinned runtime supports native workers,
+so Console offers Dedicated without a custom-image declaration.
+Compute initializes private workspace files before Sandbox handoff and verifies
+their completion marker in the Harness. [Sandbox delivery limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
+still block direct Secret-backed model and environment projection.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
@@ -105,7 +106,12 @@ or outbound access on failure, then retry. Editing follows installation capabili
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage.
+responses, and browser storage. With a selected Credential Gateway, supported
+Dedicated API-key creation registers the selected Secret as a model
+[Credential Source](../credential-sources.md), then provisions with that source.
+Both Harnesses keep the same provider and Secret controls; the Harness receives
+only a placeholder. The caller also needs source `create`, `read`, and `operate`.
+Authentication methods outside the selected gateway catalog remain unavailable.
 
 Presets preselect their authentication method or retain saved bindings.
 Method-only Presets require a model Secret. Bound API-key and Service Accounts
@@ -159,7 +165,13 @@ the same request. A refused retry of a failed job shows the API's reason when it
 one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+After an uncertain source registration, **Check credential registration** recovers
+the exact ready source. If no source exists, **Create Agent** retries the same
+registration name and references; uniqueness fences an earlier request that
+commits later. A source left `registering` or `deleting` offers **Remove failed
+credential registration**, which requires source `delete`; removal can need a
+retry after the gateway's registration safety window. The model Secret remains
+saved. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.

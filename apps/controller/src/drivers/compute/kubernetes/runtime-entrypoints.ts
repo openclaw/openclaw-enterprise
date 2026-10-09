@@ -3724,13 +3724,14 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
+const setupEnvelopePath = process.env.OPENCLAW_NODE_SETUP_ENVELOPE;
 const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
 const temporary = process.env.TMPDIR;
 const workerCapacity = Number(process.env.OPENCLAW_NATIVE_WORKER_CAPACITY);
 if (
   !inferenceConfig ||
   !state ||
-  !setupCode ||
+  [Boolean(setupCode), Boolean(setupEnvelopePath)].filter(Boolean).length !== 1 ||
   !workspace?.startsWith("/") ||
   !temporary ||
   !Number.isSafeInteger(workerCapacity) ||
@@ -3772,20 +3773,25 @@ const nodeEnv = {
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
-if (process.env.OPENCLAW_NODE_CA_PEM) {
+const gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || (
+  process.env.OPENCLAW_NODE_CA_PATH
+    ? readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8")
+    : undefined
+);
+if (gatewayCa) {
   const caPath = join(state, "gateway-ca.pem");
+  // The node needs both Gateway trust and the Sandbox's model-egress trust.
   const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
-  writeFileSync(
-    caPath,
-    [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"),
-    { mode: 0o600 },
-  );
+  writeFileSync(caPath, [inheritedCa, gatewayCa].filter(Boolean).join("\n"), { mode: 0o600 });
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
 }
+// Provider files carry the exact revision's setup envelope. Convert it to the
+// private one-shot target file consumed by connect, without exposing it in argv.
+const target = setupCode ?? Buffer.from(readFileSync(setupEnvelopePath, "utf8")).toString("base64url");
 const connectTargetPath = join(state, "connect-target");
-writeFileSync(connectTargetPath, setupCode, { mode: 0o600 });
+writeFileSync(connectTargetPath, target, { mode: 0o600 });
 const child = spawn(
   process.execPath,
   [

@@ -83,7 +83,7 @@ test("Installation startup declares native worker support only as a custom runti
   const path = await fixture(t, configuration);
   const load = () =>
     loadInstallationConfiguration({ mode: "development", environment: { OCC_CONFIG_PATH: path } });
-  // Off by default: the pinned runtime cannot run dedicated native OpenClaw.
+  // The pinned runtime needs no operator declaration in the Installation file.
   assert.equal((await load()).installation.runtime, undefined);
   configuration.runtime = { nativeWorkerSupport: "custom-image" };
   await writeFile(path, JSON.stringify(configuration), "utf8");

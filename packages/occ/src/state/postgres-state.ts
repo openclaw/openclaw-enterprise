@@ -2763,6 +2763,12 @@ export class PostgresPlatformState implements PlatformStateStore {
                          AND r.admitted_spec #>> '{harness_auth,sourceId}' = $2)
                      OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
                           jsonb_build_object('sourceId', $2::text)))
+               ) OR EXISTS (
+                 -- Before an Agent exists, its queued plan still holds the model source.
+                 SELECT 1 FROM occ.agent_provisioning_work AS p
+                 WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
+                   AND p.plan #>> '{harnessAuth,method}' = 'credential_source'
+                   AND p.plan #>> '{harnessAuth,sourceId}' = $2
                ) AS present`,
               [namespaceId, credentialSourceId],
             )

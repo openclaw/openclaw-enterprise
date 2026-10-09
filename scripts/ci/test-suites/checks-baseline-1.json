@@ -261,7 +261,8 @@
     {
       "path": "tests/integration/sandbox-driver-startup.test.mjs",
       "expectedTests": [
-        "OpenShell reconciles renewed workspace-node setup into its revision provider"
+        "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
+        "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider"
       ]
     },
     {

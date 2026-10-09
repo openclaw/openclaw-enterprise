@@ -198,7 +198,10 @@ const WORKSPACE_NODE_CA_ENVIRONMENT = "OPENCLAW_NODE_CA_PEM";
 const WORKSPACE_NODE_CA_PATH_ENVIRONMENT = "OPENCLAW_NODE_CA_PATH";
 const WORKSPACE_NODE_CA_FILE = "node-ca.pem";
 const WORKSPACE_NODE_BINARY = "/usr/local/bin/node";
-const RUNTIME_PROFILE_ID = "oce-codex-runtime";
+const RUNTIME_PROFILE_IDS = {
+  codex: "oce-codex-runtime",
+  openclaw: "oce-openclaw-runtime",
+} as const;
 const RUNTIME_PROFILE_MANAGED_ANNOTATION = "openclaw.dev/managed-by";
 const RUNTIME_PROFILE_MANAGED_VALUE_PREFIX = `${OPENSHELL_MANAGED_BY}:`;
 const RUNTIME_PROVIDER_AGENT_LABEL = "openclaw.dev/agent-id";
@@ -450,16 +453,24 @@ function codexTransportVerifier(requirements: HarnessWorkloadRequirements): void
   }
 }
 
-interface CodexRuntimeFiles {
+interface HarnessRuntimeFiles {
   readonly config: Readonly<Record<string, string>>;
   readonly profile: OpenShellProviderProfile;
 }
 
-function codexRuntimeFiles(requirements: HarnessWorkloadRequirements): CodexRuntimeFiles {
-  const expected = new Map([
-    ["runtime.json", PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT],
-    ["config.toml", PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT],
-  ]);
+function harnessRuntimeFiles(
+  requirements: HarnessWorkloadRequirements,
+  harnessId: keyof typeof RUNTIME_PROFILE_IDS,
+): HarnessRuntimeFiles {
+  const codex = harnessId === "codex";
+  const expected = new Map(
+    codex
+      ? [
+          ["runtime.json", PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT],
+          ["config.toml", PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT],
+        ]
+      : [],
+  );
   const files = requirements.files ?? [];
   if (
     files.length !== expected.size ||
@@ -474,29 +485,33 @@ function codexRuntimeFiles(requirements: HarnessWorkloadRequirements): CodexRunt
   ) {
     throw new SandboxRevisionUnsupportedError(
       "SANDBOX_HARNESS_UNSUPPORTED",
-      "OpenShell dedicated Codex requires its exact bounded plugin-runtime files.",
+      codex
+        ? "OpenShell dedicated Codex requires its exact bounded plugin-runtime files."
+        : "OpenShell dedicated OpenClaw cannot receive Codex plugin-runtime files.",
     );
   }
-  const runtime = files.find((file) => file.name === "runtime.json")!;
-  let manifest: ConfigurationRecord;
-  try {
-    manifest = configurationObject(JSON.parse(runtime.content), "Codex plugin-runtime manifest");
-  } catch {
-    throw new SandboxRevisionUnsupportedError(
-      "SANDBOX_HARNESS_UNSUPPORTED",
-      "OpenShell dedicated Codex requires a valid plugin-runtime manifest.",
-    );
-  }
-  const selections = configurationObject(manifest.selections, "Codex plugin-runtime selections");
-  if (
-    manifest.kind !== "codex" ||
-    Object.keys(selections).length !== 0 ||
-    manifest.repositoryBrokerNetworkPolicy !== undefined
-  ) {
-    throw new SandboxRevisionUnsupportedError(
-      "SANDBOX_HARNESS_UNSUPPORTED",
-      "OpenShell dedicated Codex does not yet support selected plugins or repository credentials.",
-    );
+  if (codex) {
+    const runtime = files.find((file) => file.name === "runtime.json")!;
+    let manifest: ConfigurationRecord;
+    try {
+      manifest = configurationObject(JSON.parse(runtime.content), "Codex plugin-runtime manifest");
+    } catch {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "OpenShell dedicated Codex requires a valid plugin-runtime manifest.",
+      );
+    }
+    const selections = configurationObject(manifest.selections, "Codex plugin-runtime selections");
+    if (
+      manifest.kind !== "codex" ||
+      Object.keys(selections).length !== 0 ||
+      manifest.repositoryBrokerNetworkPolicy !== undefined
+    ) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "OpenShell dedicated Codex does not yet support selected plugins or repository credentials.",
+      );
+    }
   }
   const nodeCaEntries = requirements.environment.filter(
     (entry) => entry.name === WORKSPACE_NODE_CA_ENVIRONMENT,
@@ -510,7 +525,7 @@ function codexRuntimeFiles(requirements: HarnessWorkloadRequirements): CodexRunt
   ) {
     throw new SandboxRevisionUnsupportedError(
       "SANDBOX_HARNESS_UNSUPPORTED",
-      "OpenShell dedicated Codex requires at most one bounded literal workspace-node CA bundle.",
+      "OpenShell requires at most one bounded literal workspace-node CA bundle.",
     );
   }
   const nodeCa = nodeCaEntries[0];
@@ -525,8 +540,8 @@ function codexRuntimeFiles(requirements: HarnessWorkloadRequirements): CodexRunt
     node_ca_pem: nodeCa === undefined || "valueFrom" in nodeCa ? "" : nodeCa.value,
   });
   const profileBase: Omit<OpenShellProviderProfile, "annotations"> = {
-    id: RUNTIME_PROFILE_ID,
-    displayName: "Codex runtime files (OpenClaw Enterprise)",
+    id: RUNTIME_PROFILE_IDS[harnessId],
+    displayName: `${codex ? "Codex" : "OpenClaw"} runtime files (OpenClaw Enterprise)`,
     category: "PROVIDER_PROFILE_CATEGORY_OTHER",
     credentials: [],
     files: [
@@ -579,16 +594,16 @@ interface WorkspaceNodeBinding {
   readonly tls: boolean;
 }
 
-interface CodexRuntimeCredentialMaterial {
+interface HarnessRuntimeCredentialMaterial {
   readonly credentials: Readonly<Record<string, string>>;
   readonly credentialExpirationTimes: Readonly<Record<string, string>>;
   readonly config: Readonly<Record<string, string>>;
   readonly binding?: WorkspaceNodeBinding;
 }
 
-async function codexRuntimeCredentials(
+async function harnessRuntimeCredentials(
   context: SandboxHarnessContext,
-): Promise<CodexRuntimeCredentialMaterial> {
+): Promise<HarnessRuntimeCredentialMaterial> {
   const projected = context.requirements.environment.filter((entry) => "valueFrom" in entry);
   if (projected.length === 0) {
     return { credentials: {}, credentialExpirationTimes: {}, config: {} };
@@ -1539,7 +1554,7 @@ function sandboxProviders(
   if (runtimeProvider !== undefined) {
     if (providers.includes(runtimeProvider)) {
       throw new OpenShellSandboxConfigurationFailure(
-        "The Codex runtime provider conflicts with another requested provider.",
+        "The Harness runtime provider conflicts with another requested provider.",
       );
     }
     providers.push(runtimeProvider);
@@ -1650,12 +1665,13 @@ function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefine
 function verifyRuntimeProvider(
   provider: OpenShellProviderResponse,
   name: string,
+  profileId: string,
   expectedLabels: Readonly<Record<string, string>>,
   expectedConfig?: Readonly<Record<string, string>>,
 ): void {
   if (
     provider.name !== name ||
-    provider.type !== RUNTIME_PROFILE_ID ||
+    provider.type !== profileId ||
     !exactStringMap(provider.labels, expectedLabels) ||
     (expectedConfig !== undefined && !exactStringMap(provider.config, expectedConfig))
   ) {
@@ -1706,10 +1722,11 @@ function runtimeProviderSetupEnvelope(
 function runtimeProviderSetupUpdate(
   provider: OpenShellProviderResponse,
   name: string,
+  profileId: string,
   expectedLabels: Readonly<Record<string, string>>,
   expectedConfig: Readonly<Record<string, string>>,
 ): Readonly<Record<string, string>> | undefined {
-  verifyRuntimeProvider(provider, name, expectedLabels);
+  verifyRuntimeProvider(provider, name, profileId, expectedLabels);
   if (exactStringMap(provider.config, expectedConfig)) {
     return undefined;
   }
@@ -1941,27 +1958,21 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    let runtimeProvider: string | undefined;
-    let runtimeCredentialMaterial: CodexRuntimeCredentialMaterial = {
-      credentials: {},
-      credentialExpirationTimes: {},
-      config: {},
-    };
     if (codex) {
       codexTransportVerifier(context.requirements);
-      const runtimeFiles = codexRuntimeFiles(context.requirements);
-      runtimeCredentialMaterial = await codexRuntimeCredentials(context);
-      await this.ensureRuntimeProfile(client, workspace, runtimeFiles.profile, context.signal);
-      const ensured = await this.ensureRuntimeProvider(
-        client,
-        workspace,
-        context,
-        { ...runtimeFiles.config, ...runtimeCredentialMaterial.config },
-        runtimeCredentialMaterial.credentials,
-        runtimeCredentialMaterial.credentialExpirationTimes,
-      );
-      runtimeProvider = ensured.name;
     }
+    const runtimeFiles = harnessRuntimeFiles(context.requirements, codex ? "codex" : "openclaw");
+    const runtimeCredentialMaterial = await harnessRuntimeCredentials(context);
+    await this.ensureRuntimeProfile(client, workspace, runtimeFiles.profile, context.signal);
+    const { name: runtimeProvider } = await this.ensureRuntimeProvider(
+      client,
+      workspace,
+      context,
+      runtimeFiles.profile.id,
+      { ...runtimeFiles.config, ...runtimeCredentialMaterial.config },
+      runtimeCredentialMaterial.credentials,
+      runtimeCredentialMaterial.credentialExpirationTimes,
+    );
     const serviceExposures = codex
       ? [
           {
@@ -2186,9 +2197,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         },
         context.signal,
       );
+      const harnessId = context.revision.harness.id;
       if (
         context.revision.harness.mode === "dedicated" &&
-        context.revision.harness.id === "codex"
+        (harnessId === "codex" || harnessId === "openclaw")
       ) {
         const provider = runtimeProviderName(context.revision.id);
         const existing = await client.getProvider(workspace, provider, context.signal);
@@ -2196,6 +2208,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           verifyRuntimeProvider(
             existing,
             provider,
+            RUNTIME_PROFILE_IDS[harnessId],
             runtimeProviderLabels(context.namespace, context.revision),
           );
           await client.deleteProvider(workspace, provider, context.signal);
@@ -2213,14 +2226,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       verifyWorkspaceOwnership(workspace, context.namespace);
       for (const provider of await client.listProviders(workspace.name, context.signal)) {
         if (
-          provider.type === RUNTIME_PROFILE_ID &&
+          Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
           provider.labels[OPENSHELL_MANAGED_BY_LABEL] === OPENSHELL_MANAGED_BY &&
           provider.labels[OPENSHELL_NAMESPACE_ID_LABEL] === context.namespace.id
         ) {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
         }
       }
-      await this.deleteRuntimeProfileIfUnused(client, workspace.name, context.signal);
+      for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
+        await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
+      }
       await client.deleteWorkspace(workspace.name, context.signal);
     }
     const resources = [
@@ -2346,6 +2361,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     client: OpenShellGatewayClient,
     workspace: string,
     context: SandboxHarnessContext,
+    profileId: string,
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
@@ -2360,7 +2376,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           {
             workspace,
             name,
-            type: RUNTIME_PROFILE_ID,
+            type: profileId,
             labels: expectedLabels,
             credentials,
             credentialExpirationTimes,
@@ -2381,7 +2397,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         }
       }
     }
-    const setupUpdate = runtimeProviderSetupUpdate(provider, name, expectedLabels, config);
+    const setupUpdate = runtimeProviderSetupUpdate(
+      provider,
+      name,
+      profileId,
+      expectedLabels,
+      config,
+    );
     if (setupUpdate !== undefined) {
       provider = await client.updateProviderConfig(
         workspace,
@@ -2391,29 +2413,30 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         context.signal,
       );
     }
-    verifyRuntimeProvider(provider, name, expectedLabels, config);
+    verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
     return Object.freeze({ name, created });
   }
 
   private async deleteRuntimeProfileIfUnused(
     client: OpenShellGatewayClient,
     workspace: string,
+    profileId: string,
     signal: AbortSignal,
   ): Promise<void> {
     const providers = await client.listProviders(workspace, signal);
-    if (providers.some((provider) => provider.type === RUNTIME_PROFILE_ID)) {
+    if (providers.some((provider) => provider.type === profileId)) {
       return;
     }
-    const profile = await client.getProviderProfile(workspace, RUNTIME_PROFILE_ID, signal);
+    const profile = await client.getProviderProfile(workspace, profileId, signal);
     if (profile === undefined) {
       return;
     }
     if (!isManagedRuntimeProfile(profile)) {
       throw new OpenShellSandboxConfigurationFailure(
-        `Refusing to delete unmanaged OpenShell provider profile ${RUNTIME_PROFILE_ID}.`,
+        `Refusing to delete unmanaged OpenShell provider profile ${profileId}.`,
       );
     }
-    await client.deleteProviderProfile(workspace, RUNTIME_PROFILE_ID, signal);
+    await client.deleteProviderProfile(workspace, profileId, signal);
   }
 
   private requireOperatorWorkspaceMode(operation: string): void {

@@ -1,22 +1,22 @@
 ---
 created: "2026-09-23"
 updated: "2026-10-08"
-last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
+last_updated_session: "Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa"
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves new Slack token Secrets from the channel setup modal through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. Model authentication discovers models from an entered API key or service account token, then saves the credential as a Secret before provisioning. Presets retain their existing Secret binding. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
+Console saves Slack tokens and model credentials through the Secrets API, then submits inline Configuration and credential references. Presets retain their bindings. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets or its model source, provisions trusted-proxy runtime credentials, and admits the first deployment.
 
-This flow ends at deployment submission. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own activation, runtime failures and later deployments.
+The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own activation, failures and later deployments.
 
 ## Entry Points
 
 - Console: `apps/controller/src/console/agents/create.mjs`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
-- Preconditions: a ready Namespace, supported Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
+- Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
 
 ## Flow
 
@@ -27,7 +27,7 @@ graph TD
   API --> Queue["<b>Existing work queue</b><br/>Return job handle"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
   Claim --> Config["<b>Create Configuration</b><br/>Record completed identity"]
-  Config --> Agent["<b>Create Agent</b><br/>Grant exact Secret access"]
+  Config --> Agent["<b>Create Agent</b><br/>Grant exact credential access"]
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
   Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first revision"]
   Deploy --> UI["<b>Agent deployment view</b><br/>Follow activation"]
@@ -59,6 +59,10 @@ Service Accounts and Codex plugin browsing remain specific to Codex.
 
 The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. Model discovery uses the entered API key or service account token without saving it. Create Agent saves that credential as an ordinary Namespace Secret, clears the input, and reuses its returned reference for provisioning retries. Bound Presets retain their credential and provider. A lost Secret-save response needs recovery rather than automatic repetition.
 
+A selected Credential Gateway's catalog directs Console to register the model
+Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
+reuses confirmed sources and safely retries uncertain registration.
+
 Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options, selected repository bindings with an explicit access profile, and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
 
 On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers Retry credential access on that Agent, without repeating creation.
@@ -69,7 +73,7 @@ On ordinary draft creation paths, Console creates the Configuration and Agent, t
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. A Secret binding with a reserved or invalid destination, a Secret reference to another Namespace, or missing, `runtime` or credential-source Harness authentication is rejected with `400 INVALID_REQUEST` and a message naming the rule; a reference to a Secret the Namespace does not hold stays `404`. After the Installation selects another Secret Driver, a request, status read or retry that uses a Secret stored through the previous one answers `503` after the Secret's `operate` check and lookup, with a message to save replacement Secrets and submit a new request. A worker that meets such a Secret fails the accepted work on that attempt with `PROVISIONING_REJECTED` and the same message; with no usable Secret Driver selected, it keeps retrying. Before a new API request enters the write transaction, the selected ChannelDriver checks configured credentials through authorized Secret callbacks. The Slack Driver checks token roles and bot authentication; this does not pin Secret versions or add worker revalidation. The repository Driver validates current Namespace selections before job admission and again when the worker creates the Agent; deployment checks the exact Harness topology through the Compute Driver. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
+OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. A Secret binding with a reserved or invalid destination, a Secret reference to another Namespace, or missing or `runtime` Harness authentication is rejected with `400 INVALID_REQUEST` and a message naming the rule; a reference to a Secret the Namespace does not hold stays `404`. After the Installation selects another Secret Driver, a request, status read or retry that uses a Secret stored through the previous one answers `503` after the Secret's `operate` check and lookup, with a message to save replacement Secrets and submit a new request. A worker that meets such a Secret fails the accepted work on that attempt with `PROVISIONING_REJECTED` and the same message; with no usable Secret Driver selected, it keeps retrying. Before a new API request enters the write transaction, the selected ChannelDriver checks configured credentials through authorized Secret callbacks. The Slack Driver checks token roles and bot authentication; this does not pin Secret versions or add worker revalidation. The repository Driver validates current Namespace selections before job admission and again when the worker creates the Agent; deployment checks the exact Harness topology through the Compute Driver. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
@@ -77,7 +81,10 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 `packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
 
-The existing worker dispatches the job under its queue claim. Before effects and result commits, OCC verifies current ownership, Namespace readiness and exact authority. Completed outputs are reused on retry. Configuration creation uses the accepted inline values and existing bindings. Once that Configuration exists, OCC creates a stopped Agent, persists its auth/provider/plugin/repository/workspace selections and grants its service principal exact Secret permissions.
+The existing worker dispatches the job under its queue claim. Before effects and result commits, OCC verifies current ownership, Namespace readiness and exact authority. Completed outputs are reused on retry. Configuration creation uses the accepted inline values and existing bindings. Once that Configuration exists, OCC creates a stopped Agent, persists its auth/provider/plugin/repository/workspace selections and grants its service principal exact Secret permissions. Source-backed provisioning records the canonical model source and grants only
+source `operate`. Admission, replay, retry and worker execution recheck caller
+authority, source readiness and Gateway ownership. Queued/running work prevents
+source deletion.
 
 The Compute Driver prepares runtime credentials through the existing credential path, without a loopback HTTP call. The Kubernetes Driver owns trusted-proxy configuration and generated credential protection; provisioning carries no gateway token or trust override.
 
@@ -90,16 +97,16 @@ Kubernetes Configuration requests inherit the provisioning claim cancellation si
 The job admits one first revision and records its ID. Provisioning reports success at this handoff. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` returns those IDs immediately; the submit handler opens Agent details for that revision without waiting for activation. The detail page's Deployment activity panel reads the recorded startup result and exposes Refresh deployment. Ordinary revision reconciliation owns startup, activation and runtime failure. Later deployments use the regular Deploy API.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
-with all required containment facets. The pinned runtime lacks that support;
-an operator must declare a compatible custom image in
+with all required containment facets. The pinned runtime declares native support;
+custom images still require an operator declaration in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
 `packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
-Admission does not prove that the
-Driver can deliver every workload requirement. The current Sandbox handoff
-rejects workspace initialization, and stock OpenShell rejects Secret-backed
-environment projection. These requirements remain enforced; the
-[OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-describes the upstream delivery limits and verification-only path.
+Kubernetes Compute initializes
+[private workspace inputs](workspace-files.md#2-deployment-initializes-storage-before-execution)
+on the approved Harness PVC before Sandbox startup. OpenShell still rejects
+ordinary Secret-backed environment projection; model sources and node enrollment
+use their separate delivery contracts. Admission proves no runtime readiness;
+see [OpenShell limits](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
 
 ### 5. Failures preserve useful outputs
 
@@ -113,7 +120,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Debugging and Verification
 
-- Follow the returned `data.provisioning.url` or read `GET /namespaces/:namespaceId/agents/provision/:workId`. Failed work reports a safe error; if a Secret or ServiceAccount it uses was deleted, status and retry answer `409` naming it. Status does not recheck the plugin policy, the runtime image's native worker support, the Compute Driver's plan validation or its Harness authentication check, so after a Plugin Driver switch, a runtime image change that drops native worker support, or a Compute change that refuses the plan, it still reads while retry answers `400` naming the stored plugin, the missing support or the refused setting, or `409` for the Compute refusal. A Compute refusal of a gateway setting in the caller's own Configuration (Kubernetes: `gateway.auth` except `trustedProxy.allowUsers`, `gateway.trustedProxies`, `gateway.allowRealIpFallback`) names that setting and what the Driver accepts, never its value, in the `409` and in the failed work's message; any other Compute refusal, such as an Installation routing setting, answers fixed text, and the API logs `agent_provisioning.compute_refused` with the request ID and the Driver's reason; a worker that meets one adds the reason to its `worker.completed` line. When the Compute Driver's Harness authentication check names a setting in the caller's own Configuration (Kubernetes: a Codex Gateway setting it cannot rewrite), the request and retry answer `400 INVALID_REQUEST` naming it, as deployment does, and the failed work's message names it too; other Harness authentication refusals answer a fixed `409`. Status still rechecks the accepted Driver ids and Sandbox containment, so a Compute, Configuration or Sandbox Driver switch can still make it answer an error, such as `503`. If the worker meets such a refusal, it fails the work on that attempt with `PROVISIONING_REJECTED` and a safe message instead of retrying it as an unavailable dependency. Each attempt first inspects an external write that an earlier attempt left unsettled and records it once observed, before its authority check, so such a refusal fails that work too; a write it cannot observe still retries. Provisioning needs an `executionMode` the Compute Driver supports (Kubernetes: `dedicated`); the field defaults to `embedded`, so omitting it there answers `400`. Explicit retry uses the same URL plus `/retry` and an empty body. Both first check the Namespace-wide provisioning grants (Agent and Configuration `create`, Installation `administer`), so a caller without them gets an audited `403` whether or not the Namespace or work item exists; only the initiating actor can then read or retry the work.
+- Follow the returned `data.provisioning.url` or read `GET /namespaces/:namespaceId/agents/provision/:workId`. Failed work reports a safe error; if a Secret, Credential Source or ServiceAccount it uses was deleted, status and retry answer `409` naming it. Status does not recheck the plugin policy, the runtime image's native worker support, the Compute Driver's plan validation or its Harness authentication check, so after a Plugin Driver switch, a runtime image change that drops native worker support, or a Compute change that refuses the plan, it still reads while retry answers `400` naming the stored plugin, the missing support or the refused setting, or `409` for the Compute refusal. A Compute refusal of a gateway setting in the caller's own Configuration (Kubernetes: `gateway.auth` except `trustedProxy.allowUsers`, `gateway.trustedProxies`, `gateway.allowRealIpFallback`) names that setting and what the Driver accepts, never its value, in the `409` and in the failed work's message; any other Compute refusal, such as an Installation routing setting, answers fixed text, and the API logs `agent_provisioning.compute_refused` with the request ID and the Driver's reason; a worker that meets one adds the reason to its `worker.completed` line. When the Compute Driver's Harness authentication check names a setting in the caller's own Configuration (Kubernetes: a Codex Gateway setting it cannot rewrite), the request and retry answer `400 INVALID_REQUEST` naming it, as deployment does, and the failed work's message names it too; other Harness authentication refusals answer a fixed `409`. Status still rechecks the accepted Driver ids and Sandbox containment, so a Compute, Configuration or Sandbox Driver switch can still make it answer an error, such as `503`. If the worker meets such a refusal, it fails the work on that attempt with `PROVISIONING_REJECTED` and a safe message instead of retrying it as an unavailable dependency. Each attempt first inspects an external write that an earlier attempt left unsettled and records it once observed, before its authority check, so such a refusal fails that work too; a write it cannot observe still retries. Provisioning needs an `executionMode` the Compute Driver supports (Kubernetes: `dedicated`); the field defaults to `embedded`, so omitting it there answers `400`. Explicit retry uses the same URL plus `/retry` and an empty body. Both first check the Namespace-wide provisioning grants (Agent and Configuration `create`, Installation `administer`), so a caller without them gets an audited `403` whether or not the Namespace or work item exists; only the initiating actor can then read or retry the work.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -132,6 +139,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 23:00: Guided provisioning registers model sources and preserves exact source authority for both Dedicated Harnesses. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
 
 - 2026-10-08 14:00: Missing or `runtime` Harness authentication is a named `400`, not a generic `404`. (fix-821-824)
 - 2026-10-08 13:00: Say that no API deletes a provisioning request, and link how to clear one with a legacy plan that blocks migration `0049`. A plan bound to an account without an access token on an Installation with no ChatGPT Backend fails with a message naming the Backend. (fix-780-781/d540-d541)

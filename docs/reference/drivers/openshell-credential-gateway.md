@@ -2,8 +2,8 @@
 
 The bundled OpenShell Credential Gateway stores OCC
 [credential sources](../credential-sources.md) as OpenShell providers. The
-OpenShell supervisor applies them at its egress proxy, so the dedicated Codex
-Harness never receives the real model key. It implements the
+OpenShell supervisor applies them at its egress proxy, so dedicated Codex and
+OpenClaw Harnesses receive placeholders instead of the real model key. It implements the
 [CredentialGatewayDriver contract](credential-gateway.md) and works only with the
 [OpenShell SandboxDriver](openshell-sandbox.md), through one shared `openshell`
 [Backend](../backends.md#openshell-gateway).
@@ -43,14 +43,17 @@ drivers:
     configuration:
       binaries:
         - /path/to/codex
+        - /usr/local/bin/node
       toolBinaries:
         - /usr/bin/curl
 ```
 
 `binaries` is required and closed: a nonempty list of absolute executable paths
 inside the Harness image. OpenShell releases a credential only to requests made
-by those binaries. Use the exact native Codex executable, not a wrapper script.
-A stale path fails the Codex startup model probe: the deployment fails with
+by those binaries. Use the exact native Codex executable and, for dedicated
+OpenClaw, the image's Node executable (`/usr/local/bin/node` in the pinned image).
+The OpenShell development launcher includes both. A stale path fails the
+Harness startup model probe: the deployment fails with
 `RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
 rejects the missing credential, and the active revision keeps serving.
 
@@ -172,8 +175,9 @@ and only a listed provider is detached again.
 
 In the running Sandbox, the Harness environment holds only an
 `openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
---with-api-key` stores that placeholder, and the supervisor proxy substitutes the
-real key on matching requests.
+--with-api-key` stores that placeholder; native OpenClaw reads it through its
+node-local model configuration. The supervisor proxy substitutes the real key
+on matching requests.
 
 ## Trust requirements
 
@@ -238,19 +242,19 @@ Driver startup integration covers Backend membership and selection rules.
 
 ## Troubleshooting
 
-| Symptom or message                                                                                | Cause and fix                                                                                                    |
-| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                     |
-| `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                       |
-| `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                              |
-| Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                        |
-| A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                            |
-| Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.           |
-| Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables. |
-| Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                     |
-| Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                |
-| The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                             |
-| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the exact Codex executable, Codex trusts the Sandbox CA, and the key is valid.          |
+| Symptom or message                                                                                | Cause and fix                                                                                                                      |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                                       |
+| `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                                         |
+| `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                                                |
+| Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                                          |
+| A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                                              |
+| Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.                             |
+| Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables.                   |
+| Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                                       |
+| Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                                  |
+| The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                                               |
+| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the selected Harness executable (Codex or Node), the Harness trusts the Sandbox CA, and the key is valid. |
 
 ## Related
 

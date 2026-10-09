@@ -1,4 +1,4 @@
-ARG OPENCLAW_COMMIT=90d30a1178a79dddd92e6190b66b95d89dfb3ca8
+ARG OPENCLAW_COMMIT=f8386bc7df0a6c9eda7a28ae81943c5c06a414ff
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
@@ -41,7 +41,7 @@ FROM ${NODE_BASE_IMAGE} AS openclaw-source
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-07T22:05:23Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-08T19:24:05Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -49,7 +49,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo 'c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    echo 'ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
@@ -59,8 +59,13 @@ RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp
 # TODO: Remove this bridge patch when OpenClaw `connect --ephemeral` accepts an expired
 # replayed setup code for a node whose saved device token can reconnect.
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
-RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
+RUN echo '906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
+# TODO: Remove this bridge when upstream retains the original session-create
+# authority through detached required-worker placement setup.
+COPY deploy/runtime/openclaw-required-worker-authority.patch /tmp/openclaw-required-worker-authority.patch
+RUN echo 'd07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8  /tmp/openclaw-required-worker-authority.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-required-worker-authority.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
@@ -85,7 +90,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-07T22:05:23Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-08T19:24:05Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
@@ -106,6 +111,13 @@ RUN --mount=type=secret,id=build-ca,required=false \
       --config.supportedArchitectures.libc=glibc; \
     rm -rf /tmp/pnpm-store
 COPY --from=openclaw-source /source/ ./
+# Exercise the original caller through the public RPC before and after the
+# placement acknowledgment, including revocation, against this exact bridge.
+COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
+RUN echo 'e9408d8fe1c97411db97896ea635498170e40079730ea6e463bb82b45f667573  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-required-worker-authority-regression.patch
+RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \

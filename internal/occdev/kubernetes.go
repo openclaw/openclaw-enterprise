@@ -399,8 +399,10 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id":            openShellCredentialGatewayID,
-			"configuration": map[string]any{"binaries": []string{openShellCodexBinary}},
+			"id": openShellCredentialGatewayID,
+			// OpenClaw's node host and supervised inference child use the image's
+			// Node executable; Codex retains its separately pinned binary allowance.
+			"configuration": map[string]any{"binaries": []string{openShellCodexBinary, "/usr/local/bin/node"}},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -414,7 +416,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 const (
 	openShellSandboxID           = "sandbox-openshell-development"
 	openShellCredentialGatewayID = "credential-gateway-openshell-development"
-	// The native Codex binary is the only process allowed to use injected model credentials.
+	// The pinned native Codex binary allowed to use injected model credentials.
 	openShellCodexBinary = "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.160.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"
 )
 

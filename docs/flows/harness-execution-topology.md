@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-08
-last_updated_session: authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6
+last_updated_session: authoring-run/da7b4107-43b4-4a3f-b941-194218df6457
 ---
 
 # Harness Execution Topology Flow
@@ -19,8 +19,8 @@ retires predecessors before exactly-once activation audit.
 - Source: `packages/occ/src/index.ts:OpenClawController.deployAgent` and
   `apps/controller/src/worker.ts:ControllerWorker`.
 - Assumptions: authorized actor; ready Namespace; same-Namespace native agent Configuration;
-  explicit Agent execution mode; and a supported `harnessAuth` binding. Managed methods reference an authorized OCC
-  Secret API key or a Driver-issued account-owned access-token credential.
+  explicit execution mode; and a supported `harnessAuth` binding with an authorized
+  OCC Secret or account-owned credential.
 
 ## Flow
 
@@ -68,7 +68,9 @@ captures its native configuration, approved harness identity/version, explicit m
 selection, and Agent ServicePrincipal. Production admits approved
 `openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
 the selected SandboxDriver provisions Harnesses with networking, filesystem, and
-process containment. An associated
+process containment and the Installation has native-worker support.
+Pinned runtime support is automatic; custom images can declare it at startup.
+An associated
 `access_token` additionally requires dedicated Codex; the frozen account
 contains only its OCC identity, credential kind, and opaque Secret reference.
 
@@ -144,11 +146,18 @@ across restarts and revisions.
 
 Dedicated Harnesses have ServiceAccounts separate from their Gateway. Compute
 owns the Gateway Pod; SandboxDriver owns the native Harness. The paired native
-node owns its identity, workspace, and model key. Enrollment reads a private
-one-use target; restarts reuse its device token. Compute pins that device in
-`dedicated-native` with `inference: "worker"`: missing/disconnected Harnesses
-fail without Gateway inference. Exact callbacks and session-bound admission
-scope transport to the Agent.
+node owns its identity, workspace, and model key. OpenShell delivers the exact
+revision's setup envelope and Gateway CA through its native runtime profile
+provider files, separate from Codex's. The native entrypoint combines the Gateway
+CA with inherited TLS trust and converts the envelope into a private one-use
+target; restarts reuse the persisted device token. SandboxDriver propagates renewed
+enrollment material and removes the revision's provider during cleanup.
+`internal/occdev/kubernetes.go:writeInstallation` permits model egress for
+Node and pinned Codex binaries. Native workers
+connect outbound without a Codex app-server endpoint. Compute pins the
+device in `dedicated-native` with `inference: "worker"`: missing/disconnected
+Harnesses fail without Gateway inference. Exact callbacks and session-bound
+admission scope transport to the Agent.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
 projects admitted OpenAI models and an environment SecretRef into canonical
 `models.providers.openai`.
@@ -156,8 +165,8 @@ projects admitted OpenAI models and an environment SecretRef into canonical
 writes private node configuration with capacity, isolation, and Driver-provided
 `OPENCLAW_WORKSPACE_DIR`. OpenShell's
 `apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` admits its data
-mount as the default workspace. Native Gateway file transfer uses that workspace
-unless an endpoint overrides it. OpenClaw snapshots node-local models/credentials
+mount as the default and main Agent workspace. Native Gateway file transfer uses
+that workspace unless an endpoint overrides it. OpenClaw snapshots node-local models/credentials
 and derives exact managed workspaces from authorized launch descriptors, without
 an inference file, grant catalog, or retired `nativeInferenceConfig` setting.
 
@@ -207,22 +216,19 @@ for example after rejected model authentication, the next revision's preparation
 repairs it with its own template instead of waiting on the failed predecessor.
 The repair deletes an embedded predecessor's revision Secret and ConfigMap copies.
 
-The worker commits the database `activeRevisionId` with an exact compare-and-set
-before Kubernetes default after-commit activation.
-`KubernetesComputeDriver.activateRevision` updates the shared gateway's `Recreate`
-Deployment and Service. Embedded preparation does not validate the replacement's
-credentials, so cutover can stop the serving gateway before the replacement
-validates them in its own
-[startup](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup).
-Initial and replacement Gateways use the same bounded check. Failures, including
-timeouts/rate limits, hold readiness until repair/restart or redeployment.
-Readiness polls do not repeat model requests; worker retries do not restart
-unchanged Pods. There is no automatic rollback.
-Embedded activation also deletes embedded predecessor copies when it re-renders
-the Gateway, even if the replacement never becomes ready.
-For a dedicated predecessor, activation preserves copies while its Harness
-Deployment or terminating Pod survives. Normal retirement stops the Harness
-and removes the artifacts.
+The worker commits `activeRevisionId` by exact compare-and-set before Kubernetes
+activation. `KubernetesComputeDriver.activateRevision` updates the shared Gateway's
+`Recreate` Deployment and Service. Embedded preparation does not validate credentials,
+so cutover can stop the serving Gateway before replacement
+[startup](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup)
+validates them. Initial and replacement Gateways use the same bounded check;
+failures, including provider timeouts/rate limits, hold them unready until repair
+and restart or a new deployment. Readiness polling does not repeat model requests;
+worker retries do not restart unchanged Pods. There is no automatic rollback.
+Embedded activation deletes embedded predecessor copies when re-rendering, even
+if the replacement never becomes ready. For a dedicated predecessor, copies remain
+while its Harness Deployment or terminating Pod survives; normal retirement stops
+the Harness and removes the artifacts.
 
 If activation, readiness, predecessor retirement, or audit completion fails,
 the worker requeues the revision with `REVISION_FINALIZATION_INCOMPLETE`, or a
@@ -253,26 +259,24 @@ prepares private directories and `/tmp`.
 Workspace-file access uses the enrolled Harness node; Gateway and Harness share
 no workspace, session, skill, or image mounts. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 covers per-image assets and generated-image return.
-The OpenClaw node host keeps Gateway-issued worker bundles in its own state and
-workspaces below `/home/node/workspace`, away from gateway state, `CODEX_HOME`,
-and credentials. A restart republishes image-owned
+The node host stores bundles in its own state and workspaces below
+`/home/node/workspace`, separate from gateway state, `CODEX_HOME`, and credentials. A restart republishes image-owned
 runtime assets and reconnects with the paired identity; readiness waits for the
 bounded identity check. The compile cache and model-probe state stay in node
 state and `TMPDIR`, which a Sandbox Driver can grant.
 
-For a selected Sandbox Driver, stopping or retiring a revision always runs its
-required cleanup after stopping a Compute-owned ordinary Harness, or delegates
-provider-owned Harness removal to that cleanup. An absent ordinary Deployment
-does not skip cleanup, so a cleanup failure remains retryable.
-Revision retirement retains both owned claims even after stop removed the
-gateway. When another revision's Gateway or route survives, retirement checks its exact
-revision ownership before deleting resources. A successor in the shared namespace
-keeps its Gateway Deployment, identity, Service and policies. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
-retires every revision before calling
+Stopping or retiring a revision always runs the selected Sandbox Driver's cleanup:
+after Compute stops an ordinary Harness, or to remove a provider-owned Harness.
+An absent ordinary Deployment does not skip cleanup; failures remain retryable.
+Retirement retains both owned claims after Gateway removal and checks the retiring
+revision's ownership before deleting resources. Successors keep
+their Gateway Deployment, identity, Service and policies.
+`apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion` retires every
+revision, then calls
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
-to delete exact-owned private and shared claims by UID. Final deletion checks
-all selected targets, independently of the Agent draft's current execution mode. Cleanup failures retry
-before the worker removes the Agent's database identity. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
+to delete exact-owned private and shared claims by UID across all selected targets,
+regardless of the Agent draft's mode. Cleanup retries precede database identity
+removal. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 ## Debugging and Verification
@@ -319,6 +323,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 15:29: Trace default pinned-runtime support and native Node model-egress allowance in the accompanying change. (authoring-run/da7b4107-43b4-4a3f-b941-194218df6457 - 13405e1fee089db09c4d592e6dba7adb566f3b17)
 
 - 2026-10-08 02:42: Align the admitted native Agent workspace and Gateway file-transfer binding with OpenShell's approved data mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - a8d2969355bd3c0478337e16a01e267ad3607595)
 

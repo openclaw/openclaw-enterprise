@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-03
-last_updated_session: authoring-run/264cfb8c-8627-40cb-8ac4-0b67ef3134dc
+updated: 2026-10-08
+last_updated_session: 01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa
 ---
 
 # Agent Workspace Files Flow
@@ -15,9 +15,8 @@ activation retains completion metadata.
 Subsequent file operations authorize the exact active Agent and use its
 Compute-resolved private endpoint through Envoy Gateway.
 
-Dedicated execution uses Kubernetes Codex; see
-[workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
-Dedicated OpenClaw worker execution remains pending.
+Dedicated execution initializes the Harness workspace for Codex and native
+OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
 See [two-cluster transport](../testing/two-cluster-local.md) for CP/DP routing.
 
@@ -100,11 +99,17 @@ separate setup container and Agent-owned durable volumes; SSH uses the protected
 exact-Agent directory and remote helper. Delivery does not put document strings
 in container arguments or environment values. Dedicated Harness startup must
 also verify completion before execution. Unsupported workspace placement fails
-rather than writing outside managed storage. Provider-owned Sandbox startup
-cannot carry this init container, so it rejects workspace setup instead of
-dropping initialization.
+rather than writing outside managed storage. For a provider-owned Sandbox,
+Compute runs a restricted bootstrap Deployment on the approved Harness PVC.
+Its initializer mounts only the private setup Secret and workspace, without
+credentials or network grants. Marker readiness precedes private-byte cleanup,
+UID/version-fenced deletion, and confirmed Pod termination before Sandbox
+startup. Retries use completed Secret metadata without recreating a writer;
+stop and retirement remove unfinished bootstrap Deployments. The Harness
+verifies completion at its effective workspace path, including OpenShell
+relocation under `/sandbox`.
 
-The runner validates identity, paths, OpenClaw `2026.9.8`, and the rendered
+The runner validates identity, paths, OpenClaw `2026.9.9`, and the rendered
 template digest against Console defaults; defaults identities must match, and
 links and conflicts fail. Without a completion
 marker, native `setup` initializes the workspace and Git without starting the Gateway.
@@ -346,6 +351,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 23:20: Initialize the approved Harness PVC before Sandbox provisioning, retain exact completion guards after relocation, and remove private writers during shutdown. (01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
 
 - 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
 

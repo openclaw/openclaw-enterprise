@@ -22,6 +22,21 @@ const readyForm = [
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   ...createModelSecret("storybook-model-api-key"),
 ];
+const modelCredentialSourceTypes = [
+  {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  },
+];
+const dedicatedOpenclawForm = [
+  ...readyForm,
+  { selector: "#agent-harness", value: "openclaw" },
+  { selector: ".launch-runtime summary", click: true },
+  { selector: "#execution-mode", value: "dedicated" },
+];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
   { selector: "#preset-variable-name", value: "Codex assistant" },
@@ -859,7 +874,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; supported Installations also offer Dedicated under Runtime details. No model is selected by default.",
+      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; Runtime details also offers Dedicated. No model is selected by default.",
     steps: [
       "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
@@ -1592,20 +1607,60 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",
     path: create,
-    nativeWorkerSupport: "custom-image",
-    actions: [
-      ...readyForm,
-      { selector: "#agent-harness", value: "openclaw" },
-      { selector: ".launch-runtime summary", click: true },
-      { selector: "#execution-mode", value: "dedicated" },
-    ],
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: dedicatedOpenclawForm,
     description:
-      "Experimental Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation declares custom-image native worker support. A model and dummy API-key Secret are selected; channel controls remain available.",
+      "Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation has the default runtime's native worker support and a model Credential Source catalog. Its selected dummy Secret is registered before provisioning; the Harness receives a placeholder.",
     steps: [
       "Confirm the Harness is OpenClaw and Execution mode is Dedicated.",
       "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
       "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
+    ],
+  },
+  createDedicatedCodexCredentialSource: {
+    group: "Pages/Create Agent",
+    name: "Codex with model Credential Source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "The same model Secret picker and Credential Gateway guidance apply to dedicated Codex. Creating the Agent registers its model source before guided provisioning.",
+    steps: [
+      "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
+      "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+    ],
+  },
+  createCredentialRegistrationUnknown: {
+    group: "Pages/Create Agent",
+    name: "Model credential registration outcome unknown",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "ready",
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The registration response is unavailable after the simulated Credential Source becomes ready. The form preserves the model Secret and asks the operator to check registration before retrying.",
+    steps: [
+      "Select Check credential registration. The saved source is found ready and Create Agent becomes available.",
+      "Create the Agent and confirm the source is reused, with no new model Secret or registration.",
+    ],
+  },
+  createCredentialRegistrationCleanup: {
+    group: "Pages/Create Agent",
+    name: "Remove failed model credential registration",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "deleting",
+    actions: [
+      ...dedicatedOpenclawForm,
+      click("Create Agent"),
+      click("Check credential registration"),
+    ],
+    description:
+      "An uncertain registration leaves a visible deleting source. Creation stays blocked until its gateway copy is removed; the model Secret remains saved for the next registration.",
+    steps: [
+      "Select Remove failed credential registration and confirm that the model Secret remains saved.",
+      "Create the Agent again. A fresh source registration uses the same model Secret before provisioning.",
     ],
   },
   createEmbedded: {
@@ -1619,6 +1674,23 @@ export const scenarios = {
     ],
     description:
       "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
+  },
+  createOpenclawWithoutNativeWorkers: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw without native worker support",
+    path: create,
+    nativeWorkerSupport: false,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation lacks native worker support. OpenClaw uses Embedded execution; Dedicated is disabled with an explanation.",
+    steps: [
+      "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing runtime support.",
+      "Select Codex and confirm Dedicated remains available.",
+    ],
   },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
@@ -3975,7 +4047,7 @@ export const scenarios = {
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
       "Check the inset arrows on the Namespace, Provider, Harness, and Authentication method controls. Use the controls with a mouse and keyboard.",
-      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Dedicated requires an Installation with native worker support; the separate Dedicated OpenClaw stories simulate that prerequisite.",
+      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Expand Runtime details and select Dedicated; the OpenClaw harness stays selected and channel controls become available.",
       "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a listed model.",
       "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a listed model.",
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",

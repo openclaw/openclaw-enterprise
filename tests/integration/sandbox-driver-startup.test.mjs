@@ -276,9 +276,10 @@ function codexRequirements(revision, environment = []) {
   };
 }
 
-function codexSandboxFixture(
+function runtimeSandboxFixture(
   driver,
   {
+    harnessId = "codex",
     runtimeManifest = JSON.stringify({ kind: "codex", selections: {} }),
     codexConfig = "[features]\nplugins = false\n",
     files,
@@ -289,7 +290,7 @@ function codexSandboxFixture(
     id: "rev_00000000-0000-4000-8000-000000000003",
     namespaceId: context.namespace.id,
     agentId: "agt_00000000-0000-4000-8000-000000000003",
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: driver.id,
   };
   const nodeSetup = {
@@ -315,8 +316,8 @@ function codexSandboxFixture(
   context.kubernetes = kubernetes;
   const requirements = {
     loginMode: "api_key",
-    image: "codex-runtime@sha256:synthetic",
-    command: harnessRuntimeCommand('console.error("codex runtime");'),
+    image: "openclaw-runtime@sha256:synthetic",
+    command: harnessRuntimeCommand('console.error("harness runtime");'),
     workspaceMounts: [
       {
         claimName: "harness-workspace-codex",
@@ -330,42 +331,54 @@ function codexSandboxFixture(
         mountPath: "/home/node/.openclaw-node",
         readOnly: false,
       },
-      {
-        claimName: "harness-workspace-codex",
-        subPath: "codex-sessions",
-        mountPath: "/home/node/.codex/sessions",
-        readOnly: false,
-      },
+      ...(harnessId === "codex"
+        ? [
+            {
+              claimName: "harness-workspace-codex",
+              subPath: "codex-sessions",
+              mountPath: "/home/node/.codex/sessions",
+              readOnly: false,
+            },
+          ]
+        : []),
     ],
     credentialAttachments: [{ sourceId: "cs_test", ref: `oce-cs-${"b".repeat(24)}` }],
     environment: [
       { name: "HOME", value: "/home/node" },
-      { name: "CODEX_HOME", value: "/home/node/.codex" },
+      ...(harnessId === "codex" ? [{ name: "CODEX_HOME", value: "/home/node/.codex" }] : []),
       { name: "OPENCLAW_NODE_STATE_DIR", value: "/home/node/.openclaw-node" },
       { name: "OPENCLAW_WORKSPACE_DIR", value: "/home/node/workspace" },
       {
         name: "OPENCLAW_NODE_CA_PEM",
         value: "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----\n",
       },
-      { name: "APP_SERVER_PORT", value: "8080" },
-      { name: "APP_TOKEN_SHA", value: "a".repeat(64) },
+      ...(harnessId === "codex"
+        ? [
+            { name: "APP_SERVER_PORT", value: "8080" },
+            { name: "APP_TOKEN_SHA", value: "a".repeat(64) },
+          ]
+        : []),
       {
         name: "OPENCLAW_NODE_SETUP_CODE",
         valueFrom: { secretKeyRef: { name: "workspace-node", key: "setupCode" } },
       },
     ],
-    files: files ?? [
-      {
-        name: "runtime.json",
-        content: runtimeManifest,
-        environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
-      },
-      {
-        name: "config.toml",
-        content: codexConfig,
-        environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
-      },
-    ],
+    files:
+      files ??
+      (harnessId === "codex"
+        ? [
+            {
+              name: "runtime.json",
+              content: runtimeManifest,
+              environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+            },
+            {
+              name: "config.toml",
+              content: codexConfig,
+              environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
+            },
+          ]
+        : []),
     labels: { "openclaw.dev/revision": revision.id },
   };
   return { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup };
@@ -561,15 +574,21 @@ test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount"
 
 test("OpenShell provisions native OpenClaw without exposing an inbound Harness service", async () => {
   const requests = [];
+  let storedSandbox;
   const gatewayClient = workspaceGatewayClient();
   gatewayClient.createSandbox = async (request) => {
     requests.push(request);
-    return {
+    storedSandbox = {
       name: request.name,
-      labels: request.labels,
+      workspace: request.workspace,
+      labels: structuredClone(request.labels),
+      annotations: structuredClone(request.annotations),
+      spec: structuredClone(request.spec),
       serviceUrls: {},
     };
+    return storedSandbox;
   };
+  gatewayClient.getSandbox = async () => storedSandbox;
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   configuration.policy.filesystem = {
     includeWorkdir: false,
@@ -581,50 +600,15 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
-  const context = namespaceContext();
-  const revisionId = "rev_00000000-0000-4000-8000-000000000001";
-  const revision = {
-    id: revisionId,
-    namespaceId: context.namespace.id,
-    agentId: "agt_00000000-0000-4000-8000-000000000001",
-    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-    sandboxDriverId: driver.id,
-  };
-  const labels = {
-    "app.kubernetes.io/managed-by": "openclaw-enterprise",
-    "openclaw.dev/agent": revision.agentId,
-    "openclaw.dev/revision": revision.id,
-    "openclaw.dev/workload-role": "agent",
-  };
-  const command = harnessRuntimeCommand('console.error("native runtime");');
-  const sandbox = await driver.provisionHarness({
-    ...context,
-    revision,
-    requirements: {
-      loginMode: "api_key",
-      image: "openclaw-runtime@sha256:synthetic",
-      command,
-      workspaceMounts: [
-        {
-          claimName: "harness-workspace-native-openclaw",
-          subPath: "workspace",
-          mountPath: "/home/node/workspace",
-          readOnly: false,
-        },
-        {
-          claimName: "harness-workspace-native-openclaw",
-          subPath: "workspace-node-native-openclaw",
-          mountPath: "/home/node/.openclaw-node",
-          readOnly: false,
-        },
-      ],
-      credentialAttachments: [],
-      environment: [{ name: "TMPDIR", value: "/tmp/openclaw-native-worker" }],
-      labels,
-    },
+  const { context, revision, requirements, nodeSetup } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
   });
+  const command = requirements.command;
+  await driver.ensureNamespace(context);
+  const sandbox = await driver.provisionHarness({ ...context, revision, requirements });
+  await driver.provisionHarness({ ...context, revision, requirements });
 
-  assert.equal(sandbox.revisionId, revisionId);
+  assert.equal(sandbox.revisionId, revision.id);
   assert.equal(requests.length, 1);
   assert.deepEqual(requests[0].serviceExposures, []);
   assert.deepEqual(
@@ -636,7 +620,7 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     requests[0].spec.command[RUNTIME_WRAPPER_COMMAND.length],
     /OpenShell workspace link conflicts/,
   );
-  assert.deepEqual(requests[0].labels, labels);
+  assert.deepEqual(requests[0].labels, requirements.labels);
   assert.equal(requests[0].spec.environment.TMPDIR, "/tmp");
   assert.equal(requests[0].spec.policy.filesystem.include_workdir, false);
   assert.deepEqual(requests[0].spec.policy.filesystem.read_only, ["/app"]);
@@ -646,6 +630,51 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   // The real Gateway receives this mode with the Sandbox request; a weaker
   // Landlock setting could let a ready Harness run without filesystem policy.
   assert.equal(requests[0].spec.policy.landlock.compatibility, "hard_requirement");
+  assert.equal(requests[0].spec.environment.OPENCLAW_NODE_SETUP_CODE, undefined);
+  assert.equal(requests[0].spec.environment.OPENCLAW_NODE_CA_PEM, undefined);
+  assert.equal(requests[0].spec.environment.OPENAI_API_KEY, undefined);
+  assert.equal(requests[0].spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
+  assert.match(
+    requests[0].spec.environment.OPENCLAW_NODE_STATE_DIR,
+    /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u,
+  );
+  const runtimeProvider = requests[0].spec.providers.find((name) =>
+    name.startsWith("oce-runtime-"),
+  );
+  assert.ok(runtimeProvider, "the native node must receive its enrollment provider");
+  assert.deepEqual(gatewayClient.providers.get(runtimeProvider).config, {
+    node_setup_json: JSON.stringify(nodeSetup),
+    node_ca_pem: "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----\n",
+  });
+  const profile = gatewayClient.profiles.get("oce-openclaw-runtime").profile;
+  assert.deepEqual(profile.files, [
+    {
+      path: "node-setup.json",
+      content: "{{config.node_setup_json}}",
+      environmentVariable: "OPENCLAW_NODE_SETUP_ENVELOPE",
+    },
+    {
+      path: "node-ca.pem",
+      content: "{{config.node_ca_pem}}",
+      environmentVariable: "OPENCLAW_NODE_CA_PATH",
+    },
+  ]);
+  assert.deepEqual(
+    requests[0].spec.policy.network_policies["workspace-node-enrollment"].endpoints,
+    [
+      {
+        host: "gateway.example.test",
+        ports: [443],
+        tls: "NETWORK_TLS_MODE_SKIP",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      },
+    ],
+  );
+  await driver.cleanup({ ...context, revision });
+  assert.equal(gatewayClient.providers.has(runtimeProvider), false);
+  assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), true);
+  await driver.cleanup(context);
+  assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), false);
 });
 
 test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {
@@ -1040,7 +1069,7 @@ test("OpenShell rejects projected Agent identity before gateway mutation", async
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
-  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
   requirements.workloadIdentity = {
     serviceAccountName: "agent-codex",
     token: {
@@ -1129,7 +1158,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     backend: backendFor(gatewayClient),
   });
   const { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup } =
-    codexSandboxFixture(driver);
+    runtimeSandboxFixture(driver);
 
   await driver.ensureNamespace(context);
   await driver.provisionHarness({ ...context, revision, requirements });
@@ -1322,7 +1351,7 @@ test("OpenShell retains the revision provider when Sandbox creation has an unkno
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
-  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
 
   await assert.rejects(
     driver.provisionHarness({ ...context, revision, requirements }),
@@ -1345,101 +1374,109 @@ test("OpenShell retains the revision provider when Sandbox creation has an unkno
   assert.equal(gatewayClient.providers.has(runtimeProvider), true);
 });
 
-test("OpenShell reconciles renewed workspace-node setup into its revision provider", async () => {
-  let storedSandbox;
-  const gatewayClient = workspaceGatewayClient();
-  gatewayClient.createSandbox = async (request) => {
-    storedSandbox = {
-      name: request.name,
-      workspace: request.workspace,
-      labels: structuredClone(request.labels),
-      annotations: structuredClone(request.annotations),
-      spec: structuredClone(request.spec),
-      serviceUrls: {},
+for (const harnessId of ["codex", "openclaw"]) {
+  test(`OpenShell reconciles renewed ${harnessId} workspace-node setup into its revision provider`, async () => {
+    let storedSandbox;
+    const gatewayClient = workspaceGatewayClient();
+    gatewayClient.createSandbox = async (request) => {
+      storedSandbox = {
+        name: request.name,
+        workspace: request.workspace,
+        labels: structuredClone(request.labels),
+        annotations: structuredClone(request.annotations),
+        spec: structuredClone(request.spec),
+        serviceUrls: {},
+      };
+      return {
+        ...storedSandbox,
+        serviceUrls: harnessId === "codex" ? { "": "http://codex.example.test:8080/" } : {},
+      };
     };
-    return { ...storedSandbox, serviceUrls: { "": "http://codex.example.test:8080/" } };
-  };
-  gatewayClient.getSandbox = async () => storedSandbox;
-  gatewayClient.getService = async () => ({
-    sandbox: storedSandbox.name,
-    name: "",
-    targetPort: 8080,
-    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
-    advertisedUrl: "http://codex.example.test:8080/",
-    url: "http://codex.example.test:8080/",
-  });
-  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
-    id: "openshell-sandbox",
-    implementation: "openshell",
-    backend: backendFor(gatewayClient),
-  });
-  const { context, revision, requirements } = codexSandboxFixture(driver);
-  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+    gatewayClient.getSandbox = async () => storedSandbox;
+    gatewayClient.getService = async () => ({
+      sandbox: storedSandbox.name,
+      name: "",
+      targetPort: 8080,
+      authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+      advertisedUrl: "http://codex.example.test:8080/",
+      url: "http://codex.example.test:8080/",
+    });
+    const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+    });
+    const { context, revision, requirements } = runtimeSandboxFixture(driver, { harnessId });
+    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
 
-  await provision();
-  const [runtimeProviderName] = [...gatewayClient.providers.keys()];
-  const initialProvider = gatewayClient.providers.get(runtimeProviderName);
-  const initialSetup = JSON.parse(initialProvider.config.node_setup_json);
-  gatewayClient.providers.set(runtimeProviderName, {
-    ...initialProvider,
-    config: {
-      ...initialProvider.config,
-      node_setup_json: JSON.stringify({ ...initialSetup, expiresAtMs: Date.now() - 1 }),
-    },
-  });
-  const renewedSetup = {
-    ...initialSetup,
-    bootstrapToken: "renewed-node-setup",
-    expiresAtMs: Date.now() + 600_000,
-  };
-  const renewedCode = Buffer.from(JSON.stringify(renewedSetup)).toString("base64url");
-  context.kubernetes.read = async ({ metadata }) => ({
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: {
-      ...metadata,
-      labels: {
-        "openclaw.dev/namespace": context.namespace.id,
-        "openclaw.dev/agent": revision.agentId,
+    await provision();
+    const [runtimeProviderName] = [...gatewayClient.providers.keys()];
+    const initialProvider = gatewayClient.providers.get(runtimeProviderName);
+    assert.ok(initialProvider, "the Harness must receive a revision-owned enrollment provider");
+    const initialSetup = JSON.parse(initialProvider.config.node_setup_json);
+    gatewayClient.providers.set(runtimeProviderName, {
+      ...initialProvider,
+      config: {
+        ...initialProvider.config,
+        node_setup_json: JSON.stringify({ ...initialSetup, expiresAtMs: Date.now() - 1 }),
       },
-    },
-    data: { setupCode: Buffer.from(renewedCode).toString("base64") },
-  });
+    });
+    const renewedSetup = {
+      ...initialSetup,
+      bootstrapToken: "renewed-node-setup",
+      expiresAtMs: Date.now() + 600_000,
+    };
+    const renewedCode = Buffer.from(JSON.stringify(renewedSetup)).toString("base64url");
+    context.kubernetes.read = async ({ metadata }) => ({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        ...metadata,
+        labels: {
+          "openclaw.dev/namespace": context.namespace.id,
+          "openclaw.dev/agent": revision.agentId,
+        },
+      },
+      data: { setupCode: Buffer.from(renewedCode).toString("base64") },
+    });
 
-  // A retry must update the revision-owned provider rather than strand the
-  // revision after Compute replaces its expired setup Secret.
-  await provision();
-  const updates = gatewayClient.calls.filter(([operation]) => operation === "updateProviderConfig");
-  assert.deepEqual(updates, [
-    [
-      "updateProviderConfig",
-      runtimeProviderName,
-      { node_setup_json: JSON.stringify(renewedSetup) },
-      "1",
-    ],
-  ]);
-  assert.equal(
-    gatewayClient.providers.get(runtimeProviderName).config.node_setup_json,
-    JSON.stringify(renewedSetup),
-  );
-  assert.equal(
-    gatewayClient.calls.filter(([operation]) => operation === "createProvider").length,
-    1,
-  );
+    // A retry must update the revision-owned provider rather than strand the
+    // revision after Compute replaces its expired setup Secret.
+    await provision();
+    const updates = gatewayClient.calls.filter(
+      ([operation]) => operation === "updateProviderConfig",
+    );
+    assert.deepEqual(updates, [
+      [
+        "updateProviderConfig",
+        runtimeProviderName,
+        { node_setup_json: JSON.stringify(renewedSetup) },
+        "1",
+      ],
+    ]);
+    assert.equal(
+      gatewayClient.providers.get(runtimeProviderName).config.node_setup_json,
+      JSON.stringify(renewedSetup),
+    );
+    assert.equal(
+      gatewayClient.calls.filter(([operation]) => operation === "createProvider").length,
+      1,
+    );
 
-  // Renewal authority covers only the setup envelope. It must not repair or
-  // conceal drift in the revision's immutable runtime files.
-  const renewedProvider = gatewayClient.providers.get(runtimeProviderName);
-  gatewayClient.providers.set(runtimeProviderName, {
-    ...renewedProvider,
-    config: { ...renewedProvider.config, runtime_json: '{"kind":"foreign"}' },
+    // Renewal authority covers only the setup envelope. It must not repair or
+    // conceal drift in the revision's immutable runtime files.
+    const renewedProvider = gatewayClient.providers.get(runtimeProviderName);
+    gatewayClient.providers.set(runtimeProviderName, {
+      ...renewedProvider,
+      config: { ...renewedProvider.config, node_ca_pem: "foreign-ca" },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+    assert.equal(
+      gatewayClient.calls.filter(([operation]) => operation === "updateProviderConfig").length,
+      1,
+    );
   });
-  await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
-  assert.equal(
-    gatewayClient.calls.filter(([operation]) => operation === "updateProviderConfig").length,
-    1,
-  );
-});
+}
 
 test("OpenShell rejects unexpected annotations on an existing Sandbox", async () => {
   let storedSandbox;
@@ -1464,7 +1501,7 @@ test("OpenShell rejects unexpected annotations on an existing Sandbox", async ()
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
-  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
 
   await driver.provisionHarness({ ...context, revision, requirements });
   await assert.rejects(
@@ -1473,46 +1510,48 @@ test("OpenShell rejects unexpected annotations on an existing Sandbox", async ()
   );
 });
 
-test("OpenShell rejects malformed or expired node setup before gateway mutation", async (t) => {
-  for (const [name, setupCode, expected] of [
-    ["malformed", "not-a-setup-code", /malformed setup envelope/],
-    [
-      "expired",
-      Buffer.from(
-        JSON.stringify({
-          url: "wss://gateway.example.test/node",
-          bootstrapToken: "expired-token",
-          expiresAtMs: Date.now() - 1,
-        }),
-      ).toString("base64url"),
-      /expired or has no bounded expiry/,
-    ],
-  ]) {
-    await t.test(name, async () => {
-      const gatewayClient = workspaceGatewayClient();
-      const driver = new OpenShellSandboxDriver(
-        sandboxInstallation().drivers.sandbox.configuration,
-        {
-          id: "openshell-sandbox",
-          implementation: "openshell",
-          backend: backendFor(gatewayClient),
-        },
-      );
-      const { context, revision, requirements } = codexSandboxFixture(driver);
-      const originalRead = context.kubernetes.read;
-      context.kubernetes.read = async (request) => {
-        const secret = await originalRead(request);
-        return { ...secret, data: { setupCode: Buffer.from(setupCode).toString("base64") } };
-      };
+for (const harnessId of ["codex", "openclaw"]) {
+  test(`OpenShell rejects malformed or expired ${harnessId} node setup before gateway mutation`, async (t) => {
+    for (const [name, setupCode, expected] of [
+      ["malformed", "not-a-setup-code", /malformed setup envelope/],
+      [
+        "expired",
+        Buffer.from(
+          JSON.stringify({
+            url: "wss://gateway.example.test/node",
+            bootstrapToken: "expired-token",
+            expiresAtMs: Date.now() - 1,
+          }),
+        ).toString("base64url"),
+        /expired or has no bounded expiry/,
+      ],
+    ]) {
+      await t.test(name, async () => {
+        const gatewayClient = workspaceGatewayClient();
+        const driver = new OpenShellSandboxDriver(
+          sandboxInstallation().drivers.sandbox.configuration,
+          {
+            id: "openshell-sandbox",
+            implementation: "openshell",
+            backend: backendFor(gatewayClient),
+          },
+        );
+        const { context, revision, requirements } = runtimeSandboxFixture(driver, { harnessId });
+        const originalRead = context.kubernetes.read;
+        context.kubernetes.read = async (request) => {
+          const secret = await originalRead(request);
+          return { ...secret, data: { setupCode: Buffer.from(setupCode).toString("base64") } };
+        };
 
-      await assert.rejects(
-        driver.provisionHarness({ ...context, revision, requirements }),
-        expected,
-      );
-      assert.deepEqual(gatewayClient.calls, []);
-    });
-  }
-});
+        await assert.rejects(
+          driver.provisionHarness({ ...context, revision, requirements }),
+          expected,
+        );
+        assert.deepEqual(gatewayClient.calls, []);
+      });
+    }
+  });
+}
 
 test("OpenShell rejects unsupported or foreign Codex runtime providers before Sandbox creation", async (t) => {
   const scenarios = [
@@ -1569,7 +1608,7 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
           backend: backendFor(gatewayClient),
         },
       );
-      const fixture = codexSandboxFixture(driver, scenario.fixture);
+      const fixture = runtimeSandboxFixture(driver, scenario.fixture);
       scenario.mutate?.(fixture);
 
       await assert.rejects(
@@ -2330,7 +2369,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
-  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
   const statusContext = { ...context, revision, requirements, transportToken: "transport-token" };
 
   // Nothing listens yet: a refused handshake and OpenShell's own 502 mean starting.

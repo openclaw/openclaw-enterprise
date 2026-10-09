@@ -1,10 +1,10 @@
 # Runtime image recipe
 
 Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains both supported runtime
-entrypoints:
+real-runtime integration tests. The image contains these runtime entrypoints:
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
+- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral`.
 - Dedicated Codex app-server: `codex app-server`.
 
 The image sets `NPM_CONFIG_UPDATE_NOTIFIER=false` so local npm commands do not
@@ -21,7 +21,7 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin is an OpenClaw main commit, not a published OpenClaw release.
+The source pin identifies an OpenClaw source build, not a published release.
 Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
 an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
@@ -34,6 +34,15 @@ after enrollment cannot reconnect. The patch lets that path decode an expired
 code and hands the expiry to the node host. The node host then reconnects with
 the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
+The build also applies `openclaw-required-worker-authority.patch`. A required
+worker placement may acknowledge session creation before background setup
+finishes. The patch retains the original request and operator authority through
+that setup, while preserving revocation and exact session checks. The personal
+model selection remains connection-bound until its durable session commit.
+The OpenClaw build stage applies a separate, checksum-verified regression patch
+and runs the real Gateway public-RPC cases without network access. The cases
+cover placement before and after acknowledgement, disconnect, and committed
+role, scope, and profile revocation. Test changes stay in the build stage.
 The source archive and patch hashes identify the resulting custom build.
 
 Dedicated native OpenClaw requires both required worker placement
@@ -42,25 +51,29 @@ Dedicated native OpenClaw requires both required worker placement
 projects each worker's managed workspace from its authorized launch descriptor;
 OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field.
 
-The selected image remains unqualified for the complete dedicated native flow.
-`PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
-`packages/occ/src/native-worker-support.ts` stays false, so admission refuses
-that topology unless the operator declares an explicitly selected custom image.
-The images-runtime-startup lane validates both generated configurations with the
-image's CLI. Schema acceptance alone does not qualify enrollment, workspace
-access, or native model execution.
+The selected source includes required placement activation, node-local
+model/workspace projection, and the Codex native-child relay. OCE advertises
+`pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
+without a custom-image declaration. Deployment still requires a provisioning
+SandboxDriver with networking, filesystem, and process containment.
+
+The images-runtime-startup lane runs the production Gateway and Harness
+entrypoints and validates their generated configurations with the image's CLI.
+Native AMD64 and ARM64 image checks and real deployment verification remain
+separate requirements. Schema acceptance alone does not prove placement,
+enrollment, containment, workspace access, or model execution.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `90d30a1178a79dddd92e6190b66b95d89dfb3ca8`                                                                   |
-| Source archive SHA-256                       | `c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b`                                           |
+| OpenClaw source commit                       | `f8386bc7df0a6c9eda7a28ae81943c5c06a414ff`                                                                   |
+| Source archive SHA-256                       | `ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.160.0`                                                                                                    |
 | Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                    |
 
-The source's package version is `2026.9.8`; it does not identify this custom
+The source's package version is `2026.9.9`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, both bridge patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+hash, the three bridge patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
@@ -108,7 +121,7 @@ checksum-verifying download helper, and both installs read it from a loopback se
 instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/f8386bc7df0a6c9eda7a28ae81943c5c06a414ff/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

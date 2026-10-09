@@ -1,17 +1,17 @@
 # Harness execution
 
 A Harness calls the model and runs tools for an Agent. The bundled deployment
-paths run OpenClaw inside the Agent's gateway or Codex as a dedicated runtime.
-Choose an execution mode on the Agent and a compatible model and Harness in its
-Configuration.
+paths run OpenClaw inside the Agent's gateway or run OpenClaw or Codex in a
+separate dedicated runtime. Choose an execution mode on the Agent and a
+compatible model and Harness in its Configuration.
 
 ## Supported topology
 
-| Harness  | Agent execution mode | Workloads and support                                                                                                                                                                      |
-| -------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| OpenClaw | `embedded`           | One gateway executes the built-in Harness; available on Kubernetes and SSH.                                                                                                                |
-| Codex    | `dedicated`          | A gateway connects to a separate Codex Harness; available on Kubernetes.                                                                                                                   |
-| OpenClaw | `dedicated`          | Experimental native worker; requires full-facet Sandbox provisioning. Stock OpenShell has [upstream blockers](#optional-sandbox-provisioning), so this is not a supported production path. |
+| Harness  | Agent execution mode | Workloads and support                                                                                                                                                    |
+| -------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| OpenClaw | `embedded`           | One gateway executes the built-in Harness; available on Kubernetes and SSH.                                                                                              |
+| Codex    | `dedicated`          | A gateway connects to a separate Codex Harness; available on Kubernetes.                                                                                                 |
+| OpenClaw | `dedicated`          | Experimental native worker enabled by the pinned runtime; requires full-facet Sandbox provisioning and supported [workload projections](#optional-sandbox-provisioning). |
 
 Agent creation defaults to `embedded`; an update that omits the mode preserves
 it. Deployment rejects a Harness that the Agent's execution mode cannot run with
@@ -283,17 +283,25 @@ explicitly, and test bridges do not establish turnkey production support. See it
 
 ### Native worker support
 
-The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) supports required
-worker placement (`cloudWorkers.requiredProfile`), but is not yet qualified for
-the complete native worker flow. Native worker models and environment SecretRefs
-are rendered in the node’s canonical `models.providers` configuration; there is
-no separate node inference-config setting.
-Deploy and provisioning therefore refuse dedicated native OpenClaw with
-`400 INVALID_REQUEST`, and the console withholds that choice. Provisioning
-status reads do not recheck this support, so work accepted before it was
-removed still reports its status; retry refuses it. An operator whose
-runtime image is built from an OpenClaw source with both features can declare
-[`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration).
+Dedicated native OpenClaw needs enforced worker placement
+(`cloudWorkers.requiredProfile`) and node-local inference. Compute renders the
+models and environment SecretRefs in canonical node `models.providers`
+configuration; there is no separate node inference-config setting.
+The pinned [runtime image](../../deploy/runtime/README.md) includes these
+features, and OCC reports `capabilities.nativeWorkers.support: "pinned-runtime"`
+from `GET /installation`. In the Console, select OpenClaw, expand Runtime
+details, and choose Dedicated. Create Agent then starts the same provisioning
+workflow used by dedicated Codex; no startup override is required.
+
+A custom image can use the existing
+[`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration)
+declaration. Without native-worker support, deploy and provisioning answer
+`400 INVALID_REQUEST`, the Console withholds Dedicated OpenClaw, and retry
+rechecks support. Deployment still requires the qualifying SandboxDriver,
+admitted authentication, and supported workload projections described above. Compute puts the selected
+model metadata and credential reference only in the native node's configuration;
+the Gateway receives no model credential. A missing model or disconnected node
+fails the turn without Gateway inference fallback.
 
 ## Related
 
