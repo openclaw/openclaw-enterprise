@@ -552,11 +552,65 @@ const maxReporterBytes = 50 * 1024 * 1024;
 // and the file's output tail before it exits; read them for this long.
 const timeoutGraceMs = 5_000;
 
+// Process groups of the Node test runners still running, so a signal that ends this
+// runner can end them too: they run detached, out of the terminal's process group.
+const liveGroups = new Set();
+
+function killGroup(pgid, signal) {
+  // Membership is the real guard: only a group this runner spawned and whose
+  // leader has not exited yet. Never 0 or 1, which process.kill would turn into
+  // this runner's own group or every process.
+  if (!liveGroups.has(pgid) || !Number.isSafeInteger(pgid) || pgid <= 1) {
+    return;
+  }
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    // ESRCH: every process in the group has already exited.
+  }
+}
+
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
+
+function forwardSignal(signal) {
+  // This runner ends at once, so nothing would follow up on a file that ignores
+  // the signal, and nothing reads the runners' reports any more.
+  for (const pgid of liveGroups) {
+    killGroup(pgid, "SIGKILL");
+  }
+  for (const other of forwardedSignals) {
+    process.removeListener(other, forwardSignal);
+  }
+  // Listening replaced the default action; end the runner as that signal would have.
+  if (process.listenerCount(signal) === 0) {
+    process.kill(process.pid, signal);
+  }
+}
+
+let forwarding = false;
+
+function addLiveGroup(pgid) {
+  if (!forwarding) {
+    forwarding = true;
+    for (const signal of forwardedSignals) {
+      process.on(signal, forwardSignal);
+    }
+  }
+  liveGroups.add(pgid);
+}
+
 // spawnSync's contract, without blocking the runner while other files run: stdout
 // is kept up to maxReporterBytes (ENOBUFS past it), stdin is closed at once, and the
 // timeout sends SIGTERM and reports ETIMEDOUT. Like spawnSync, stopping also closes
 // the pipes (after timeoutGraceMs for a timeout), so a grandchild holding them
 // cannot keep the file running. Child stderr is not retained.
+//
+// The Node test runner leads its own process group. The timeout's SIGTERM reaches
+// only the runner, which reports the interrupted tests and exits, but can leave the
+// isolated test-file child (and anything it started) running. So the whole group
+// gets SIGKILL once the grace period is over, and whenever the runner exits:
+// anything still in its group then has outlived its file. ENOBUFS discards the
+// rest of the output, so it kills the group at once.
 function runNode(args, { cwd, env, timeout }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
@@ -564,7 +618,16 @@ function runNode(args, { cwd, env, timeout }) {
     let error;
     let settled = false;
     let graceTimer;
-    const child = spawn(process.execPath, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, args, {
+      cwd,
+      env,
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const pgid = child.pid;
+    if (pgid !== undefined) {
+      addLiveGroup(pgid);
+    }
     const closePipes = () => {
       child.stdout.destroy();
       child.stderr.destroy();
@@ -572,10 +635,14 @@ function runNode(args, { cwd, env, timeout }) {
     const stop = (code) => {
       if (error === undefined) {
         error = Object.assign(new Error(`child ${code}`), { code });
-        child.kill("SIGTERM");
         if (code === "ETIMEDOUT") {
-          graceTimer = setTimeout(closePipes, timeoutGraceMs);
+          child.kill("SIGTERM");
+          graceTimer = setTimeout(() => {
+            killGroup(pgid, "SIGKILL");
+            closePipes();
+          }, timeoutGraceMs);
         } else {
+          killGroup(pgid, "SIGKILL");
           closePipes();
         }
       } else if (code === "ENOBUFS") {
@@ -615,8 +682,14 @@ function runNode(args, { cwd, env, timeout }) {
         ...(error ? { error } : {}),
       });
     };
+    child.on("exit", () => {
+      // The runner has reported; whatever it left in its group goes now.
+      killGroup(pgid, "SIGKILL");
+      liveGroups.delete(pgid);
+    });
     child.on("error", (spawnError) => {
       error ??= spawnError;
+      liveGroups.delete(pgid);
       finish(null, null);
     });
     child.on("close", finish);

@@ -106,12 +106,15 @@ jobs:
       # startup tests are split in two, balanced by measured case durations;
       # only part 1 runs the Codex sandbox, so only it needs the k3d tools for
       # the seccomp profile.
-      # Runners: the k3d fixture and observability lanes need ubuntu-22.04,
-      # whose kernel has bridge netfilter for the NetworkPolicy proofs. The
-      # other lanes use blacksmith 16vcpu, which exposes 4 CPUs to the job
-      # (8vcpu exposes 2) and rarely waits for a runner (on 10-08/09, 15 % of
-      # 8vcpu jobs waited over a minute, none on 16vcpu). A label no runner
-      # serves leaves the job queued, so use only labels already in use here.
+      # Runners: the k3d fixture and observability lanes use blacksmith
+      # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
+      # K3s policy enforcement disabled, production-network-access fails
+      # every deny case there. It ran these lanes about a minute faster than
+      # ubuntu-22.04 (4 CPUs). The other lanes use blacksmith 16vcpu, which
+      # exposes 4 CPUs to the job (8vcpu exposes 2) and rarely waits for a
+      # runner (on 10-08/09, 15 % of 8vcpu jobs waited over a minute, none on
+      # 16vcpu). A label no runner serves leaves the job queued, so use only
+      # labels already in use here.
       - id: matrix
         name: Build lane matrix
         env:
@@ -131,10 +134,10 @@ jobs:
               {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
-              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
-              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
-              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
+              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"}

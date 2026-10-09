@@ -2145,8 +2145,8 @@ function buildMatrix(t, mode, lanes) {
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", (t) => {
   const table = laneTable(readFileSync(join(repositoryRoot, ".github/workflows/ci.yml"), "utf8"));
   // A runner label nobody provides leaves the job queued until it times out.
-  // Lanes other than the netfilter ones must use a self-hosted label that
-  // actionlint knows (the only list in .github/actionlint.yaml).
+  // Every lane must use a self-hosted label that actionlint knows (the only
+  // list in .github/actionlint.yaml).
   const selfHostedLabels = [
     ...readFileSync(join(repositoryRoot, ".github/actionlint.yaml"), "utf8").matchAll(
       /^ {4}- (\S+)$/gm,
@@ -2158,12 +2158,11 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
   );
   for (const row of table) {
     assert.deepEqual(Object.keys(row), ["lane", "title", "profile", "timeout", "runner"]);
-    // NetworkPolicy proofs need the bridge netfilter support of this kernel.
+    assert.ok(selfHostedLabels.includes(row.runner), `${row.lane} runner ${row.runner}`);
+    // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "ubuntu-22.04", row.lane);
-    } else {
-      assert.ok(selfHostedLabels.includes(row.runner), `${row.lane} runner ${row.runner}`);
+      assert.equal(row.runner, "blacksmith-32vcpu-ubuntu-2404", row.lane);
     }
   }
   for (const mode of ["full", "docs"]) {

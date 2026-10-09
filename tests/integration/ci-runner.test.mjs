@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -561,6 +562,182 @@ test("run records timeout cancellation without leaking child output", async (t) 
   assert.equal(record.reason, "timeout");
   assert.equal(record.timeoutMs, 100);
 });
+
+// Field 5 of /proc/<pid>/stat is the process group; the name in parentheses may hold spaces.
+function procStat(pid) {
+  try {
+    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^.*\) /su, "")
+      .split(" ");
+    return { state: fields[0], pgid: Number(fields[2]) };
+  } catch {
+    return undefined;
+  }
+}
+
+test(
+  "run kills a timed-out file's whole process group after the timeout record",
+  { skip: process.platform !== "linux" && "reads /proc" },
+  async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state/orphan.json");
+    const recordPath = join(root, "state/orphan-pids.json");
+    // The isolated test-file child ignores SIGTERM and has a child of its own, so the
+    // Node test runner's own SIGTERM handling cannot end either of them.
+    await writeFile(
+      join(root, "tests/integration/orphan.test.mjs"),
+      [
+        'import { spawn } from "node:child_process";',
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        'import test from "node:test";',
+        'test("outlives its runner", async () => {',
+        '  process.on("SIGTERM", () => {});',
+        '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });',
+        '  const pgid = (pid) => Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
+        "  writeFileSync(process.env.CI_RUNNER_ORPHAN_RECORD, JSON.stringify({",
+        "    runner: process.ppid, file: process.pid, grandchild: grandchild.pid,",
+        "    pgid: pgid(process.pid), grandchildPgid: pgid(grandchild.pid),",
+        "  }));",
+        '  console.log("waiting with SIGTERM ignored");',
+        "  await new Promise((resolve) => setTimeout(resolve, 60_000));",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { orphan: { files: [{ path: "tests/integration/orphan.test.mjs" }] } },
+      groups: { ci: ["orphan"] },
+    });
+    let pids;
+    // Never leave the fixture's processes behind, whatever the outcome: only the exact
+    // pids the fixture recorded, still in the fixture's group, never a group.
+    t.after(() => {
+      for (const pid of [pids?.runner, pids?.file, pids?.grandchild]) {
+        if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
+        }
+      }
+    });
+
+    const result = run(
+      root,
+      [
+        "run",
+        "orphan",
+        "--manifest",
+        "manifest.json",
+        "--root",
+        root,
+        "--state",
+        statePath,
+        "--results",
+        join(root, "results/orphan.json"),
+      ],
+      { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
+    );
+
+    assert.equal(result.status, 1);
+    pids = JSON.parse(await readFile(recordPath, "utf8"));
+    // The timeout record still comes from the runner's reporter before the group dies.
+    const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
+    assert.equal(record.reason, "timeout");
+    assert.equal(record.timeoutMs, 5000);
+    assert.deepEqual(record.interruptedTests, [{ name: "outlives its runner", line: 4 }]);
+    assert.deepEqual(record.output.lines, ["stdout: waiting with SIGTERM ignored"]);
+    // Killed processes are reaped by their new parent asynchronously; a zombie is gone.
+    const deadline = Date.now() + 5_000;
+    const alive = () =>
+      [pids.file, pids.grandchild].filter((pid) => {
+        const stat = procStat(pid);
+        return stat !== undefined && stat.state !== "Z" && stat.pgid === pids.pgid;
+      });
+    while (alive().length > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.deepEqual(alive(), []);
+    // The Node test runner leads its own process group, apart from this test's.
+    assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
+    assert.equal(pids.pgid, pids.runner);
+    assert.equal(pids.grandchildPgid, pids.runner);
+    assert.notEqual(pids.pgid, procStat(process.pid).pgid);
+  },
+);
+
+test(
+  "run kills what a passing file left in its process group",
+  { skip: process.platform !== "linux" && "reads /proc" },
+  async (t) => {
+    const root = await fixture(t);
+    const recordPath = join(root, "state/leftover-pids.json");
+    // The file passes and exits; its grandchild, unref'd, would run on for a minute.
+    await writeFile(
+      join(root, "tests/integration/leftover.test.mjs"),
+      [
+        'import { spawn } from "node:child_process";',
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        'import test from "node:test";',
+        'test("passes and leaves a process behind", () => {',
+        '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });',
+        "  grandchild.unref();",
+        '  const pgid = Number(readFileSync(`/proc/${grandchild.pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
+        "  writeFileSync(process.env.CI_RUNNER_ORPHAN_RECORD, JSON.stringify({ runner: process.ppid, grandchild: grandchild.pid, pgid }));",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { leftover: { files: [{ path: "tests/integration/leftover.test.mjs" }] } },
+      groups: { ci: ["leftover"] },
+    });
+    let pids;
+    t.after(() => {
+      const pid = pids?.grandchild;
+      if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    });
+
+    const result = run(
+      root,
+      [
+        "run",
+        "leftover",
+        "--manifest",
+        "manifest.json",
+        "--root",
+        root,
+        "--state",
+        join(root, "state/leftover.json"),
+        "--results",
+        join(root, "results/leftover.json"),
+      ],
+      { CI_RUNNER_ORPHAN_RECORD: recordPath },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    pids = JSON.parse(await readFile(recordPath, "utf8"));
+    assert.equal(pids.pgid, pids.runner);
+    const deadline = Date.now() + 5_000;
+    const alive = () => {
+      const stat = procStat(pids.grandchild);
+      return stat !== undefined && stat.state !== "Z" && stat.pgid === pids.pgid;
+    };
+    while (alive() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(alive(), false);
+  },
+);
 
 test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from artifacts", async (t) => {
   const root = await fixture(t);
