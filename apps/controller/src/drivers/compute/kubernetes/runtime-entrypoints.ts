@@ -2545,6 +2545,15 @@ function configureGateway(peerStatus) {
     process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined
   ) {
     const config = readOpenClawConfig();
+    const hookDirectory = process.env.OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY;
+    if (hookDirectory !== undefined) {
+      // Compute owns the relay; Sandbox supplies only its private on-Harness path.
+      const relay = config.plugins?.entries?.codex?.config?.appServer?.nativeHookRelay;
+      if (!isPlainObject(relay)) {
+        throw new Error("The provider Harness requires a Compute-owned native hook relay.");
+      }
+      relay.credentialDirectory = hookDirectory;
+    }
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};

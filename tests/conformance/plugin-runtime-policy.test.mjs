@@ -713,11 +713,19 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   const lines = [];
   let openClaw = pluginList("disabled", 1);
   // The Gateway starts before the node pairs: the optional binding file is absent.
+  // Its provider owns a private directory outside the model/file-transfer workspace.
+  const baseConfig = codexGatewayConfig();
+  baseConfig.plugins.entries.codex.config.appServer.nativeHookRelay = {
+    url: "https://gateway.example.test/node/__openclaw__/native-hook",
+    credentialDirectory: "/home/node/.oce-native-hooks",
+  };
+  const hookDirectory = "/private/provider-home/.oce-native-hooks";
   const { files, calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
-    baseConfig: codexGatewayConfig(),
+    baseConfig,
     env: {
       APP_SERVER_URL: "ws://harness.example.test:18790",
       OPENCLAW_REMOTE_WORKSPACE_ROOT: "/sandbox/enterprise",
+      OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY: hookDirectory,
     },
     workspaceNodeBindingPath: true,
     intervals,
@@ -728,6 +736,10 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   });
   const configPath = "/home/node/.openclaw/openclaw.json";
   const atStart = JSON.parse(files.get(configPath));
+  assert.deepEqual(atStart.plugins.entries.codex.config.appServer.nativeHookRelay, {
+    ...baseConfig.plugins.entries.codex.config.appServer.nativeHookRelay,
+    credentialDirectory: hookDirectory,
+  });
   assert.equal(atStart.plugins.entries["file-transfer"], undefined);
   // Before the node pairs, Codex already gets no tool that would act on the
   // Gateway Pod's empty workspace or run commands there.

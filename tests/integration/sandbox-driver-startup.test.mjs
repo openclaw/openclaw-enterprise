@@ -1227,6 +1227,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.deepEqual(await driver.harnessEndpoint({ ...context, revision, requirements }), {
     url: "ws://codex.example.test:8080/",
     workspaceRoot: "/sandbox/enterprise",
+    nativeHookCredentialDirectory: `${requests[0].spec.environment.HOME}/.oce-native-hooks`,
   });
 
   assert.equal(requests.length, 1);

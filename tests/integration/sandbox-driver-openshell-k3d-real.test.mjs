@@ -3605,6 +3605,18 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     providerWorkspace,
     "the OpenShell Harness and Agent Gateway must use the same workspace root.",
   );
+  const harnessHome = topology.harnessPod.spec.containers
+    .flatMap(({ env = [] }) => env)
+    .find(({ name }) => name === "HOME")?.value;
+  const hookDirectory = topology.gatewayPod.spec.containers
+    .flatMap(({ env = [] }) => env)
+    .find(({ name }) => name === "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY")?.value;
+  assert.equal(
+    hookDirectory,
+    `${harnessHome}/.oce-native-hooks`,
+    "the Gateway must deliver native hook credentials into the Harness launcher's private directory.",
+  );
+  assert.equal(hookDirectory.startsWith(`${providerWorkspace}/`), false);
   const writablePath = `${providerWorkspace}/${nonce}.txt`;
   // OpenShell serves provider-profile files only when they are opened; access(2) reports them
   // missing. Reading proves the projected config is readable, and a write open is refused.

@@ -8359,6 +8359,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const setupRequests = [];
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
+  let providerHookDirectory = "/private/provider-home/.oce-native-hooks";
   const fixture = providerReadinessFixture({
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
@@ -8384,7 +8385,11 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     },
     async harnessEndpoint(context) {
       endpoints.push(context);
-      return { url: providerUrl, workspaceRoot: providerWorkspaceRoot };
+      return {
+        url: providerUrl,
+        workspaceRoot: providerWorkspaceRoot,
+        nativeHookCredentialDirectory: providerHookDirectory,
+      };
     },
     lifecycleDrivers: [
       {
@@ -8511,7 +8516,11 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     undefined,
     undefined,
     undefined,
-    { url: providerUrl, workspaceRoot: providerWorkspaceRoot },
+    {
+      url: providerUrl,
+      workspaceRoot: providerWorkspaceRoot,
+      nativeHookCredentialDirectory: providerHookDirectory,
+    },
   );
   gateway.metadata.generation = 1;
   gateway.status = {
@@ -8725,6 +8734,11 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     gatewayContainer.env.find(({ name }) => name === "OPENCLAW_REMOTE_WORKSPACE_ROOT").value,
     providerWorkspaceRoot,
   );
+  assert.equal(
+    gatewayContainer.env.find(({ name }) => name === "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY")
+      .value,
+    providerHookDirectory,
+  );
   assert.deepEqual(gateway.spec.template.spec.hostAliases, [
     { ip: "10.43.0.50", hostnames: ["tenant--sandbox.openshell.localhost"] },
   ]);
@@ -8764,6 +8778,42 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   fixture.setObservation({ items: [fixture.pod("ready")] });
   await driver.activateRevision(revision, context);
   assert.equal(endpoints.length, 6);
+  assert.equal(
+    objects
+      .get(key("Deployment", gatewayName, gatewayNamespace))
+      .spec.template.spec.containers[0].env.find(
+        ({ name }) => name === "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY",
+      ).value,
+    providerHookDirectory,
+  );
+  // A provider must name a private directory it actually creates. Missing, ambiguous,
+  // or workspace-visible paths fail both lifecycle paths before the Gateway is rewritten.
+  const privateHookDirectory = providerHookDirectory;
+  for (const invalid of [
+    undefined,
+    "relative/hooks",
+    "/private/../hooks",
+    "/",
+    providerWorkspaceRoot,
+    `${providerWorkspaceRoot}/hooks`,
+  ]) {
+    providerHookDirectory = invalid;
+    for (const lifecycle of ["prepareRevision", "activateRevision"]) {
+      await assert.rejects(
+        driver[lifecycle](revision, context),
+        /native hook credential directory/,
+      );
+      assert.equal(
+        objects
+          .get(key("Deployment", gatewayName, gatewayNamespace))
+          .spec.template.spec.containers[0].env.find(
+            ({ name }) => name === "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY",
+          ).value,
+        privateHookDirectory,
+      );
+    }
+  }
+  providerHookDirectory = privateHookDirectory;
   const privateSetup = {
     id: context.workspaceSetup.id,
     secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },

@@ -1061,6 +1061,8 @@ export interface SandboxHarnessEndpoint {
   readonly url: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /** Required for Codex: provider-created private hook directory outside its workspace. */
+  readonly nativeHookCredentialDirectory?: string;
 }
 
 export interface SandboxNamespaceContext {

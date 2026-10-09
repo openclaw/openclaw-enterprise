@@ -32,6 +32,11 @@ required `facets` and `cleanup` members, plus seven optional methods.
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
 Compute routes the Agent Gateway through it instead of its own Harness Service.
+For Codex, the endpoint must also supply `nativeHookCredentialDirectory`: a
+provider-created, owner-only directory outside the Harness workspace and file-transfer
+roots. Compute requires a normalized absolute path and rejects workspace overlap.
+It retains ownership of the relay URL and authentication; the Sandbox supplies
+only the private file destination.
 `harnessStatus(context)`, offered only with `harnessEndpoint`, observes that
 transport with the Agent transport token. It answers `serving` only after an
 authenticated handshake, or `failed` with the Harness's held startup failure,

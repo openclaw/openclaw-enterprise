@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-06
-last_updated_session: authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e
+updated: 2026-10-09
+last_updated_session: authoring-run/8e337823-5cdf-4dbb-bdac-e9c51a5051b9
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -260,36 +260,28 @@ failures count against that quota. Completed records expire after 24 hours.
 `unary` maps that exact refusal to `OpenShellAdmissionLimitError`, a
 `TransientDependencyError` (`SANDBOX_ADMISSION_LIMIT_REACHED`): revision
 provisioning waits for it until the convergence deadline without spending
-attempts; Namespace work retries it as usual. Codex requests one unnamed
-bearer-passthrough exposure for `APP_SERVER_PORT` and requires its `service_urls`
-entry. Native
-OpenClaw connects outbound, so it requests no exposure and rejects any returned
-URL. The Driver
-calls `getSandbox` first and creates only an absent Sandbox; it adopts an
-existing or `ALREADY_EXISTS` Sandbox only when its Workspace, labels,
-annotations, and full spec match the request and it is not deleting or stopped.
-For Codex, `GetService` must also return the unnamed bearer-passthrough endpoint
-on the admitted port. Workspace `sandbox:write` is the trust boundary because a
-holder can replace the Sandbox.
+attempts; Namespace work retries it. Codex requires one unnamed bearer-passthrough
+exposure for `APP_SERVER_PORT` in both `service_urls` and `GetService`. Native
+OpenClaw connects outbound and rejects returned exposure URLs. After `getSandbox`,
+the Driver creates only an absent Sandbox. It adopts existing or `ALREADY_EXISTS`
+Sandboxes only when Workspace, labels, annotations, and full spec match and the
+Sandbox is neither deleting nor stopped. Workspace `sandbox:write` is the trust
+boundary: its holder can replace the Sandbox.
 
 The Backend shares one client per endpoint but does not cache failed setup.
 Cancellation is checked after setup and before dispatch; after dispatch it
 cancels the local gRPC call without proving the remote mutation stopped. The
 lifecycle therefore recovers uncertain effects through adoption and cleanup.
 
-`GetService` retains two forms of the URL. The normalized form preserves the
-existing control-endpoint behavior used by local clients. The advertised form
-preserves OpenShell's hostname and port for workload transport. The Sandbox
-Driver accepts only the unnamed exposure on the admitted app-server port with
-bearer passthrough and returns its WebSocket origin plus the provider-local
-`/sandbox/enterprise` workspace root through `harnessEndpoint`. Missing,
-malformed, or changed exposure state fails closed.
-
-The revision provider survives an uncertain create; revision cleanup deletes
-the Sandbox first.
-
-The runtime opens provider files through their reported absolute paths. Any
-Gateway failure prevents readiness.
+`GetService` keeps a normalized control URL for local clients and the advertised
+hostname and port for workload transport. `harnessEndpoint` requires the unnamed
+bearer-passthrough exposure on the admitted app-server port and returns its
+WebSocket origin, `/sandbox/enterprise` workspace root, and
+`nativeHookCredentialDirectory` beneath the remapped Harness `HOME`. The shared
+launcher creates that private directory with mode `0700`. Invalid or changed
+exposure state fails closed. The runtime opens provider files at their reported
+absolute paths; Gateway failure prevents readiness. Revision providers survive
+uncertain creates; cleanup deletes their Sandbox first.
 
 OpenShell's supervisor opens the node connection. Kubernetes-only uses the
 in-cluster WSS route; Compose uses the Agent Gateway Service URL. In both cases,
@@ -301,19 +293,20 @@ process-group signaling returns `EPERM`.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-After a successful create, Compute verifies that the returned reference belongs
-to the revision. When the selected provisioning Sandbox Driver also implements
-`harnessEndpoint`, Compute resolves the endpoint and replaces the first
-Gateway's fail-closed template. The resulting Deployment receives that exact
-origin as `APP_SERVER_URL`, the provider-local root as
-`OPENCLAW_REMOTE_WORKSPACE_ROOT`, and, in the owned k3d profile, an exact host
-alias to the provider address. Compute grants Gateway egress only to the
-configured provider peer and port, leaves the direct Agent Service on its
-inactive selector, and omits the Compute-owned Harness route. A serving
-predecessor is not rewritten during successor preparation; activation resolves
-the candidate endpoint again before cutover. A provisioning Driver without
-`harnessEndpoint` keeps the Kubernetes Service or private-route path and the
-canonical `/home/node/workspace` root.
+Compute verifies the created reference belongs to the revision. If the Sandbox
+implements `harnessEndpoint`, Compute replaces the first Gateway's fail-closed
+template with `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`, and the owned
+k3d profile's exact provider host alias. Compute validates the private hook
+directory outside the workspace and passes it to the Gateway launcher.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:configureGateway`
+sets the existing relay's directory before spawning OpenClaw, preserving Compute's
+relay URL and authentication.
+
+Gateway egress permits only the configured provider peer and port. The direct
+Agent Service remains inactive, and Compute omits its Harness route. Successor
+preparation preserves the serving predecessor; activation resolves the candidate
+endpoint again. Without `harnessEndpoint`, provisioning retains the Kubernetes
+Service or private route and `/home/node/workspace` root.
 
 Compute then waits for the provider-owned Harness Pod and exact workspace node.
 Missing enrollment keeps the revision inactive. The dedicated Harness wrapper
@@ -365,6 +358,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 12:22: Pass the Sandbox-owned private native hook credential directory to the Gateway launcher. (authoring-run/8e337823-5cdf-4dbb-bdac-e9c51a5051b9 - 635244e85c443a4408c92730b508601bbb20f2cd)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 

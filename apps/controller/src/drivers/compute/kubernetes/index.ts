@@ -7,7 +7,7 @@ import {
 } from "@openclaw-enterprise/utils";
 import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -1324,6 +1324,24 @@ function providerHarnessUrl(
   ) {
     throw new ConfigurationFailure(
       "SandboxDriver Harness workspace root must be an absolute path without surrounding whitespace.",
+    );
+  }
+  const hookDirectory = endpoint.nativeHookCredentialDirectory;
+  const workspaceRoot = posix.resolve(endpoint.workspaceRoot ?? "/home/node/workspace");
+  if (
+    typeof hookDirectory !== "string" ||
+    !posix.isAbsolute(hookDirectory) ||
+    hookDirectory === "/" ||
+    hookDirectory.trim() !== hookDirectory ||
+    hookDirectory.includes("\0") ||
+    posix.normalize(hookDirectory) !== hookDirectory ||
+    workspaceRoot === "/" ||
+    hookDirectory === workspaceRoot ||
+    hookDirectory.startsWith(`${workspaceRoot}/`) ||
+    workspaceRoot.startsWith(`${hookDirectory}/`)
+  ) {
+    throw new ConfigurationFailure(
+      "SandboxDriver Harness native hook credential directory must be a normalized absolute private path outside the workspace.",
     );
   }
   return url;
@@ -12241,11 +12259,17 @@ for (const path of ${JSON.stringify(
                   ? `ws://agent-${suffix}.${required(configuration?.harnessNamespace?.name, "Harness namespace")}.svc:${AGENT_TRANSPORT_PORT}`
                   : `wss://${this.options.executionCluster.harnessRouting.hostname}${this.harnessRoutePath(ownership)}`,
           });
-          if (providerEndpoint?.workspaceRoot !== undefined) {
+          if (providerEndpoint !== undefined) {
             variables.push({
-              name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
-              value: providerEndpoint.workspaceRoot,
+              name: "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY",
+              value: providerEndpoint.nativeHookCredentialDirectory!,
             });
+            if (providerEndpoint.workspaceRoot !== undefined) {
+              variables.push({
+                name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
+                value: providerEndpoint.workspaceRoot,
+              });
+            }
           }
         }
         if (configuration?.usesGatewayPasswordEnv === true) {

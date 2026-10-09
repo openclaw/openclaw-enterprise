@@ -2258,6 +2258,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return Object.freeze({
       url: harnessWebSocketUrl(service.advertisedUrl),
       workspaceRoot: "/sandbox/enterprise",
+      nativeHookCredentialDirectory: `${OPENSHELL_HOME}/.oce-native-hooks`,
     });
   }
 
