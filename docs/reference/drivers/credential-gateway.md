@@ -51,8 +51,9 @@ A `CredentialSourceType` declares:
   are supplied as OCC Secret references.
 - `rotation`: `none`, `external`, or `refresh`. A `refresh` type stores no
   static value. The [Credential Refresh Driver](credential-refresh.md) on the
-  same Backend mints and refreshes its tokens, and OCC calls that Driver, not
-  `updateSource`, to change its material.
+  same Backend mints and refreshes its tokens; OCC calls that Driver to change
+  their material. Secret-backed types accept updates; device-authorized types
+  require a new login source instead.
 - `deviceAuthorization`: optional `{ harnessId }` declaring device login for this
   source type. The login path requires one matching type with no required user
   config or Secret inputs.
@@ -66,11 +67,12 @@ A `CredentialSourceType` declares:
 The `chatgptAuthTokens` mode receives externally managed ChatGPT authentication
 through a credential source. It is a receiving contract for a Credential
 Gateway and paired Sandbox that already provide OAuth token injection. The
-bundled OpenShell catalog does not yet offer this source type.
+experimental OpenShell `codex-oauth` type requires the upstream gateway API and
+alias-enabled supervisor described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
-`accountId`, `planType`, and optional `userId`, `email`, and `isFedramp`. The
+`accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The
 trusted Driver supplies account metadata from the authenticated connection;
 these fields are not caller-selected Agent configuration. The placeholder must
 be the exact value recognized by the egress injector. Real access tokens,
@@ -98,19 +100,23 @@ bundle or native-refresh fallback is supported. See
 
 ### Optional additions
 
-A device-login source requires `startDeviceAuthorization(context)` and
-`pollDeviceAuthorization(context, privateState)`. Start returns device instructions,
-expiry and an opaque handle. Poll returns `pending` or `ready`; `ready` means the
-external service durably owns the connection. Neither returns provider tokens to
-OCC. Calls operate on the exact registered source and must not recreate a removed
-source. OCC serializes polling with Secret compare-and-swap and does not replay
-an uncertain exchange.
+Device-login source types require the paired [Credential Refresh Driver](credential-refresh.md#device-authorization)
+to implement authorization. The Gateway registers the source before login and
+owns its attachment and access-token retrieval; it receives no device-grant
+refresh material.
 
-`withSourceToken(context, use)` supplies a warm `CredentialSourceToken` only for
+`withSourceToken(context, use)` supplies a usable `CredentialSourceToken` only for
 an authorized configuration callback: access token and optional trusted account
-ID/FedRAMP classification. It must not initiate refresh or return the refresh
-credential. The callback rechecks authorization before provider I/O; source
-withdrawal and token readiness remain the external service's responsibility.
+ID/FedRAMP classification. The external token service may refresh to satisfy its
+remaining-lifetime requirement. It owns refresh credentials, refresh execution,
+and successor-token persistence; this operation must never return refresh
+material. OCC does not implement refresh or retain the returned access token
+outside the callback.
+
+OCC authorizes the source before retrieval, and the callback rechecks authorization
+before provider I/O. Cancellation or a failed recheck does not undo refresh already
+started by the external service. Source withdrawal and token readiness remain
+that service's responsibility.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
 uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`,
@@ -151,8 +157,8 @@ configuration. The interface has no initializer or destructor.
    reads each Secret value and commits the record as `registering`, then calls
    `registerSource` outside the transaction. A second transaction moves the
    record to `ready` with its audit event. For a `refresh` type, the
-   [Credential Refresh Driver](credential-refresh.md#lifecycle) first mints the
-   source's first token. If `registerSource` returns `failed` or
+   [Credential Refresh Driver](credential-refresh.md#lifecycle) first mints a
+   token; device-authorized types defer that step until login completion. If `registerSource` returns `failed` or
    `absent`, OCC calls `removeSource` and deletes the record. If it throws, a
    create may still land, so OCC calls `removeSource` but keeps the record
    `deleting`. OCC finalizes a deletion only 70 seconds after `createdAt`, and a
@@ -213,9 +219,8 @@ adopt or delete the same stored copy.
   Update pushes new static values; running Agents use them after a redeploy.
 - Compute accepts `openai`/`api_key` credential sources for dedicated Codex or
   native OpenClaw. `openai`/`chatgptAuthTokens` is dedicated-Codex-only and
-  requires the external-auth attachment described above. The bundled catalog's
-  Harness authentication remains API-key-only; this contract does not implement
-  a Codex OAuth Token Service, source Driver, or token injection.
+  requires the external-auth attachment described above. The bundled catalog
+  includes experimental Codex device login through the paired Refresh Driver.
   Other listed sources need a Sandbox Driver that provisions the Harness.
 - Guided Agent provisioning rejects credential-source Harness authentication.
   Create the Agent, then deploy it.

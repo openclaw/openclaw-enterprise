@@ -3972,46 +3972,58 @@ export class OpenClawController {
     const config = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
-    const { namespace, gateway, refresh, source, values } = await this.mutate(async (state) => {
-      await this.authorize(principalId, "create", {
-        kind: "credential_source",
-        id: input.namespaceId,
-        namespaceId: input.namespaceId,
-      });
-      const locked = await this.lockNamespace(state, input.namespaceId);
-      // An Installation property, so it is reported before any Namespace state.
-      this.assertCredentialGatewaySelected();
-      if (locked.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const selected = this.credentialGatewayDriver();
-      const type = await this.credentialSourceType(selected, input.type);
-      credentialSourceFieldsMatch("config", type.config, config);
-      credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
-      const refreshDriver =
-        type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
-      const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);
-      const registering = await state.credentialSources.createCredentialSource(
-        Object.freeze({
-          id: this.nextIdentifier("credential_source"),
-          namespaceId: locked.id,
-          name: input.name,
-          type: type.type,
-          config,
-          secrets: secretRefs,
-          driverId: selected.id,
-          state: "registering",
-          createdAt: this.timestamp(),
-        }),
-      );
-      return {
-        namespace: locked,
-        gateway: selected,
-        refresh: refreshDriver,
-        source: registering,
-        values: read,
-      };
-    });
+    const { namespace, gateway, refresh, deferred, source, values } = await this.mutate(
+      async (state) => {
+        await this.authorize(principalId, "create", {
+          kind: "credential_source",
+          id: input.namespaceId,
+          namespaceId: input.namespaceId,
+        });
+        const locked = await this.lockNamespace(state, input.namespaceId);
+        // An Installation property, so it is reported before any Namespace state.
+        this.assertCredentialGatewaySelected();
+        if (locked.status !== "ready") {
+          throw new NamespaceNotReadyError();
+        }
+        const selected = this.credentialGatewayDriver();
+        const type = await this.credentialSourceType(selected, input.type);
+        credentialSourceFieldsMatch("config", type.config, config);
+        credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+        const refreshDriver =
+          type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
+        if (
+          type.deviceAuthorization !== undefined &&
+          (!refreshDriver?.startDeviceAuthorization || !refreshDriver.pollDeviceAuthorization)
+        ) {
+          throw new NotImplementedError(
+            "agent_device_authorization",
+            "Device login requires the selected Credential Refresh Driver's device authorization support.",
+          );
+        }
+        const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);
+        const registering = await state.credentialSources.createCredentialSource(
+          Object.freeze({
+            id: this.nextIdentifier("credential_source"),
+            namespaceId: locked.id,
+            name: input.name,
+            type: type.type,
+            config,
+            secrets: secretRefs,
+            driverId: selected.id,
+            state: "registering",
+            createdAt: this.timestamp(),
+          }),
+        );
+        return {
+          namespace: locked,
+          gateway: selected,
+          refresh: refreshDriver,
+          deferred: type.deviceAuthorization !== undefined,
+          source: registering,
+          values: read,
+        };
+      },
+    );
     const placed = await this.credentialNamespace(namespace);
     let status: CredentialSourceStatus;
     // A returned result means every gateway effect of this attempt has finished; a throw does not.
@@ -4032,7 +4044,11 @@ export class OpenClawController {
       if (status.state === "failed" || status.state === "absent") {
         throw new DependencyUnavailableError("The Credential Gateway did not store the source.");
       }
-      if (refresh !== undefined) {
+      if (refresh !== undefined && deferred) {
+        // A device grant does not exist until authorization completes. The source
+        // is registered now; the Refresh Driver owns its later first mint.
+        status = { ...status, refresh: { state: "pending" } };
+      } else if (refresh !== undefined) {
         // A refresh type is usable only once the first token is minted. Registration happens
         // once per source ID, so its request IDs are stable for the gateway's replay window.
         terminal = false;
@@ -4160,6 +4176,11 @@ export class OpenClawController {
       }
       const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       const type = await this.credentialSourceType(gateway, source.type);
+      if (type.deviceAuthorization !== undefined) {
+        // Device grants are held by the Refresh Driver, not recorded Secret references.
+        // Reconfiguring from an empty reference set could revoke the active grant.
+        throw new ResourceStateConflictError("Reconnect by creating a new device-login source.");
+      }
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
       const values = await this.readCredentialSourceSecrets(
@@ -4357,7 +4378,7 @@ export class OpenClawController {
       };
       status = await gateway.sourceStatus(context);
       const refresh =
-        status.state === "ready"
+        status.state === "ready" || status.state === "pending"
           ? await this.refreshDriverForSource(gateway, source.type)
           : undefined;
       if (refresh !== undefined) {
@@ -5037,17 +5058,18 @@ export class OpenClawController {
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
-    if (!this.selections.has("credential_gateway")) {
+    if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
       throw new NotImplementedError(
         "agent_device_authorization",
-        "Device login requires a Credential Gateway.",
+        "Device login requires a Credential Gateway and a Credential Refresh Driver.",
       );
     }
     const gateway = this.credentialGatewayDriver();
+    const refresh = this.credentialRefreshDriver();
     const secrets = this.secretDriver();
     if (
-      !gateway.startDeviceAuthorization ||
-      !gateway.pollDeviceAuthorization ||
+      !refresh.startDeviceAuthorization ||
+      !refresh.pollDeviceAuthorization ||
       !secrets.withValue ||
       !secrets.compareAndSwap
     ) {
@@ -5059,7 +5081,9 @@ export class OpenClawController {
     const types = await this.credentialGatewayOperation(() =>
       gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
     );
-    const supported = types.filter((type) => type.deviceAuthorization?.harnessId === harnessId);
+    const supported = types.filter(
+      (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === harnessId,
+    );
     if (supported.length !== 1) {
       throw new NotImplementedError(
         "agent_device_authorization",
@@ -5076,7 +5100,7 @@ export class OpenClawController {
     const { context } = await this.authorizedCredentialSource(principalId, namespaceId, source.id);
     let started: CredentialSourceDeviceAuthorization;
     try {
-      started = await gateway.startDeviceAuthorization(context);
+      started = await refresh.startDeviceAuthorization(context);
     } catch (error) {
       throw error instanceof DeviceAuthorizationStartError
         ? error
@@ -5086,12 +5110,13 @@ export class OpenClawController {
     const { privateState, expiresAt, ...authorization } = started;
     const session: DeviceAuthorizationSession = {
       kind: "harness_device_authorization",
-      version: 1,
+      version: 2,
       actorId: principalId,
       namespaceId,
       ...(agentId === undefined ? {} : { agentId }),
       harnessId,
       credentialGatewayId: gateway.id,
+      credentialRefreshId: refresh.id,
       sourceId: source.id,
       phase: "pending",
       expiresAt,
@@ -5179,7 +5204,14 @@ export class OpenClawController {
       namespaceId,
       session.sourceId,
     );
-    if (gateway.id !== session.credentialGatewayId || !gateway.pollDeviceAuthorization) {
+    const refresh = this.selections.has("credential_refresh")
+      ? this.credentialRefreshDriver()
+      : undefined;
+    if (
+      gateway.id !== session.credentialGatewayId ||
+      refresh?.id !== session.credentialRefreshId ||
+      !refresh.pollDeviceAuthorization
+    ) {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
     }
     const response = (status: "pending" | "ready", expiresAt = session.expiresAt) => ({
@@ -5204,7 +5236,7 @@ export class OpenClawController {
     }
     let result: CredentialSourceDeviceAuthorizationResult;
     try {
-      result = await gateway.pollDeviceAuthorization(context, session.privateState!);
+      result = await refresh.pollDeviceAuthorization(context, session.privateState!);
     } catch {
       // An uncertain external exchange is not replayed. The source remains visible for recovery.
       await this.secretOperation(() =>
@@ -5218,7 +5250,18 @@ export class OpenClawController {
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
-    await this.authorizedCredentialSource(principalId, namespaceId, session.sourceId);
+    const current = await this.authorizedCredentialSource(
+      principalId,
+      namespaceId,
+      session.sourceId,
+    );
+    if (
+      current.gateway.id !== session.credentialGatewayId ||
+      !this.selections.has("credential_refresh") ||
+      this.credentialRefreshDriver().id !== session.credentialRefreshId
+    ) {
+      throw new ResourceStateConflictError("The login Driver changed. Connect again.");
+    }
     const { privateState: _privateState, ...completedSession } = session;
     const next: DeviceAuthorizationSession =
       result.status === "pending"

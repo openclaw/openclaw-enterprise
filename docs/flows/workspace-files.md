@@ -42,7 +42,7 @@ graph TD
   subgraph Initial["Creation and first deployment"]
     S["Create Agent with initial files"] --> T["Authorize and stage exact-Agent input"]
     T --> U["Separate deploy request"]
-    U --> V["Compute initializes durable workspace"]
+    U --> V["Initialize through Compute or selected Sandbox"]
     V --> W{"Setup complete?"}
     W -->|no| X["Block execution; retain pending input"]
     W -->|yes| Y["Start runtime; activate revision"]
@@ -87,40 +87,42 @@ textarea values use LF newlines.
 
 ### 2. Deployment initializes storage before execution
 
-`apps/controller/src/worker.ts` reads private setup state while resolving
-`ComputeRevisionContext`. A selected Driver without `supportsWorkspaceSetup`
-returns `WORKSPACE_SETUP_UNSUPPORTED`. The deployment worker serializes the
-Agent's startup and passes `workspaceSetup` to Compute.
+`apps/controller/src/worker.ts` reads private setup state into
+`ComputeRevisionContext`. A Driver without `supportsWorkspaceSetup` returns
+`WORKSPACE_SETUP_UNSUPPORTED`. The worker serializes Agent startup and passes
+`workspaceSetup` to Compute.
 
-The bundled Drivers deliver inputs to the shared
-`apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`:
-Kubernetes uses an owned Secret and an init container on the workspace owner
-(Gateway when embedded; Harness when dedicated); Docker uses a
-separate setup container and Agent-owned durable volumes; SSH uses the protected
-exact-Agent directory and remote helper. Delivery does not put document strings
-in container arguments or environment values. Dedicated Harness startup must
-also verify completion before execution. Unsupported workspace placement fails
-rather than writing outside managed storage. Provider-owned Sandbox startup
-cannot carry this init container, so it rejects workspace setup instead of
-dropping initialization.
+Bundled Drivers use
+`apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`.
+Kubernetes delivers an Agent-owned Secret to the workspace owner's init
+container: Gateway when embedded, Harness when dedicated. Docker uses a setup
+container and durable volumes; SSH uses the protected Agent directory.
 
-The runner validates identity, paths, OpenClaw `2026.9.8`, and the rendered
-template digest against Console defaults; defaults identities must match, and
-links and conflicts fail. Without a completion
-marker, native `setup` initializes the workspace and Git without starting the Gateway.
-The Kubernetes initializer uses the configured Gateway resource budget because it
-loads the native CLI, even when it runs in the dedicated Harness Pod.
-It atomically replaces supplied files, including empty strings, when existing
-content is absent, stock, or already submitted. It reruns native setup so the
-`BOOTSTRAP.md` lifecycle sees the submitted profile, verifies the results, then
-atomically writes `.oce-workspace-setup.json`.
+For a provider-owned Harness,
+`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment` hands Sandbox the
+[setup identity and exact Secret reference](../reference/drivers/sandbox.md#provisioning-inputs).
+`apps/controller/src/drivers/sandbox/openshell.ts:initializeWorkspace` waits
+for OpenShell Sandbox readiness, verifies the private Secret's Namespace,
+Agent and setup identity, then calls authenticated `ExecSandbox` with a fixed
+initializer and JSON stdin. File contents never enter provider configuration,
+arguments, or environment values; remote stdout and stderr are discarded.
+The launcher waits for the completion marker. A workspace `flock` serializes
+initializers even when an RPC acknowledgement is lost. The Harness verifier uses
+`OPENCLAW_WORKSPACE_DIR`, preserving OpenShell's actual mount location.
 
-Matching markers skip application after lost acknowledgement.
-Incomplete writes retry with the same safety checks. After recorded completion,
-a divergent file or missing or mismatched marker blocks startup and never
-authorizes replay over later user edits. Native setup output and
-failure details are suppressed at the delivery boundary to avoid disclosing
-contents.
+The runner validates identity, paths, OpenClaw `2026.9.8`, and template digest
+against Console defaults; defaults identities must match, and links or conflicts
+fail. Native `setup` initializes the workspace and Git without starting the
+Gateway. Kubernetes init containers use the Gateway resource budget to load the
+native CLI. The runner atomically writes supplied files, including empty
+strings, only over absent, stock, or already-submitted content. It reruns setup
+for the `BOOTSTRAP.md` lifecycle, verifies results, and writes
+`.oce-workspace-setup.json` atomically.
+
+Matching markers skip replay after lost acknowledgement. Incomplete writes retry
+with the same checks. Missing or mismatched markers after recorded completion
+block startup rather than overwrite later edits. Setup failure details are
+suppressed to protect document contents.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -293,7 +295,7 @@ hello grants `operator.admin`; reads also accept `operator.read`.
 
 ### 8. Native file access returns a bounded result
 
-`gateway/workspace-files-client.ts:requestNativeWorkspaceFile` uses Hello's
+`apps/controller/src/gateway/workspace-files-client.ts:requestNativeWorkspaceFile` uses Hello's
 `sessionDefaults.defaultAgentId` when embedded OpenClaw composition opts in and native ownership
 is `sole` with `selectionRequired: false`. Other rosters retain the explicit
 `main` target; other callers retain their explicit targets. Dedicated Codex
@@ -356,6 +358,8 @@ replays it. The native client closes in the operation's cleanup path.
 - 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
 
 - 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
+
+- 2026-10-08 14:42: Initialize OpenShell workspaces privately before Harness startup. (authoring-run/91f18132-f597-42a4-b024-036a23b5313d - ece639c78765727a67753639f6ab225a243e064d)
 
 - 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
 

@@ -15,6 +15,9 @@ import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 service OpenShell {
+  rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
+  // Operator mTLS only; uses upstream GetProviderCredentials at 4c1b16a4.
+  rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
@@ -516,6 +519,7 @@ message GetProviderRefreshStatusResponse {
 }
 
 message ConfigureProviderRefreshRequest {
+  google.protobuf.Timestamp expiration_time = 106;
   WorkspaceSelector workspace_scope = 7;
   string provider = 1;
   string credential_key = 2;
@@ -711,4 +715,49 @@ message SandboxLogLine {
   string message = 5;
   string source = 6;
   map<string, string> fields = 7;
+}
+
+message ExecSandboxRequest {
+  string sandbox = 1;
+  repeated string command = 2;
+  string workdir = 3;
+  map<string, string> environment = 4;
+  bytes stdin = 6;
+  bool tty = 7;
+  uint32 cols = 8;
+  uint32 rows = 9;
+  bool no_login_shell = 10;
+  string request_id = 11;
+  WorkspaceSelector workspace_scope = 12;
+  google.protobuf.Duration execution_timeout = 105;
+}
+
+message ExecSandboxStdout { bytes data = 1; }
+
+message ExecSandboxStderr { bytes data = 1; }
+
+message ExecSandboxExit { int32 exit_code = 1; }
+
+message ExecSandboxEvent {
+  oneof payload {
+    ExecSandboxStdout stdout = 1;
+    ExecSandboxStderr stderr = 2;
+    ExecSandboxExit exit = 3;
+  }
+}
+
+message GetProviderCredentialsRequest {
+  WorkspaceSelector workspace_scope = 1;
+  string name = 2;
+  repeated string credential_keys = 3;
+  google.protobuf.Duration minimum_remaining_lifetime = 4;
+}
+
+message ProviderCredentialValue {
+  string value = 1;
+  google.protobuf.Timestamp expiration_time = 2;
+}
+
+message GetProviderCredentialsResponse {
+  map<string, ProviderCredentialValue> credentials = 1;
 }

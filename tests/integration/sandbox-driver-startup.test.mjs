@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
@@ -28,6 +31,10 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import {
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+} from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 const controllerRequire = createRequire(
@@ -433,8 +440,11 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
   const signal = AbortSignal.timeout(2_000);
   const offered = await createdDriver.credentialGatewayDriver.listSourceTypes({ signal });
   assert.deepEqual(
-    offered.filter(({ rotation }) => rotation === "refresh").map(({ type }) => type),
-    ["oauth2-client-credentials", "oauth2-refresh-token"],
+    offered
+      .filter(({ rotation }) => rotation === "refresh")
+      .map(({ type }) => type)
+      .sort(),
+    ["codex-oauth", "oauth2-client-credentials", "oauth2-refresh-token"],
   );
   const withoutRefresh = sandboxInstallation();
   withoutRefresh.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
@@ -513,6 +523,30 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
     auth: { mode: "bearerTokenFile", path: "/etc/openclaw/openshell/token" },
   };
   await load(protectedTransport);
+
+  // Export credentials use a separate operator identity; they cannot make an
+  // otherwise unauthenticated ordinary RPC connection count as protected.
+  const operatorTls = {
+    certificatePath: "/etc/openclaw/openshell/operator.crt",
+    privateKeyPath: "/etc/openclaw/openshell/operator.key",
+  };
+  protectedTransport.backend[0].configuration.operatorTls = operatorTls;
+  await load(protectedTransport);
+  tlsOnly.backend[0].configuration.operatorTls = operatorTls;
+  await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile authentication/);
+
+  for (const invalid of [
+    { certificatePath: operatorTls.certificatePath },
+    { ...operatorTls, privateKeyPath: "operator.key" },
+  ]) {
+    protectedTransport.backend[0].configuration.operatorTls = invalid;
+    await assert.rejects(load(protectedTransport), /operatorTls requires absolute/);
+  }
+  protectedTransport.backend[0].configuration.operatorTls = operatorTls;
+  const plaintextOperator = sandboxInstallation();
+  plaintextOperator.backend[0].configuration.operatorTls = operatorTls;
+  await assert.rejects(load(plaintextOperator), /operatorTls requires a direct HTTPS/);
+
   // The declaration is only for unprotected transport, so it cannot mask a protected setup.
   protectedTransport.backend[0].configuration.insecureTransport = "network-policy";
   await assert.rejects(load(protectedTransport), /insecureTransport is only for unprotected/);
@@ -1198,6 +1232,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.deepEqual(await driver.harnessEndpoint({ ...context, revision, requirements }), {
     url: "ws://codex.example.test:8080/",
     workspaceRoot: "/sandbox/enterprise",
+    nativeHookCredentialDirectory: `${requests[0].spec.environment.HOME}/.oce-native-hooks`,
   });
 
   assert.equal(requests.length, 1);
@@ -1359,6 +1394,165 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
 
   await driver.cleanup(context);
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
+});
+
+test("OpenShell delivers initial workspace files privately after supervisor readiness", async (t) => {
+  const gatewayClient = workspaceGatewayClient();
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const setup = {
+    id: "initial-workspace",
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    defaultsId: WORKSPACE_DEFAULTS_ID,
+    completed: false,
+    files: { ...WORKSPACE_DEFAULTS, "AGENTS.md": "Private initial Agent instructions\n" },
+  };
+  requirements.workspaceSetup = {
+    id: setup.id,
+    defaultsId: setup.defaultsId,
+    secretKeyRef: { name: "workspace-setup", key: "setup.json" },
+  };
+  const readNodeSecret = context.kubernetes.read;
+  let foreign = false;
+  context.kubernetes.read = async (request) =>
+    request.metadata.name !== "workspace-setup"
+      ? readNodeSecret(request)
+      : {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: {
+            ...request.metadata,
+            labels: {
+              "openclaw.dev/namespace": revision.namespaceId,
+              "openclaw.dev/agent": foreign ? "another-agent" : revision.agentId,
+            },
+          },
+          data: { "setup.json": Buffer.from(JSON.stringify(setup)).toString("base64") },
+        };
+  let sandbox;
+  gatewayClient.createSandbox = async (request) => {
+    sandbox = {
+      ...structuredClone(request),
+      phase: "SANDBOX_PHASE_PROVISIONING",
+      serviceUrls: { "": "http://codex.example.test" },
+    };
+    return sandbox;
+  };
+  gatewayClient.getSandbox = async () => sandbox;
+  gatewayClient.getService = async () => ({
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    url: "http://codex.example.test",
+  });
+  const executions = [];
+  let exitCode = 0;
+  gatewayClient.execSandbox = async (request) => {
+    executions.push(request);
+    return exitCode;
+  };
+  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+
+  await provision();
+  assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
+  sandbox.phase = "SANDBOX_PHASE_READY";
+  await provision();
+  const execution = executions[0];
+  assert.deepEqual(JSON.parse(execution.stdin), setup);
+  assert.equal(execution.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
+  assert.equal(JSON.stringify(execution.command).includes(setup.files["AGENTS.md"]), false);
+  assert.equal(JSON.stringify(sandbox).includes(setup.files["AGENTS.md"]), false);
+  assert.equal(
+    JSON.stringify([...gatewayClient.providers.values()]).includes(setup.files["AGENTS.md"]),
+    false,
+  );
+
+  // Failed initialization and foreign Secret ownership must never report successful delivery.
+  exitCode = 1;
+  await assert.rejects(provision(), /workspace initialization failed/);
+  foreign = true;
+  const before = executions.length;
+  await assert.rejects(provision(), /workspace initialization failed/);
+  assert.equal(executions.length, before);
+
+  await t.test(
+    "native initializer serializes retries and preserves later edits",
+    {
+      skip: process.env.OCC_TEST_RUNTIME_IMAGE
+        ? false
+        : "Set OCC_TEST_RUNTIME_IMAGE to the pinned native runtime.",
+    },
+    async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "openshell-workspace-setup-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, "workspace");
+      const home = join(root, "home");
+      await mkdir(workspace);
+      await mkdir(home);
+      // Execute the exact command produced by provisionHarness with the real native CLI.
+      // Only transport is substituted here; the separate live Sandbox proof covers the relay.
+      const execute = (input) =>
+        new Promise((resolve, reject) => {
+          const child = spawn(
+            "docker",
+            [
+              "run",
+              "--rm",
+              "--interactive",
+              "--pull=never",
+              "--network",
+              "none",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--user",
+              `${process.getuid()}:${process.getgid()}`,
+              "--volume",
+              `${workspace}:/sandbox/enterprise`,
+              "--volume",
+              `${home}:/sandbox/.openclaw-runtime/home`,
+              ...Object.entries(execution.environment).flatMap(([key, value]) => [
+                "--env",
+                `${key}=${value}`,
+              ]),
+              "--entrypoint",
+              execution.command[0],
+              process.env.OCC_TEST_RUNTIME_IMAGE,
+              ...execution.command.slice(1),
+            ],
+            { stdio: ["pipe", "ignore", "pipe"] },
+          );
+          let error = "";
+          child.stderr.on("data", (chunk) => {
+            error += chunk;
+          });
+          child.on("error", reject);
+          child.on("close", (code) =>
+            code === 0 ? resolve() : reject(new Error(`Native setup exited ${code}: ${error}`)),
+          );
+          child.stdin.end(input);
+        });
+      await Promise.all([execute(execution.stdin), execute(execution.stdin)]);
+      assert.equal(await readFile(join(workspace, "AGENTS.md"), "utf8"), setup.files["AGENTS.md"]);
+      assert.equal(
+        JSON.parse(await readFile(join(workspace, ".oce-workspace-setup.json"), "utf8")).id,
+        setup.id,
+      );
+      await writeFile(join(workspace, "AGENTS.md"), "User edit after initialization\n");
+      await execute(execution.stdin);
+      assert.equal(
+        await readFile(join(workspace, "AGENTS.md"), "utf8"),
+        "User edit after initialization\n",
+      );
+      const { files: _files, ...completed } = setup;
+      await execute(JSON.stringify({ ...completed, completed: true }));
+    },
+  );
 });
 
 test("OpenShell retains the revision provider when Sandbox creation has an unknown outcome", async () => {

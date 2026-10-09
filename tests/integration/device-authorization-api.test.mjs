@@ -7,7 +7,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
-  createDeviceCredentialGateway,
+  createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
@@ -37,7 +37,10 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
   const clock = createControlledClock();
   const auditSink = new InMemoryAuditSink();
   const secretDriver = createTestSecretDriver();
-  const gateway = createDeviceCredentialGateway({ now: () => clock.wallNow(), ...gatewayOptions });
+  const { gateway, refresh } = createDeviceCredentialDrivers({
+    now: () => clock.wallNow(),
+    ...gatewayOptions,
+  });
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     secretDriver,
@@ -58,6 +61,8 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
   const namespace = await fixture.createNamespace("Device login", { ready: true });
   fixture.controller.registerDriver(gateway);
   fixture.controller.selectDriver("credential_gateway", gateway.id);
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver("credential_refresh", refresh.id);
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
@@ -109,6 +114,7 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
     namespace,
     secretDriver,
     gateway,
+    refresh,
     auditSink,
     requests,
     responses,
@@ -203,6 +209,9 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   assertDeviceAudit(fixture, "poll");
   const stored = await fixture.stored(login);
   assert.equal(stored.sourceId, ready.source.id);
+  assert.equal(stored.version, 2);
+  assert.equal(stored.credentialGatewayId, fixture.gateway.id);
+  assert.equal(stored.credentialRefreshId, fixture.refresh.id);
   assert.equal(stored.privateState, undefined);
   assert.equal(stored.credential, undefined);
   assert.equal(JSON.stringify(stored).includes(DEVICE_ACCESS_TOKEN), false);
@@ -449,6 +458,89 @@ test("one poll owns Gateway completion and cancellation fences its result withou
     false,
   );
   assert.equal((await fixture.request("GET", fixture.sourcesPath)).data[0].id, sourceId);
+  assertNoCredentials(fixture);
+});
+
+test("a changed Refresh Driver cannot receive an existing device login handle", async (t) => {
+  const fixture = await createFixture(t);
+  const login = await fixture.start();
+  const original = await fixture.stored(login);
+  await fixture.clock.advance(5000);
+  // Selecting another owner must fail before forwarding the old owner's opaque handle.
+  const replacement = { ...fixture.refresh, id: "replacement-device-refresh" };
+  fixture.controller.registerDriver(replacement);
+  fixture.controller.selectDriver("credential_refresh", replacement.id);
+  const before = [...fixture.gateway.calls];
+
+  const refused = await fixture.poll(login);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.deepEqual(fixture.gateway.calls, before, "owner mismatch must precede external calls");
+  const stored = await fixture.stored(login);
+  assert.equal(stored.version, 2);
+  assert.equal(stored.credentialGatewayId, fixture.gateway.id);
+  assert.equal(stored.credentialRefreshId, fixture.refresh.id);
+  assert.equal(stored.sourceId, original.sourceId);
+  assert.equal(stored.phase, "pending");
+  assert.equal(stored.privateState, original.privateState);
+  assert.equal((await fixture.request("GET", fixture.sourcesPath)).data[0].id, original.sourceId);
+  assertNoCredentials(fixture);
+});
+
+test("a Refresh Driver change during polling fences completion without replaying the exchange", async (t) => {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const fixture = await createFixture(t, {
+    beforePoll: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  const login = await fixture.start();
+  const original = await fixture.stored(login);
+  await fixture.clock.advance(5000);
+  const pending = fixture.poll(login);
+  await Promise.race([
+    entered.promise,
+    pending.then(() => assert.fail("poll must reach the original Refresh Driver")),
+  ]);
+  // The original owner can finish externally, but a changed selection cannot authorize
+  // committing that result to the login session. The separately managed source survives.
+  const replacement = { ...fixture.refresh, id: "replacement-device-refresh" };
+  fixture.controller.registerDriver(replacement);
+  fixture.controller.selectDriver("credential_refresh", replacement.id);
+  release.resolve();
+  const refused = await pending;
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  const stored = await fixture.stored(login);
+  assert.equal(stored.version, 2);
+  assert.equal(stored.credentialGatewayId, fixture.gateway.id);
+  assert.equal(stored.credentialRefreshId, fixture.refresh.id);
+  assert.equal(stored.sourceId, original.sourceId);
+  assert.equal(
+    stored.phase,
+    "polling",
+    "an externally completed grant cannot mark this session ready",
+  );
+  assert.equal(fixture.gateway.sources.get(original.sourceId), "ready");
+  assert.equal((await fixture.request("GET", fixture.sourcesPath)).data[0].id, original.sourceId);
+  assert.equal(
+    fixture.gateway.calls.some(
+      ({ operation }) => operation === "removeRefresh" || operation === "removeSource",
+    ),
+    false,
+  );
+
+  // Restoring the original selection still must not re-enter a consumed exchange.
+  fixture.controller.selectDriver("credential_refresh", fixture.refresh.id);
+  const repeated = await fixture.poll(login);
+  assert.equal(repeated.status, 200, JSON.stringify(repeated.body));
+  assert.equal(repeated.data.status, "pending");
+  assert.equal(repeated.data.source, undefined);
+  assert.equal(
+    fixture.gateway.calls.filter(({ operation }) => operation === "pollDeviceAuthorization").length,
+    1,
+  );
   assertNoCredentials(fixture);
 });
 

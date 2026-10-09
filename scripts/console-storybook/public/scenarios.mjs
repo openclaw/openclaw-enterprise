@@ -2139,7 +2139,7 @@ export const scenarios = {
     pluginCapabilities,
     actions: startOAuthLogin,
     description:
-      "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
+      "The fixture completes login after one poll. Agent creation includes the source in both Harness authentication and its credentialSources list. No access or refresh token appears in this preview.",
     steps: [
       "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
       "Choose a model and create the Agent. Deployment is simulated; credential-service delivery is not proved here.",

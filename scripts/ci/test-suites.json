@@ -26,6 +26,7 @@
     "slack": "./test-suites/slack.json",
     "provider-account": "./test-suites/provider-account.json",
     "openshell": "./test-suites/openshell.json",
+    "openshell-oauth": "./test-suites/openshell-oauth.json",
     "helper-timeout": "./test-suites/helper-timeout.json",
     "logging-collector": "./test-suites/logging-collector.json",
     "k3d-otel": "./test-suites/k3d-otel.json",

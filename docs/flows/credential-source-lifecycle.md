@@ -8,12 +8,12 @@ last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 
 ## Overview
 
-An authorized caller registers, binds, deploys, updates, withdraws, or deletes
-a credential source. OCC stores metadata and Secret references; the selected
-Credential Gateway holds copied values. This flow also covers external ChatGPT
-authentication; the
-[OpenShell Sandbox provisioning flow](openshell-sandbox-provisioning.md) covers
-attachment, provisioning, and readiness.
+OCC authorizes and records Namespace credential sources, binds them to Agents,
+and freezes their identities in revisions. The worker resolves those records
+for Compute; the paired Gateway/Sandbox attaches and injects credentials. OCC
+stores metadata and Secret references, never values. This flow also covers
+updates, withdrawal, deletion, and recovery; [refresh](credential-source-refresh.md)
+and [Sandbox provisioning](openshell-sandbox-provisioning.md) own their internal steps.
 
 ## Entry Points
 
@@ -47,7 +47,7 @@ graph TD
   I -- "ready" --> J["<b>Compute receives source</b><br/>Attachment handoff"]
   J --> P{"<b>Source login mode</b>"}
   P -- "api_key" --> Q["<b>Sandbox provisions Harness</b><br/>API-key placeholder"]
-  P -. "chatgptAuthTokens: external Driver required" .-> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
+  P -- "chatgptAuthTokens: custom OpenShell" --> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
   T --> U["<b>Codex entrypoint</b><br/>Ephemeral external-mode auth.json"]
   U --> V["<b>Native model probe</b><br/>Then app-server startup"]
   E --> K["<b>DELETE</b><br/>refused while referenced"]
@@ -58,10 +58,8 @@ graph TD
 
 ## Execution Trace
 
-Registration and deletion must start outside a transaction borrowed from the
-same controller instance. OCC rejects an active or inherited stale context with
-`ResourceConflictError` before validation or effects. Each first commits its
-intermediate State record, then calls `registerSource` or `removeSource`.
+Registration and deletion reject active or inherited stale transaction contexts
+before effects. Each commits its intermediate record before external calls.
 
 ### 1. Admit the registration request
 
@@ -84,7 +82,7 @@ Cross-Namespace Secret references raise `SecretBindingValidationError`
 (`400 INVALID_REQUEST`). OCC then authorizes `secret:operate`, locks each Secret
 (`404` if absent), and calls its Driver's `withValue` (`503` if unsupported).
 The Kubernetes Driver verifies ownership labels, UID, and key before decoding.
-Values remain in memory only for the gateway call.
+Values remain in memory only for the authorized external call.
 
 ### 3. Register with the gateway and commit
 
@@ -92,36 +90,31 @@ Values remain in memory only for the gateway call.
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-The transaction commits a `credential_sources` row with a new `cs_` ID, gateway
-Driver ID and `registering` state, plus `credential_source_secrets` references.
-OCC obtains runtime placement from Compute's `resolveSandboxNamespace`, then
-calls `registerSource` with a 30-second timeout. OpenShell derives the provider
-name from the source ID, ensures its Workspace profile, and creates an
-OCC-labeled provider with that `profile_workspace`. Retries adopt only matching labels.
+The transaction commits a `registering` source and its Secret references before
+external effects. OCC resolves Compute's Sandbox namespace and calls Gateway
+`registerSource` with a 30-second deadline. OpenShell creates the workspace
+profile and labeled provider; replay adopts only matching ownership. Refresh
+material goes only to the paired Refresh Driver, with initialization described
+in the [refresh flow](credential-source-refresh.md).
 
-A terminal `failed` or `absent` result calls `abandonCredentialRegistration`:
-remove the copy, then delete the record, or leave it `deleting` if removal fails.
-A thrown call can still create a copy later, so cleanup always retains
-`deleting` for another DELETE. Success atomically changes `registering` to
-`ready` and appends the audit. An interrupted transaction leaves `registering`,
-which cannot bind or deploy but can be deleted. If concurrent DELETE removed
-the record, OCC removes the copy again and returns `409`.
+A definitive failed/absent result triggers cleanup and record deletion; failed
+cleanup leaves `deleting`. A thrown call may still take effect, so cleanup always
+retains `deleting` for a later DELETE. Success commits `ready` and mutation audit
+atomically. A failed commit leaves `registering`, which blocks binding/admission
+but permits deletion. If concurrent DELETE already won, OCC removes the external
+copy again and returns `409`.
 
 ### Device authorization and configuration
 
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-A type declaring `deviceAuthorization.harnessId` uses normal registration, then
-the Gateway's device-login methods. Tokens remain in the service; a private
-Secret stores the opaque handle and exact source/actor scope. Ready returns the
-source reference. Failed or abandoned sources need explicit cleanup; closing
-a login does not revoke them.
-
-OCC authorizes exact source use before `withSourceToken` and rechecks inside its
-callback before Plugin Driver I/O. Discovery receives a warm access token and
-trusted account identity; Codex never refreshes it. Saved-Agent discovery
-rechecks the binding and Agent grant independently of login-session lifetime.
+Device authorization registers the source before the paired Refresh Driver
+receives issuer material. OCC fences the private session and returns only the
+ready source reference. Gateway `withSourceToken` supplies access credentials to
+an authorized callback and may trigger external refresh. The
+[refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
+owns exchange, handoff, retrieval, and cancellation boundaries.
 
 ### 4. Bind the source to an Agent
 
@@ -185,17 +178,14 @@ for one that is missing or changed.
 Compute checks the list in `credentialSourcesForRevision` and attaches it after
 the model source. The next owner is the [OpenShell Sandbox provisioning flow](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
-For `chatgptAuthTokens`, `attachForRevision` supplies the
+For `chatgptAuthTokens`, Gateway `attachForRevision` returns the placeholder and
+trusted account metadata. Compute's `credentialSourceEnvironment` passes them to
+the native entrypoint, which writes ephemeral external-token `auth.json` before
+the model probe and app-server startup. No refresh token reaches Codex.
+OpenShell's `sandboxCommand` wraps the stable placeholder as a JWT alias; the
+custom injector preserves credential identity across rotations. See the
 [external-auth contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication).
-Compute's `credentialSourceEnvironment` passes the placeholder and authenticated
-metadata as `CODEX_ACCESS_TOKEN` and `OCE_CODEX_CHATGPT_ACCOUNT`. The entrypoint in
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`
-writes ephemeral external-mode `auth.json` before the native model probe and
-app-server startup. Codex receives the unchanged placeholder and no refresh token.
-
-An external Driver/service must supply OAuth, refresh, and Sandbox injection;
-the bundled OpenShell catalog offers only API keys. Legacy runtime-owned OAuth
-and importing an Agent's refresh bundle are unsupported.
+The repository's default pinned images lack the full integration; no legacy Agent refresh bundle is imported.
 
 ### 7. Delete the source
 
@@ -207,7 +197,8 @@ locks the source. Agent draft, active revision or pending deployment references
 return `409`; withdrawal-only references return `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`;
 another owning Driver returns `503`. It moves `registering` or `ready` to
 `deleting`; triggers forbid leaving that state or returning to `registering`.
-Outside the transaction, `removeSource` confirms deletion of the owned provider,
+Outside the transaction, OCC removes refresh state through the selected Refresh
+Driver, then Gateway `removeSource` confirms deletion of the owned provider,
 then its profile if no same-type provider remains. Failure leaves `deleting`
 and returns `503`.
 
@@ -222,14 +213,17 @@ atomically. Namespace deletion returns `NAMESPACE_NOT_EMPTY` while a record rema
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
 One transaction locks the Namespace/source, authorizes `credential_source:update`,
-and requires a `ready`, catalog-offered source (`409` otherwise). It validates
-replacement references, authorizes each Secret's `operate`, reads with `withValue`,
-and calls `updateSource` with Compute's placement under the source lock.
-OpenShell verifies provider ownership before `UpdateProvider`. OCC then replaces
-references and appends the audit atomically. Gateway failure rolls back references;
-later failure leaves the gateway newer until retry. `absent` or `failed` returns
-`503`. OpenShell rejects empty values because `UpdateProvider` merges values,
-and delivers updates only to newly started processes.
+and requires a ready source offered by the catalog (`409` otherwise). For static
+sources, it validates replacement references, authorizes every Secret read, and
+calls Gateway `updateSource` with Compute's placement. OpenShell requires matching
+ownership and nonempty values because `UpdateProvider` merges credentials.
+Only subsequently started processes receive the update.
+
+The transaction commits replacement Secret references and audit after the
+external write. A failed write rolls back the references; a later commit failure
+leaves OpenShell newer until the request is repeated. An absent/failed source
+returns `503`. Secret-backed refresh updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotation);
+device-authorized sources reject PATCH before reading Secrets or changing refresh.
 
 ### 9. Withdraw a source from an Agent
 
@@ -329,6 +323,13 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 - 2026-10-09 08:30: Replays take over withdrawal work. (fix-892-894)
 - 2026-10-09 06:00: Exhausted withdrawals retry later without Compute maintenance. (fix-887)
+
+- 2026-10-09 17:37: Trace Refresh-owned device authorization in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 1c2fbd2bc2953430e3ddaf68882176c6943ea7b2)
+
+- 2026-10-09 17:01: Trace operator-TLS retrieval and Gateway-owned refresh in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
+
+- 2026-10-08 12:47: Trace the experimental OpenShell device-login, warm-read, and JWT-placeholder integration in the accompanying local change. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - ece639c78765727a67753639f6ab225a243e064d)
+
 - 2026-10-08 20:30: Maintenance leaves denied withdrawals for a replay. (fix-853)
 - 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)
 - 2026-10-08 16:00: Preparation rechecks revoked withdrawals against a late Sandbox create. (fix-790)

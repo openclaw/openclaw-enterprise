@@ -95,6 +95,11 @@ export interface OpenShellBackendConfiguration {
   readonly auth?:
     | { readonly mode: "unauthenticated" }
     | { readonly mode: "bearerTokenFile"; readonly path: string };
+  /** Direct operator mTLS for credential retrieval only; ordinary RPCs keep auth above. */
+  readonly operatorTls?: {
+    readonly certificatePath: string;
+    readonly privateKeyPath: string;
+  };
   /** At most 30 s; it bounds how late a timed-out credential registration can land. */
   readonly requestTimeoutMs?: number;
   readonly rootCertificatePath?: string;
@@ -305,7 +310,7 @@ export interface CredentialSourceFieldSpec {
 
 /** One entry in a Credential Gateway implementation's catalog. */
 export interface CredentialSourceType {
-  /** Device login initializes this source in the selected Credential Gateway. */
+  /** Device login defers the first mint to the selected Credential Refresh Driver. */
   readonly deviceAuthorization?: { readonly harnessId: string };
   readonly type: string;
   readonly config: readonly CredentialSourceFieldSpec[];
@@ -1030,6 +1035,13 @@ export interface HarnessWorkloadRequirements {
   /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
   readonly workloadIdentity?: SandboxWorkloadIdentity;
   readonly workspaceMounts: readonly SandboxWorkspaceMount[];
+  /** Initialize the mounted workspace privately before starting the Harness; never copy file contents here. */
+  readonly workspaceSetup?: {
+    readonly id: string;
+    readonly defaultsId?: string;
+    /** Agent-owned, same-Namespace setup delivery; the Sandbox consumes only this exact key. */
+    readonly secretKeyRef: { readonly name: string; readonly key: string };
+  };
   readonly environment: readonly SandboxEnvironmentVariable[];
   readonly files: readonly SandboxWorkloadFile[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
@@ -1049,6 +1061,8 @@ export interface SandboxHarnessEndpoint {
   readonly url: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /** Required for Codex: provider-created private hook directory outside its workspace. */
+  readonly nativeHookCredentialDirectory?: string;
 }
 
 export interface SandboxNamespaceContext {
@@ -1305,6 +1319,8 @@ export interface ExternalChatgptAuth {
   readonly accountId: string;
   readonly planType: string;
   readonly userId?: string;
+  /** Membership identity from the access token, distinct from the global user ID. */
+  readonly accountUserId?: string;
   readonly email?: string;
   readonly isFedramp?: boolean;
 }
@@ -1326,16 +1342,7 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
-  /** The Gateway owns the provider exchange and tokens; OCC retains only an opaque handle. */
-  startDeviceAuthorization?(
-    context: CredentialSourceContext,
-  ): Promise<CredentialSourceDeviceAuthorization>;
-  /** Ready means the Gateway durably owns the connection; never return tokens to OCC. */
-  pollDeviceAuthorization?(
-    context: CredentialSourceContext,
-    privateState: string,
-  ): Promise<CredentialSourceDeviceAuthorizationResult>;
-  /** Warm lookup only: the token service owns refresh. Tokens exist only during the callback. */
+  /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
   withSourceToken?<T>(
     context: CredentialSourceContext,
     use: (token: CredentialSourceToken) => Promise<T>,
@@ -1390,6 +1397,15 @@ export interface CredentialRefreshStatus {
  */
 export interface CredentialRefreshDriver extends Driver {
   readonly capability: "credential_refresh";
+  /** Owns the private device exchange; OCC retains only an opaque login handle. */
+  startDeviceAuthorization?(
+    context: CredentialSourceContext,
+  ): Promise<CredentialSourceDeviceAuthorization>;
+  /** Ready means refresh custody and the first managed token are established; never returns tokens. */
+  pollDeviceAuthorization?(
+    context: CredentialSourceContext,
+    privateState: string,
+  ): Promise<CredentialSourceDeviceAuthorizationResult>;
   /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
   configureRefresh(
     context: CredentialSourceContext,
@@ -1850,7 +1866,7 @@ export interface CredentialSourceDeviceAuthorization {
   readonly userCode: string;
   readonly expiresAt: string;
   readonly intervalSeconds: number;
-  /** Opaque Gateway login handle; never an access or refresh token. */
+  /** Opaque Refresh Driver login handle; never an access or refresh token. */
   readonly privateState: string;
 }
 

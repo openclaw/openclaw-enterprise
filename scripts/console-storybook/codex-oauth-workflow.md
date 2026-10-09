@@ -17,7 +17,7 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    Choose **Cancel login** and confirm the sign-in button returns.
 3. Open **ChatGPT login ready for plugin discovery (Experimental)**. Wait for the ready status,
    choose **Configure plugins**, select Calendar, and add it. Choose a model and
-   create the Agent. Inspect the simulated requests: discovery carries a credential-source reference and Agent creation saves its source ID,
+   create the Agent. Inspect the simulated requests: discovery carries a credential-source reference and Agent creation includes that ID in both `harnessAuth` and `credentialSources`,
    never access or refresh tokens. Confirm creation opens the saved draft; deploy it
    separately from Agent detail because guided provisioning does not support credential sources.
 4. Check **ChatGPT login permission denied (Experimental)**, **ChatGPT login exchange failed (Experimental)**,

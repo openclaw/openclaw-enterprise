@@ -10,6 +10,7 @@ import type {
   CredentialSourceInput,
   CredentialSourceStatus,
   CredentialSourceType,
+  CredentialSourceToken,
 } from "@openclaw-enterprise/contracts";
 import { CredentialSourceRevisionError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
@@ -27,6 +28,15 @@ import {
   type OpenShellProviderResponse,
   type OpenShellRefreshStrategy,
 } from "../sandbox/openshell-gateway-client.ts";
+
+import {
+  CODEX_OAUTH_TYPE,
+  CODEX_PROFILE_ID,
+  CODEX_ACCESS_TOKEN_ENV,
+  CODEX_ACCOUNT_CONFIG,
+  CODEX_OAUTH_TOKEN_URL,
+  codexAccountMetadata,
+} from "../credential-refresh/codex-device-authorization.ts";
 
 export interface OpenShellCredentialGatewayOptions {
   /** Absolute paths of the Harness binaries allowed to reach model endpoints. */
@@ -245,6 +255,54 @@ function bearerTokenEndpoint(config: Readonly<Record<string, string>>): {
 const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   {
     catalog: Object.freeze({
+      type: CODEX_OAUTH_TYPE,
+      config: Object.freeze([]),
+      secrets: Object.freeze([]),
+      rotation: "refresh",
+      deviceAuthorization: Object.freeze({ harnessId: "codex" }),
+      harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "chatgptAuthTokens" }),
+    }),
+    refresh: Object.freeze({
+      strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+      configMaterial: Object.freeze(["client_id"]),
+    }),
+    validate() {},
+    credentials: () => Object.freeze({ access_token: CODEX_ACCESS_TOKEN_ENV }),
+    profileScope: "type",
+    profileId: () => CODEX_PROFILE_ID,
+    profile: (_sourceId, _config, options) => ({
+      id: CODEX_PROFILE_ID,
+      displayName: "Codex OAuth (Experimental)",
+      category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
+      credentials: [
+        {
+          name: "access_token",
+          envVars: [CODEX_ACCESS_TOKEN_ENV],
+          required: true,
+          authStyle: "bearer",
+          headerName: "authorization",
+          refresh: {
+            strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+            tokenUrl: CODEX_OAUTH_TOKEN_URL,
+            scopes: [],
+            refreshBeforeSeconds: 300,
+            material: [
+              { name: "client_id", required: true, secret: false },
+              { name: "refresh_token", required: true, secret: true },
+            ],
+          },
+        },
+      ],
+      endpoints: [
+        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/**" },
+        { host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" },
+      ],
+      binaries: options.binaries,
+      inferenceCapable: true,
+    }),
+  },
+  {
+    catalog: Object.freeze({
       type: "openai",
       config: Object.freeze([]),
       secrets: Object.freeze([
@@ -385,8 +443,8 @@ function catalogTypes(
 ): readonly OpenShellSourceType[] {
   return SOURCE_TYPES.filter(
     (entry) =>
-      entry.catalog.harnessAuth !== undefined ||
-      (options.toolBinaries !== undefined && (entry.refresh === undefined || refresh)),
+      (entry.catalog.harnessAuth !== undefined || options.toolBinaries !== undefined) &&
+      (entry.refresh === undefined || refresh),
   );
 }
 
@@ -547,7 +605,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         );
       }
     }
-    return { state: "ready" };
+    return { state: input.type === CODEX_OAUTH_TYPE ? "pending" : "ready" };
   }
 
   /**
@@ -596,6 +654,27 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return { state: "ready" };
   }
 
+  async withSourceToken<T>(
+    context: CredentialSourceContext,
+    use: (token: CredentialSourceToken) => Promise<T>,
+  ): Promise<T> {
+    const provider = await this.codexProvider(context);
+    const account = codexAccountMetadata(provider.config);
+    // Only the operator channel can export credentials. OpenShell may refresh to
+    // satisfy its lifetime guarantee; the Driver never receives refresh material here.
+    const token = await this.credentialClient(context).getProviderCredential(
+      openShellWorkspaceName(context.namespace),
+      provider.name,
+      CODEX_ACCESS_TOKEN_ENV,
+      context.signal,
+    );
+    return use({
+      accessToken: token.value,
+      accountId: account.accountId,
+      ...(account.isFedramp === undefined ? {} : { isFedramp: account.isFedramp }),
+    });
+  }
+
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
     const provider = await this.client(context).getProvider(
       openShellWorkspaceName(context.namespace),
@@ -607,6 +686,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     if (!ownedBy(provider, context.source.id, knownSourceType(context.source.type))) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
+    }
+    if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
+      return { state: "pending" };
     }
     return { state: "ready" };
   }
@@ -670,7 +752,20 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
       await this.ensureProfile(client, workspace, type, source.id, source.config, context.signal);
-      attachments.push(Object.freeze({ sourceId: source.id, ref: name }));
+      attachments.push(
+        Object.freeze({
+          sourceId: source.id,
+          ref: name,
+          ...(source.type === CODEX_OAUTH_TYPE
+            ? {
+                externalChatgptAuth: {
+                  ...codexAccountMetadata(provider.config),
+                  accessTokenPlaceholder: `openshell:resolve:env:${CODEX_ACCESS_TOKEN_ENV}`,
+                },
+              }
+            : {}),
+        }),
+      );
     }
     return Object.freeze(attachments);
   }
@@ -751,8 +846,37 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     });
   }
 
+  private async codexProvider(
+    context: CredentialSourceContext,
+  ): Promise<OpenShellProviderResponse> {
+    if (
+      context.source.type !== CODEX_OAUTH_TYPE ||
+      context.source.driverId !== this.id ||
+      context.source.namespaceId !== context.namespace.id
+    ) {
+      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
+    }
+    const provider = await this.client(context).getProvider(
+      openShellWorkspaceName(context.namespace),
+      openShellProviderName(context.source.id),
+      context.signal,
+    );
+    if (!provider || !ownedBy(provider, context.source.id, knownSourceType(CODEX_OAUTH_TYPE))) {
+      throw new ScopeViolationError(
+        "The OpenShell provider is not owned by this Codex OAuth source.",
+      );
+    }
+    return provider;
+  }
+
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
     return this.backend.client.clientForNamespace(context.namespace.name);
+  }
+
+  private credentialClient(
+    context: CredentialGatewayContext & { readonly namespace: { name: string } },
+  ) {
+    return this.backend.client.credentialClientForNamespace(context.namespace.name);
   }
 
   private async ensureProfile(

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Harness Authentication Binding Flow
@@ -34,7 +34,7 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 ```mermaid
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
-  DA["Gateway completes device login<br/>External implementation required"] -.-> B
+  DA["Refresh Driver completes device login<br/>External implementation required"] -.-> B
   G -->|external ChatGPT| OA["Sandbox supplies placeholder<br/>and account metadata"]
   OA --> J
   R["Operator provisions protected host env"] --> B
@@ -289,6 +289,8 @@ an external OAuth Driver and service; the bundled catalog offers API keys only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 17:37: Trace Refresh-owned device authorization in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 1c2fbd2bc2953430e3ddaf68882176c6943ea7b2)
 
 - 2026-10-07 16:05: Select Harness authentication by source ID and validate the complete credential attachment set. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 046c3d75e)
 

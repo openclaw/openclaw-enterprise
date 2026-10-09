@@ -2306,6 +2306,11 @@ async function prepareProductionInstallation(
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
+    // Console creation includes initial files. Keep this normal setup path in the
+    // real Sandbox proof so credential-only fixtures cannot hide delivery gaps.
+    ...(harnessId === "codex"
+      ? { initialWorkspaceFiles: { "AGENTS.md": "# Initialized OpenShell workspace\n" } }
+      : {}),
     // The list holds every bound source; harnessAuth names the model source within it.
     credentialSources: [
       { sourceId: modelSource.data.id },
@@ -2399,6 +2404,14 @@ async function prepareProductionInstallation(
   });
 
   const sandbox = await waitForSandbox(placement, deployed.data);
+  if (harnessId === "codex") {
+    const initialFile = await request(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`,
+    );
+    assert.equal(initialFile.status, 200, JSON.stringify(initialFile.error));
+    assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
+  }
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
   process.stderr.write(
     "OpenShell integration: provider Harness ready; checking ownership and mounts.\n",
@@ -3592,6 +3605,18 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     providerWorkspace,
     "the OpenShell Harness and Agent Gateway must use the same workspace root.",
   );
+  const harnessHome = topology.harnessPod.spec.containers
+    .flatMap(({ env = [] }) => env)
+    .find(({ name }) => name === "HOME")?.value;
+  const hookDirectory = topology.gatewayPod.spec.containers
+    .flatMap(({ env = [] }) => env)
+    .find(({ name }) => name === "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY")?.value;
+  assert.equal(
+    hookDirectory,
+    `${harnessHome}/.oce-native-hooks`,
+    "the Gateway must deliver native hook credentials into the Harness launcher's private directory.",
+  );
+  assert.equal(hookDirectory.startsWith(`${providerWorkspace}/`), false);
   const writablePath = `${providerWorkspace}/${nonce}.txt`;
   // OpenShell serves provider-profile files only when they are opened; access(2) reports them
   // missing. Reading proves the projected config is readable, and a write open is refused.

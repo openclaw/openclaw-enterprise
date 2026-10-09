@@ -7,7 +7,7 @@ import {
 } from "@openclaw-enterprise/utils";
 import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix } from "node:path";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -1451,6 +1451,24 @@ function providerHarnessUrl(
   ) {
     throw new ConfigurationFailure(
       "SandboxDriver Harness workspace root must be an absolute path without surrounding whitespace.",
+    );
+  }
+  const hookDirectory = endpoint.nativeHookCredentialDirectory;
+  const workspaceRoot = posix.resolve(endpoint.workspaceRoot ?? "/home/node/workspace");
+  if (
+    typeof hookDirectory !== "string" ||
+    !posix.isAbsolute(hookDirectory) ||
+    hookDirectory === "/" ||
+    hookDirectory.trim() !== hookDirectory ||
+    hookDirectory.includes("\0") ||
+    posix.normalize(hookDirectory) !== hookDirectory ||
+    workspaceRoot === "/" ||
+    hookDirectory === workspaceRoot ||
+    hookDirectory.startsWith(`${workspaceRoot}/`) ||
+    workspaceRoot.startsWith(`${hookDirectory}/`)
+  ) {
+    throw new ConfigurationFailure(
+      "SandboxDriver Harness native hook credential directory must be a normalized absolute private path outside the workspace.",
     );
   }
   return url;
@@ -5103,6 +5121,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         workspaceSetup,
         repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
         nativeRuntime,
+        undefined,
+        sandboxDriver?.provisionHarness !== undefined,
       );
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
@@ -5171,6 +5191,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           harnessAuth.loginMode,
           attachments,
           this.sandboxWorkloadFiles(pluginRuntime),
+          workspaceSetup,
         );
         const requirements = {
           ...renderedRequirements,
@@ -5666,6 +5687,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         workspaceSetup,
         repositoryMaterial,
         nativeRuntime,
+        undefined,
+        sandboxDriver?.provisionHarness !== undefined,
       );
     let providerEndpoint: SandboxHarnessEndpoint | undefined;
     if (sandboxDriver?.provisionHarness === undefined) {
@@ -5730,6 +5753,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         harnessAuth.loginMode,
         [],
         this.sandboxWorkloadFiles(pluginRuntime),
+        workspaceSetup,
       );
       if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
         throw new Error("The exact AgentRevision workload is not ready.");
@@ -8443,6 +8467,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "accountId",
             "planType",
             "userId",
+            "accountUserId",
             "email",
             "isFedramp",
           ].includes(key),
@@ -8451,6 +8476,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !text(record.accountId) ||
       !text(record.planType) ||
       (record.userId !== undefined && !text(record.userId)) ||
+      (record.accountUserId !== undefined && !text(record.accountUserId)) ||
       (record.email !== undefined && !text(record.email)) ||
       (record.isFedramp !== undefined && typeof record.isFedramp !== "boolean")
     ) {
@@ -8471,6 +8497,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     loginMode: HarnessWorkloadRequirements["loginMode"],
     credentialAttachments: readonly CredentialSourceAttachment[] = [],
     files: readonly SandboxWorkloadFile[] = [],
+    workspaceSetup?: WorkspaceSetup,
   ): HarnessWorkloadRequirements {
     const template = asRecord(deployment.spec?.template);
     const metadata = asRecord(template?.metadata);
@@ -8490,12 +8517,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (command.some((entry) => typeof entry !== "string") || command.length === 0) {
       throw new ConfigurationFailure("Dedicated Harness command must be explicit.");
     }
+    const initializer = Array.isArray(spec?.initContainers)
+      ? spec.initContainers.find((item) => asRecord(item)?.name === "initialize-workspace")
+      : undefined;
+    const setupVolume = Array.isArray(spec?.volumes)
+      ? spec.volumes.find((item) => asRecord(item)?.name === "workspace-setup")
+      : undefined;
     if (
-      Array.isArray(spec?.initContainers) &&
-      spec.initContainers.some((item) => asRecord(item)?.name === "initialize-workspace")
+      (workspaceSetup === undefined && (initializer !== undefined || setupVolume !== undefined)) ||
+      (workspaceSetup !== undefined &&
+        (initializer === undefined ||
+          asRecord(asRecord(setupVolume)?.secret)?.secretName !==
+            this.workspaceSetupSecretName(workspaceSetup.agentId)))
     ) {
       throw new ConfigurationFailure(
-        "Sandbox Harness requirements cannot deliver workspace initialization.",
+        "Sandbox workspace initialization requires its exact private setup delivery.",
       );
     }
     const fileEnvironment = new Set(files.map((file) => file.environmentVariable));
@@ -8533,6 +8569,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
       command: command as readonly string[],
       ...(workloadIdentity === undefined ? {} : { workloadIdentity }),
       workspaceMounts,
+      ...(workspaceSetup === undefined
+        ? {}
+        : {
+            workspaceSetup: {
+              id: workspaceSetup.id,
+              ...(workspaceSetup.defaultsId === undefined
+                ? {}
+                : { defaultsId: workspaceSetup.defaultsId }),
+              secretKeyRef: {
+                name: this.workspaceSetupSecretName(workspaceSetup.agentId),
+                key: "setup.json",
+              },
+            },
+          }),
       environment,
       files: Object.freeze([...files]),
       credentialAttachments: Object.freeze([...credentialAttachments]),
@@ -9134,8 +9184,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     container.args = nodeProgramArguments(
       (workspaceSetup === undefined
         ? ""
-        : workspaceSetupVerifier(workspaceSetup, "/home/node/workspace")) +
-        AGENT_WITH_NODE_ENTRYPOINT,
+        : workspaceSetupVerifier(
+            workspaceSetup,
+            this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
+              ? "/home/node/workspace"
+              : { environment: "OPENCLAW_WORKSPACE_DIR" },
+          )) + AGENT_WITH_NODE_ENTRYPOINT,
     );
   }
 
@@ -12284,7 +12338,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryMaterial?: ResolvedRepositoryMaterialSpec,
     nativeRuntime?: NativeRuntimeSnapshot,
     providerEndpoint?: SandboxHarnessEndpoint,
+    useRuntimeWorkspace = false,
   ): ManagedKubernetesObject {
+    const harnessSetupWorkspace = useRuntimeWorkspace
+      ? { environment: "OPENCLAW_WORKSPACE_DIR" as const }
+      : "/home/node/workspace";
     if (nativeRuntime !== undefined && (embedded || role !== "agent")) {
       throw new ConfigurationFailure(
         "Dedicated OpenClaw runtime requires a dedicated Harness workload.",
@@ -12653,11 +12711,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ? `ws://agent-${suffix}.${required(configuration?.harnessNamespace?.name, "Harness namespace")}.svc:${AGENT_TRANSPORT_PORT}`
                   : `wss://${this.options.executionCluster.harnessRouting.hostname}${this.harnessRoutePath(ownership)}`,
           });
-          if (providerEndpoint?.workspaceRoot !== undefined) {
+          if (providerEndpoint !== undefined) {
             variables.push({
-              name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
-              value: providerEndpoint.workspaceRoot,
+              name: "OPENCLAW_NATIVE_HOOK_CREDENTIAL_DIRECTORY",
+              value: providerEndpoint.nativeHookCredentialDirectory!,
             });
+            if (providerEndpoint.workspaceRoot !== undefined) {
+              variables.push({
+                name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
+                value: providerEndpoint.workspaceRoot,
+              });
+            }
           }
         }
         if (configuration?.usesGatewayPasswordEnv === true) {
@@ -12932,7 +12996,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                               workspaceSetup,
                               role === "gateway"
                                 ? required(configuration?.workspace, "Initial workspace directory")
-                                : "/home/node/workspace",
+                                : harnessSetupWorkspace,
                             )) +
                           (role === "gateway"
                             ? GATEWAY_RUNTIME_ENTRYPOINT

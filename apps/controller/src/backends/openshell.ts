@@ -32,6 +32,7 @@ export class OpenShellGateway {
   private readonly configuration: OpenShellBackendConfiguration;
   private readonly injectedClient: OpenShellGatewayClient | undefined;
   private readonly clients = new Map<string, OpenShellGatewayClient>();
+  private readonly credentialClients = new Map<string, OpenShellGatewayClient>();
 
   constructor(
     configuration: OpenShellBackendConfiguration,
@@ -60,18 +61,52 @@ export class OpenShellGateway {
     return created;
   }
 
+  /** Export uses a distinct operator identity without broadening ordinary RPC authority. */
+  credentialClientForNamespace(
+    namespace: string,
+  ): Pick<OpenShellGatewayClient, "getProviderCredential"> {
+    if (this.injectedClient !== undefined) {
+      return this.injectedClient;
+    }
+    const operatorTls = this.configuration.operatorTls;
+    if (operatorTls === undefined) {
+      throw new OpenShellBackendConfigurationFailure(
+        "OpenShell credential retrieval requires operatorTls certificate and private key paths.",
+      );
+    }
+    const options: OpenShellGatewayClientOptions = {
+      ...this.clientOptions(namespace),
+      auth: { mode: "mutualTls", ...operatorTls },
+    };
+    const existing = this.credentialClients.get(options.endpoint);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const created = new GrpcOpenShellGatewayClient(options);
+    this.credentialClients.set(options.endpoint, created);
+    return created;
+  }
+
   close(): void {
     this.injectedClient?.close();
     for (const client of this.clients.values()) {
       client.close();
     }
     this.clients.clear();
+    for (const client of this.credentialClients.values()) {
+      client.close();
+    }
+    this.credentialClients.clear();
   }
 
   private clientOptions(namespace: string): OpenShellGatewayClientOptions {
     const configuration = this.configuration;
     return {
       endpoint: configuration.endpoint ?? serviceEndpoint(configuration, namespace),
+      // TODO(namespaced OpenShell identities): the OAuth PoC deliberately shares one
+      // installation identity for ordinary RPCs and an operator certificate for exports.
+      // Namespace selection changes routing, not identity; later identity provisioning
+      // belongs here, while OCC continues authorizing each source operation.
       ...(configuration.auth === undefined ? {} : { auth: configuration.auth }),
       ...(configuration.requestTimeoutMs === undefined
         ? {}

@@ -25,12 +25,13 @@ The OpenShell SandboxDriver owns only the provider sandboxing delegation:
 - `configureAgent` contributes configuration before revision admission.
 - In `operator` mode, `ensureNamespace` applies configured labels, workspace
   resources, and NetworkPolicies, then owns the exact active Workspace.
-- `provisionHarness` asks the OpenShell gateway to create one OpenShell Sandbox
-  in that Workspace. Dedicated Codex exposes its loopback app-server port in the
+- `provisionHarness` creates one Sandbox in that Workspace. Dedicated Codex
+  exposes its loopback app-server port in the
   same request; native OpenClaw requests no inbound service. The Driver adds each
   [credential attachment](#credential-attachments) to the Sandbox's providers,
   plus a revision-owned Codex runtime provider when applicable,
   validates the route, and returns the stable Sandbox reference.
+  Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before Harness execution.
 - OpenShell's controller creates and owns the provider Harness Pod behind that
   Sandbox.
 - `cleanup` derives the stable Sandbox identity during revision retirement, even

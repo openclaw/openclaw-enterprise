@@ -4,12 +4,13 @@ import { ResourceStateConflictError } from "./errors.ts";
 /** Private Secret-backed state; provider payloads never enter platform rows or API responses. */
 export interface DeviceAuthorizationSession {
   readonly kind: "harness_device_authorization";
-  readonly version: 1;
+  readonly version: 2;
   readonly actorId: string;
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly harnessId: string;
   readonly credentialGatewayId: string;
+  readonly credentialRefreshId: string;
   readonly sourceId: string;
   readonly phase: "pending" | "polling" | "ready" | "cancelled";
   readonly expiresAt: string;
@@ -32,11 +33,12 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
   const authorization = asRecord(record?.authorization);
   if (
     record?.kind !== "harness_device_authorization" ||
-    record.version !== 1 ||
+    record.version !== 2 ||
     !isNonEmptyString(record.actorId) ||
     !isNonEmptyString(record.namespaceId) ||
     !isNonEmptyString(record.harnessId) ||
     !isNonEmptyString(record.credentialGatewayId) ||
+    !isNonEmptyString(record.credentialRefreshId) ||
     !isNonEmptyString(record.sourceId) ||
     (record.agentId !== undefined && !isNonEmptyString(record.agentId)) ||
     !["pending", "polling", "ready", "cancelled"].includes(String(record.phase)) ||

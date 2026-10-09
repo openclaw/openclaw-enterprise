@@ -13,9 +13,10 @@ processes need no restart.
 OpenClaw Control Plane (OCC) owns the source record, its Secret references, and
 authorization. The paired [Credential Gateway](credential-gateway.md) owns the
 source's stored record and applies the current token to the Agent's requests.
-This Driver owns the refresh material and the minted tokens. OCC calls it only to
-set up refresh, to force a rotation, and to read refresh status; it never calls
-the Driver on a request path.
+This Driver owns issuer exchange, refresh material, and minted tokens. OCC calls
+it for setup, device authorization, incident rotation, status, and removal.
+Configuration discovery uses the Gateway's [access-token callback](credential-gateway.md#optional-additions);
+OpenShell may refresh during retrieval without an OCC refresh call.
 
 Selection is optional. The only implementation is the bundled
 [OpenShell Credential Refresh](openshell-credential-gateway.md#oauth2-refresh-sources),
@@ -31,8 +32,8 @@ method below. Startup rejects a Driver that omits one.
 | Operation          | Inputs and preconditions                                                                       | Result or side effects                                                                          | Failure or absence                                                              |
 | ------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `configureRefresh` | A source the gateway registered, its config, resolved refresh material, and a UUID request ID. | Replaces the source's refresh material. Replaying a successful request ID applies nothing new.  | A throw leaves the outcome unknown; OCC never retries it with a new request ID. |
-| `rotate`           | A configured source and a UUID request ID.                                                     | Forces one mint and returns the refresh status. It does not revoke the old token at the issuer. | A status other than `ready` means no token was minted.                          |
-| `refreshStatus`    | A configured source.                                                                           | Current refresh status.                                                                         | Missing refresh state reports `failed`, never `ready`.                          |
+| `rotate`           | A configured source and a UUID request ID.                                                     | Forces one mint and returns the refresh status. It does not revoke the old token at the issuer. | Only `ready` confirms a usable minted token.                                    |
+| `refreshStatus`    | An existing source.                                                                            | Current refresh status.                                                                         | Missing state is `pending` before device authorization, otherwise `failed`.     |
 | `removeRefresh`    | Source record.                                                                                 | Deletes the stored refresh material. Already-absent material counts as removed.                 | A throw keeps the OCC record `deleting` for retry.                              |
 
 `CredentialRefreshStatus` carries only `state` (`pending`, `ready`, or
@@ -41,8 +42,25 @@ an implementation-owned `failureCode`, and a `recoveryAction` of `retry`,
 `reauthorize`, `fix_configuration`, or `investigate`. It never carries a token,
 refresh material, or text from the issuer.
 
-A `CredentialSourceType` whose `rotation` is `refresh` needs this Driver. The
-contract has no optional methods.
+A `CredentialSourceType` whose `rotation` is `refresh` needs this Driver. The four refresh methods are required; device authorization adds optional hooks.
+
+## Device authorization
+
+A type declaring `deviceAuthorization.harnessId` requires this Driver's
+`startDeviceAuthorization(context)` and `pollDeviceAuthorization(context, privateState)`.
+OCC first registers an empty source with the Gateway; it defers refresh setup
+until authorization supplies a grant. Start returns device instructions and an
+opaque handle. Poll returns `pending` or `ready` only, never issuer credentials.
+The Refresh Driver performs the exchange, configures gateway-owned refresh, and
+confirms a usable token before reporting `ready`.
+
+OCC fences polling with Secret compare-and-swap and binds the session to its actor,
+source, and both Gateway and Refresh Driver IDs. It rechecks those bindings and
+authority after external completion. A changed selection or uncertain exchange
+requires reconnecting; it never replays the exchange. Closing the session removes
+only its handle. Existing sources remain usable by their authorized Agents.
+Device-source `PATCH` is refused: create a new login source rather than reseeding
+a rotating refresh grant.
 
 ## IAM
 
@@ -71,7 +89,8 @@ destructor.
    derive from the source ID, so a replay of the same step is not applied twice.
    The source becomes `ready` only once `rotate` reports `ready`. On any failure,
    OCC calls `removeRefresh` and the gateway's `removeSource`, as for a failed
-   static registration.
+   static registration. Device-authorized types register without configuring or
+   minting; their first mint occurs during the device completion above.
 2. **Background refresh.** The Driver re-mints before expiry without OCC. A
    failure appears in the source's status with its recovery action.
 3. **Update.** `PATCH` reads the current or replacement Secret values and calls
@@ -97,18 +116,19 @@ destructor.
   the selected Credential Gateway's Backend.
 - OCC does not poll refresh status or audit background refresh failures; read
   the source to see them.
-- Model sources do not use refresh types.
+- The experimental `codex-oauth` model source uses device authorization; OAuth2
+  tool sources receive their initial material through Secret references.
 - Installed Credential Refresh packages are unsupported.
 
 ## Troubleshooting
 
-| Symptom                                                      | What to check                                                                                                                                  |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| A refresh type is missing from the catalog                   | Select `drivers.credential_refresh` and declare it on the gateway's Backend.                                                                   |
-| Registration or rotation returns `503` naming a failure code | The issuer refused the material or was unreachable. Read the source's `status.refresh` and follow its `recoveryAction`.                        |
-| `status.refresh.recoveryAction` is `reauthorize`             | The issuer revoked the refresh token. Complete a new sign-in, store the new refresh token in a Secret, and `PATCH` the source to reference it. |
-| `status.refresh.recoveryAction` is `fix_configuration`       | Check the source's `token_url`, `client_id`, `scope`, and client secret against the issuer.                                                    |
-| Rotation returns `409`                                       | The source is static. Update its Secret values instead.                                                                                        |
+| Symptom                                                      | What to check                                                                                                                                                               |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A refresh type is missing from the catalog                   | Select `drivers.credential_refresh` and declare it on the gateway's Backend.                                                                                                |
+| Registration or rotation returns `503` naming a failure code | The issuer refused the material or was unreachable. Read the source's `status.refresh` and follow its `recoveryAction`.                                                     |
+| `status.refresh.recoveryAction` is `reauthorize`             | The issuer revoked the refresh token. For a device source, reconnect with a new source. For a Secret-backed type, store new material in a Secret and `PATCH` its reference. |
+| `status.refresh.recoveryAction` is `fix_configuration`       | Check the source's `token_url`, `client_id`, `scope`, and client secret against the issuer.                                                                                 |
+| Rotation returns `409`                                       | The source is static. Update its Secret values instead.                                                                                                                     |
 
 ## Implementations
 

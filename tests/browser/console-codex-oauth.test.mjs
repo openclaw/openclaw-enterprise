@@ -3,7 +3,7 @@ import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
-  createDeviceCredentialGateway,
+  createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
@@ -30,9 +30,11 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const originalFetch = globalThis.fetch;
   let approved = false;
   const providerRequests = [];
-  const gateway = createDeviceCredentialGateway({ approve: async () => approved });
+  const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => approved });
   fixture.controller.registerDriver(gateway);
   fixture.controller.selectDriver("credential_gateway", gateway.id);
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver("credential_refresh", refresh.id);
   const plugin = {
     id: "plugin-oauth-fixture",
     name: "calendar",
@@ -124,7 +126,14 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(discovery.body.credentialSource.kind, "credential_source");
   await page.getByLabel("Agent name", { exact: true }).fill("OAuth Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  const created = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === `/namespaces/${namespace.id}/agents`,
+  );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const createResponse = await created;
+  assert.equal(createResponse.status(), 201, await createResponse.text());
   await page.getByRole("heading", { name: "OAuth Agent", exact: true }).waitFor();
   const creation = requests.find(
     (request) => request.method === "POST" && request.path === `/namespaces/${namespace.id}/agents`,
@@ -235,10 +244,11 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.equal((await saved).status(), 200);
   assert.equal((await granted).status(), 201);
-  const replaced = (await fixture.request("GET", agentPath)).data.harnessAuth;
+  const replacedAgent = (await fixture.request("GET", agentPath)).data;
+  const replaced = replacedAgent.harnessAuth;
   assert.equal(replaced.method, "credential_source");
   assert.notEqual(replaced.sourceId, originalAuth.sourceId);
-  assert.deepEqual((await fixture.request("GET", agentPath)).data.credentialSources, [
+  assert.deepEqual(replacedAgent.credentialSources, [
     { sourceId: otherSource.id },
     { sourceId: replaced.sourceId },
   ]);
@@ -303,7 +313,9 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
   assert.equal(await slowDiscard.promise, 204);
-  assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, replaced);
+  const retainedAgent = (await fixture.request("GET", agentPath)).data;
+  assert.deepEqual(retainedAgent.harnessAuth, replaced);
+  assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
   assert.doesNotMatch(
     JSON.stringify(requests),
     new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`),

@@ -268,6 +268,7 @@ export function installFixture(scenario, evidence) {
       configuration: structuredClone(configuration.values),
       secretBindings: structuredClone(configuration.secretBindings),
       harnessAuth: structuredClone(owner.harnessAuth),
+      credentialSources: structuredClone(owner.credentialSources),
       ...(owner.pluginApprovers !== undefined
         ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
         : {}),

@@ -95,10 +95,10 @@ inactive history alone does not retain the source indefinitely.
 ## Use a personal Codex login
 
 Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
-Credential Gateway with device login, warm access-token lookup and external-token
-attachments, plus its paired Sandbox's token injection. The bundled OpenShell
-catalog provides API-key sources only; operators must supply the OAuth service
-integration. There is no installation opt-in flag.
+Credential Refresh Driver for device login, a paired Credential Gateway for
+access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
+the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc);
+the repository's default pinned images do not support this flow. There is no installation opt-in flag.
 
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.
@@ -107,7 +107,7 @@ integration. There is no installation opt-in flag.
    source `operate` permission. Deployment still requires a successful native
    model probe.
 3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
-   for a warm access token; the token service owns refresh. Another device login
+   for a usable access token; the token service owns refresh. Another device login
    is needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor, save the new
    source, and deploy. Saving a draft does not change the running revision.
