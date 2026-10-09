@@ -876,10 +876,12 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       // export cost Images and Packaging about 40 s and filled only their own
       // merge ref's scope. Main pushes keep the lane's export as a backstop.
       ...(state.lane === "images-packaging" &&
-      (cacheWarm || process.env.GITHUB_EVENT_NAME === "push")
+      (cacheWarm ||
+        process.env.GITHUB_EVENT_NAME === "push" ||
+        process.env.GITHUB_RUN_ATTEMPT === "1")
         ? [
             "--cache-to",
-            cacheWarm
+            cacheWarm || process.env.GITHUB_EVENT_NAME !== "push"
               ? `${cache},mode=max,timeout=10m`
               : `${cache},mode=max,ignore-error=true,timeout=60s`,
           ]
@@ -908,11 +910,8 @@ async function buildRuntimeImages(
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
   // prints it per image once the build ends (parallel builds stay readable), also
   // when the build fails or overruns its own deadline inside the job's.
-  const progress = cacheWarm ? ["--progress=plain"] : [];
+  const progress = ["--progress=plain"];
   const build = async (role, args) => {
-    if (!cacheWarm) {
-      return execFile(process.env.OCC_DOCKER_BIN ?? "docker", args);
-    }
     let output = "";
     try {
       const built = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
@@ -924,7 +923,7 @@ async function buildRuntimeImages(
       output = error.stderr ?? "";
       throw error;
     } finally {
-      process.stderr.write(`[image-cache-warm] ${role} build\n${output}\n`);
+      process.stderr.write(`[build-trace] ${role} build\n${output}\n`);
     }
   };
   await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
