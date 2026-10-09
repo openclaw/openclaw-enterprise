@@ -1,6 +1,10 @@
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { betterAuthIssuer, validHttpBaseURL } from "../apps/controller/src/auth/configuration.ts";
+import {
+  betterAuthIssuer,
+  refuseRewrittenIpv4AuthHost,
+  validHttpBaseURL,
+} from "../apps/controller/src/auth/configuration.ts";
 import {
   bootstrapOutputPath,
   writeProtectedBootstrapFile,
@@ -73,11 +77,13 @@ function authBaseURL(raw, mode) {
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must contain an absolute URL.");
   }
+  // Before the loopback exception: Node rewrites 127.1, 0177.0.0.1 and
+  // 192.168.010.001, and the rewritten host must not become the published origin.
+  refuseRewrittenIpv4AuthHost(raw, parsed);
   if (
     mode === "production" &&
     parsed.protocol !== "https:" &&
-    parsed.hostname !== "127.0.0.1" &&
-    parsed.hostname !== "localhost"
+    !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname)
   ) {
     throw new Error("OCC_AUTH_BASE_URL must be HTTPS except for loopback development tests.");
   }

@@ -1091,6 +1091,32 @@ test("after a Secret Driver change an Agent update can replace the old Harness S
       return true;
     });
   }
+  // A requested Harness Secret is denied before its lookup too: without operate, the old-driver
+  // Secret gets the same 403 as a missing one, never this 503 or a 404.
+  iamState.restrictions.push({
+    id: "deny-operate-missing-harness-secret",
+    namespaceId: namespace.id,
+    action: "operate",
+    resourceKind: "secret",
+    resourceId: missing.source.id,
+    effect: "deny",
+  });
+  for (const harnessAuth of [oldHarnessAuth, missing]) {
+    await assert.rejects(
+      controller.createAgent(administrator, {
+        namespaceId: namespace.id,
+        name: "Denied old-key agent",
+        configurationId: agent.configurationId,
+        harnessAuth,
+      }),
+      (error) => {
+        assert.ok(error instanceof AuthorizationDeniedError, `${error.name}: ${error.message}`);
+        assert.ok(!(error instanceof DependencyUnavailableError));
+        assert.deepEqual(error.authorization.resource, harnessAuth.source);
+        return true;
+      },
+    );
+  }
   iamState.restrictions.length = 0;
   // A requested Secret the Namespace does not hold stays a scope miss, not this 503.
   await assert.rejects(
@@ -1222,6 +1248,34 @@ test("after a Secret Driver change an Agent update and deploy wait for its Confi
     (await update(administrator, { configurationId: unbound.id })).configurationId,
     unbound.id,
   );
+
+  // The Agent's own bound Harness Secret answers before the Configuration's bindings: a caller
+  // denied operate on it gets that 403, not the Configuration's 503. The Agent keeps this
+  // Secret to the end, so the final deploy admits it through the selected driver too.
+  const harnessSecret = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "harness-key-current",
+    value: "synthetic-current-harness-key",
+  });
+  grantAgentSecretOperate(agent, harnessSecret);
+  await update(administrator, {
+    configurationId: unbound.id,
+    harnessAuth: { method: "api_key", source: harnessSecret.ref },
+  });
+  iamState.restrictions.push({
+    id: "deny-operate-bound-harness-secret",
+    namespaceId: namespace.id,
+    action: "operate",
+    resourceKind: "secret",
+    resourceId: harnessSecret.id,
+    effect: "deny",
+  });
+  await assert.rejects(update(administrator), (error) => {
+    assert.ok(!(error instanceof DependencyUnavailableError), `${error.name}: ${error.message}`);
+    assert.deepEqual(error.authorization, { action: "operate", resource: harnessSecret.ref });
+    return true;
+  });
+  iamState.restrictions.length = 0;
 
   // Once the Configuration binds a Secret stored through the selected driver, both proceed.
   const current = await controller.createSecret(administrator, {

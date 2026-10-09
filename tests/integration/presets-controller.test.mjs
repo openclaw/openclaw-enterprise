@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +17,7 @@ import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 async function createFixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "occ-presets-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const audit = new InMemoryAuditSink();
+  const audit = options.auditSink ?? new InMemoryAuditSink();
   let policy;
   const state = new InMemoryPlatformState({
     auditSink: audit,
@@ -181,6 +182,236 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
       ["openclaw.presets.delete", alpha.id],
     ],
   );
+});
+
+test("Preset HTTP writes preserve all four full-size initial workspace files", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Workspace Preset", { ready: true });
+  const content = ("# Workspace guidance\n" + "Routine fixture instructions.\n".repeat(600)).slice(
+    0,
+    16 * 1024,
+  );
+  const template = {
+    agent: {
+      initialWorkspaceFiles: Object.fromEntries(
+        ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => [name, content]),
+      ),
+    },
+  };
+  const path = collection(namespace.id);
+  const created = await createPreset(fixture, namespace.id, "Full workspace", template);
+  assert.deepEqual((await fixture.request("GET", `${path}/${created.id}`)).data.template, template);
+  const replacement = await createPreset(fixture, namespace.id, "Replacement", {});
+  const updated = await fixture.request("PATCH", `${path}/${replacement.id}`, {
+    body: { template },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(
+    (await fixture.request("GET", `${path}/${replacement.id}`)).data.template,
+    template,
+  );
+});
+
+test("Preset transport admits the template JSON limit and escaped strings, while admission still rejects larger templates", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Preset JSON budget", { ready: true });
+  const template = { variables: { guidance: { type: "string", default: "" } } };
+  const overhead = Buffer.byteLength(JSON.stringify(template));
+  template.variables.guidance.default = "Routine guidance. "
+    .repeat(60_000)
+    .slice(0, 1024 * 1024 - overhead);
+  assert.equal(Buffer.byteLength(JSON.stringify(template)), 1024 * 1024);
+  const path = collection(namespace.id);
+  const accepted = await createPreset(fixture, namespace.id, "JSON boundary", template);
+  assert.deepEqual(
+    (await fixture.request("GET", `${path}/${accepted.id}`)).data.template,
+    template,
+  );
+
+  // JSON permits Unicode escapes for ordinary string characters, without changing the template.
+  const encoded = JSON.stringify({ name: "Escaped JSON", template }).replace(
+    /[A-Za-z .]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  const escaped = await fetch(fixture.origin + path, {
+    method: "POST",
+    headers: { ...authenticatedHeaders(fixture.session), "content-type": "application/json" },
+    body: encoded,
+  });
+  assert.equal(escaped.status, 201, await escaped.text());
+
+  const oversized = structuredClone(template);
+  oversized.variables.guidance.default += "x";
+  const rejected = await fixture.request("PATCH", `${path}/${accepted.id}`, {
+    body: { template: oversized },
+  });
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  assert.match(rejected.body.error.message, /JSON exceeds maximum size of 1 MiB/);
+  assert.deepEqual(
+    (await fixture.request("GET", `${path}/${accepted.id}`)).data.template,
+    template,
+  );
+});
+
+// Sends a write's head and its first 64 KiB, declaring a body of `declaredBytes`, and never the
+// rest. Resolves with the response, or with null if the controller is still waiting for the body
+// after the deadline (it would buffer it before answering).
+function partialWrite(fixture, method, path, session, declaredBytes) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (callback, value) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        request.destroy();
+        callback(value);
+      }
+    };
+    const request = httpRequest(new URL(path, fixture.origin), {
+      method,
+      headers: {
+        ...authenticatedHeaders(session, { origin: fixture.origin }),
+        "content-type": "application/json",
+        "content-length": String(declaredBytes),
+      },
+    });
+    const timer = setTimeout(() => settle(resolve, null), 5000);
+    request.on("response", (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          settle(resolve, { status: response.statusCode, body });
+        } catch (error) {
+          settle(reject, error);
+        }
+      });
+      response.on("error", (error) => settle(reject, error));
+    });
+    request.on("error", (error) => settle(reject, error));
+    request.write(
+      `{"name":"Unread","template":{"variables":{"guidance":{"type":"string","default":"${"x".repeat(64 * 1024)}`,
+    );
+  });
+}
+
+test("Preset writes refuse a caller without the grant before reading the body", async (t) => {
+  // One sink for State and the HTTP layer, so the route's denial rows are recorded too.
+  const fixture = await createFixture(t, { auditSink: new InMemoryAuditSink() });
+  const namespace = await fixture.createNamespace("Preset pre-body grant", { ready: true });
+  const existing = await createPreset(fixture, namespace.id, "Existing");
+  let memberId;
+  const member = await fixture.createAccountWithPolicy("preset-member", (principal) => {
+    memberId = principal.id;
+    grantRole(fixture.policy, principal.id, {
+      id: "pre-body-namespace-reader",
+      bindingId: "pre-body-read-namespace",
+      namespaceId: namespace.id,
+      permissions: { namespace: ["read"], preset: ["read"] },
+    });
+  });
+  const session = await fixture.signIn(member.credentials);
+  // Over the general 64 KiB limit and under the Preset route limit (6 MiB + 8 KiB).
+  const declaredBytes = 6 * 1024 * 1024;
+  const forbidden = {
+    code: "FORBIDDEN",
+    message: "The exact platform operation was not authorized.",
+  };
+  for (const [method, path, action, grant, target] of [
+    [
+      "POST",
+      collection(namespace.id),
+      "openclaw.presets.create",
+      "create",
+      { kind: "preset", id: namespace.id, namespaceId: namespace.id },
+    ],
+    [
+      "PATCH",
+      `${collection(namespace.id)}/${existing.id}`,
+      "openclaw.presets.update",
+      "update",
+      { kind: "preset", id: existing.id, namespaceId: namespace.id },
+    ],
+  ]) {
+    const small = await fixture.request(method, path, {
+      session,
+      body: { name: "Unauthorized", template: {} },
+    });
+    assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
+    assert.deepEqual(small.body.error, forbidden, method);
+    const denials = () =>
+      fixture.audit.events.filter(
+        (event) =>
+          event.kind === "authorization_denial" &&
+          event.actor?.principalId === memberId &&
+          event.action === action,
+      );
+    const before = denials().length;
+    const refused = await partialWrite(fixture, method, path, session, declaredBytes);
+    assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
+    assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
+    assert.deepEqual(refused.body.error, forbidden, method);
+    // The refusal keeps its audit row, naming the exact grant the write itself checks.
+    const recorded = denials().slice(before);
+    assert.equal(recorded.length, 1, method);
+    assert.equal(recorded[0].reasonCode, "AUTHORIZATION_DENIED", method);
+    assert.deepEqual(recorded[0].resource, target, method);
+    assert.deepEqual(
+      recorded[0].authorization,
+      { principalId: memberId, action: grant, resource: target },
+      method,
+    );
+  }
+  assert.deepEqual(
+    (await fixture.request("GET", `${collection(namespace.id)}/${existing.id}`)).data,
+    existing,
+  );
+  assert.deepEqual(
+    (await fixture.request("GET", collection(namespace.id))).data.map((preset) => preset.id),
+    [existing.id],
+  );
+});
+
+test("Preset writes check the grant again in their transaction after the pre-body check", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Preset grant re-check", { ready: true });
+  const existing = await createPreset(fixture, namespace.id, "Existing");
+  let writer;
+  const member = await fixture.createAccountWithPolicy("preset-writer", (principal) => {
+    ({ binding: writer } = grantRole(fixture.policy, principal.id, {
+      id: "re-check-preset-writer",
+      bindingId: "re-check-write-presets",
+      namespaceId: namespace.id,
+      permissions: { namespace: ["read"], preset: ["read", "create", "update"] },
+    }));
+  });
+  const session = await fixture.signIn(member.credentials);
+  // The grant is withdrawn right after the pre-body check passes, before the handler runs.
+  const occ = fixture.controller;
+  const preBodyCheck = occ.authorizePresetWrite;
+  occ.authorizePresetWrite = async (...args) => {
+    await preBodyCheck.apply(occ, args);
+    const index = fixture.policy.bindings.indexOf(writer);
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+  };
+  t.after(() => delete occ.authorizePresetWrite);
+  for (const [method, path] of [
+    ["POST", collection(namespace.id)],
+    ["PATCH", `${collection(namespace.id)}/${existing.id}`],
+  ]) {
+    const refused = await fixture.request(method, path, {
+      session,
+      body: { name: "Withdrawn", template: {} },
+    });
+    assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.code, "FORBIDDEN", method);
+    // The pre-body check passed and withdrew the grant; restore it for the next write.
+    assert.equal(fixture.policy.bindings.includes(writer), false, method);
+    fixture.policy.bindings.push(writer);
+  }
+  assert.deepEqual((await fixture.request("GET", collection(namespace.id))).data, [existing]);
 });
 
 test("Preset variables create independent ordinary Agent drafts that survive template replacement and deletion", async (t) => {

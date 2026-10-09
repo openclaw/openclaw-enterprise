@@ -132,6 +132,37 @@ old schema over the canonical one. A failed or disconnected migration is not
 proof of rollback: reconnect, run `--check`, and inspect the retained database
 before deciding whether another attempt is appropriate.
 
+### Clear legacy managed PAT bindings before `0049`
+
+Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
+authentication: recreate development Agents, revisions, and provisioning
+requests before migrating` when an Agent draft, any AgentRevision, or a
+provisioning plan still holds a retired `chatgpt_service_account` binding. No
+API deletes a revision or provisioning request on its own: delete each affected
+Agent, which also deletes its revisions and requests, and create it again after
+the upgrade. Changing an Agent's binding does not clear historical revisions.
+
+A provisioning request that never created an Agent survives Agent deletion.
+Let queued or running requests finish. Then, as the migration role, list the
+remaining ones and delete those that failed or were cancelled. Deleting the
+`occ.controller_work` row removes its request row, as Agent deletion does:
+
+```sql
+SELECT work_id, status FROM occ.agent_provisioning_work
+WHERE agent_id IS NULL
+  AND plan #>> '{harnessAuth,method}' = 'chatgpt_service_account';
+
+DELETE FROM occ.controller_work
+WHERE work_kind = 'provisioning'
+  AND idempotency_key IN (
+    SELECT work_id FROM occ.agent_provisioning_work
+    WHERE agent_id IS NULL AND status IN ('failed', 'cancelled')
+      AND plan #>> '{harnessAuth,method}' = 'chatgpt_service_account');
+```
+
+Alternatively, [recreate the disposable installation](#recreate-an-unsupported-disposable-development-installation).
+In-place conversion is unsupported.
+
 ### Recreate an unsupported disposable development installation
 
 First match the target to the startup output: container engine and connection,

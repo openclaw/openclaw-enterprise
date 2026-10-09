@@ -73,9 +73,10 @@ Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 - `failed`: terminal failure or completion without activation.
 
 Pending `progress.lastAttempt` contains the latest exact-work result's
-allowlisted `code`, fixed `message`, and `at`, when first recorded; repeated
-deferrals record once ([readiness codes](agents/deployment.md#pending-deployment-progress)). Null means no bound evidence, not proof work never ran. Maintenance and
-cleanup results are excluded. `progress.nextAttemptAt` is the earliest queued
+allowlisted `code`, fixed `message`, and `at`; repeated deferrals record once,
+except [refused-candidate stops](agents/deployment.md#pending-deployment-progress).
+Null means no bound evidence. Maintenance and cleanup
+results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; it is null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
@@ -101,11 +102,11 @@ deployments have separate records and cannot rewrite earlier results.
 A bodyless `POST` to
 `/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
 requests fresh checks for the exact revision. It requires Agent read and operate
-plus AgentRevision read. The response has a revision ID, observation time, and
-at most 32 bounded checks. Kubernetes currently probes Slack configuration,
-authentication, and connectivity without sending. Missing Pods yield `unknown`;
-unavailable evidence yields `503`. The call changes no stored deployment state
-and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+plus AgentRevision read. It returns a revision ID, observation time, and at
+most 32 checks. Kubernetes reports held startup failures and probes Slack
+configuration, authentication, and connectivity without sending. Missing Pods
+yield `unknown`; unavailable evidence yields `503`. The call changes no stored
+state and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
 
 ## Backend association
 
@@ -154,13 +155,12 @@ an account does not issue its credential or change the model, Harness, or Backen
 
 **Development upgrade limitation:** migration `0049` rejects retained
 `chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
-or provisioning plans. It rolls back without converting or deleting those
-records. Changing the current Agent binding does not clear historical revisions;
-retained legacy state must be cleared before the upgrade can proceed. Delete each
-affected Agent, which also deletes its revisions and provisioning requests, and
-create it again after the upgrade. Agent deletion does not remove a provisioning
-request that failed before it created an Agent. This is an intentional
-development-state break; in-place conversion is unsupported.
+or provisioning plans, and rolls back without converting them. No API deletes a
+revision or provisioning request on its own: delete each affected Agent, which
+also deletes its revisions and requests, and create it again after the upgrade.
+Changing the binding does not clear historical revisions. For a request that
+never created an Agent, see
+[clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 For dedicated Codex with a Credential Gateway, use
 `{ "method": "credential_source", "sourceId": "cs_…" }`; see
@@ -252,6 +252,9 @@ in an Agent's live workspace:
 Authenticate with a session or scoped service API key. Session-authenticated
 writes must pass the [CSRF checks](authentication.md). The Agent must have an
 active revision and a reachable gateway.
+
+Embedded OpenClaw sole rosters follow the Gateway-announced default ID.
+Other rosters retain the explicit main target; dedicated deployment requires it.
 
 `PUT` accepts one `content` field:
 
@@ -386,6 +389,8 @@ its compatibility limits before planning deployment.
   Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Backend binding or topology is incompatible.
+- `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The account has no access token,
+  and the Installation has no ChatGPT Backend to issue one.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation.

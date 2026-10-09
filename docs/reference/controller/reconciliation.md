@@ -92,7 +92,9 @@ Already-active recovery repeats route activation and predecessor retirement
 before that audit and finalization. Kubernetes dedicated replacement stops all
 earlier runtimes before preparing the candidate and reuses the Harness-only RWO
 claim. This interrupts serving, including the gateway; a failed candidate needs
-retry or a new revision, not automatic rollback. See the
+retry or a new revision, not automatic rollback. A candidate the worker refuses,
+for example after revoked authority, is stopped before its failure is recorded,
+so it never serves in place of the stopped active revision. See the
 [exclusive replacement contract](../drivers/compute.md#production-revision-stages).
 Pod termination does not fence independent processes during node partitions or
 manual replacement.
@@ -211,7 +213,18 @@ the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share
 a placeholder variable fail it the same way with
-`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. See the
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. Dispatch also fails it at once when
+the Harness credential source was withdrawn from the revision
+(`CREDENTIAL_WITHDRAWN`), when the Harness authentication Secret or source, or a
+listed credential source, is missing or changed since admission
+(`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), or when the
+Installation no longer selects the revision's Credential Gateway
+(`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
+revision pinned to a Compute Driver the controller no longer selects, or to a
+Harness version it no longer approves, fails with `COMPUTE_DRIVER_MISMATCH` or
+`HARNESS_DESCRIPTOR_MISMATCH`. A revision whose ServiceAccount Backend binding
+no longer matches the Agent's Backend, or whose credential is no longer issued,
+fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
 

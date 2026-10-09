@@ -9,6 +9,7 @@ import {
   NativeWorkerSupportError,
   PostgresPlatformState,
   ProvisioningSecretDriverError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -17,6 +18,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -28,6 +30,7 @@ import {
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -188,6 +191,64 @@ function createProvisioningConfigurationDriver(options) {
     }
   };
   return driver;
+}
+
+// Stands in for the controller's 90 s Configuration settle window passing: the pending create's
+// database-clock start moves 91 s back, and its deferred work becomes claimable now. The
+// effect's owner and target stay exactly as the worker recorded them.
+async function elapseConfigurationSettleWindow(fixture, workId) {
+  const aged = await fixture.pool.query(
+    `UPDATE occ.agent_provisioning_work
+     SET progress = jsonb_set(
+       progress,
+       '{pendingEffect,startedAt}',
+       to_jsonb(to_char((clock_timestamp() - interval '91 seconds') AT TIME ZONE 'UTC',
+         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+     )
+     WHERE work_id = $1
+       AND progress -> 'pendingEffect' ->> 'kind' = 'configuration'
+       AND progress -> 'pendingEffect' ? 'startedAt'`,
+    [workId],
+  );
+  assert.equal(aged.rowCount, 1, "the pending Configuration create must record its start");
+  const woken = await fixture.pool.query(
+    `UPDATE occ.controller_work SET available_at = clock_timestamp()
+     WHERE idempotency_key = $1 AND state = 'queued'`,
+    [workId],
+  );
+  assert.equal(woken.rowCount, 1, "the provisioning work must be queued");
+}
+
+// Runs the worker until the first Configuration create has failed with an unknown outcome and
+// the next attempt has deferred inside the settle window, then stops it.
+async function provisionUntilConfigurationSettling(fixture, admitted, sent) {
+  const { workId } = admitted.data.provisioning;
+  await fixture.startWorker();
+  const deferred = await waitFor(
+    "the absent Configuration create to wait out its settle window",
+    async () => {
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+      const work = await fixture.pool.query(
+        `SELECT state, attempt_count,
+           available_at > clock_timestamp() + interval '30 seconds' AS deferred
+         FROM occ.controller_work WHERE idempotency_key = $1`,
+        [workId],
+      );
+      const [row] = work.rows;
+      return row?.state === "queued" && row.deferred ? row : undefined;
+    },
+  );
+  await fixture.stopWorker();
+  // Only the attempt that sent the create spent an attempt; nothing was sent again yet.
+  assert.equal(deferred.attempt_count, 1);
+  assert.equal(sent.length, 1);
+  const record = await fixture.pool.query(
+    "SELECT progress -> 'error' ->> 'code' AS code FROM occ.agent_provisioning_work WHERE work_id = $1",
+    [workId],
+  );
+  assert.deepEqual(record.rows, [{ code: "PROVISIONING_OUTCOME_UNKNOWN" }]);
 }
 
 async function ensureProvisioningBootstrap(context, state) {
@@ -1041,6 +1102,63 @@ test(
 );
 
 test(
+  "a provisioning failure takes the Namespace lock before its claimed work row",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId, url } = admitted.data.provisioning;
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    const failure = {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    };
+
+    // Stopping or deleting a provisioned Agent locks the Namespace, then the Agent, then this
+    // claimed work row (cancelByAgent). Hold the Namespace until the worker's permanent failure
+    // waits on it; the waiting failure must not hold the work row yet, or the two deadlock.
+    let committed;
+    try {
+      await withNamespaceLockHeld(fixture.pool, namespace.id, async (lock) => {
+        committed = fixture.state.transact(async (unit) => {
+          const current = await unit.provisioning.findByWorkId(workId);
+          await unit.provisioning.recordFailure(
+            claim,
+            {
+              completedPhase: current.completedPhase,
+              progress: { ...current.progress, error: failure },
+            },
+            { disposition: "permanent", ...failure },
+          );
+        });
+        // Surface an early failure through the await below instead of an unhandled rejection.
+        committed.catch(() => {});
+        // No worker runs here, so the only backend that can wait on this lock is the failure's.
+        await lock.waitForBlocked("the failure's real wait on the Namespace lock");
+        await lock.assertNotHeld(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1 FOR UPDATE NOWAIT",
+          [workId],
+          "a failure waiting for the Namespace must not already hold its work row",
+        );
+      });
+      await committed;
+    } finally {
+      await committed?.catch(() => {});
+    }
+
+    const after = await fixture.request("GET", url);
+    assert.equal(after.status, 200, JSON.stringify(after.body));
+    assert.equal(after.data.status, "failed");
+    assert.deepEqual(after.data.error, failure);
+  },
+);
+
+test(
   "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
@@ -1302,8 +1420,14 @@ test(
       }
       return created;
     };
-    configurationDriver.inspectExact = (configuration) =>
-      allowConfigurationRecovery ? inspectExact(configuration) : undefined;
+    // Until recovery is allowed, the Configuration backend cannot answer the inspection either,
+    // so the worker cannot observe the landed write and retries it as an unknown outcome.
+    configurationDriver.inspectExact = async (configuration) => {
+      if (!allowConfigurationRecovery) {
+        throw new Error("synthetic Configuration read outage");
+      }
+      return inspectExact(configuration);
+    };
     const fixture = await createFixture(context, { computeDriver, configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
@@ -1382,6 +1506,222 @@ test(
 );
 
 test(
+  "a Configuration create that never reached the API server is sent again after its settle window",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-resend",
+    });
+    const createExact = configurationDriver.createExact;
+    const sent = [];
+    configurationDriver.createExact = async (configuration) => {
+      sent.push(structuredClone(configuration));
+      if (sent.length === 1) {
+        // The write deadline passes before the API server receives the create: nothing is
+        // stored, and the worker cannot tell that from a create that landed (finding 911).
+        throw new Error("synthetic Configuration create timeout before the API server");
+      }
+      return createExact(configuration);
+    };
+    const fixture = await createFixture(context, { computeDriver, configurationDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // Inside the window an absent Configuration may still be a late create, so the worker
+    // neither resends it nor spends the fixture's three attempts waiting.
+    await provisionUntilConfigurationSettling(fixture, admitted, sent);
+
+    await elapseConfigurationSettleWindow(fixture, admitted.data.provisioning.workId);
+    await fixture.startWorker();
+    const succeeded = await waitFor("Agent provisioning to succeed after the resend", async () => {
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    fixture.cancelProvisioningAtTeardown(namespace.id, succeeded.agentId);
+    await fixture.stopWorker();
+
+    // The resend writes the same Configuration under the same identity, once.
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[1], sent[0]);
+    const agent = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/agents/${succeeded.agentId}`,
+    );
+    assert.equal(agent.status, 200, JSON.stringify(agent.body));
+    assert.equal(agent.data.configurationId, sent[0].id);
+    assert.deepEqual(
+      await configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
+      sent[0],
+    );
+  },
+);
+
+test(
+  "a resent Configuration create that meets a late original settles only an exact match",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-resend-conflict",
+    });
+    const createExact = configurationDriver.createExact;
+    const sent = [];
+    let lateOriginal;
+    configurationDriver.createExact = async (configuration) => {
+      sent.push(structuredClone(configuration));
+      if (sent.length === 1) {
+        throw new Error("synthetic Configuration create timeout");
+      }
+      // The first create lands just before the resend reaches the API server, which answers
+      // that resend and any later one with AlreadyExists, as the Kubernetes Driver reports it.
+      if (sent.length === 2) {
+        await lateOriginal(configuration);
+      }
+      throw new ConfigurationConflictError("The Kubernetes ConfigMap create conflicted.");
+    };
+    const fixture = await createFixture(context, { computeDriver, configurationDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const provision = async () => {
+      const admitted = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        {
+          body: provisioningBody(namespace.id, secrets, {
+            name: `Resend ${randomUUID().slice(0, 8)}`,
+          }),
+        },
+      );
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+      return admitted;
+    };
+
+    // The late original is the exact Configuration: the conflict proves it landed, and the
+    // exact inspection settles it.
+    lateOriginal = (configuration) => createExact(configuration);
+    const exact = await provision();
+    await provisionUntilConfigurationSettling(fixture, exact, sent);
+    await elapseConfigurationSettleWindow(fixture, exact.data.provisioning.workId);
+    await fixture.startWorker();
+    const succeeded = await waitFor("Agent provisioning to settle the late original", async () => {
+      const observed = await fixture.request("GET", exact.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    fixture.cancelProvisioningAtTeardown(namespace.id, succeeded.agentId);
+    await fixture.stopWorker();
+    assert.equal(sent.length, 2);
+    assert.deepEqual(
+      await configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
+      sent[0],
+    );
+
+    // A different Configuration under the same name is never taken as this request's write:
+    // the work is not settled and runs out of attempts, and the stored document is untouched.
+    // (This test Driver's inspection answers not found for a mismatch; the Kubernetes one
+    // reports a conflict, which fails the attempt the same way.)
+    sent.length = 0;
+    const foreign = { model: "foreign-configuration" };
+    lateOriginal = (configuration) =>
+      configurationDriver.create({ ...configuration, values: foreign });
+    const mismatched = await provision();
+    await provisionUntilConfigurationSettling(fixture, mismatched, sent);
+    await elapseConfigurationSettleWindow(fixture, mismatched.data.provisioning.workId);
+    await fixture.startWorker();
+    const failed = await waitFor(
+      "Agent provisioning to refuse the foreign Configuration",
+      async () => {
+        const observed = await fixture.request("GET", mismatched.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        assert.notEqual(observed.data.status, "succeeded", JSON.stringify(observed.body));
+        return observed.data.status === "failed" ? observed.data : undefined;
+      },
+    );
+    await fixture.stopWorker();
+    assert.equal(failed.error?.code, "PROVISIONING_OUTCOME_UNKNOWN");
+    assert.equal(failed.agentId, undefined);
+    const stored = await configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id });
+    assert.deepEqual(stored.values, foreign);
+    const metadata = await fixture.pool.query(
+      "SELECT count(*)::integer AS count FROM occ.configurations WHERE namespace_id = $1 AND id = $2",
+      [namespace.id, sent[0].id],
+    );
+    assert.equal(metadata.rows[0].count, 0);
+  },
+);
+
+test(
+  "a Configuration resend follows a fresh authority check and sends nothing once authority is revoked",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-resend-revoked",
+    });
+    const createExact = configurationDriver.createExact;
+    const inspectExact = configurationDriver.inspectExact;
+    const sent = [];
+    configurationDriver.createExact = async (configuration) => {
+      sent.push(structuredClone(configuration));
+      if (sent.length === 1) {
+        throw new Error("synthetic Configuration create timeout before the API server");
+      }
+      return createExact(configuration);
+    };
+    let revokeOnInspection;
+    configurationDriver.inspectExact = async (configuration) => {
+      const inspected = await inspectExact(configuration);
+      await revokeOnInspection?.();
+      return inspected;
+    };
+    const fixture = await createFixture(context, { configurationDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId } = admitted.data.provisioning;
+    await provisionUntilConfigurationSettling(fixture, admitted, sent);
+    await elapseConfigurationSettleWindow(fixture, workId);
+
+    // The actor loses authority after the attempt's first checks passed, while the worker is
+    // inspecting the absent Configuration, so only the check just before the resend sees it.
+    // Revoked authority must send nothing: the create stays an unknown outcome and the work
+    // runs out of attempts.
+    let inspections = 0;
+    revokeOnInspection = async () => {
+      inspections += 1;
+      if (inspections === 2) {
+        await fixture.revokeCurrentPrincipal();
+      }
+    };
+    await fixture.startWorker();
+    const work = await waitFor("the revoked provisioning work to run out of attempts", async () => {
+      const observed = await fixture.pool.query(
+        "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+        [workId],
+      );
+      return observed.rows[0]?.state === "failed_permanent" ? observed.rows[0] : undefined;
+    });
+    await fixture.stopWorker();
+    assert.equal(work.reason_code, "PROVISIONING_OUTCOME_UNKNOWN");
+    assert.equal(sent.length, 1, "revoked authority must not resend the Configuration create");
+    await assert.rejects(
+      configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
+      /does not exist/,
+    );
+  },
+);
+
+test(
   "provisioning a duplicate Agent name fails permanently and says the name is taken",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
@@ -1449,11 +1789,19 @@ test(
     });
     let configurationOutage = true;
     const createExact = configurationDriver.createExact;
+    const inspectExact = configurationDriver.inspectExact;
+    // The outage answers no Configuration request, so the unknown create runs out of attempts.
     configurationDriver.createExact = async (configuration) => {
       if (configurationOutage) {
         throw new Error("synthetic Configuration outage");
       }
       return createExact(configuration);
+    };
+    configurationDriver.inspectExact = async (configuration) => {
+      if (configurationOutage) {
+        throw new Error("synthetic Configuration outage");
+      }
+      return inspectExact(configuration);
     };
     const fixture = await createFixture(context, { configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
@@ -1660,12 +2008,20 @@ test(
       id: "configuration-provisioning-plugin-switch",
     });
     const createExact = configurationDriver.createExact;
+    const inspectExact = configurationDriver.inspectExact;
     let configurationOutage = true;
+    // The outage answers no Configuration request, so the unknown create runs out of attempts.
     configurationDriver.createExact = async (configuration) => {
       if (configurationOutage) {
         throw new Error("synthetic Configuration outage");
       }
       return createExact(configuration);
+    };
+    configurationDriver.inspectExact = async (configuration) => {
+      if (configurationOutage) {
+        throw new Error("synthetic Configuration outage");
+      }
+      return inspectExact(configuration);
     };
     const computeDriver = createRuntimeComputeDriver();
     const secretDriver = createTestSecretDriver({ id: "secret-provisioning" });
@@ -2007,6 +2363,181 @@ test(
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
       message: "Agent provisioning could not complete.",
     });
+  },
+);
+
+test(
+  "a permanent refusal after an unfinished Configuration write settles the write and rejects the work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-unsettled-refusal",
+    });
+    const createExact = configurationDriver.createExact;
+    const created = [];
+    configurationDriver.createExact = async (configuration) => {
+      const stored = await createExact(configuration);
+      created.push(configuration.id);
+      if (created.length === 1) {
+        // The write lands but its receipt is lost, and before the next attempt the
+        // Installation's Compute Driver starts refusing the stored plan (no gateway routing).
+        const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
+          repositoryCredentials: true,
+        });
+        computeDriver.validateAgentProvisioning = (input) =>
+          unrouted.validateAgentProvisioning(input);
+        throw new Error("synthetic Configuration receipt loss");
+      }
+      return stored;
+    };
+    const completed = [];
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The next attempt inspects the unfinished write before its fence, records the receipt,
+    // and then fails the work on the refusal instead of retrying an unknown outcome.
+    await fixture.startWorker();
+    const failed = await waitFor("the provisioning work to fail", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.status === "failed" ? row : undefined;
+    });
+    await fixture.stopWorker();
+    const workId = admitted.data.provisioning.workId;
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [
+        { attempt: 1, outcome: "retry", code: "PROVISIONING_OUTCOME_UNKNOWN" },
+        { attempt: 2, outcome: "permanent", code: "PROVISIONING_REJECTED" },
+      ],
+    );
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "The Compute Driver cannot provision this execution mode or gateway configuration.",
+    });
+    const { pendingEffect, effectReceipt } = failed.progress;
+    assert.equal(pendingEffect?.kind, "configuration");
+    assert.deepEqual(
+      { kind: effectReceipt?.kind, owner: effectReceipt?.owner, targetId: effectReceipt?.targetId },
+      { kind: "configuration", owner: pendingEffect.owner, targetId: pendingEffect.targetId },
+    );
+    assert.deepEqual(
+      created,
+      [pendingEffect.targetId],
+      "recovery never writes the Configuration again",
+    );
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
+    ]);
+  },
+);
+
+test(
+  "a lost authority after an unfinished transport write settles the write and rejects the work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    let fixture;
+    const computeDriver = createRuntimeComputeDriver();
+    const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
+    let provisioned = 0;
+    computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
+      const status = await provisionRuntimeCredentials(...args);
+      provisioned += 1;
+      if (provisioned === 1) {
+        // The credentials land but their receipt is lost, and the initiating administrator
+        // loses the provisioning grants before the next attempt.
+        await fixture.revokeCurrentPrincipal();
+        throw new Error("synthetic transport receipt loss");
+      }
+      return status;
+    };
+    const completed = [];
+    fixture = await createFixture(context, {
+      computeDriver,
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    await fixture.startWorker();
+    const failed = await waitFor("the provisioning work to fail", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.status === "failed" ? row : undefined;
+    });
+    await fixture.stopWorker();
+    fixture.cancelProvisioningAtTeardown(namespace.id, failed.agent_id);
+    const workId = admitted.data.provisioning.workId;
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [
+        { attempt: 1, outcome: "retry", code: "PROVISIONING_OUTCOME_UNKNOWN" },
+        { attempt: 2, outcome: "permanent", code: "PROVISIONING_REJECTED" },
+      ],
+    );
+    assert.equal(failed.progress.error?.code, "PROVISIONING_REJECTED");
+    const { pendingEffect, effectReceipt } = failed.progress;
+    assert.deepEqual(
+      { kind: effectReceipt?.kind, owner: effectReceipt?.owner, targetId: effectReceipt?.targetId },
+      { kind: "transport", owner: pendingEffect?.owner, targetId: failed.agent_id },
+    );
+    assert.equal(provisioned, 1, "recovery never provisions the credentials again");
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
+    ]);
+    // One failure audit per attempt: the unknown outcome, then the authorization denial.
+    const audit = await fixture.pool.query(
+      `SELECT kind, outcome FROM occ.audit_events
+       WHERE namespace_id = $1
+         AND action = 'openclaw.agents.provision.failure'
+         AND details->>'workId' = $2
+       ORDER BY kind`,
+      [namespace.id, workId],
+    );
+    assert.deepEqual(audit.rows, [
+      { kind: "authorization_denial", outcome: "denied" },
+      { kind: "mutation", outcome: "failure" },
+    ]);
+    const revisions = await fixture.pool.query(
+      "SELECT id FROM occ.agent_revisions WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.equal(revisions.rowCount, 0);
   },
 );
 
@@ -2417,6 +2948,20 @@ test(
       return rows[0]?.status === "failed" ? true : undefined;
     });
     await fixture.stopWorker();
+    // This Installation has no ChatGPT Backend, so the failure names it instead of the
+    // generic text.
+    const job = await fixture.pool.query(
+      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+      [workId],
+    );
+    assert.deepEqual(job.rows, [
+      {
+        error: {
+          code: "PROVISIONING_REJECTED",
+          message: new ServiceAccountDriverNotConfiguredError("deploy").message,
+        },
+      },
+    ]);
     const workState = async () =>
       (
         await fixture.pool.query(

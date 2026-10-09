@@ -7,6 +7,7 @@ import {
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -14,7 +15,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 // Gateway storage and Compute placement are test doubles. Requests use the real
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
-async function fixture(t) {
+async function fixture(t, { toolSources = false } = {}) {
   const providers = new Map();
   const profiles = new Map();
   const mutations = [];
@@ -61,12 +62,19 @@ async function fixture(t) {
       id: "openshell-test",
       type: "openshell",
       configuration: { endpoint: "http://127.0.0.1:1" },
-      drivers: { credential_gateway: "openshell-credentials", sandbox: "openshell-sandbox" },
+      drivers: {
+        credential_gateway: "openshell-credentials",
+        sandbox: "openshell-sandbox",
+        ...(toolSources ? { credential_refresh: "openshell-refresh" } : {}),
+      },
     },
     { gatewayClient: client },
   );
   const driver = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/app/bin/codex"] },
+    {
+      binaries: ["/app/bin/codex"],
+      ...(toolSources ? { toolBinaries: ["/usr/bin/curl"] } : {}),
+    },
     {
       id: "openshell-credentials",
       backend,
@@ -88,6 +96,11 @@ async function fixture(t) {
   await app.bootstrap();
   app.controller.registerDriver(driver);
   app.controller.selectDriver("credential_gateway", driver.id);
+  if (toolSources) {
+    const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
+    app.controller.registerDriver(refresh);
+    app.controller.selectDriver("credential_refresh", refresh.id);
+  }
   const namespace = await app.createNamespace("credential-test", { ready: true });
   const path = "/namespaces/" + namespace.id + "/credential-sources";
   const secret = await app.createSecret(namespace.id, "model-key", "synthetic-model-key");
@@ -322,4 +335,56 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     assert.equal(f.profiles.size, 0);
     assert.equal(f.providers.size, 0);
   }
+});
+
+test("offered OpenShell source values return field-specific HTTP 400 before effects", async (t) => {
+  const f = await fixture(t, { toolSources: true });
+  const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
+  const endpoint = { host: "tools.example.test", env_var: "TOOL_TOKEN" };
+  const oauth = { ...endpoint, token_url: "https://issuer.example.test/token", client_id: "occ" };
+  // Use each offered type through real API/OCC/Driver admission. Only the value is
+  // invalid: catalog fields and Secret references are valid, so this must not be a 404.
+  for (const [type, field, value] of [
+    ["bearer-token", "host", "*.example.test"],
+    ["bearer-token", "port", "0"],
+    ["bearer-token", "path", "relative"],
+    ["bearer-token", "env_var", "PATH"],
+    ["oauth2-client-credentials", "token_url", "http://issuer.example.test/token"],
+    ["oauth2-client-credentials", "client_id", "not visible"],
+    ["oauth2-client-credentials", "scope", "read\twrite"],
+    ["oauth2-refresh-token", "env_var", "OPENAI_API_KEY"],
+  ]) {
+    await t.test(type + ": " + field, async () => {
+      const secretField = {
+        "bearer-token": "token",
+        "oauth2-client-credentials": "client_secret",
+        "oauth2-refresh-token": "refresh_token",
+      }[type];
+      const response = await f.request("POST", f.path, {
+        body: {
+          name: "invalid-" + field,
+          type,
+          config: { ...(type === "bearer-token" ? endpoint : oauth), [field]: value },
+          secrets: { [secretField]: secret.ref },
+        },
+      });
+      assert.deepEqual((await f.request("GET", f.path)).data, []);
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assert.deepEqual(response.body.error.details, [
+        { path: "/config/" + field, code: "INVALID_VALUE" },
+      ]);
+    });
+  }
+  const unavailable = await f.request("POST", f.path, {
+    body: { name: "unoffered", type: "not-offered", config: {}, secrets: {} },
+  });
+  assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
+  assert.equal(
+    f.secretDriver.calls.some(({ operation }) => operation === "withValue"),
+    false,
+  );
+  assert.deepEqual(f.mutations, []);
+  assert.equal(f.providers.size, 0);
+  assert.equal(f.profiles.size, 0);
 });

@@ -125,7 +125,9 @@ The worker emits fixed operational event classes through the same logger:
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A provisioning plan that the Compute Driver refuses for a reason the caller
+  write. A pass that could not stop a refused candidate has code
+  `REFUSED_CANDIDATE_STOP_PENDING`, adds `refusal`, the refusal's code, and stays
+  pending until the stop succeeds. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
   `reason` when it gives one: bounded printable text that never carries another
   tenant's values. These fields stay in the local log; the Collector

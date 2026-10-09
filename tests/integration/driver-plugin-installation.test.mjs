@@ -484,3 +484,355 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
     },
   );
 });
+
+// Exact on-disk production dependencies isolate export resolution from registry installation.
+// Node's own ESM import is the independent oracle; the OCC path stays the real startup loader.
+test("compiled Driver metadata activates through production startup and Configuration HTTP", async (t) => {
+  for (const [description, exports, bom = false] of [
+    ["root array", ["./compiled/index.js"]],
+    ["root manifest with a UTF-8 BOM", "./compiled/index.js", true],
+    ["root subpath array", { ".": ["./compiled/index.js"] }],
+    ["invalid target before URL decoding", ["./node_modules/%ZZ.js", "./compiled/index.js"]],
+    ["import array", { import: ["./compiled/index.js"], require: "./compiled/index.cjs" }],
+    [
+      "target fallbacks",
+      {
+        ".": [
+          null,
+          "../invalid.js",
+          { browser: "./browser.js" },
+          { import: ["./compiled/index.js"] },
+        ],
+      },
+    ],
+    [
+      "nested conditions",
+      {
+        node: [{ require: "./compiled/index.cjs" }, { import: ["./compiled/index.js"] }],
+        default: "./compiled/index.cjs",
+      },
+    ],
+    ["condition order", { default: ["./compiled/index.js"], import: ["./compiled/index.cjs"] }],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, exports);
+      if (bom) {
+        // A normal installed manifest from a BOM-writing editor remains valid to Node.
+        const path = join(owner, "node_modules", configurationPackage, "package.json");
+        await writeFile(path, `\uFEFF${await readFile(path, "utf8")}`);
+      }
+      const native = importConfigurationPackage(owner);
+      assert.equal(native.status, 0, native.stderr);
+      assert.equal(native.stdout.trim(), "function");
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      const drivers = await load(owner, configuration);
+      const fixture = await authenticatedApplication(scenario, drivers);
+      const bootstrap = await request(fixture, "POST", "/installation/bootstrap", {
+        name: "Array exports",
+      });
+      assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
+      const namespace = await request(fixture, "POST", "/namespaces", {
+        name: "Array Configuration",
+      });
+      assert.equal(namespace.status, 201, JSON.stringify(namespace));
+      const created = await request(
+        fixture,
+        "POST",
+        `/namespaces/${namespace.data.id}/configurations`,
+        {
+          kind: "agent",
+          values: { agents: { defaults: { model: "openai/example-model" } } },
+        },
+      );
+      assert.equal(created.status, 201, JSON.stringify(created));
+      const read = await request(
+        fixture,
+        "GET",
+        `/namespaces/${namespace.data.id}/configurations/${created.data.id}`,
+      );
+      assert.equal(read.status, 200, JSON.stringify(read));
+      assert.deepEqual(read.data, created.data);
+    });
+  }
+  for (const [description, exports] of [
+    ["empty array", []],
+    ["no import condition", [{ require: "./compiled/index.cjs" }]],
+    ["invalid targets only", ["../invalid.js", 42]],
+    ["selected missing file", ["./compiled/missing.js", "./compiled/index.js"]],
+    ["selected malformed encoding", ["./compiled/%ZZ.js", "./compiled/index.js"]],
+    ["selected CJS", ["./compiled/index.cjs", "./compiled/index.js"]],
+    ["matched null condition", { import: null, default: ["./compiled/index.js"] }],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, exports);
+      const native = importConfigurationPackage(owner);
+      if (description !== "selected CJS") {
+        assert.notEqual(native.status, 0, native.stdout);
+      }
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configuration), (error) => {
+        assert.match(
+          error.message,
+          description === "selected CJS"
+            ? new RegExp(
+                `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/index.cjs`)} is not a \\.mjs or \\.js file\\.$`,
+              )
+            : /package.*(?:available|compiled|JavaScript|encoding)/,
+        );
+        return true;
+      });
+    });
+  }
+});
+
+// Only the first byte-order mark is an encoding prefix; later marks are not JSON whitespace.
+test("Driver manifest BOM handling preserves invalid metadata refusals", async (t) => {
+  for (const prefix of ["\uFEFF\uFEFF", " \uFEFF"]) {
+    await t.test(JSON.stringify(prefix), async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
+      const path = join(owner, "node_modules", configurationPackage, "package.json");
+      await writeFile(path, `${prefix}${await readFile(path, "utf8")}`);
+      const native = importConfigurationPackage(owner);
+      assert.notEqual(native.status, 0, native.stdout);
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configuration), /invalid installed package metadata/);
+    });
+  }
+});
+
+// Node takes a `.js` entry's format from the nearest package.json scope, not the package root,
+// and matches the "type" key by its raw JSON text. Node's own import is the oracle.
+test("Driver entry format follows the nearest package.json scope Node's import uses", async (t) => {
+  // `exports` is undefined in ESM, so Node can load this file only as CommonJS.
+  const commonJSDriver = [
+    'exports.configurationSchema = { type: "object" };',
+    "exports.validateConfiguration = () => {};",
+    'exports.createDriver = () => { throw new Error("The CommonJS Driver must never be created."); };',
+    "",
+  ].join("\n");
+  async function scopedPackage(scenario, { root, entry = "./compiled/index.js", files }) {
+    const owner = await onDiskConfigurationPackage(scenario, entry);
+    const installed = join(owner, "node_modules", configurationPackage);
+    const manifestPath = join(installed, "package.json");
+    const { type: _type, ...manifest } = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(manifestPath, `${JSON.stringify(manifest).slice(0, -1)}${root}}`);
+    for (const [file, text] of Object.entries(files)) {
+      await writeFile(join(installed, file), text);
+    }
+    return owner;
+  }
+  for (const [description, layout] of [
+    [
+      "nested module scope under a CommonJS root",
+      { root: ',"type":"commonjs"', files: { "compiled/package.json": '{"type":"module"}' } },
+    ],
+    [
+      "nested module scope under a root without type",
+      { root: "", files: { "compiled/package.json": '\ufeff{"type":"module"}' } },
+    ],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await scopedPackage(scenario, layout);
+      const native = importConfigurationPackage(owner);
+      assert.equal(native.status, 0, native.stderr);
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      const drivers = await load(owner, configuration);
+      assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
+    });
+  }
+  // The refusal names the package.json whose scope decided the entry's format.
+  const refusedFormat = (manifest) =>
+    new RegExp(
+      `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/driver.js`)} takes its format from ${escapeRegExp(`${configurationPackage}/${manifest}`)}, which does not set "type": "module"\\.$`,
+    );
+  for (const [description, layout, message] of [
+    [
+      "nested scope without type under a module root",
+      {
+        root: ',"type":"module"',
+        entry: "./compiled/driver.js",
+        files: {
+          "compiled/package.json": '{"name":"compiled"}',
+          "compiled/driver.js": commonJSDriver,
+        },
+      },
+      refusedFormat("compiled/package.json"),
+    ],
+    [
+      "nested CommonJS scope under a module root",
+      {
+        root: ',"type":"module"',
+        entry: "./compiled/driver.js",
+        files: {
+          "compiled/package.json": '{"type":"commonjs"}',
+          "compiled/driver.js": commonJSDriver,
+        },
+      },
+      refusedFormat("compiled/package.json"),
+    ],
+    [
+      "escaped type key in the root manifest",
+      {
+        root: ',"typ\\u0065":"module"',
+        entry: "./compiled/driver.js",
+        files: { "compiled/driver.js": commonJSDriver },
+      },
+      refusedFormat("package.json"),
+    ],
+    [
+      "non-string type in the nearest manifest",
+      {
+        root: ',"type":"module"',
+        files: { "compiled/package.json": '{"type":"module","type":1}' },
+      },
+      /^drivers\.configuration\.package has invalid package scope metadata\.$/,
+    ],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await scopedPackage(scenario, layout);
+      const native = importConfigurationPackage(owner);
+      if (layout.entry === undefined) {
+        assert.notEqual(native.status, 0, native.stdout);
+      } else {
+        // Node loads the selected file, as CommonJS.
+        assert.equal(native.status, 0, native.stderr);
+        assert.equal(native.stdout.trim(), "function");
+      }
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configuration), (error) => {
+        assert.match(error.message, message);
+        return true;
+      });
+    });
+  }
+});
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function onDiskConfigurationPackage(t, exports) {
+  const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));
+  t.after(() => rm(owner, { recursive: true, force: true }));
+  const installed = join(owner, "node_modules", configurationPackage);
+  await mkdir(dirname(installed), { recursive: true });
+  await cp(join(fixtures, "test-configuration-driver"), installed, { recursive: true });
+  await cp(join(installed, "compiled", "index.js"), join(installed, "compiled", "driver entry.js"));
+  const manifestPath = join(installed, "package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, exports }));
+  await writeFile(
+    join(owner, "package.json"),
+    JSON.stringify({
+      name: "driver-export-array-owner",
+      version: "1.0.0",
+      private: true,
+      dependencies: { [configurationPackage]: manifest.version },
+    }),
+  );
+  return owner;
+}
+
+function importConfigurationPackage(owner) {
+  return spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `console.log(typeof (await import(${JSON.stringify(configurationPackage)})).createDriver)`,
+    ],
+    {
+      cwd: owner,
+      encoding: "utf8",
+    },
+  );
+}
+
+// Node's ESM resolver is the oracle: "." selects a subpath only at the top level, and the
+// selected target must name an existing file exactly (no extension, directory or main lookup).
+test("Driver export resolution selects the file Node's import selects", async (t) => {
+  for (const [description, exports] of [
+    [
+      "nested dot key is a condition name",
+      [{ ".": "./compiled/index.cjs" }, "./compiled/index.js"],
+    ],
+    [
+      "nested dot key under a condition",
+      { import: { ".": "./compiled/missing.js" }, default: "./compiled/index.js" },
+    ],
+    [
+      "module-sync condition",
+      { "module-sync": "./compiled/index.js", import: "./compiled/missing.js" },
+    ],
+    ["percent-decoded target", "./compiled/driver%20entry.js"],
+    ["query and fragment", ["./compiled/index.js?x=1#y"]],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, exports);
+      const native = importConfigurationPackage(owner);
+      assert.equal(native.status, 0, native.stderr);
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      const drivers = await load(owner, configuration);
+      assert.equal(
+        drivers.installation.drivers.configuration.implementation,
+        `${configurationPackage}@1.0.0`,
+      );
+      assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
+    });
+  }
+  for (const [description, exports, message] of [
+    [
+      "directory target",
+      ["./compiled", "./compiled/index.js"],
+      /package export target must be a file, not a directory/,
+    ],
+    [
+      "trailing-slash directory",
+      "./compiled/",
+      /package export target must be a file, not a directory/,
+    ],
+    [
+      "extensionless target",
+      ["./compiled/index", "./compiled/index.js"],
+      /package selects an unavailable compiled ESM entry/,
+    ],
+    [
+      "encoded separator",
+      "./compiled%2findex.js",
+      /package export target must not encode a path separator/,
+    ],
+    [
+      "mixed subpath and condition keys",
+      { ".": "./compiled/index.js", import: "./compiled/index.js" },
+      /package exports must not mix subpath and condition keys/,
+    ],
+    [
+      "numeric condition key",
+      [{ 0: "./compiled/index.cjs", import: "./compiled/index.js" }, "./compiled/index.js"],
+      /package exports must not contain numeric condition keys/,
+    ],
+    [
+      "malformed encoding",
+      ["./compiled/%ZZ.js", "./compiled/index.js"],
+      /^drivers\.configuration\.package export target has malformed percent encoding\.$/,
+    ],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, exports);
+      const native = importConfigurationPackage(owner);
+      assert.notEqual(native.status, 0, native.stdout);
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configuration), (error) => {
+        assert.match(error.message, message);
+        return true;
+      });
+    });
+  }
+});

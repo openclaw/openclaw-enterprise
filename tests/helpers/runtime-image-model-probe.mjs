@@ -14,10 +14,7 @@ import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
-import {
-  GATEWAY_READINESS_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 
@@ -28,8 +25,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 // substituted: a sidecar in the runtime image owns the network namespace,
 // answers the Responses API as api.openai.com (mapped to loopback, trusted
 // through a private CA), and observes the wrapper from outside. Like the
-// kubelet, the test also runs the real readiness program inside the Gateway
-// container every two seconds, so it shares the Gateway's CPU quota.
+// kubelet, the sidecar also polls the real HTTP readiness endpoint.
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -94,7 +90,6 @@ async function createProbeMaterial(t, configuration) {
     file("endpoint.mjs"),
     await readFile(new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url)),
   );
-  await writeFile(file("readiness.cjs"), GATEWAY_READINESS_ENTRYPOINT);
   await writeFile(file("openclaw.json"), JSON.stringify(configuration));
   await chmod(directory, 0o755);
   for (const name of [
@@ -104,7 +99,6 @@ async function createProbeMaterial(t, configuration) {
     "hosts",
     "resolv.conf",
     "endpoint.mjs",
-    "readiness.cjs",
     "openclaw.json",
   ]) {
     await chmod(file(name), 0o644);
@@ -184,24 +178,17 @@ export async function runEmbeddedGatewayProbe(
   t,
   { mode, delayMs = 0, cpus, memory, until, limitMs, stress, afterStop },
 ) {
+  const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
   const material = await createProbeMaterial(t, gateway.configuration);
   const suffix = randomBytes(6).toString("hex");
   const sidecar = `oce-runtime-model-probe-endpoint-${suffix}`;
   const containerName = `oce-runtime-model-probe-gateway-${suffix}`;
-  let stopReadiness = false;
   t.after(async () => {
-    stopReadiness = true;
     await runDocker(["rm", "-f", containerName]).catch(() => {});
     await runDocker(["rm", "-f", sidecar]).catch(() => {});
     await afterStop?.();
   });
-  const readinessEnvironment = Object.fromEntries(
-    gateway.environment.map((entry) => [
-      entry.slice(0, entry.indexOf("=")),
-      entry.slice(entry.indexOf("=") + 1),
-    ]),
-  );
   await runDocker([
     "run",
     "--name",
@@ -230,8 +217,6 @@ export async function runEmbeddedGatewayProbe(
     "PROBE_OBSERVE_NATIVE_PORT=8080",
     "-e",
     "PROBE_OBSERVE_STATUS_PORT=18791",
-    "-e",
-    `PROBE_OBSERVE_READINESS_ENV=${JSON.stringify(readinessEnvironment)}`,
     "--entrypoint",
     "node",
     image,
@@ -281,15 +266,6 @@ export async function runEmbeddedGatewayProbe(
   const startedAt = containerTime(
     (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
   );
-  // The kubelet's exec readiness probe (periodSeconds 2) runs in the container.
-  const kubeletReadiness = (async () => {
-    while (!stopReadiness) {
-      await runDocker(["exec", containerName, "node", "-e", GATEWAY_READINESS_ENTRYPOINT], {
-        timeout: 10_000 * imageSmokeTimeoutMultiplier,
-      }).catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  })();
   const collect = async () => {
     const [endpoint, wrapper, state] = await Promise.all([
       runDocker(["logs", sidecar]),
@@ -311,31 +287,26 @@ export async function runEmbeddedGatewayProbe(
     };
   };
   const deadline = Date.now() + limitMs * imageSmokeTimeoutMultiplier;
-  try {
-    for (;;) {
-      const snapshot = await collect();
-      if (until(snapshot, containerName)) {
-        return { containerName, snapshot };
-      }
-      if (!snapshot.running) {
-        const error = new assert.AssertionError({
-          message: "The Gateway wrapper exited before settlement.",
-        });
-        error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "wrapper-exited");
-        throw error;
-      }
-      if (Date.now() > deadline) {
-        const error = new assert.AssertionError({
-          message: "The embedded Gateway exceeded its settlement guard.",
-        });
-        error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "outer-timeout");
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+  for (;;) {
+    const snapshot = await collect();
+    if (until(snapshot, containerName)) {
+      return { containerName, snapshot, setupMs: startedAt - scenarioStartedAt };
     }
-  } finally {
-    stopReadiness = true;
-    await kubeletReadiness;
+    if (!snapshot.running) {
+      const error = new assert.AssertionError({
+        message: "The Gateway wrapper exited before settlement.",
+      });
+      error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "wrapper-exited");
+      throw error;
+    }
+    if (Date.now() > deadline) {
+      const error = new assert.AssertionError({
+        message: "The embedded Gateway exceeded its settlement guard.",
+      });
+      error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "outer-timeout");
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 

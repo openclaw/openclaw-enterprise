@@ -155,7 +155,8 @@ files to the exporter Secret. Update existing Secrets through your normal
 Secret-management workflow, and [refresh them on upgrade](#refresh-the-collector-configuration-on-upgrade).
 
 Set the exact approved exporter or proxy IPv4 address and port in the protected
-values copy; `203.0.113.10/32` below is a placeholder:
+values copy. Use decimal ports from 1 to 65535 without leading zeros;
+`203.0.113.10/32` below is a placeholder:
 
 ```bash
 yq -i '.logging.collector.enabled = true |

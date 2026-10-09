@@ -47,12 +47,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      # Pull the Engine's Docker Hub images (k3s node and source images)
+      # through mirror.gcr.io without the runner's Docker Hub sign-in, as
+      # Runtime Image Fixture does (findings 973 and 977; same exposure). This
+      # restarts the Engine before the lane starts.
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: k3d-observability-demo
           profile: k3d
           node-version: "24.16.0"
           artifact-prefix: demo-results
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
       - name: Upload rendered log dashboard
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

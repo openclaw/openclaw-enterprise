@@ -275,6 +275,57 @@ test(
   },
 );
 
+// An OpenShell Sandbox delivers the Gateway CA as a provider file (OPENCLAW_NODE_CA_PATH)
+// and runs the Harness with its own HOME. Codex hook commands call the Gateway route, so
+// they need that CA as much as the node does, and their credential directory is HOME's.
+test(
+  "Codex hooks trust a file-delivered Gateway CA from the Harness HOME",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-ca-file-"));
+    const caPath = join(directory, "node-ca.pem");
+    await writeFile(caPath, "gateway-public-ca\n");
+    const setupEnvelopePath = join(directory, "node-setup.json");
+    await writeFile(
+      setupEnvelopePath,
+      JSON.stringify({
+        url: "wss://gateway.example.test/node",
+        bootstrapToken: "provider-bootstrap-token",
+        expiresAtMs: Date.now() + 60_000,
+      }),
+    );
+    const { waitFor } = await startSupervisor(t, directory, {
+      child: [
+        'const { appendFileSync } = require("node:fs");',
+        "const [events, kind] = process.argv.slice(2);",
+        "appendFileSync(events, JSON.stringify({ kind, pid: process.pid,",
+        "caPath: process.env.NODE_EXTRA_CA_CERTS,",
+        'hasCaPath: process.env.OPENCLAW_NODE_CA_PATH !== undefined }) + "\\n");',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: pendingIdentityProbe,
+      env: { OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath, OPENCLAW_NODE_CA_PATH: caPath },
+    });
+    const rows = await waitFor(
+      "children started",
+      (observed) =>
+        observed.some(({ kind }) => kind === "node") &&
+        observed.some(({ kind }) => kind === "codex"),
+    );
+    const node = rows.find(({ kind }) => kind === "node");
+    const codex = rows.find(({ kind }) => kind === "codex");
+    assert.equal(node.caPath, caPath);
+    const hooks = join(directory, ".oce-native-hooks");
+    assert.equal((await stat(hooks)).mode & 0o777, 0o700);
+    assert.equal(codex.caPath, join(hooks, "gateway-ca.pem"));
+    assert.equal(await readFile(codex.caPath, "utf8"), "gateway-public-ca");
+    assert.equal(codex.hasCaPath, false);
+  },
+);
+
 // A Deployment-backed Codex Harness starts before its node setup Secret exists
 // and receives the code through an optional volume. Real child processes prove
 // the start order; native pairing and the kubelet volume refresh are not run here.

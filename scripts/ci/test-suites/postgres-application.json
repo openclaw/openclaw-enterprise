@@ -3,9 +3,11 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
-  "fileConcurrency": 2,
+  "fileConcurrency": 4,
   "parallelFiles": [
+    "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
     "tests/integration/occ-metrics.test.mjs"
@@ -31,22 +33,20 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision.test.mjs",
       "expectedTests": [
-        "worker fixture disposal preserves another database's live claim and activation",
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
-        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
         "credential withdrawal work revokes from the active revision without redeploying it",
-        "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
+        "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
+        "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",
+        "a withdrawal retried after an outage leaves one denied to its requester for a replay",
+        "a withdrawal whose last attempt outlives its lease is retried later and revoked without a replay",
+        "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
         "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
         "a deployment retry never re-attaches a source withdrawn while it was finishing",
+        "a withdrawal reaches a deployment admitted before it, which activates without the source",
+        "a withdrawal reaches the predecessor that runs until its successor's deployment activates",
+        "a withdrawn Harness source fails a deployment admitted before the withdrawal",
         "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
         "maintenance keeps re-queuing withdrawals after a withdrawn source loses its Agent grant",
-        "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
-        "Agent stop cleans a terminal candidate without an active revision",
-        "Agent stop reauthorizes the recorded actor before Compute mutation",
-        "Agent delete reauthorizes the recorded actor before Compute mutation",
-        "a deployment during active cleanup supersedes the remaining Agent stop effects",
-        "a deployment during candidate cleanup supersedes the remaining Agent stop effects",
-        "maintenance retains its real lease across consecutive short predecessor retirements",
         "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
         "the revision worker rejects associated-account access revoked after admission before invoking Compute",
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
@@ -60,6 +60,25 @@
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
         "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-health.test.mjs",
+      "expectedTests": [
+        "worker fixture disposal preserves another database's live claim and activation"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
+      "expectedTests": [
+        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
+        "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
+        "Agent stop cleans a terminal candidate without an active revision",
+        "Agent stop reauthorizes the recorded actor before Compute mutation",
+        "Agent delete reauthorizes the recorded actor before Compute mutation",
+        "a deployment during active cleanup supersedes the remaining Agent stop effects",
+        "a deployment during candidate cleanup supersedes the remaining Agent stop effects",
+        "maintenance retains its real lease across consecutive short predecessor retirements"
       ]
     },
     {

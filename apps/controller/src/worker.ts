@@ -48,10 +48,12 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
+  CredentialWithdrawalRefusedError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
+  credentialWithdrawalCompanionRevisions,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
   repositoryCleanupRevisionId,
@@ -59,8 +61,10 @@ import {
   provisioningEffectReceipt as provisioningEffectReceiptForRecord,
   provisioningPendingEffect,
   type ClaimedWork,
+  type ControllerWork,
   type NativeWorkerSupport,
   type ProvisioningEffectReceipt,
+  type PlatformReadView,
   type PlatformUnitOfWork,
   type PostgresPool,
   type PostgresQueryClient,
@@ -151,6 +155,14 @@ const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   ...Object.values(REVISION_PENDING_CODES),
 ]);
 
+// A refused candidate whose stop keeps failing waits on that stop, which can block the serial
+// worker for minutes (Kubernetes waits for gateway and Agent Pods to terminate). Each failed stop
+// doubles its recheck from the readiness cadence up to 5 minutes, and waits at least four times
+// as long as that stop took, so a blocked stop holds at most a fifth of the worker and other
+// Agents' work runs between attempts (finding 1002).
+const REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS = 300_000;
+const REFUSED_CANDIDATE_STOP_DURATION_FACTOR = 4;
+
 // A repository cleanup that another pass cannot settle (an invalidated attempt or a cleanup
 // error, with no session still closing) still rechecks so its obligation stays visible, but
 // the delay grows with the work row's age, as for long readiness rechecks: age / 40, at least
@@ -240,6 +252,43 @@ function revisionFailureLogFields(error: unknown): {
 }
 
 /**
+ * Stopping a refused candidate failed. The pass waits as
+ * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
+ * for, and its log names the stop's own failure.
+ */
+class RefusedCandidateStopError extends Error {
+  readonly refusal: string;
+  /** How long the failed stop held the worker. */
+  readonly durationMs: number;
+
+  constructor(refusal: string, durationMs: number, cause: unknown) {
+    super("The refused AgentRevision candidate could not be stopped.", { cause });
+    this.name = "RefusedCandidateStopError";
+    this.refusal = refusal;
+    this.durationMs = durationMs;
+  }
+
+  /**
+   * The refusal stands, but it is not published while its candidate may still serve: the work
+   * waits on the stop's own dependency and the next pass repeats the refusal and the stop.
+   */
+  pending(): {
+    readonly result: RevisionDispatchResult;
+    readonly logFields: Readonly<Record<string, string | number>>;
+  } {
+    return {
+      result: {
+        outcome: "pending",
+        code: "REFUSED_CANDIDATE_STOP_PENDING",
+        refusedCandidate: this.refusal,
+        refusedStopMs: this.durationMs,
+      },
+      logFields: { ...revisionFailureLogFields(this.cause), refusal: this.refusal },
+    };
+  }
+}
+
+/**
  * The pending result of an activation pass that did not finish: a dependency
  * that is converging and a known activation wait keep their own codes (D330);
  * anything else stays REVISION_FINALIZATION_INCOMPLETE.
@@ -286,6 +335,14 @@ interface DispatchResult {
 interface RevisionDispatchResult extends DispatchResult {
   /** A transient dependency failure, retried until the convergence deadline. */
   readonly dependencyFailure?: TransientDependencyError;
+  /**
+   * A refusal whose exclusive candidate could not be stopped yet. Its pending passes outlast
+   * the attempt budget and the convergence deadline: ending the work would leave the refused
+   * candidate serving with nothing left to stop it.
+   */
+  readonly refusedCandidate?: string;
+  /** How long the refused candidate's failed stop took; it lengthens the recheck. */
+  readonly refusedStopMs?: number;
   readonly data?: Readonly<Record<string, unknown>>;
   readonly resultData?: Readonly<Record<string, unknown>>;
   readonly revision?: Readonly<AgentRevision>;
@@ -346,6 +403,95 @@ function settleCredentialWithdrawal(
     : { outcome: "permanent", code: denied.code, attempts };
 }
 
+/**
+ * A pending withdrawal whose last attempt found its requester without `agent:operate` waits
+ * for a replay: only an operator who still holds it can take it over and queue an attempt
+ * that can succeed, so maintenance does not queue another denied attempt. One Compute refused
+ * (CredentialWithdrawalRefusedError) waits too: an operator corrects the cause, then replays.
+ */
+const CREDENTIAL_WITHDRAWAL_REPLAY_REASONS: ReadonlySet<string> = new Set([
+  "AUTHORIZATION_DENIED",
+  "ACTOR_REVOKED",
+  "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+  "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+]);
+
+function credentialWithdrawalAwaitsReplay(withdrawal: Readonly<CredentialWithdrawal>): boolean {
+  return (
+    withdrawal.lastReason !== undefined &&
+    CREDENTIAL_WITHDRAWAL_REPLAY_REASONS.has(withdrawal.lastReason)
+  );
+}
+
+/**
+ * Later attempt series a withdrawal gets after its work runs out of attempts on a retryable
+ * failure: 30 s, 1, 2 and 4 min, then every 5 min, about an hour in all.
+ */
+const MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES = 15;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_BASE_MS = 30_000;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_MAX_MS = 300_000;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_SUFFIX = /:recovery:([1-9][0-9]*)$/;
+
+/**
+ * The series after the claimed one. Every series of one request shares the request's work key
+ * with its number appended, so a series is queued once and the chain stays bounded; a replay is
+ * a new request whose chain starts again.
+ */
+function nextCredentialWithdrawalRecovery(idempotencyKey: string): {
+  readonly idempotencyKey: string;
+  readonly number: number;
+} {
+  const current = CREDENTIAL_WITHDRAWAL_RECOVERY_SUFFIX.exec(idempotencyKey);
+  const requestKey = current === null ? idempotencyKey : idempotencyKey.slice(0, current.index);
+  const number = (current === null ? 0 : Number(current[1])) + 1;
+  return { idempotencyKey: `${requestKey}:recovery:${number}`, number };
+}
+
+function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
+  return Math.min(
+    CREDENTIAL_WITHDRAWAL_RECOVERY_MAX_MS,
+    CREDENTIAL_WITHDRAWAL_RECOVERY_BASE_MS * 2 ** Math.min(recovery - 1, 10),
+  );
+}
+
+/** A revision's first pending withdrawal, preferring one that does not await a replay. */
+function firstPendingCredentialWithdrawal(
+  withdrawals: readonly Readonly<CredentialWithdrawal>[],
+): Readonly<CredentialWithdrawal> | undefined {
+  const pending = withdrawals.filter(({ state }) => state === "pending");
+  return pending.find((withdrawal) => !credentialWithdrawalAwaitsReplay(withdrawal)) ?? pending[0];
+}
+
+/**
+ * A pending withdrawal that needs an attempt queued: it does not await a replay, and no attempt
+ * for its revision is queued or running. Every path that queues withdrawal work without an
+ * operator request (maintenance, a later series) checks this, so each revision keeps one chain.
+ */
+async function credentialWithdrawalNeedsAttempt(
+  unit: PlatformUnitOfWork,
+  withdrawal: Readonly<CredentialWithdrawal>,
+): Promise<boolean> {
+  return (
+    withdrawal.state === "pending" &&
+    !credentialWithdrawalAwaitsReplay(withdrawal) &&
+    !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
+      withdrawal.namespaceId,
+      withdrawal.revisionId,
+    ))
+  );
+}
+
+/** Each requester's withdrawn source ids, in attempt order. */
+function sourceIdsByRequester(
+  attempts: readonly CredentialWithdrawalAttempt[],
+): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const { requestedBy, credentialSourceId } of attempts) {
+    grouped.set(requestedBy, [...(grouped.get(requestedBy) ?? []), credentialSourceId]);
+  }
+  return grouped;
+}
+
 /** The revision's admitted sources once each: its Harness source first, then the others. */
 function revisionCredentialSourceIds(revision: Readonly<AgentRevision>): readonly string[] {
   const harnessSourceId = revisionHarnessSourceId(revision);
@@ -381,7 +527,7 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
-function workOperation(claim: ClaimedWork): string {
+function workOperation(claim: ControllerWork): string {
   if (isCredentialWithdrawalWork(claim)) {
     return "agent_revision.credential_withdrawal";
   }
@@ -696,6 +842,8 @@ const MAX_AUDITED_PENDING_LIFECYCLE_RECORDS = 4_096;
 export class ControllerWorker {
   private readonly metrics: OccMetrics | undefined;
   private passOutcome: WorkOutcome = "error";
+  /** The revision this pass asked Compute to prepare, if any. */
+  private preparedThisPass: string | undefined;
   private readonly state: PostgresPlatformState;
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
@@ -748,6 +896,11 @@ export class ControllerWorker {
     { readonly stoppedAt: number; readonly restopAfterMs: number }
   >();
   private readonly deployTimings = new Map<string, DeployTiming>();
+  /**
+   * Consecutive failed refused-candidate stops per deployment work item, which set its backoff.
+   * A restart forgets them, so the backoff starts again from the readiness cadence.
+   */
+  private readonly refusedStopFailures = new Map<string, number>();
   /** The last stuck-cleanup cause logged per repository cleanup work item. */
   private readonly repositoryCleanupCauses = new Map<string, string>();
   /**
@@ -969,11 +1122,13 @@ export class ControllerWorker {
       // Every pass starts here, including back-to-back claims that skip the idle delay.
       this.progress();
       try {
-        await this.queue.recoverStale();
+        const recovery = await this.queue.recoverStale();
+        await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         const claim = await this.queue.claim();
         if (claim !== undefined) {
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
+          this.preparedThisPass = undefined;
           try {
             await this.process(claim);
           } catch (error) {
@@ -1394,6 +1549,8 @@ export class ControllerWorker {
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
     }
+    await this.recheckRevokedCredentialSources(claim, revision);
+    this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
     );
@@ -1614,7 +1771,8 @@ export class ControllerWorker {
       await this.processRepositoryCleanup(claim);
       return;
     }
-    // A withdrawal names an active revision but never deploys it.
+    // A withdrawal names the active revision, an admitted successor, or a predecessor not yet
+    // retired, but never deploys it.
     if (isCredentialWithdrawalWork(claim)) {
       await this.processCredentialWithdrawal(claim);
       return;
@@ -2186,7 +2344,7 @@ export class ControllerWorker {
         throw new WorkClaimLostError();
       }
       if (result.outcome === "success" && result.agent !== undefined) {
-        const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+        const agent = await this.lockClaimAgent(unit, claim);
         if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
           result = { outcome: "permanent", code: "INVALID_AGENT_OWNER" };
         } else if (agent.desiredRuntimeState !== "stopped") {
@@ -2301,7 +2459,7 @@ export class ControllerWorker {
    */
   private async processCredentialWithdrawal(claim: ClaimedWork): Promise<void> {
     let result: CredentialWithdrawalDispatchResult;
-    let authorized: readonly Readonly<CredentialWithdrawal>[] = [];
+    let requested: readonly Readonly<CredentialWithdrawal>[] = [];
     const denied: CredentialWithdrawalAttempt[] = [];
     const attempts: CredentialWithdrawalAttempt[] = [];
     try {
@@ -2361,6 +2519,7 @@ export class ControllerWorker {
         });
         return;
       }
+      requested = pending.map(({ withdrawal }) => withdrawal);
       // Earlier attempts already revoked every requested source.
       if (pending.length === 0) {
         await this.finalizeCredentialWithdrawal(claim, {
@@ -2398,7 +2557,7 @@ export class ControllerWorker {
           });
         }
       }
-      authorized = allowed.map(({ withdrawal }) => withdrawal);
+      const authorized = allowed.map(({ withdrawal }) => withdrawal);
       if (allowed.length > 0) {
         if (
           revision.compute.id !== this.compute.id ||
@@ -2441,16 +2600,24 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      // Confirmed revocations stand; every authorized withdrawal not yet confirmed retries.
-      const settled = new Set(attempts.map(({ credentialSourceId }) => credentialSourceId));
+      // Confirmed revocations stand; every withdrawal not yet confirmed or denied retries,
+      // including one IAM failed to authorize, so no earlier denial stays its last reason. A
+      // Compute refusal that retrying cannot change (a configuration that cannot reach the
+      // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
+      // mismatch does; a replay tries again.
+      const code =
+        error instanceof CredentialWithdrawalRefusedError ? error.code : "DEPENDENCY_UNAVAILABLE";
+      const settled = new Set(
+        [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
+      );
       result = {
-        outcome: "retry",
-        code: "DEPENDENCY_UNAVAILABLE",
+        outcome: error instanceof CredentialWithdrawalRefusedError ? "permanent" : "retry",
+        code,
         attempts: [
           ...attempts,
           ...unrevokedAttempts(
-            authorized.filter(({ credentialSourceId }) => !settled.has(credentialSourceId)),
-            "DEPENDENCY_UNAVAILABLE",
+            requested.filter(({ credentialSourceId }) => !settled.has(credentialSourceId)),
+            code,
           ),
           ...denied,
         ],
@@ -2461,11 +2628,25 @@ export class ControllerWorker {
 
   private async finalizeCredentialWithdrawal(
     claim: ClaimedWork,
-    result: CredentialWithdrawalDispatchResult,
+    dispatched: CredentialWithdrawalDispatchResult,
   ): Promise<void> {
+    let result = dispatched;
+    const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
+      outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
+      }
+      result = dispatched;
+      let terminalFailure = terminal(result);
+      // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
+      // them first, in admission order, before updating withdrawal rows: a concurrent
+      // withdrawal request locks the Namespace, then the Agent, then the same rows. Under those
+      // locks, a replay that took a denied withdrawal over during this pass is settled.
+      if (terminalFailure) {
+        await this.lockClaimScope(unit, claim);
+        result = await this.withoutReassignedDenials(unit, claim, result);
+        terminalFailure = terminal(result);
       }
       // Each row explains a withdrawal that is still pending, including after the last attempt.
       const at = new Date().toISOString();
@@ -2485,18 +2666,10 @@ export class ControllerWorker {
           );
         }
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
       const attempts = result.attempts ?? [];
       // Each confirmed revocation is audited as its requester's mutation in the pass that
       // confirmed it, so a later retry cannot lose it.
-      const revokedBy = new Map<string, string[]>();
-      for (const { requestedBy, credentialSourceId, revoked } of attempts) {
-        if (revoked) {
-          revokedBy.set(requestedBy, [...(revokedBy.get(requestedBy) ?? []), credentialSourceId]);
-        }
-      }
+      const revokedBy = sourceIdsByRequester(attempts.filter(({ revoked }) => revoked));
       for (const [actorId, credentialSourceIds] of revokedBy) {
         await this.appendCredentialWithdrawalAudit(unit, claim, {
           actorId,
@@ -2521,27 +2694,35 @@ export class ControllerWorker {
         const unsettled = attempts.filter(
           ({ revoked, denial }) => !revoked && denial === undefined,
         );
-        if (terminalFailure && (unsettled.length > 0 || attempts.length === 0)) {
-          await this.appendCredentialWithdrawalAudit(unit, claim, {
-            actorId: claim.actorId,
-            outcome: "failure",
-            code: result.code,
-            credentialSourceIds: unsettled.map(({ credentialSourceId }) => credentialSourceId),
-          });
+        // A failure is audited against each unsettled withdrawal's requester, as a revocation
+        // is, so a withdrawal a replay took over is not attributed to the claim's actor.
+        if (terminalFailure) {
+          const failedBy = sourceIdsByRequester(unsettled);
+          if (attempts.length === 0) {
+            failedBy.set(claim.actorId, []);
+          }
+          for (const [actorId, credentialSourceIds] of failedBy) {
+            await this.appendCredentialWithdrawalAudit(unit, claim, {
+              actorId,
+              outcome: "failure",
+              code: result.code,
+              credentialSourceIds,
+            });
+          }
         }
       }
       if (result.outcome === "success") {
         await queue.complete(claim);
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
+        if (result.outcome === "retry") {
+          await this.scheduleCredentialWithdrawalRecovery(unit, queue, claim);
+        }
       } else {
         await queue.retry(claim, { code: result.code });
       }
     }, this.queueOptions);
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = terminal(result) ? "permanent" : result.outcome;
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -2552,6 +2733,139 @@ export class ControllerWorker {
       outcome: result.outcome,
       code: result.code,
     });
+  }
+
+  /**
+   * A denial checked the requester this pass read. A replay that made another operator the
+   * requester since then (requestRevisionCredentialWithdrawal) leaves this claim as the
+   * withdrawal's only work, so the denial must not end it: that withdrawal becomes unconfirmed
+   * with CREDENTIAL_WITHDRAWAL_REASSIGNED, and a claim that only denials failed retries, so
+   * its next attempt authorizes the new requester. Other outcomes stand. Runs under the
+   * Namespace and Agent locks, which the replay takes before it reassigns.
+   */
+  private async withoutReassignedDenials(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+    result: CredentialWithdrawalDispatchResult,
+  ): Promise<CredentialWithdrawalDispatchResult> {
+    const attempts = result.attempts ?? [];
+    if (!attempts.some(({ denial }) => denial !== undefined)) {
+      return result;
+    }
+    const current = await unit.credentialSources.listCredentialWithdrawals(
+      claim.namespaceId,
+      claim.revisionId!,
+    );
+    let reassigned = false;
+    const settled = attempts.map((attempt): CredentialWithdrawalAttempt => {
+      const withdrawal = current.find(
+        ({ credentialSourceId }) => credentialSourceId === attempt.credentialSourceId,
+      );
+      if (
+        attempt.denial === undefined ||
+        withdrawal?.state !== "pending" ||
+        withdrawal.requestedBy === attempt.requestedBy
+      ) {
+        return attempt;
+      }
+      reassigned = true;
+      return {
+        credentialSourceId: attempt.credentialSourceId,
+        requestedBy: withdrawal.requestedBy,
+        code: "CREDENTIAL_WITHDRAWAL_REASSIGNED",
+        revoked: false,
+      };
+    });
+    if (!reassigned) {
+      return result;
+    }
+    // settleCredentialWithdrawal failed the claim only for its denials when every other
+    // withdrawal was revoked; it now retries. Any other failure keeps its outcome and code.
+    if (
+      result.outcome === "permanent" &&
+      attempts.every(({ revoked, denial }) => revoked || denial !== undefined)
+    ) {
+      return { outcome: "retry", code: "CREDENTIAL_WITHDRAWAL_REASSIGNED", attempts: settled };
+    }
+    return { ...result, attempts: settled };
+  }
+
+  /**
+   * Withdrawal work that ran out of attempts on a retryable failure (an unreachable gateway, or
+   * one that has not confirmed revocation yet) queues one later series of attempts for its
+   * revision, in the transaction that fails it, or right after stale-claim recovery fails it
+   * (scheduleRecoveredCredentialWithdrawals). Compute without a maintenance interval (the
+   * Kubernetes Driver) has no pass that would re-queue it, so without this a dependency outage
+   * longer than the attempt budget would leave a token usable after the dependency recovers.
+   * The queued series keeps `withdrawalInProgress` true while it waits. Each series waits twice
+   * as long as the one before, up to five minutes, and the chain ends after
+   * MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES series. Where Compute schedules maintenance, each pass
+   * re-queues the withdrawal instead (recoverPendingCredentialWithdrawals). A revision whose
+   * pending withdrawals all await a replay gets none, and neither does one whose replay already
+   * queued an attempt (credentialWithdrawalNeedsAttempt). The Namespace and Agent are already
+   * locked here, as for any terminal failure.
+   */
+  private async scheduleCredentialWithdrawalRecovery(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, "enqueue">,
+    claim: ControllerWork,
+  ): Promise<void> {
+    const recovery = nextCredentialWithdrawalRecovery(claim.idempotencyKey);
+    if (
+      this.maintenanceIntervalMs !== undefined ||
+      recovery.number > MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES
+    ) {
+      return;
+    }
+    const next = firstPendingCredentialWithdrawal(
+      await unit.credentialSources.listCredentialWithdrawals(claim.namespaceId, claim.revisionId!),
+    );
+    if (next === undefined || !(await credentialWithdrawalNeedsAttempt(unit, next))) {
+      return;
+    }
+    await queue.enqueue({
+      idempotencyKey: recovery.idempotencyKey,
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId!,
+      revisionId: claim.revisionId!,
+      actorId: claim.actorId,
+      agentTarget: CREDENTIAL_WITHDRAWAL_TARGET,
+      availableAt: new Date(Date.now() + credentialWithdrawalRecoveryDelayMs(recovery.number)),
+    });
+  }
+
+  /**
+   * Stale-claim recovery fails withdrawal work whose lease ran out on its last attempt (its
+   * worker died, or a gateway call outlasted the lease) without the worker's final pass. Each
+   * such item gets its next series here, as if that pass had failed it, in its own transaction
+   * that takes the Namespace and Agent first. A replay queued in between wins (the
+   * outstanding-work check), so this never starts a second chain. An item that cannot be
+   * scheduled is reported and left for a replay; the others still are.
+   */
+  private async scheduleRecoveredCredentialWithdrawals(
+    failed: readonly ControllerWork[],
+  ): Promise<void> {
+    if (this.maintenanceIntervalMs !== undefined) {
+      return;
+    }
+    for (const work of failed) {
+      if (!isCredentialWithdrawalWork(work) || work.agentId === undefined) {
+        continue;
+      }
+      try {
+        await this.state.transactWithQueue(async (unit, queue) => {
+          await this.lockClaimScope(unit, work);
+          await this.scheduleCredentialWithdrawalRecovery(unit, queue, work);
+        }, this.queueOptions);
+      } catch {
+        this.emit({
+          event: "worker.error",
+          code: "WORKER_UNAVAILABLE",
+          workId: work.idempotencyKey,
+          operation: workOperation(work),
+        });
+      }
+    }
   }
 
   private async appendCredentialWithdrawalAudit(
@@ -2597,37 +2911,39 @@ export class ControllerWorker {
 
   /**
    * A model-withdrawn revision must not be prepared again. Maintenance recovers every pending
-   * withdrawal, including tool sources, and stops only after all revocations are confirmed.
+   * withdrawal, including tool sources and those of revisions that may still run with a source
+   * (see pendingCredentialWithdrawals), and stops only after all revocations are confirmed.
    */
   private async completeWithdrawnRevisionMaintenance(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
+    try {
+      await this.recheckRevokedCredentialSources(claim, revision);
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // A failed recheck ends only this claim; the maintenance chain continues, so the next
+      // pass rechecks again and still re-queues pending withdrawals.
+      const pending = activationPendingResult(error);
+      await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
+        ...(pending.dependencyFailure === undefined
+          ? {}
+          : { dependencyFailure: pending.dependencyFailure }),
+        failureLogFields: revisionFailureLogFields(error),
+      });
+      return;
+    }
     await this.state.transactWithQueue(async (unit, queue) => {
+      // Namespace first, as every transaction that may also lock it (the work insert's
+      // foreign key) must.
+      await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const pending = (
-        await unit.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id)
-      ).filter(({ state }) => state === "pending");
-      if (
-        pending.length > 0 &&
-        !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
-          revision.namespaceId,
-          revision.id,
-        ))
-      ) {
-        // The requester's authority is re-checked by the withdrawal work, as for a replay.
-        await unit.operations.append({
-          kind: "agent_revision",
-          action: "reconcile",
-          target: CREDENTIAL_WITHDRAWAL_TARGET,
-          namespaceId: revision.namespaceId,
-          resourceId: revision.id,
-          actorId: pending[0]!.requestedBy,
-          operationId: randomUUID(),
-        });
-      }
+      const pending = await this.pendingCredentialWithdrawals(unit, revision);
+      await this.requeueCredentialWithdrawals(unit, pending);
       await queue.complete(claim, { code: "CREDENTIAL_WITHDRAWN" });
       if (pending.length > 0 && this.revisionMaintenanceInterval(revision) !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);
@@ -2647,50 +2963,156 @@ export class ControllerWorker {
   }
 
   /**
+   * A withdrawal that found no Sandbox records the source revoked, yet a CreateSandbox that
+   * OpenShell accepted before its worker lost the claim can still land afterwards, with the
+   * source attached. Before each preparation, and each pass of a model-withdrawn revision,
+   * the gateway detaches every revoked source again if the Sandbox still lists it. Revoked
+   * rows stay revoked; the next pass checks again until the Sandbox no longer lists it. A
+   * recheck needs no requester reauthorization: the revocation is already recorded.
+   */
+  private async recheckRevokedCredentialSources(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const withdraw = this.compute.withdrawCredentialSource?.bind(this.compute);
+    const sourceIds = revisionCredentialSourceIds(revision);
+    if (withdraw === undefined || sourceIds.length === 0) {
+      return;
+    }
+    const sources = await this.state.read(async (view) => {
+      const revokedIds = new Set(
+        (await view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id))
+          .filter(({ state }) => state === "revoked")
+          .map(({ credentialSourceId }) => credentialSourceId),
+      );
+      const revoked: Readonly<CredentialSource>[] = [];
+      // Admission order, as withdrawal uses.
+      for (const sourceId of sourceIds) {
+        if (!revokedIds.has(sourceId)) {
+          continue;
+        }
+        // A deleted source took its gateway provider, and its withdrawals, with it.
+        const source = await view.credentialSources.findCredentialSource(
+          revision.namespaceId,
+          sourceId,
+        );
+        if (source !== undefined) {
+          revoked.push(source);
+        }
+      }
+      return revoked;
+    });
+    for (const source of sources) {
+      await this.withClaimHeartbeat(claim, (signal) =>
+        withdraw(revision, source, signal, { recheck: true }),
+      );
+    }
+  }
+
+  /**
    * Withdrawal work retries a bounded number of times. Maintenance of a revision that keeps
-   * running re-queues any pending non-model withdrawal, so a gateway outage cannot leave its
-   * token usable after the gateway recovers. Ordinary maintenance then continues.
+   * running re-queues any pending non-model withdrawal, its own or that of a revision that may
+   * still run with a source, so a gateway outage cannot leave a token usable after the gateway
+   * recovers. Without Compute maintenance, scheduleCredentialWithdrawalRecovery queues a bounded
+   * chain of later attempts instead. Ordinary maintenance then continues.
    */
   private async recoverPendingCredentialWithdrawals(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
     const sourceIds = new Set((revision.credentialSources ?? []).map(({ sourceId }) => sourceId));
-    if (sourceIds.size === 0) {
-      return;
-    }
-    const pending = (
-      await this.state.read((view) =>
-        view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
-      )
-    ).filter(
-      ({ state, credentialSourceId }) => state === "pending" && sourceIds.has(credentialSourceId),
+    const pending = await this.state.read((view) =>
+      this.pendingCredentialWithdrawals(view, revision, sourceIds),
     );
-    if (pending.length === 0) {
+    if (pending.every(credentialWithdrawalAwaitsReplay)) {
       return;
     }
     await this.state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      if (
-        !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
-          revision.namespaceId,
-          revision.id,
-        ))
-      ) {
-        // The withdrawal work reauthorizes each withdrawal's own requester, as for a replay.
-        await unit.operations.append({
-          kind: "agent_revision",
-          action: "reconcile",
-          target: CREDENTIAL_WITHDRAWAL_TARGET,
-          namespaceId: revision.namespaceId,
-          resourceId: revision.id,
-          actorId: pending[0]!.requestedBy,
-          operationId: randomUUID(),
-        });
-      }
+      await this.requeueCredentialWithdrawals(
+        unit,
+        await this.pendingCredentialWithdrawals(unit, revision, sourceIds),
+      );
     }, this.queueOptions);
+  }
+
+  /**
+   * The pending credential withdrawals that maintenance of the active `revision` recovers, one
+   * per revision, preferring one that does not await a replay: its own (only of `sourceIds`,
+   * when given), then those of the revisions that may still run with a withdrawn source
+   * (credentialWithdrawalCompanionRevisions). No other pass would ever queue those: a successor
+   * has no maintenance before it activates, and a predecessor's ends once it is superseded. In
+   * practice they are admitted successors: an active revision gets a maintenance chain only once
+   * its deployment activated it, which retires its predecessors, so an unretired predecessor's
+   * withdrawal is retried by a replay.
+   */
+  private async pendingCredentialWithdrawals(
+    view: PlatformReadView,
+    revision: Readonly<AgentRevision>,
+    sourceIds?: ReadonlySet<string>,
+  ): Promise<readonly Readonly<CredentialWithdrawal>[]> {
+    const withdrawals = await view.credentialSources.listCredentialWithdrawals(
+      revision.namespaceId,
+      revision.id,
+    );
+    // A withdrawal records a row on the then-active revision with every other revision's, and
+    // a successor that activates has its own, so without one there is nothing to recover. This
+    // keeps the revision walk off the maintenance passes of Agents that never withdrew a source.
+    if (withdrawals.length === 0) {
+      return [];
+    }
+    const own = firstPendingCredentialWithdrawal(
+      withdrawals.filter(
+        ({ credentialSourceId }) => sourceIds === undefined || sourceIds.has(credentialSourceId),
+      ),
+    );
+    const pending = own === undefined ? [] : [own];
+    const companions = await credentialWithdrawalCompanionRevisions(
+      view,
+      await view.revisions.listRevisions(revision.namespaceId, revision.agentId),
+      revision,
+      new Date(),
+    );
+    for (const companion of companions) {
+      // Rows exist only for sources the revision holds, so none needs filtering here.
+      const found = firstPendingCredentialWithdrawal(
+        await view.credentialSources.listCredentialWithdrawals(companion.namespaceId, companion.id),
+      );
+      if (found !== undefined) {
+        pending.push(found);
+      }
+    }
+    return pending;
+  }
+
+  /**
+   * Queues withdrawal work for each revision's pending withdrawal that has no attempt queued
+   * or running, so one outage costs one bounded series of attempts per maintenance pass. The
+   * work re-checks each withdrawal's own requester, as for a replay. A withdrawal that awaits a
+   * replay is skipped, so a denied requester's withdrawal is not retried on every pass. Its
+   * revision's work, re-queued for another of its withdrawals, still rechecks and audits it.
+   */
+  private async requeueCredentialWithdrawals(
+    unit: PlatformUnitOfWork,
+    pending: readonly Readonly<CredentialWithdrawal>[],
+  ): Promise<void> {
+    for (const withdrawal of pending) {
+      if (!(await credentialWithdrawalNeedsAttempt(unit, withdrawal))) {
+        continue;
+      }
+      await unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        target: CREDENTIAL_WITHDRAWAL_TARGET,
+        namespaceId: withdrawal.namespaceId,
+        resourceId: withdrawal.revisionId,
+        actorId: withdrawal.requestedBy,
+        operationId: randomUUID(),
+      });
+    }
   }
 
   private beginDeployPass(claim: ClaimedWork): void {
@@ -2903,6 +3325,24 @@ export class ControllerWorker {
               ),
             );
       if (successor !== undefined) {
+        // A refusal decided after this check (lost repository authority, a Secret or
+        // credential-source problem, a refused observation) may still wait on its candidate's
+        // stop. The newer revision's sweep gives up at its own deadline, so finish that stop
+        // before superseding; a failed stop keeps waiting (finding 1004).
+        // The wait need not be the latest evidence: a lost claim or a retry may have followed it.
+        // A stop this process made within a lease (the newer revision's sweep) is not repeated.
+        const stopped = this.stoppedPredecessors.get(revision.id);
+        const waited =
+          claim.idempotencyKey === `agent_revision:${revision.id}:reconcile` &&
+          (stopped === undefined || Date.now() - stopped.stoppedAt >= stopped.restopAfterMs)
+            ? await this.queue.findWorkAttempt(
+                claim.idempotencyKey,
+                "REFUSED_CANDIDATE_STOP_PENDING",
+              )
+            : undefined;
+        if (waited !== undefined) {
+          await this.stopRefusedCandidate(claim, waited.refusal ?? "UNKNOWN_FAILURE");
+        }
         await this.finalizeRevision(claim, {
           outcome: "success",
           code: "REVISION_SUPERSEDED",
@@ -3058,24 +3498,37 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      if (
-        error instanceof RepositoryCredentialAuthorityError ||
-        error instanceof SandboxRevisionUnsupportedError ||
-        error instanceof CredentialSourceRevisionError ||
-        error instanceof ActivationFailedError
-      ) {
-        result = { outcome: "permanent", code: error.code };
-      } else if (error instanceof TransientDependencyError) {
-        // A dependency that recovers by itself must not spend the attempt budget:
-        // five quick retries end long before a Gateway route or an API server
-        // that is converging under load comes back (D28).
-        result = { outcome: "pending", code: error.code, dependencyFailure: error };
+      if (error instanceof RefusedCandidateStopError) {
+        ({ result, logFields: failureLogFields } = error.pending());
       } else {
-        result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+        if (
+          error instanceof RepositoryCredentialAuthorityError ||
+          error instanceof SandboxRevisionUnsupportedError ||
+          error instanceof CredentialSourceRevisionError ||
+          error instanceof ActivationFailedError
+        ) {
+          result = { outcome: "permanent", code: error.code };
+        } else if (error instanceof TransientDependencyError) {
+          // A dependency that recovers by itself must not spend the attempt budget:
+          // five quick retries end long before a Gateway route or an API server
+          // that is converging under load comes back (D28).
+          result = { outcome: "pending", code: error.code, dependencyFailure: error };
+        } else {
+          result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+        }
+        failureLogFields = revisionFailureLogFields(error);
       }
-      failureLogFields = revisionFailureLogFields(error);
     }
-    await this.finalizeRevision(claim, result, failureLogFields);
+    try {
+      await this.finalizeRevision(claim, result, failureLogFields);
+    } catch (error) {
+      // A refusal caught above (for example lost repository authority) stops its candidate here.
+      if (!(error instanceof RefusedCandidateStopError)) {
+        throw error;
+      }
+      const pending = error.pending();
+      await this.finalizeRevision(claim, pending.result, pending.logFields);
+    }
   }
 
   private async authorizeRevision(
@@ -3650,6 +4103,7 @@ export class ControllerWorker {
         : undefined;
     const expired =
       result.outcome === "pending" &&
+      result.refusedCandidate === undefined &&
       Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
     // end, and then hold the container unready until an explicit restart that
@@ -3700,6 +4154,24 @@ export class ControllerWorker {
     ) {
       return;
     }
+    // OCC refused this candidate (its authority, credentials or configuration), so its runtime
+    // must not keep serving. A runtime that failed by itself (a held startup failure, the
+    // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
+    // ActivationFailedError also lands here, but no bundled Driver activates before commit, so
+    // it only reaches a published (active) revision, which the stop skips.
+    if (resolved.outcome === "permanent" && heldFailureCode === undefined && !expired) {
+      await this.stopRefusedCandidate(claim, resolved.code);
+    }
+    let refusedStopRecheckMs: number | undefined;
+    if (resolved.refusedCandidate === undefined) {
+      this.refusedStopFailures.delete(claim.idempotencyKey);
+    } else {
+      refusedStopRecheckMs = this.refusedStopRecheckMs(
+        claim,
+        Date.now() - claim.createdAt.getTime(),
+        resolved.refusedStopMs ?? 0,
+      );
+    }
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     let committedOutcome: WorkOutcome =
@@ -3729,7 +4201,7 @@ export class ControllerWorker {
         }
         await this.appendRevisionSuperseded(unit, claim, resolved.supersededBy);
       } else if (resolved.revision !== undefined && resolved.outcome === "success") {
-        const current = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+        const current = await this.lockClaimAgent(unit, claim);
         if (
           current === undefined ||
           current.servicePrincipalId !== resolved.revision.servicePrincipalId ||
@@ -3765,6 +4237,14 @@ export class ControllerWorker {
           code: resolved.code,
           ...(resolved.resultData === undefined ? {} : { resultData: resolved.resultData }),
         });
+      } else if (resolved.refusedCandidate !== undefined) {
+        // Every deferral is recorded, so `lastAttempt.at` shows the stop is still retried; the
+        // backoff bounds them to one per few minutes.
+        await queue.defer(
+          claim,
+          { code: resolved.code, refusal: resolved.refusedCandidate },
+          { delayMs: refusedStopRecheckMs!, repeatEvidence: true },
+        );
       } else if (resolved.outcome === "pending") {
         const ageMs = Date.now() - claim.createdAt.getTime();
         await queue.defer(
@@ -3787,6 +4267,9 @@ export class ControllerWorker {
         });
       }
     }, this.queueOptions);
+    if (resolved.refusedCandidate !== undefined) {
+      this.recordRefusedStopFailure(claim);
+    }
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
       await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(stoppedCandidate!));
@@ -3851,6 +4334,131 @@ export class ControllerWorker {
     });
   }
 
+  /**
+   * Exclusive replacement stops every predecessor before a candidate's first pass, so a
+   * candidate that a later pass refuses (for example after its actor lost `deploy`) would be
+   * the only runtime left, serving a deployment OCC rejected while the recorded active revision
+   * has no workload (finding 990). Without an active revision, any Compute's candidate is the
+   * Agent's only runtime too: a refused first embedded deployment on Kubernetes kept its Gateway
+   * Pod with its model key, secret environment and private state until a later deployment, stop
+   * or delete (finding 1016). Stop it under the live claim before the failure is published, so
+   * the Agent is unavailable until a new revision activates. A refused active revision is left
+   * alone: its workload is the one recorded, and active maintenance owns it.
+   */
+  private async stopRefusedCandidate(claim: ClaimedWork, refusal: string): Promise<void> {
+    const compute = this.compute;
+    // Only the deployment's own work can leave a candidate serving: maintenance exists only for
+    // revisions that activated, and their retirement already stopped them.
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile`
+    ) {
+      return;
+    }
+    const { namespace, agent, revision } = await this.state.read(async (view) => ({
+      namespace: await view.namespaces.findNamespace(claim.namespaceId),
+      agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
+      revision: await view.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      ),
+    }));
+    if (
+      namespace === undefined ||
+      agent === undefined ||
+      revision === undefined ||
+      namespace.status !== "ready" ||
+      revision.namespaceId !== namespace.id ||
+      revision.agentId !== agent.id ||
+      revision.servicePrincipalId !== agent.servicePrincipalId ||
+      revision.compute.id !== compute.id ||
+      revision.compute.implementation !== compute.implementation ||
+      agent.activeRevisionId === revision.id
+    ) {
+      return;
+    }
+    if (compute.requiresStoppedPredecessors?.(revision) !== true) {
+      // Beside a non-exclusive active revision the candidate is left alone: that revision still
+      // serves, and an embedded Kubernetes candidate may own the Agent's shared Gateway route,
+      // which stopping the candidate would delete. Its next deployment, stop or delete retires it.
+      if (agent.activeRevisionId !== undefined) {
+        return;
+      }
+      // Only a candidate Compute prepared can have a runtime: this pass prepared it, or an
+      // earlier pass that recorded evidence may have (stopping an unprepared one is idempotent).
+      // A refusal decided before the work's first preparation leaves Compute untouched.
+      if (
+        this.preparedThisPass !== revision.id &&
+        (await this.queue.findWorkAttempt(claim.idempotencyKey)) === undefined
+      ) {
+        return;
+      }
+    }
+    const started = Date.now();
+    try {
+      if (compute.bindAgent !== undefined) {
+        await this.withClaimHeartbeat(claim, async () => {
+          await compute.bindAgent!({ namespace, agent });
+        });
+      }
+      await this.closeRevisionCredentials(claim, revision);
+      await this.withClaimHeartbeat(claim, () => compute.stopRevision(revision));
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      throw new RefusedCandidateStopError(refusal, Date.now() - started, error);
+    }
+    this.refusedStopFailures.delete(claim.idempotencyKey);
+    // Like a swept predecessor, the next deployment need not stop it again within a lease.
+    this.stoppedPredecessors.delete(revision.id);
+    this.stoppedPredecessors.set(revision.id, {
+      stoppedAt: Date.now(),
+      restopAfterMs: this.leaseDurationMs,
+    });
+    if (this.stoppedPredecessors.size > MAX_STOPPED_PREDECESSOR_RECORDS) {
+      const oldest = this.stoppedPredecessors.keys().next().value;
+      if (oldest !== undefined) {
+        this.stoppedPredecessors.delete(oldest);
+      }
+    }
+  }
+
+  /**
+   * The recheck after this work's next failed refused-candidate stop: the readiness cadence,
+   * doubled for each earlier consecutive failure up to REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS, and
+   * at least REFUSED_CANDIDATE_STOP_DURATION_FACTOR times as long as the failed stop took.
+   */
+  private refusedStopRecheckMs(claim: ClaimedWork, ageMs: number, stopMs: number): number {
+    const failures = (this.refusedStopFailures.get(claim.idempotencyKey) ?? 0) + 1;
+    return Math.max(
+      Math.min(
+        REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS,
+        revisionReadinessRecheckMs(ageMs) * 2 ** Math.min(failures - 1, 20),
+      ),
+      Math.ceil(Math.max(0, stopMs) * REFUSED_CANDIDATE_STOP_DURATION_FACTOR),
+    );
+  }
+
+  /** Counts a failed refused-candidate stop once its deferral committed. */
+  private recordRefusedStopFailure(claim: ClaimedWork): void {
+    const key = claim.idempotencyKey;
+    const failures = (this.refusedStopFailures.get(key) ?? 0) + 1;
+    this.refusedStopFailures.delete(key);
+    this.refusedStopFailures.set(key, failures);
+    if (this.refusedStopFailures.size > MAX_STOPPED_PREDECESSOR_RECORDS) {
+      // Forgetting a record only restarts that work's backoff.
+      const oldest = this.refusedStopFailures.keys().next().value;
+      if (oldest !== undefined) {
+        this.refusedStopFailures.delete(oldest);
+      }
+    }
+  }
+
   private async completeStoppedRevisionWork(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
@@ -3905,7 +4513,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
         agent.id !== revision.agentId ||
@@ -4005,7 +4613,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
         agent.servicePrincipalId !== revision.servicePrincipalId ||
@@ -4069,7 +4677,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      const agent = await this.lockClaimAgent(unit, claim);
       if (agent?.activeRevisionId !== revisionId || agent.desiredRuntimeState !== "running") {
         return;
       }
@@ -4111,6 +4719,31 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
     });
     return true;
+  }
+
+  // Lock the claim's Agent in admission order: Namespace, then Agent. These
+  // transactions can later take Namespace locks (a Controller work insert's
+  // foreign key, or the queue's cleanup transfer), so locking the Agent first
+  // deadlocks with a concurrent Namespace-scoped mutation that then locks the
+  // Agent, such as deploy, stop, delete or credential withdrawal.
+  private async lockClaimAgent(
+    unit: PlatformUnitOfWork,
+    claim: Pick<ControllerWork, "namespaceId" | "agentId">,
+  ): Promise<Readonly<Agent> | undefined> {
+    await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
+    return unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+  }
+
+  // lockClaimAgent for work that may carry no Agent (a malformed withdrawal target).
+  private async lockClaimScope(
+    unit: PlatformUnitOfWork,
+    claim: Pick<ControllerWork, "namespaceId" | "agentId">,
+  ): Promise<void> {
+    if (claim.agentId === undefined) {
+      await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
+    } else {
+      await this.lockClaimAgent(unit, claim);
+    }
   }
 
   private async enqueueMaintenance(

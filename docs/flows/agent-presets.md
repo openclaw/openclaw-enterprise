@@ -1,17 +1,16 @@
 ---
 created: 2026-09-21
-updated: 2026-10-06
-last_updated_session: authoring-run/a45c48cd-bde3-41b1-8e3d-57bf774df237
+updated: 2026-10-10
+last_updated_session: authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The console reads a Namespace-owned Preset, renders its variables, and saves an
-independent Configuration and Agent through the existing APIs. This flow starts
-with Preset CRUD or selection and stops at a saved Agent draft. Deployment
-continues through [revision admission](configuration-driver/persistence-and-revisions.md).
+The Console renders a Namespace Preset and saves an independent Configuration
+and Agent through existing APIs. This flow stops at the draft; deployment follows
+[revision admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -117,6 +116,11 @@ the new Namespace. Disabling defaults leaves persisted copies alone.
 
 ### 2. Admit and store a template
 
+`apps/controller/src/index.ts:createFastifyApp` gives Preset POST/PATCH a
+transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
+returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
+the grant get 403 before any body is read.
+
 `packages/occ/src/index.ts:OpenClawController.createPreset`
 
 [`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
@@ -156,12 +160,11 @@ Presets remain selectable. The separate **Start without Preset** action opens
 the ordinary form without reading a Namespace Preset; it does not automatically
 replace a denied selection. Normal creation authorization still applies.
 
-The shipped `deploy/presets/default-codex.json` also supplies the public
-`/console/default-codex-preset.mjs` module through
-`apps/controller/src/console-assets.ts:readConsoleAsset`. The form's
-`configurationTemplate` reads that base for empty templates, explicit reset, and
-Harness transitions, then adds model routing. The module contains only the public
-bundled definition; it does not expose installed Namespace templates.
+`console-assets.ts:readConsoleAsset` serves the public
+[`default-codex`](../../deploy/presets/default-codex.json) as
+`/console/default-codex-preset.mjs`. `configurationTemplate` uses this base for
+empty templates, reset and Harness transitions, adding model routing. Installed
+Namespace templates are never exposed by that module.
 
 The user
 reviews prefilled scalar defaults and fills typed inputs. Inputs for referenced
@@ -188,21 +191,23 @@ disabled so the user follows ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-Before resetting the view, Console captures the unsaved form's raw editor text,
-model controls, workspace files, repository selections, and staged Secret
-references. The in-memory map is scoped to the signed-in user and Namespace.
-Returning to an explicitly selected Preset form through navigation or browser history reconstructs it
-from that copy; capability and repository discovery run again against current
-access. A form started through the default Preset shortcut or without a Preset
-registers for discard on exit. After
-flushing captures, `loadPage` removes its creation and channel snapshots and its
-retained view when navigation leaves creation or changes Namespace. Re-entry
-opens the initial choices; resources already saved through the API remain.
-Invalid JSON survives as text. Password controls and plugin discovery results
-are excluded. Start over removes the copy; session loss, logout, a different
-signed-in user, and page exit clear the map. Starting a save removes its capture
-before any mutation, so a later route return cannot replay a pre-save copy as a
-new Agent. Existing partial-save recovery remains local to its form.
+Before resetting views, `loadPage` captures unsaved JSON, model controls,
+workspace files, repositories and staged Secret references in a user/Namespace
+map. Explicit Preset forms return through navigation/history from this copy;
+capability and repository discovery run again. Default-shortcut and bare forms
+instead discard on exit. Flushing captures removes their creation/channel
+snapshots and retained view when leaving creation or changing Namespace;
+re-entry opens the chooser, preserving saved resources. Invalid JSON stays text;
+passwords and discovery results are excluded. Start over, session loss, logout,
+user change and page exit clear captures. Starting save clears its capture
+before mutation, preventing replay as a new Agent. Partial-save recovery stays
+local to the form.
+
+`agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
+model metadata referenced by defaults or entries. Only an unreferenced replaced
+primary is retired. Temporary clearing retains fallback entries and transport.
+The saved Configuration goes through the existing configured-Harness resolver;
+model execution remains a later boundary.
 
 ### 4. Save an independent draft
 
@@ -227,22 +232,17 @@ variables remain confined to the credential field. User-edited workspace bytes
 follow the existing private workspace setup path in both regular and provisioning
 creation. The form keeps Secret bindings internally and exposes channel-specific
 Secret controls rather than a raw bindings editor.
-Selected model Secret metadata and references survive draft navigation; raw
-passwords do not. Provider or authentication-method changes clear the selection.
-For an existing selection or a Secret reference already bound in the Preset,
-Save uses the reference without creating another Secret. Ordinary creation grants
-the new Agent's service principal exact Secret `operate` access and retains the
-reference through Agent-conflict and grant retries. The caller needs permission to
-manage the grant; if it fails, the saved Agent remains and the form offers a retry.
-Provisioning derives the grant from `harnessAuth.source`.
-For a password input, Save first creates a same-Namespace Secret, clears the
-credential input, and retains the returned reference. It then creates a
-Configuration and an Agent that refers to the Configuration and Secret, and
-grants the Agent access. Dedicated provisioning uses the existing provisioning
-flow after Secret creation. Password bytes are sent only to the Secret creation
-endpoint, never as Agent or Configuration fields. Each server
-request owns full schema, native credential, and authorization admission before
-its persistence boundary; browser validation is not that boundary.
+Model Secret references survive draft navigation; passwords do not. Provider or
+authentication-method changes clear the selection. Existing or Preset-bound
+references are reused. Ordinary creation grants the Agent service principal
+exact Secret `operate` access; Agent-conflict and grant retries retain the
+reference. The caller needs grant-management permission. A failed grant keeps
+the saved Agent and offers retry. Provisioning derives it from `harnessAuth.source`.
+Password inputs first create a same-Namespace Secret, clear the input, and
+retain the reference. Save then creates Configuration and Agent resources and
+grants access; dedicated provisioning follows its existing flow. Password bytes
+reach only Secret creation. Each API request performs schema, native credential
+and authorization admission before persistence.
 
 If Secret creation fails, the masked input remains for correction or retry.
 If a later save fails, its saved Secret reference is reused.
@@ -291,6 +291,14 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
+
+- 2026-10-10 06:42: Preserve referenced fallback model metadata and retire obsolete primary catalog entries during Console selection. (authoring-run/d6d98411-224c-4a17-8bb9-5bd060b1dd59 - f27f55ce2bfb3d54b8e95c8c3f0f670425717a52)
+
+- 2026-10-09 19:46: Authorize Preset writes before reading the body. (authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320 - deeb84b5e)
+
+- 2026-10-10 02:23: Admit contract-sized Preset writes at the HTTP boundary; template limits and mutation checks remain unchanged. (authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 
 - 2026-10-06 22:22: Locate Preset file loading in its adjacent composition module; initialization remains unchanged. (authoring-run/a45c48cd-bde3-41b1-8e3d-57bf774df237 - 17e10b6d34cc2c805b3910fddfef191d3dd1b3f8)
 - 2026-10-05 05:30: Only the API logs Preset warnings.

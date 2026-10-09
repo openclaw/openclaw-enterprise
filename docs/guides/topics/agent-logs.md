@@ -17,7 +17,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    When the latest deployment failed, **Deployment activity** links straight to
    that version's Logs tab.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists its recent warning Events, prefixed with their container.
+   lists its recent warning Events, prefixed with their container. Last termination
+   shows the current exit for a terminated container, otherwise its prior exit.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
@@ -57,10 +58,17 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/logs?source=gateway&tailLines=200
 ```
 
+Container timestamps are returned in UTC, preserving their available nanosecond precision.
+
 `runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
 `download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;
-unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to read only newer lines of the same view.
+unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
+read only newer lines of the same view. Container cursors count the lines delivered at their newest timestamp, so a
+later line at that timestamp is returned once, even with identical text. When a
+tail or Driver byte cut leaves unknown whether a read began at that timestamp's
+first line, or an older cursor lacks the count, such a line can stay hidden until
+a later timestamp: OCC cannot tell it from an older line the tail omitted.
 `download=true` answers `text/plain` with `Content-Disposition: attachment`,
 always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
@@ -180,7 +188,7 @@ A page never silently skips output; it labels each gap:
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
-line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
+line, 512 KiB per response, the newest 100 Events per Pod, 10 seconds overall. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
@@ -190,6 +198,7 @@ Kubernetes keeps only each container's current and previous instance, nothing
 from deleted Pods; for
 older output, use your [observability backend](../observability.md). While a
 container crash-loops, the previous instance can briefly read as empty.
+Initial `PodInitializing` or `ContainerCreating` can also read as empty; following resumes when the container starts.
 
 ## Sandbox source
 

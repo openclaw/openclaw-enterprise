@@ -84,6 +84,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.pinEndpoint(ctx); err != nil {
 		return err
 	}
+	if err := r.checkLegacyNATTable(ctx); err != nil {
+		return err
+	}
 	state.ContainerEngine = r.engine
 	state.DockerHost = r.env["DOCKER_HOST"]
 	if err := r.ensureAbsent(ctx, state); err != nil {
@@ -511,7 +514,7 @@ func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url 
 	if err := json.Unmarshal(data, &key); err != nil || key.Meta.InstallationID == "" || strings.TrimSpace(key.Data.Key) == "" {
 		return "", nil, fmt.Errorf("bootstrap service key is missing its key or Installation ID")
 	}
-	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second})
+	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second, Context: ctx})
 	if err != nil {
 		return "", nil, err
 	}

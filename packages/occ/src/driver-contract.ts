@@ -57,13 +57,17 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       "validateSourceConfig",
       "registerSource",
       "updateSource",
-      "rotateSource",
       "sourceStatus",
       "removeSource",
       "attachForRevision",
       "attachmentStatus",
       "withdraw",
     ].every((operation) => typeof candidate[operation] === "function");
+  }
+  if (driver.capability === "credential_refresh") {
+    return ["configureRefresh", "rotate", "refreshStatus", "removeRefresh"].every(
+      (operation) => typeof candidate[operation] === "function",
+    );
   }
   if (driver.capability === "service_account") {
     return ["create", "createCredential", "delete"].every(
@@ -73,6 +77,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "sandbox") {
     return (
       sandboxFacets(candidate.facets) &&
+      (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
       (candidate.ensureNamespace === undefined ||
         typeof candidate.ensureNamespace === "function") &&
@@ -124,6 +129,17 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       typeof candidate.readAgentRuntimeLogs === "function") &&
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
+  );
+}
+
+function absolutePosixPath(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    value
+      .slice(1)
+      .split("/")
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..")
   );
 }
 

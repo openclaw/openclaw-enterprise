@@ -7,6 +7,7 @@ import {
   DockerComputeDriver,
 } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { ComputeGatewaySettingError } from "../../packages/occ/src/index.ts";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
   // Redirect only the socket address in an isolated child. The real Driver,
@@ -71,6 +72,79 @@ try {
   );
   await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
     timeout: 10_000,
+  });
+});
+
+test("Docker namespace delete treats a network that vanished before DELETE as removed", async () => {
+  // A fake engine behind the real Driver and Node HTTP client: the network inspect
+  // finds an owned network, then the network DELETE answers with each status below.
+  const source = String.raw`
+import assert from "node:assert/strict";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
+const labels = {
+  "org.openclaw.enterprise.managed": "true",
+  "org.openclaw.enterprise.compute-driver": "docker",
+  "org.openclaw.enterprise.namespace-id": "ns_vanish",
+};
+let deleteStatus;
+const requests = [];
+const server = http.createServer((request, response) => {
+  const path = request.url.split("?")[0];
+  requests.push(request.method + " " + path);
+  const send = (status, body) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(body === undefined ? "" : JSON.stringify(body));
+  };
+  if (request.method === "GET" && path.startsWith("/networks/")) return send(200, { Labels: labels });
+  if (request.method === "DELETE" && path.startsWith("/networks/")) {
+    return deleteStatus === 204 ? send(204) : send(deleteStatus, { message: "network " + deleteStatus });
+  }
+  if (request.method === "GET" && path === "/containers/json") return send(200, []);
+  if (request.method === "GET" && path === "/volumes") return send(200, { Volumes: [] });
+  send(500, { message: "unexpected " + request.method + " " + path });
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const nativeRequest = http.request;
+http.request = (options, callback) =>
+  nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
+syncBuiltinESMExports();
+try {
+  const { DockerComputeDriver } = await import(process.argv[1]);
+  const driver = new DockerComputeDriver({ images: { gateway: "gateway:local", agent: "agent:local" } });
+  const outcomes = {};
+  for (const status of [204, 404, 409, 500]) {
+    deleteStatus = status;
+    requests.length = 0;
+    outcomes[status] = await driver.deleteNamespace({ id: "ns_vanish" });
+    assert.equal(requests.at(-1), "DELETE /networks/" + driver.networkName("ns_vanish"), String(status));
+  }
+  process.stdout.write(JSON.stringify(outcomes));
+} finally {
+  http.request = nativeRequest;
+  syncBuiltinESMExports();
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const driver = new URL(
+    "../../apps/controller/src/drivers/compute/docker/index.ts",
+    import.meta.url,
+  );
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "-e", source, driver.href],
+    { timeout: 10_000 },
+  );
+  const deleted = { namespaceId: "ns_vanish", namespaceDeleted: true };
+  const kept = { namespaceId: "ns_vanish", namespaceDeleted: false };
+  assert.deepEqual(JSON.parse(stdout), {
+    204: deleted,
+    // Removed between the inspect and the DELETE: the namespace is gone, not failed.
+    404: deleted,
+    // Still in use, or the engine failed: keep refusing.
+    409: { ...kept, failure: "permanent" },
+    500: { ...kept, failure: "retryable" },
   });
 });
 
@@ -193,9 +267,15 @@ test("Docker Compute gateway containers use password auth by default and preserv
   assert.equal(defaultLaunch.revision.configuration.gateway, undefined);
 
   const passwordLaunch = await gatewayContainerLaunch({
-    gateway: { auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } } },
+    gateway: {
+      tls: { enabled: false },
+      auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+    },
   });
   assert.match(passwordLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
+  assert.deepEqual(JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.tls, {
+    enabled: false,
+  });
   assert.equal(
     JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
     "password",
@@ -251,7 +331,7 @@ test("Docker Compute gateway containers use password auth by default and preserv
   );
 });
 
-test("Docker Compute rejects unsupported native gateway auth before Docker engine access", async () => {
+test("Docker Compute rejects unsupported native gateway settings before Docker engine access", async () => {
   const driver = new DockerComputeDriver({
     images: { gateway: "gateway:local", agent: "agent:local" },
   });
@@ -260,6 +340,22 @@ test("Docker Compute rejects unsupported native gateway auth before Docker engin
     [{ gateway: { auth: { mode: "oauth" } } }, /password or trusted-proxy/i],
     [{ gateway: { auth: { unsupportedField: true } } }, /unsupported field unsupportedField/i],
     [{ gateway: { auth: null } }, /gateway auth must be an object/i],
+    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
+    // The published port forwards to the container IP while the healthcheck probes
+    // loopback, so a loopback-only listener would pass readiness and serve nothing.
+    [{ gateway: { bind: "loopback" } }, /gateway\.bind must listen on all interfaces/],
+    [{ gateway: { bind: "tailnet" } }, /gateway\.bind must listen on all interfaces/],
+    [
+      { gateway: { bind: "custom", customBindHost: "127.0.0.1" } },
+      /gateway\.customBindHost must be 0\.0\.0\.0/,
+    ],
+    [{ gateway: { tailscale: { mode: "serve" } } }, /gateway\.tailscale\.mode must be off/],
+    [
+      {
+        plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
+      },
+      /appServer\.approvalPolicy must not be "untrusted"/,
+    ],
   ]) {
     const revision = dockerGatewayRevision(driver, configuration);
     let networkAccesses = 0;
@@ -277,6 +373,18 @@ test("Docker Compute rejects unsupported native gateway auth before Docker engin
     assert.equal(networkAccesses, 0);
     assert.equal(dockerRequests, 0);
   }
+  // Admission names the same listener settings with a 409 before a revision exists.
+  for (const [gateway, setting] of [
+    [{ bind: "loopback" }, "gateway.bind"],
+    [{ bind: "custom", customBindHost: "127.0.0.1" }, "gateway.customBindHost"],
+    [{ tailscale: { mode: "funnel" } }, "gateway.tailscale.mode"],
+  ]) {
+    assert.throws(
+      () => driver.validateGatewaySettings({ gateway }),
+      (error) => error instanceof ComputeGatewaySettingError && error.setting === setting,
+    );
+  }
+  assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { bind: "lan" } }));
 });
 
 async function gatewayContainerLaunch(configuration = {}) {

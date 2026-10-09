@@ -157,7 +157,7 @@ client or admin key; the
 [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret)
 owns these checks.
 
-Revocation and denial fail permanently before runtime creation. Older revisions
+Revocation and denial fail permanently before the pass prepares a runtime. Older revisions
 complete as superseded; active revisions enter finalization or maintenance.
 When Compute requires stopped predecessors, a newer admission supersedes older
 active maintenance before Compute effects, even after candidate failure.
@@ -297,6 +297,17 @@ attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
+Before publishing a permanent refusal of an inactive candidate that is exclusive,
+or prepared while its Agent has no active revision (not a held runtime failure,
+the deadline or exhausted retries), `ControllerWorker.stopRefusedCandidate`
+stops it under the claim heartbeat, so a rejected deployment never serves. A stop failure publishes nothing: the work defers as
+`REFUSED_CANDIDATE_STOP_PENDING` past the attempt budget and deadline until the
+stop succeeds, after the readiness cadence doubled per failed stop up to 5 minutes
+but at least four times the stop's duration (`refusedStopRecheckMs`, in memory),
+so other Agents' work runs. Each deferral records evidence with the refusal
+(`repeatEvidence`) for deployment status and `worker.completed`'s `refusal`. A pass
+superseded by a newer exclusive revision first retries a stop its work waited on.
+
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
 releasing the claim without consuming retries. Obligations survive; lease loss
@@ -367,9 +378,11 @@ failed retry keeps the active runtime.
 - `worker.compute-prepare-failed` identifies the failed Driver stage without
   serializing the raw exception. Correlate it by `workId` or `revisionId` with
   the following `worker.completed` retry.
-- [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs) and
+- [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs),
+  [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
+  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
-  require PostgreSQL; neither proves real model execution.
+  require PostgreSQL; none proves real model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback on the authenticated route after changing IAM Drivers.
 - [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) verifies
@@ -396,27 +409,8 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
+- 2026-10-10 11:40: Stop a refused first deployment on any Compute. (fix-1016)
 
-- 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
-- 2026-10-04 04:20: Abort Compute when the last confirmed claim lease runs out, even if a renewal never answers. (bughunt-10-claimloss)
-
-- 2026-10-03 17:00: Finish published deployments after a last-attempt crash. (fix-recover-active-revision)
-
-- 2026-10-03 16:00: Bound worker queries and restart a stuck run loop. (fix-worker-liveness)
-
-- 2026-10-02 06:30: Name Compute's pending reason in deployment progress and slow rechecks for long-pending revisions. (fix-deploy-pending-reasons)
-
-- 2026-10-01 17:20: Point Agent lifecycle admission at its HTTP owner; deployment audit keeps the admitted authorization. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
-
-- 2026-10-01 16:37: Added bounded Compute preparation failure diagnostics without changing retry outcomes. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
-
-- 2026-10-01 04:06: Document metrics client error ownership through release. (authoring-run/d0545dc8-f524-4ce5-a3ce-918838dddd92 - 97dfb6b9)
-
-- 2026-09-29 18:40: Continue maintenance past expired exhausted claims.
-
-- 2026-09-29 12:00: Continue maintenance after dependency exhaustion.
-
-- 2026-09-28 22:10: Expose exact-work pending reconciliation results through deployment status and the Console. (01a0eb85-73a8-7572-92a9-a6a06fbdf0a5 - 0aedecfd)
+- 2026-10-10 06:40: Back off and report a failing refused-candidate stop. (fix-1002-1004)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

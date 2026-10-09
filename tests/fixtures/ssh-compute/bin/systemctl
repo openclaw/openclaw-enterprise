@@ -12,6 +12,17 @@ if [ "$operation" = 'show' ]; then
   [ "${1:-}" = '--value' ] && shift
 fi
 unit=${1:-}
+case "$operation" in
+  enable|link)
+    case "$unit" in
+      /*)
+        [ "$unit" = "$OCC_SSH_FIXTURE_UNIT_DIRECTORY/$(basename "$unit")" ]
+        [ -f "$unit" ]
+        unit=$(basename "$unit")
+        ;;
+    esac
+    ;;
+esac
 pidfile="$OCC_SSH_FIXTURE_STATE/$unit.pid"
 enabled="$OCC_SSH_FIXTURE_STATE/$unit.enabled"
 active() {
@@ -24,6 +35,7 @@ stop() {
 case "$operation" in
   --version) printf '%s\n' 'systemd SSH conformance fixture' ;;
   daemon-reload) : ;;
+  link) : ;;
   enable) : > "$enabled" ;;
   disable) rm -f "$enabled" ;;
   is-enabled) [ -f "$enabled" ] ;;

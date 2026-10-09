@@ -185,6 +185,10 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "reference/credential-sources/withdrawal",
+                    "label": "Credential Withdrawal"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }
@@ -447,8 +451,20 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes",
+                    "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
                   },
                   {
                     "page": "guides/deploy/upgrade-baseline",
@@ -457,6 +473,10 @@
                   {
                     "page": "guides/deploy/production-upgrade",
                     "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
@@ -473,6 +493,10 @@
                   {
                     "page": "guides/deploy/oidc-sign-in",
                     "label": "OIDC Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-keycloak",
+                    "label": "Keycloak Sign-in"
                   },
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
@@ -735,6 +759,10 @@
                         "label": "Credential Gateway"
                       },
                       {
+                        "page": "reference/drivers/credential-refresh",
+                        "label": "Credential Refresh"
+                      },
+                      {
                         "page": "reference/drivers/iam",
                         "label": "IAM"
                       },
@@ -829,6 +857,10 @@
                         "label": "First Agent Smoke"
                       },
                       {
+                        "page": "testing/keycloak",
+                        "label": "Keycloak OIDC Lane"
+                      },
+                      {
                         "page": "testing/ci-manual-integration",
                         "label": "Manual Integration Lanes"
                       },
@@ -909,6 +941,7 @@
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/credential-source-lifecycle",
+              "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
@@ -925,6 +958,7 @@
               "flows/container-package-bootstrap",
               "flows/container-publication",
               "flows/cli-publication",
+              "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",
@@ -937,8 +971,10 @@
               "testing/production-tui",
               "testing/slack",
               "testing/qa-matrix",
+              "testing/qa-matrix-results",
               "testing/service-accounts",
               "testing/plugins",
+              "testing/plugins-proof-notes",
               "testing/openshell",
               "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",
