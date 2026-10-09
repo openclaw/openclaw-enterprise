@@ -913,6 +913,32 @@ async function buildRuntimeImages(
   const progress = ["--progress=plain"];
   const build = async (role, args) => {
     let output = "";
+    if (args[0] === "buildx" && args.includes("--load")) {
+      // Probe: resolve the image from the cache without loading it, then ask
+      // Docker whether it already holds that image ID.
+      const probe = [];
+      for (let i = 0; i < args.length; i += 1) {
+        if (args[i] === "--load") continue;
+        if (args[i] === "--cache-to") { i += 1; continue; }
+        probe.push(args[i]);
+      }
+      const metadata = join(process.env.RUNNER_TEMP ?? ".", `probe-${role}-${randomUUID()}.json`);
+      const at = ["buildx", "build", "--output", "type=image,push=false", "--metadata-file", metadata, ...probe.slice(2)];
+      const started = Date.now();
+      try {
+        const probed = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", at, { timeoutMs: 10 * 60_000 });
+        const meta = JSON.parse(await readFile(metadata, "utf8"));
+        const config = meta["containerimage.config.digest"];
+        let present = "no";
+        try {
+          await execFile("docker", ["image", "inspect", "--format", "{{.Id}}", config]);
+          present = "yes";
+        } catch {}
+        process.stderr.write(`[probe] ${role} resolve_ms=${Date.now() - started} config=${config} docker_has_image=${present}\n${probed.stderr}\n`);
+      } catch (error) {
+        process.stderr.write(`[probe] ${role} failed after ${Date.now() - started} ms: ${error.message}\n${error.stderr ?? ""}\n`);
+      }
+    }
     try {
       const built = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
         timeoutMs: 20 * 60_000,
