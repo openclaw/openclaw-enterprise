@@ -138,7 +138,12 @@ async function listRepositoryOptions({
     )
     .catch((error: unknown) => {
       if (error instanceof RepositoryOptionsUnavailableError) {
-        throw failure(503, "REPOSITORY_OPTIONS_UNAVAILABLE", "Repository options are unavailable.");
+        // The cause is fixed Installation composition, never upstream detail.
+        throw failure(
+          503,
+          "REPOSITORY_OPTIONS_UNAVAILABLE",
+          `Repository options are unavailable. ${error.message} See docs/guides/repository-credentials/team-runbook.md.`,
+        );
       }
       throw error;
     });

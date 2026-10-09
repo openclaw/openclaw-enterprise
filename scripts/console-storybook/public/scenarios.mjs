@@ -1826,7 +1826,7 @@ export const scenarios = {
       "Unavailable repository choices show administrator setup guidance and allow a draft without repositories.",
     steps: [
       "Read the setup guidance and open Set up repository access to review the operator procedure.",
-      "Retry repository choices, or save a draft without repositories.",
+      "Confirm no Retry repository choices button appears, then save a draft without repositories.",
     ],
     gap: "Simulated UI proof only; this preview does not configure a GitHub App or verify repository access.",
   },

@@ -1054,7 +1054,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
         status.className = "error";
         status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
       }
-      retry.hidden = clearSelections;
+      // Draft-only means fixed Installation composition: retrying cannot succeed.
+      retry.hidden = clearSelections || state.discovery === "draft-only";
       revealInvalidSelections();
       render();
       onChange(false);

@@ -1863,7 +1863,9 @@ export class OpenClawController {
       driver = this.selectedDriver("repo");
     } catch {
       throw new RepositoryOptionsUnavailableError(
-        "The selected repository credential Driver is unavailable.",
+        this.selections.has("repo")
+          ? "The selected repository credential Driver is unavailable."
+          : "This Installation selects no repository credential Driver.",
       );
     }
     let result: RepositoryOptions;

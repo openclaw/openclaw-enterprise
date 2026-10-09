@@ -518,7 +518,11 @@ test("Missing repository composition cannot hide denied or unavailable IAM", asy
   const unavailable = await f.request("GET", path);
   assert.equal(unavailable.status, 503, JSON.stringify(unavailable));
   assert.equal(unavailable.error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
-  assert.equal(unavailable.error.message, "Repository options are unavailable.");
+  // The fixture selects no RepoDriver; the answer names that cause and the runbook.
+  assert.equal(
+    unavailable.error.message,
+    "Repository options are unavailable. This Installation selects no repository credential Driver. See docs/guides/repository-credentials/team-runbook.md.",
+  );
 
   f.iamState.restrictions.push({
     id: "deny-create-without-repositories",

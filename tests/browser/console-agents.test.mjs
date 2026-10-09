@@ -627,6 +627,11 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     await unavailablePage.getByRole("button", { name: "Create Agent" }).isEnabled(),
     true,
   );
+  // A missing repository composition cannot recover by retrying, so no Retry is offered.
+  assert.equal(
+    await unavailablePage.getByRole("button", { name: "Retry repository choices" }).isVisible(),
+    false,
+  );
   const unavailableRequests = apiRequests(unavailablePage, unavailableFixture.origin);
   await enterManualModel(unavailablePage, "repository-fixture-model-key", "gpt-5.1");
   await unavailablePage.getByLabel("Agent name").fill("Authorized ordinary Agent");
