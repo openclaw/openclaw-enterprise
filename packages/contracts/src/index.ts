@@ -94,6 +94,11 @@ export interface OpenShellBackendConfiguration {
   readonly auth?:
     | { readonly mode: "unauthenticated" }
     | { readonly mode: "bearerTokenFile"; readonly path: string };
+  /** Direct operator mTLS for credential retrieval only; ordinary RPCs keep auth above. */
+  readonly operatorTls?: {
+    readonly certificatePath: string;
+    readonly privateKeyPath: string;
+  };
   /** At most 30 s; it bounds how late a timed-out credential registration can land. */
   readonly requestTimeoutMs?: number;
   readonly rootCertificatePath?: string;
@@ -1288,7 +1293,7 @@ export interface CredentialGatewayDriver extends Driver {
     context: CredentialSourceContext,
     privateState: string,
   ): Promise<CredentialSourceDeviceAuthorizationResult>;
-  /** Warm lookup only: the token service owns refresh. Tokens exist only during the callback. */
+  /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
   withSourceToken?<T>(
     context: CredentialSourceContext,
     use: (token: CredentialSourceToken) => Promise<T>,

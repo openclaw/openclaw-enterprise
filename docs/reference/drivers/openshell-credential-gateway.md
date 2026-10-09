@@ -73,22 +73,31 @@ them.
 
 ### Experimental Codex OAuth PoC
 
-The `codex-oauth` type requires a custom OpenShell gateway exposing
-`ResolveProviderCredential` and a matching supervisor supporting identity-bound
-JWT placeholder aliases. The stock pinned images do not provide this integration.
-The PoC deliberately uses the same installation-wide OpenShell Platform Admin
-identity for provider creation and warm-token reads. This is the Backend's
-service identity, not the Console user's session. It needs provider management
-permissions and `provider:credentials:read` when scope enforcement is enabled.
-OCC still authorizes each user's exact Namespace/source operation. Separate
-namespace-scoped OpenShell identities are deferred; no separate reader service
-or supervisor impersonation is needed.
+The `codex-oauth` type requires OpenShell's upstream `GetProviderCredentials`
+RPC and matching gateway/supervisor support for identity-bound JWT placeholder aliases.
+The stock pinned images do not provide this complete integration. See
+[OAuth test setup](../../testing/openshell-oauth.md) for revision and image selection.
 
-Device login stores refresh material in OpenShell and retains only an opaque
-login session in OCC. OpenShell owns subsequent refresh. `withSourceToken` reads
-the current access token for plugin discovery; it never refreshes or returns
-credentials to the Console. Deployment and later revisions attach the same
-source and receive account metadata plus a placeholder, never refresh material.
+The Backend keeps its ordinary identity for Workspace, provider, refresh-control,
+and Sandbox operations. Access-token retrieval uses a separate `operatorTls`
+channel: a directly verified client certificate issued by the gateway's trusted
+client CA with exact organizational unit `operator`. Enable OpenShell's
+`openshell.gateway.mtls_auth.operator_enabled` setting. Operator requests cannot
+carry a bearer header or forwarded identity. This certificate grants gateway-wide
+operator authority; protect its key as an administrative credential. OCC still
+authorizes each user's exact Namespace/source operation before retrieval and
+rechecks authority before the callback uses the token. Namespace-scoped OpenShell
+identities remain deferred.
+
+The Driver transiently receives device-exchange credentials and hands refresh
+material to OpenShell; OCC retains only an opaque login session. OpenShell owns
+subsequent refresh and successor-token persistence. `withSourceToken` requests a
+usable access token for plugin discovery, accepting the upstream default minimum
+remaining lifetime of five minutes. OpenShell may refresh to satisfy that request.
+Retrieval returns no refresh material, and the access token exists only inside
+the authorized callback; it is never sent to the Console. Canceling retrieval does
+not guarantee server-side refresh stops. Deployment and later revisions attach
+the same source and receive account metadata plus a placeholder.
 
 The Sandbox wraps its issued placeholder as a JWT without changing its provider
 identity. Revocation, endpoint binding, and expiry remain enforced by OpenShell.
@@ -98,11 +107,6 @@ See [OAuth storage](kubernetes-compute/codex-oauth-storage.md).
 
 #### WIP boundaries
 
-- **Operator token read.** The fork's RPC name, wire fields, and permission scope
-  are provisional. Adapt `GrpcOpenShellGatewayClient.resolveProviderCredential`
-  and its proto to the upstream API once available. Keep `withSourceToken` a
-  warm read by stable provider identity; it must not refresh or expose tokens to
-  the browser.
 - **Refresh controls.** The PoC calls OpenShell configure/rotate/status RPCs from
   `OpenShellCredentialGatewayDriver`. Move that orchestration to the proposed
   `credential_refresh` capability when implemented. Scheduling, refresh material,
@@ -138,6 +142,10 @@ Workspace:
 
 `sourceStatus` reports `ready` for an owned provider, `absent` when it is
 missing, and `failed` when a provider with that name is not owned by the source.
+For OAuth, source status and device polling remain `pending` during
+`refresh_in_progress` or `refresh_committing`. If an uncertain refresh marker
+persists, inspect OpenShell status for operator recovery; OCC does not replay
+the exchange or reseed credentials.
 
 `updateSource` requires the existing provider to be OCC-owned for the exact
 source, then calls `UpdateProvider` with the new credential values.
@@ -189,12 +197,13 @@ real key on matching requests.
 
 ### What the boundary covers
 
-The boundary keeps the key away from the Harness and from ordinary OpenShell
-reads, not from OpenShell administrators or OCC itself. On the pinned OpenShell
-revision:
+The boundary keeps the key away from the Harness and ordinary OpenShell reads,
+not from OpenShell administrators or OCC itself. With the selected gateway:
 
 - **Covered.** Provider reads and writes return `REDACTED` values. Only the
   Sandbox's own supervisor can fetch provider environments or exchange tokens.
+  The separate operator-mTLS export RPC can return runtime credentials to
+  OCC; it cannot return refresh material.
   OpenShell withholds a static key that has no credential binding. A Sandbox
   policy cannot add a `credential_binding` for a profile that defines endpoints,
   so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
@@ -211,7 +220,7 @@ revision:
 
 - The `openai` type is static, with nothing for the gateway to refresh. A running
   Agent uses an updated key only after its next deployment.
-- Codex OAuth requires the custom PoC gateway and supervisor described above;
+- Codex OAuth requires the upstream gateway API and alias-enabled runtimes described above;
   other source types remain unavailable.
 - Only one OpenShell Backend can be configured.
 

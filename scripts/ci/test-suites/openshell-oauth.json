@@ -5,7 +5,9 @@
   "requiredEnv": [
     "OCE_OPENSHELL_OAUTH_GATEWAY_ENDPOINT",
     "OCE_OPENSHELL_OAUTH_CA_FILE",
-    "OCE_OPENSHELL_OAUTH_OPERATOR_TOKEN_FILE",
+    "OCE_OPENSHELL_OAUTH_ADMIN_TOKEN_FILE",
+    "OCE_OPENSHELL_OAUTH_OPERATOR_CERT_FILE",
+    "OCE_OPENSHELL_OAUTH_OPERATOR_KEY_FILE",
     "OCE_OPENSHELL_OAUTH_DENIED_TOKEN_FILE",
     "OCE_OPENSHELL_OAUTH_TEST_TOKEN_URL",
     "OCE_OPENSHELL_OAUTH_KUBECONFIG",
@@ -17,7 +19,7 @@
     {
       "path": "tests/integration/openshell-oauth-credentials-real.test.mjs",
       "expectedTests": [
-        "OpenShell owns rotating refresh material and permits only scoped operator warm reads"
+        "OpenShell refreshes short-lived credentials on operator reads and reuses usable tokens"
       ]
     }
   ]

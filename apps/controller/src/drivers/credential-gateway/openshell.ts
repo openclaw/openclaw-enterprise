@@ -295,6 +295,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     context: CredentialSourceContext,
   ): Promise<CredentialSourceDeviceAuthorization> {
     await this.codexProvider(context);
+    this.credentialClient(context);
     return startCodexDeviceAuthorization(context.source.id, context.signal);
   }
 
@@ -303,6 +304,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     privateState: string,
   ): Promise<CredentialSourceDeviceAuthorizationResult> {
     const provider = await this.codexProvider(context);
+    this.credentialClient(context);
     if (provider.config[CODEX_ACCOUNT_CONFIG]) {
       return this.completeCodexConnection(context, provider);
     }
@@ -360,9 +362,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   ): Promise<T> {
     const provider = await this.codexProvider(context);
     const account = codexAccountMetadata(provider.config);
-    // Use the same Backend identity as provider creation. This authorized warm read
-    // never rotates credentials or impersonates the Sandbox supervisor.
-    const token = await this.client(context).resolveProviderCredential(
+    // Only the operator channel can export credentials. OpenShell may refresh to
+    // satisfy its lifetime guarantee; the Driver never receives refresh material here.
+    const token = await this.credentialClient(context).getProviderCredential(
       openShellWorkspaceName(context.namespace),
       provider.name,
       CODEX_ACCESS_TOKEN_ENV,
@@ -417,6 +419,13 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       const status = statuses[0];
       if (status?.status === "configured") {
         return { state: "pending" };
+      }
+      if (status?.status === "refresh_in_progress" || status?.status === "refresh_committing") {
+        return {
+          state: "pending",
+          reason:
+            "OpenShell credential refresh is unfinished; inspect gateway status for recovery if it persists.",
+        };
       }
       if (
         !status ||
@@ -572,6 +581,11 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.signal,
     );
     let status = statuses[0];
+    // The gateway may be publishing a scheduled or concurrently requested mint.
+    // Existing device polling waits without redeeming or reseeding credentials.
+    if (status?.status === "refresh_in_progress" || status?.status === "refresh_committing") {
+      return { status: "pending" };
+    }
     if (status?.status === "configured") {
       // Initial mint establishes the stable managed handle. Retry uses only gateway-owned
       // refresh material; a replaced refresh token is never seeded again from OCE.
@@ -587,7 +601,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         "OpenShell could not establish managed Codex OAuth refresh. Connect again.",
       );
     }
-    await client.resolveProviderCredential(
+    await this.credentialClient(context).getProviderCredential(
       workspace,
       provider.name,
       CODEX_ACCESS_TOKEN_ENV,
@@ -621,6 +635,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
     return this.backend.client.clientForNamespace(context.namespace.name);
+  }
+
+  private credentialClient(
+    context: CredentialGatewayContext & { readonly namespace: { name: string } },
+  ) {
+    return this.backend.client.credentialClientForNamespace(context.namespace.name);
   }
 
   private async ensureProfile(

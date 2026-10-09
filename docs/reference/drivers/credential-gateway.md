@@ -28,17 +28,17 @@ there is no fallback to environment delivery.
 The [shared interface](../../../packages/contracts/src/index.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
-| Operation           | Inputs and preconditions                                                                   | Result or side effects                                                                                                                                   | Failure or absence                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `listSourceTypes`   | Cancellation signal.                                                                       | The implementation's catalog of `CredentialSourceType` entries.                                                                                          | OCC treats a failure as dependency unavailable.                                   |
-| `registerSource`    | Ready Namespace, the new source record, and resolved Secret values.                        | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.                                                                   | `failed` or `absent` fails registration; OCC then calls `removeSource`.           |
-| `updateSource`      | Existing source and new resolved values.                                                   | Replaces the stored values for processes started afterwards and returns the source state.                                                                | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged. |
-| `rotateSource`      | Existing source.                                                                           | Rotates gateway-refreshed credentials.                                                                                                                   | No OCC caller yet; no delivered source type uses gateway refresh.                 |
-| `sourceStatus`      | Existing source.                                                                           | Live source state and an optional safe reason.                                                                                                           | OCC reports `failed` with a fixed reason when the call throws.                    |
-| `removeSource`      | Source record.                                                                             | Deletes the stored copy. An already-absent source counts as removed.                                                                                     | A failure leaves the OCC record `deleting` for retry.                             |
-| `attachForRevision` | Namespace, immutable revision, and the bound source records.                               | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                     | Throws when a source is unavailable or foreign; the revision does not provision.  |
-| `attachmentStatus`  | The same context plus the provisioned `SandboxResourceRef`.                                | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                      | Compute blocks activation on any state other than `ready` or `pending`.           |
-| `withdraw`          | Placement, revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.  |
+| Operation           | Inputs and preconditions                                                                   | Result or side effects                                                                                                                                   | Failure or absence                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `listSourceTypes`   | Cancellation signal.                                                                       | The implementation's catalog of `CredentialSourceType` entries.                                                                                          | OCC treats a failure as dependency unavailable.                                    |
+| `registerSource`    | Ready Namespace, the new source record, and resolved Secret values.                        | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.                                                                   | `failed` or `absent` fails registration; OCC then calls `removeSource`.            |
+| `updateSource`      | Existing source and new resolved values.                                                   | Replaces the stored values for processes started afterwards and returns the source state.                                                                | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged.  |
+| `rotateSource`      | Existing source.                                                                           | Rotates gateway-refreshed credentials.                                                                                                                   | No generic OCC caller yet; OpenShell OAuth uses its connection and retrieval flow. |
+| `sourceStatus`      | Existing source.                                                                           | Live source state and an optional safe reason.                                                                                                           | OCC reports `failed` with a fixed reason when the call throws.                     |
+| `removeSource`      | Source record.                                                                             | Deletes the stored copy. An already-absent source counts as removed.                                                                                     | A failure leaves the OCC record `deleting` for retry.                              |
+| `attachForRevision` | Namespace, immutable revision, and the bound source records.                               | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                     | Throws when a source is unavailable or foreign; the revision does not provision.   |
+| `attachmentStatus`  | The same context plus the provisioned `SandboxResourceRef`.                                | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                      | Compute blocks activation on any state other than `ready` or `pending`.            |
+| `withdraw`          | Placement, revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.   |
 
 A `CredentialSourceType` declares:
 
@@ -100,11 +100,18 @@ OCC. Calls operate on the exact registered source and must not recreate a remove
 source. OCC serializes polling with Secret compare-and-swap and does not replay
 an uncertain exchange.
 
-`withSourceToken(context, use)` supplies a warm `CredentialSourceToken` only for
+`withSourceToken(context, use)` supplies a usable `CredentialSourceToken` only for
 an authorized configuration callback: access token and optional trusted account
-ID/FedRAMP classification. It must not initiate refresh or return the refresh
-credential. The callback rechecks authorization before provider I/O; source
-withdrawal and token readiness remain the external service's responsibility.
+ID/FedRAMP classification. The external token service may refresh to satisfy its
+remaining-lifetime requirement. It owns refresh credentials, refresh execution,
+and successor-token persistence; this operation must never return refresh
+material. OCC does not implement refresh or retain the returned access token
+outside the callback.
+
+OCC authorizes the source before retrieval, and the callback rechecks authorization
+before provider I/O. Cancellation or a failed recheck does not undo refresh already
+started by the external service. Source withdrawal and token readiness remain
+that service's responsibility.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
 uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`.

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-08
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Credential source lifecycle Flow
@@ -138,18 +138,22 @@ For the experimental OpenShell `codex-oauth` type,
 performs the device exchange inside the Driver. Its caller in
 `apps/controller/src/drivers/credential-gateway/openshell.ts:pollDeviceAuthorization`
 hands refresh material to OpenShell, persists trusted account metadata, and
-confirms a warm token before returning ready. Later revisions only read and
+confirms a usable access token before returning ready. Later revisions only read and
 attach the existing provider; they never reseed its refresh token.
 The [WIP boundaries](../reference/drivers/openshell-credential-gateway.md#wip-boundaries)
-identify the temporary upstream API dependency and connection-recovery gaps.
+identify the remaining placeholder integration and connection-recovery gaps.
 
 For plugin configuration, OCC authorizes exact source use and invokes
-`withSourceToken`. The callback rechecks current authority before passing the warm
-access token and trusted account identity to the Plugin Driver. It never asks
-Codex to refresh. OpenShell's `withSourceToken` uses the custom gateway's
-admin-authorized `ResolveProviderCredential` RPC through the same Backend identity
-used to create providers. Saved-Agent discovery additionally rechecks the saved source
-and Agent principal's grant, so it works independently of the login-session lifetime.
+`withSourceToken`. The OpenShell Driver reads ownership/account metadata through
+the ordinary Backend identity, then calls `GetProviderCredentials` through its
+separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
+remaining-lifetime requirement; it returns only access credentials, retaining
+refresh material and successor-token ownership.
+
+Before provider I/O, the callback rechecks authority and, for saved-Agent
+discovery, the binding and Agent principal's source grant. Discovery survives
+login-session expiry. A failed recheck blocks provider I/O. Neither cancellation
+nor failed authorization undoes gateway refresh already started.
 
 ### 4. Bind the source to an Agent
 
@@ -338,6 +342,8 @@ than re-attach the source.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 17:01: Trace operator-TLS retrieval and Gateway-owned refresh in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
 
 - 2026-10-08 12:47: Trace the experimental OpenShell device-login, warm-read, and JWT-placeholder integration in the accompanying local change. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - ece639c78765727a67753639f6ab225a243e064d)
 

@@ -8,11 +8,11 @@ and authenticated account metadata through
 
 ## Enable device login
 
-Select a Credential Gateway that implements device authorization for Codex, warm
-access-token lookup for configuration, and the external-auth attachment contract.
+Select a Credential Gateway that implements device authorization for Codex, usable
+access-token retrieval for configuration, and the external-auth attachment contract.
 Its paired Sandbox must inject live credentials for inference and hosted-app
 requests. The experimental OpenShell `codex-oauth` source requires the
-[custom gateway and supervisor](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
+[gateway API and custom supervisor](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
 It is not supported by the stock pinned OpenShell images.
 
 Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
@@ -29,8 +29,9 @@ source attachment. Session and workspace persistence remain independent of auth.
 
 OCC's login-session Secret contains an opaque Gateway handle and source identity,
 never the access/refresh-token pair. The credential source survives closing or
-expiry of that session. Plugin configuration uses an authorized warm token from
-the source; it does not consume the deployed credential or require another login.
+expiry of that session. Plugin configuration requests a usable access token from the source; the token
+service may refresh before returning it. This does not consume the deployed
+credential or require another login.
 
 ## OAuth launch limits
 

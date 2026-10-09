@@ -14,8 +14,9 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 // This opt-in proof uses the real OpenShell server, credential backend, refresh engine,
-// operator auth, and OCE warm-read Driver. The OAuth issuer is a local synthetic fixture;
-// it does not establish real Codex login, model execution, or revision deployment.
+// operator mTLS, and OCE credential retrieval through the shared Backend. The OAuth
+// issuer is a local synthetic fixture; this does not establish real Codex login,
+// model execution, or revision deployment.
 const execute = promisify(execFile);
 const selected = process.env.OCE_OPENSHELL_OAUTH_REAL === "1";
 const required = (name) => {
@@ -25,7 +26,7 @@ const required = (name) => {
 };
 
 test(
-  "OpenShell owns rotating refresh material and permits only scoped operator warm reads",
+  "OpenShell refreshes short-lived credentials on operator reads and reuses usable tokens",
   {
     skip: selected
       ? false
@@ -57,11 +58,31 @@ test(
     );
     const endpoint = required("OCE_OPENSHELL_OAUTH_GATEWAY_ENDPOINT");
     const rootCertificatePath = required("OCE_OPENSHELL_OAUTH_CA_FILE");
+    const auth = {
+      mode: "bearerTokenFile",
+      path: required("OCE_OPENSHELL_OAUTH_ADMIN_TOKEN_FILE"),
+    };
+    const operatorTls = {
+      certificatePath: required("OCE_OPENSHELL_OAUTH_OPERATOR_CERT_FILE"),
+      privateKeyPath: required("OCE_OPENSHELL_OAUTH_OPERATOR_KEY_FILE"),
+    };
     const client = new GrpcOpenShellGatewayClient({
       endpoint,
       rootCertificatePath,
       requestTimeoutMs: 30_000,
-      auth: { mode: "bearerTokenFile", path: required("OCE_OPENSHELL_OAUTH_OPERATOR_TOKEN_FILE") },
+      auth,
+    });
+    const operatorClient = new GrpcOpenShellGatewayClient({
+      endpoint,
+      rootCertificatePath,
+      requestTimeoutMs: 30_000,
+      auth: { mode: "mutualTls", ...operatorTls },
+    });
+    const backend = createOpenShellBackend({
+      id: "openshell",
+      implementation: "openshell",
+      configuration: { endpoint, rootCertificatePath, requestTimeoutMs: 30_000, auth, operatorTls },
+      drivers: { sandbox: "sandbox", credential_gateway: "credential-gateway-openshell" },
     });
     const deniedClient = new GrpcOpenShellGatewayClient({
       endpoint,
@@ -94,6 +115,8 @@ test(
         }
       } finally {
         client.close();
+        operatorClient.close();
+        backend.client.close();
         deniedClient.close();
         await rm(directory, { recursive: true, force: true });
         if (namespaceCreated) {
@@ -144,7 +167,7 @@ test(
             headerName: "authorization",
             refresh: {
               tokenUrl: required("OCE_OPENSHELL_OAUTH_TEST_TOKEN_URL"),
-              refreshBeforeSeconds: 300,
+              refreshBeforeSeconds: 60,
             },
           },
         ],
@@ -156,12 +179,18 @@ test(
       signal,
     );
     profileCreated = true;
+    // Four minutes is usable now but below the export RPC's default five-minute
+    // lifetime. Automatic refresh is due after three minutes, beyond this test's
+    // 120-second operation budget, so the first export must trigger the refresh.
+    const initialAccessToken = `oauth-poc-access-initial-${randomUUID()}`;
+    const initialExpirationTime = new Date(Date.now() + 240_000).toISOString();
     await client.createProvider(
       {
         workspace,
         name,
         type: profileId,
-        credentials: {},
+        credentials: { [credentialKey]: initialAccessToken },
+        credentialExpirationTimes: { [credentialKey]: initialExpirationTime },
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
           "openclaw.dev/credential-source-id": sourceId,
@@ -181,20 +210,11 @@ test(
         client_id: "oauth-poc-client",
         refresh_token: `oauth-poc-refresh-initial-${randomUUID()}`,
       },
-      new Date(Date.now() + 3_600_000).toISOString(),
+      initialExpirationTime,
       signal,
     );
     assert.equal(configured.status, "configured");
 
-    const backend = createOpenShellBackend(
-      {
-        id: "openshell",
-        implementation: "openshell",
-        configuration: { endpoint },
-        drivers: { sandbox: "sandbox", credential_gateway: "credential-gateway-openshell" },
-      },
-      { gatewayClient: client },
-    );
     const driver = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/local/bin/codex"] },
       { backend },
@@ -208,11 +228,16 @@ test(
       assert.equal(accountId, "poc-account");
       return createHash("sha256").update(accessToken).digest("hex");
     };
-    assert.equal(
-      (await client.rotateProviderCredential(workspace, name, credentialKey, signal)).status,
-      "refreshed",
-    );
+    // The Driver asks upstream for a usable credential without an explicit rotate
+    // call. Only its Backend's certificate-only export channel may return the token.
     const first = await driver.withSourceToken(context, fingerprint);
+    assert.notEqual(first, createHash("sha256").update(initialAccessToken).digest("hex"));
+    assert.equal((await driver.sourceStatus(context)).state, "ready");
+    assert.equal(
+      await driver.withSourceToken(context, fingerprint),
+      first,
+      "a credential with sufficient remaining lifetime is reused without another mint",
+    );
     const firstAttachment = await driver.attachForRevision({
       signal,
       namespace: context.namespace,
@@ -241,16 +266,22 @@ test(
       "re-attaching reads the same source and metadata without reseeding its OAuth credentials",
     );
     assert.equal((await driver.sourceStatus(context)).state, "ready");
-    const resolved = await client.resolveProviderCredential(workspace, name, credentialKey, signal);
-    assert.ok(Date.parse(resolved.expirationTime) > Date.now());
+    const resolved = await operatorClient.getProviderCredential(
+      workspace,
+      name,
+      credentialKey,
+      signal,
+    );
+    assert.ok(Date.parse(resolved.expirationTime) > Date.now() + 300_000);
     await assert.rejects(
-      deniedClient.resolveProviderCredential(workspace, name, credentialKey, signal),
+      deniedClient.getProviderCredential(workspace, name, credentialKey, signal),
       (error) => error.grpcStatus === 7,
-      "a platform admin without credential-read scope cannot read plaintext",
+      "ordinary bearer administration does not confer the mTLS operator export capability",
     );
     await assert.rejects(
-      client.resolveProviderCredential(workspace, name, "refresh_token", signal),
-      "refresh material is not an injectable provider credential",
+      operatorClient.getProviderCredential(workspace, name, "refresh_token", signal),
+      (error) => [5, 9].includes(error.grpcStatus),
+      "refresh material is not an exportable runtime credential",
     );
   },
 );

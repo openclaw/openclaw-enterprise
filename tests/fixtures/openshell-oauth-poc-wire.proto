@@ -1,13 +1,13 @@
-// Independent server schema extracted from OpenShell fork 63564cceac5144078c3510285773e171d6335fec.
-// ResolveProviderCredential is a fork proposal; the other fields are upstream refresh APIs.
+// Independent server schema extracted from NVIDIA/OpenShell commit 4c1b16a4.
 syntax = "proto3";
 package openshell.v1;
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
 service OpenShell {
   rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest) returns (ConfigureProviderRefreshResponse);
   rpc RotateProviderCredential(RotateProviderCredentialRequest) returns (RotateProviderCredentialResponse);
   rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest) returns (GetProviderRefreshStatusResponse);
-  rpc ResolveProviderCredential(ResolveProviderCredentialRequest) returns (ResolveProviderCredentialResponse);
+  rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
   rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
 }
 message WorkspaceSelector { string workspace = 1; }
@@ -63,20 +63,18 @@ message GetProviderRefreshStatusResponse {
   repeated ProviderCredentialRefreshStatus credentials = 1;
 }
 
-message ResolveProviderCredentialRequest {
-  // Workspace scope. Only a named workspace selection is accepted.
+message GetProviderCredentialsRequest {
   WorkspaceSelector workspace_scope = 1;
-  // Canonical provider name in the selected workspace.
   string name = 2;
-  // Provider credential key, not a refresh-material key or storage handle.
-  string credential_key = 3;
+  repeated string credential_keys = 3;
+  google.protobuf.Duration minimum_remaining_lifetime = 4;
 }
-
-message ResolveProviderCredentialResponse {
-  // Plaintext for transient trusted-server use. Never log or persist this response.
+message ProviderCredentialValue {
   string value = 1;
-  // Earliest expiry reported by the provider or credential backend, when present.
   google.protobuf.Timestamp expiration_time = 2;
+}
+message GetProviderCredentialsResponse {
+  map<string, ProviderCredentialValue> credentials = 1;
 }
 
 message ProviderCredentialRefreshStatus {

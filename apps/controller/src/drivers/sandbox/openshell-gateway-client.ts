@@ -40,7 +40,12 @@ export interface OpenShellGatewayClientOptions {
   readonly endpoint: string;
   readonly auth?:
     | { readonly mode: "unauthenticated" }
-    | { readonly mode: "bearerTokenFile"; readonly path: string };
+    | { readonly mode: "bearerTokenFile"; readonly path: string }
+    | {
+        readonly mode: "mutualTls";
+        readonly certificatePath: string;
+        readonly privateKeyPath: string;
+      };
   readonly requestTimeoutMs?: number;
   readonly rootCertificatePath?: string;
 }
@@ -330,8 +335,8 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     credentialKey: string,
     signal: AbortSignal,
   ): Promise<readonly OpenShellProviderRefreshStatus[]>;
-  /** Returns one authorized warm credential; never triggers refresh. */
-  resolveProviderCredential(
+  /** Returns one runtime credential; OpenShell refreshes it when needed. */
+  getProviderCredential(
     workspace: string,
     provider: string,
     credentialKey: string,
@@ -358,7 +363,7 @@ type OpenShellMethod =
   | "ConfigureProviderRefresh"
   | "RotateProviderCredential"
   | "GetProviderRefreshStatus"
-  | "ResolveProviderCredential"
+  | "GetProviderCredentials"
   | "Health"
   | "GetWorkspace"
   | "CreateWorkspace"
@@ -789,7 +794,7 @@ async function metadata(
   auth: OpenShellGatewayClientOptions["auth"],
 ): Promise<Metadata> {
   const value = new grpc.Metadata();
-  if (auth === undefined || auth.mode === "unauthenticated") {
+  if (auth?.mode !== "bearerTokenFile") {
     return value;
   }
   if (!isAbsolute(auth.path)) {
@@ -833,6 +838,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
     if (options.auth?.mode === "bearerTokenFile" && !isAbsolute(options.auth.path)) {
       throw new OpenShellGatewayFailure("OpenShell bearer token file path must be absolute.");
+    }
+    if (options.auth?.mode === "mutualTls") {
+      if (!normalizeEndpoint(options.endpoint).secure) {
+        throw new OpenShellGatewayFailure("OpenShell mutual TLS requires an HTTPS endpoint.");
+      }
+      if (!isAbsolute(options.auth.certificatePath) || !isAbsolute(options.auth.privateKeyPath)) {
+        throw new OpenShellGatewayFailure("OpenShell mutual TLS file paths must be absolute.");
+      }
     }
     if (options.rootCertificatePath !== undefined && !isAbsolute(options.rootCertificatePath)) {
       throw new OpenShellGatewayFailure("OpenShell root certificate path must be absolute.");
@@ -1539,26 +1552,36 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
   }
 
-  async resolveProviderCredential(
+  async getProviderCredential(
     workspace: string,
     provider: string,
     credentialKey: string,
     signal: AbortSignal,
   ): Promise<{ readonly value: string; readonly expirationTime?: string }> {
-    // TODO(upstream operator credential read): this RPC is the local fork's contract.
-    // Adapt its wire mapping and proto here when upstream lands; keep withSourceToken
-    // a stable-provider warm read using the existing Backend identity, without refresh.
     const response = await this.unary(
-      "ResolveProviderCredential",
+      "GetProviderCredentials",
       {
-        workspace_scope: { workspace },
-        name: provider,
-        credential_key: credentialKey,
+        workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") },
+        name: nonempty(provider, "OpenShell provider name"),
+        credential_keys: [nonempty(credentialKey, "OpenShell credential key")],
+        // Omit minimum_remaining_lifetime to use the gateway's five-minute safety margin.
       },
       signal,
     );
-    const value = nonempty(response.value, "OpenShell resolved credential");
-    const expirationTime = timestampText(response.expiration_time);
+    const credentials = asRecord(response.credentials);
+    if (
+      credentials === undefined ||
+      Object.keys(credentials).length !== 1 ||
+      !Object.hasOwn(credentials, credentialKey)
+    ) {
+      throw new OpenShellGatewayFailure("OpenShell returned an unexpected credential selection.");
+    }
+    const credential = asRecord(credentials[credentialKey]);
+    const value = nonempty(credential?.value, "OpenShell provider credential");
+    const expirationTime = timestampText(credential?.expiration_time);
+    if (credential?.expiration_time !== undefined && expirationTime === null) {
+      throw new OpenShellGatewayFailure("OpenShell returned an invalid credential expiration.");
+    }
     if (expirationTime !== null && Date.parse(expirationTime) <= Date.now()) {
       throw new OpenShellGatewayFailure("The OpenShell credential has expired.");
     }
@@ -1669,7 +1692,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
               // Refresh and plaintext-read errors must not expose credential backend messages.
               if (
                 [
-                  "ResolveProviderCredential",
+                  "GetProviderCredentials",
                   "ConfigureProviderRefresh",
                   "RotateProviderCredential",
                   "GetProviderRefreshStatus",
@@ -1762,6 +1785,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           this.options.rootCertificatePath === undefined
             ? undefined
             : readFileSync(this.options.rootCertificatePath),
+          this.options.auth?.mode === "mutualTls"
+            ? readFileSync(this.options.auth.privateKeyPath)
+            : undefined,
+          this.options.auth?.mode === "mutualTls"
+            ? readFileSync(this.options.auth.certificatePath)
+            : undefined,
         )
       : grpc.credentials.createInsecure();
     return {

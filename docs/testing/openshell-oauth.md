@@ -6,18 +6,35 @@ environment; this procedure does not establish production support.
 
 ## Prepare the custom images and trust
 
-Build matching OpenShell gateway, supervisor, and static sandbox-launcher images
-with the credential-read RPC and JWT-alias support. Select both matching Helm
-charts. The [development launcher](openshell.md#start-a-reusable-development-environment)
+Use an OpenShell gateway implementing upstream `GetProviderCredentials`, added
+in revision `4c1b16a4a104581fb0afe8675feff34f00cc2ca8`. Full Harness proof also needs
+matching JWT-placeholder alias support in the gateway and supervisor. Build the
+matching static sandbox launcher and select both Helm charts. The
+[development launcher](openshell.md#start-a-reusable-development-environment)
 still imports its stock OpenShell image pins: selecting local charts alone does
-not select custom binaries. Import the custom images into the owned cluster and
-explicitly set their immutable references through the chart's `gateway.image`,
-`supervisor.image`, and `sandboxRuntime.image` values before OAuth verification.
+not select custom binaries. Import the selected images into the owned cluster and
+set their immutable references through `gateway.image`, `supervisor.image`, and
+`sandboxRuntime.image` before verification.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
-with its operator token and gateway CA. Its `rootCertificatePath` trusts
-**OCC-to-OpenShell gRPC only**. The dedicated Agent Gateway also needs to trust
-the private CA for OpenShell's advertised `wss` Harness endpoint.
+with ordinary bearer authentication, the gateway CA, and separate `operatorTls`
+certificate/key paths. Enable the gateway's default-off operator authentication
+in its Helm values:
+
+```yaml
+gatewayConfig:
+  openshell.gateway.mtls_auth:
+    operator_enabled: true
+```
+
+Issue the client certificate from its trusted client CA with exact
+`OU=operator`; use a direct TLS endpoint without termination or forwarded identity.
+The ordinary bearer keeps its Workspace/provider permissions. Credential export
+uses only the operator certificate. Do not put both identities on one request.
+
+`rootCertificatePath` trusts **OCC-to-OpenShell gRPC only**. The dedicated Agent
+Gateway also needs to trust the private CA for OpenShell's advertised `wss`
+Harness endpoint.
 
 Build the base OCE image from [the runtime Dockerfile](../../deploy/runtime/Dockerfile)
 using its pinned inputs: OpenClaw commit
@@ -47,7 +64,7 @@ docker build --build-arg BASE_RUNTIME_IMAGE="$BASE_RUNTIME_IMAGE" \
 ```
 
 Include only the public certificate in this build context, never CA signing
-keys, operator tokens, or OAuth material. `NODE_USE_SYSTEM_CA=1` makes Node use
+keys, operator credentials, or OAuth material. `NODE_USE_SYSTEM_CA=1` makes Node use
 the augmented system trust store while retaining normal certificate and
 hostname verification. A CA change requires rebuilding and selecting the image.
 
@@ -58,11 +75,11 @@ records an immutable reference. For real-runtime tests, follow the
 and set `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 `OCC_TEST_KUBERNETES_AGENT_IMAGE` to the imported digest reference.
 
-When OpenShell's operator OIDC issuer uses a private CA, also use a chart that
+When OpenShell's ordinary OIDC issuer uses a private CA, also use a chart that
 preserves the gateway image's public roots: `server.oidc.caConfigMapName` selects
 the issuer bundle through `SSL_CERT_FILE`, alongside
 `SSL_CERT_DIR=/etc/ssl/certs`. An issuer-only file without the public roots can
-allow operator login while breaking refresh at a public OAuth token endpoint.
+allow OIDC login while breaking refresh at a public OAuth token endpoint.
 This is separate from the Agent Gateway's trust above; retain TLS verification
 on both paths.
 
@@ -70,20 +87,27 @@ on both paths.
 
 The manually selected `openshell-oauth` lane runs
 [`openshell-oauth-credentials-real.test.mjs`](../../tests/integration/openshell-oauth-credentials-real.test.mjs)
-against a real custom gateway and synthetic HTTPS OAuth issuer. It is outside
+against the real upstream gateway and a synthetic HTTPS OAuth issuer. It is outside
 `ci` and `full`, enables `OCE_OPENSHELL_OAUTH_REAL=1`, and requires these inputs
 in a private environment file:
 
-| Variable                                  | Required input                                                                        |
-| ----------------------------------------- | ------------------------------------------------------------------------------------- |
-| `OCE_OPENSHELL_OAUTH_GATEWAY_ENDPOINT`    | Custom OpenShell gateway endpoint.                                                    |
-| `OCE_OPENSHELL_OAUTH_CA_FILE`             | Public gateway CA file.                                                               |
-| `OCE_OPENSHELL_OAUTH_OPERATOR_TOKEN_FILE` | Authorized operator token file.                                                       |
-| `OCE_OPENSHELL_OAUTH_DENIED_TOKEN_FILE`   | Token omitting `provider:credentials:read`.                                           |
-| `OCE_OPENSHELL_OAUTH_TEST_TOKEN_URL`      | Synthetic issuer's HTTPS token endpoint.                                              |
-| `OCE_OPENSHELL_OAUTH_KUBECONFIG`          | Dedicated disposable cluster kubeconfig.                                              |
-| `OCE_OPENSHELL_OAUTH_KUBERNETES_CONTEXT`  | `k3d-occ-dev-oce-oauth-poc`; the test enforces this owned context and a loopback API. |
-| `OCE_OPENSHELL_OAUTH_WORKSPACE_CHART`     | Matching OpenShell Workspace chart path.                                              |
+| Variable                                 | Required input                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------- |
+| `OCE_OPENSHELL_OAUTH_GATEWAY_ENDPOINT`   | Direct HTTPS gateway endpoint with operator authentication enabled.             |
+| `OCE_OPENSHELL_OAUTH_CA_FILE`            | Public gateway CA file.                                                         |
+| `OCE_OPENSHELL_OAUTH_ADMIN_TOKEN_FILE`   | Ordinary OIDC admin token for Workspace/provider operations.                    |
+| `OCE_OPENSHELL_OAUTH_OPERATOR_CERT_FILE` | Trusted client certificate with exact `OU=operator`.                            |
+| `OCE_OPENSHELL_OAUTH_OPERATOR_KEY_FILE`  | Matching private key file, readable only by the test process.                   |
+| `OCE_OPENSHELL_OAUTH_DENIED_TOKEN_FILE`  | Ordinary OIDC admin token without an operator certificate.                      |
+| `OCE_OPENSHELL_OAUTH_TEST_TOKEN_URL`     | Synthetic issuer's HTTPS token endpoint.                                        |
+| `OCE_OPENSHELL_OAUTH_KUBECONFIG`         | Dedicated disposable cluster kubeconfig.                                        |
+| `OCE_OPENSHELL_OAUTH_KUBERNETES_CONTEXT` | `k3d-occ-dev-oce-oauth-poc`; the test enforces this context and a loopback API. |
+| `OCE_OPENSHELL_OAUTH_WORKSPACE_CHART`    | Matching OpenShell Workspace chart path.                                        |
+
+The synthetic issuer must accept unique `oauth-poc-refresh-initial-<UUID>` grants,
+return a new access token and rotating refresh token with a one-hour lifetime,
+and reject reused refresh tokens. Use fresh fixture identities and state;
+never point this lane at an existing user's deployment.
 
 ```sh
 node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run openshell-oauth \
@@ -92,9 +116,15 @@ node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run openshell-oauth \
 ```
 
 Missing prerequisites fail before execution. No real model credential is needed.
-The case verifies rotating refresh material and authorized warm reads, not real
-ChatGPT login, Harness injection, or model execution. A successful TLS handshake
-or ready credential source also does not establish those outcomes.
+The case uses the real Backend's ordinary and operator channels. A seeded token
+has four minutes remaining, below upstream's five-minute retrieval requirement;
+the fixture's shorter background-refresh margin puts scheduled refresh beyond
+the operation deadline. Retrieval must refresh it, a subsequent read must reuse
+it, and another explicit rotation must use the stored successor refresh token.
+The case also checks unchanged attachments and rejects ordinary bearer export
+and refresh-material export. It proves neither real ChatGPT login nor Harness
+injection/model execution. A TLS handshake or ready source does not prove those
+outcomes either.
 
 For real-provider proof, use the Console for fresh device login, select the
 resulting source on a dedicated Codex Agent, and verify initial workspace files,

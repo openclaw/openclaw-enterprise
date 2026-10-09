@@ -107,8 +107,8 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
       refreshStatus = "refreshed";
       return { status: refreshStatus, expirationTime };
     },
-    async resolveProviderCredential() {
-      operations.push("read-warm");
+    async getProviderCredential() {
+      operations.push("read-usable");
       return { value: "synthetic-rotated-access", expirationTime };
     },
   };
@@ -117,7 +117,7 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
     {
       backend: {
         drivers: { credential_gateway: "credential-gateway-openshell" },
-        client: { clientForNamespace: () => client },
+        client: { clientForNamespace: () => client, credentialClientForNamespace: () => client },
       },
     },
   );
@@ -143,6 +143,9 @@ function fixture(t, { invalidIdToken = false, failRotation = false } = {}) {
     },
     allowRotation: () => {
       failRotation = false;
+    },
+    setRefreshStatus: (value) => {
+      refreshStatus = value;
     },
   };
 }
@@ -172,7 +175,7 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
     "configure-refresh",
     "store-metadata",
     "rotate",
-    "read-warm",
+    "read-usable",
   ]);
   const [attachment] = await f.driver.attachForRevision({
     namespace: owner.namespace,
@@ -198,7 +201,7 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
     calls,
     "completed-source replay does not redeem the code or original refresh token again",
   );
-  assert.deepEqual(f.operations, ["read-warm"]);
+  assert.deepEqual(f.operations, ["read-usable"]);
 });
 
 test("invalid OAuth token metadata cannot seed an OpenShell credential source", async (t) => {
@@ -237,4 +240,36 @@ test("configured OAuth material stays pending until the gateway establishes its 
     "resume from gateway-owned refresh material without replaying OAuth",
   );
   assert.equal(f.operations.filter((operation) => operation === "configure-refresh").length, 1);
+});
+
+test("unfinished OpenShell refresh keeps source and device completion pending", async (t) => {
+  const f = fixture(t);
+  const owner = await f.register("source-in-progress");
+  const login = await f.driver.startDeviceAuthorization(owner);
+  f.approve();
+  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+    status: "ready",
+  });
+  const exchanges = f.http.length;
+  f.operations.length = 0;
+
+  // Upstream publishes both markers during ordinary refresh. Neither proves a
+  // completed mint, and a crashed owner may leave one requiring operator recovery.
+  for (const phase of ["refresh_in_progress", "refresh_committing"]) {
+    f.setRefreshStatus(phase);
+    const status = await f.driver.sourceStatus(owner);
+    assert.equal(status.state, "pending");
+    assert.match(status.reason, /unfinished.*recovery/);
+    assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+      status: "pending",
+    });
+  }
+  assert.equal(f.http.length, exchanges, "waiting does not redeem the device grant again");
+  assert.deepEqual(f.operations, [], "waiting does not start another rotation or export");
+
+  f.setRefreshStatus("refreshed");
+  assert.deepEqual(await f.driver.pollDeviceAuthorization(owner, login.privateState), {
+    status: "ready",
+  });
+  assert.deepEqual(f.operations, ["read-usable"]);
 });

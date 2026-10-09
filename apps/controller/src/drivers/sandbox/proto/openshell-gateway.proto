@@ -1,6 +1,5 @@
 // Minimal OpenShell v0.1.3-pre.2 gateway surface used by OpenClaw Enterprise.
-// The OAuth PoC extends this binding with upstream refresh RPCs and the
-// fork-only operator credential read below.
+// Refresh and operator credential retrieval follow upstream commit 4c1b16a4.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only
@@ -21,9 +20,8 @@ service OpenShell {
   rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest) returns (ConfigureProviderRefreshResponse);
   rpc RotateProviderCredential(RotateProviderCredentialRequest) returns (RotateProviderCredentialResponse);
   rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest) returns (GetProviderRefreshStatusResponse);
-  // TODO(upstream operator credential read): replace this fork contract and its
-  // request/response below once the upstream API lands; ordinary reads stay redacted.
-  rpc ResolveProviderCredential(ResolveProviderCredentialRequest) returns (ResolveProviderCredentialResponse);
+  // Operator mTLS only; ordinary provider reads remain redacted.
+  rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
@@ -703,12 +701,16 @@ message GetProviderRefreshStatusRequest {
   WorkspaceSelector workspace_scope = 3;
 }
 message GetProviderRefreshStatusResponse { repeated ProviderCredentialRefreshStatus credentials = 1; }
-message ResolveProviderCredentialRequest {
+message GetProviderCredentialsRequest {
   WorkspaceSelector workspace_scope = 1;
   string name = 2;
-  string credential_key = 3;
+  repeated string credential_keys = 3;
+  google.protobuf.Duration minimum_remaining_lifetime = 4;
 }
-message ResolveProviderCredentialResponse {
+message ProviderCredentialValue {
   string value = 1;
   google.protobuf.Timestamp expiration_time = 2;
+}
+message GetProviderCredentialsResponse {
+  map<string, ProviderCredentialValue> credentials = 1;
 }

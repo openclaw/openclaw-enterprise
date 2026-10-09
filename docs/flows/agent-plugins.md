@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent Plugin Deployment Flow
@@ -77,13 +77,15 @@ Namespace does not hold is `404`. Unsupported discovery reads no credential.
 Existing-Agent discovery requires active Agent `read`/`update`. Hosted discovery
 resolves a bound Secret PAT through
 [`SecretDriver.withValue`](../reference/drivers/secret.md), or asks the selected
-Credential Gateway's `withSourceToken` for a warm access token and account metadata.
+Credential Gateway's `withSourceToken` for a usable access token and account metadata.
+The token service may refresh before returning it; see the
+[credential-source lifecycle](credential-source-lifecycle.md#device-authorization-and-configuration).
 OCC rechecks the binding and caller/Agent source `operate` inside the callback.
 CredentialSource discovery remains available after its login session closes; the
 [CredentialSource flow](credential-source-lifecycle.md) owns that lifecycle.
 Curated discovery needs no credential. Missing, denied, or unavailable sources
 fail before discovery. Nontransactional reads may precede rotation; discovery
-persists neither state nor credentials and never refreshes provider tokens.
+persists neither state nor credentials; provider refresh belongs to the token service.
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
 hosted identity, searches `q`, and pages GLOBAL entries with opaque cursors.
@@ -301,6 +303,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
 
 - 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 

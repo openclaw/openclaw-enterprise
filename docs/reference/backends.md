@@ -130,6 +130,9 @@ backend:
         mode: bearerTokenFile
         path: /etc/openclaw/openshell/token
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
+      operatorTls:
+        certificatePath: /etc/openclaw/openshell/operator.crt
+        privateKeyPath: /etc/openclaw/openshell/operator.key
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
@@ -148,6 +151,10 @@ Its closed `configuration` accepts:
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land.
 - `rootCertificatePath`: an absolute path to the gateway CA.
+- `operatorTls`: optional `{ certificatePath, privateKeyPath }`, both absolute
+  paths. Required for OAuth access-token retrieval; requires HTTPS. It opens a
+  separate certificate-only channel to the same gateway, using the same server
+  CA and no bearer header. Ordinary RPCs keep the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
   bearer-token authentication, and rejected otherwise. It declares that
   NetworkPolicy restricts the gateway to the OCE API, worker, and OpenShell
@@ -159,8 +166,11 @@ Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
 [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). One
 OpenShell Backend is supported. Composition builds one gateway client object
-and injects it into both members, which cache one client per resolved endpoint.
-The API and the worker each construct it, so both need the token file and gateway access.
+and injects it into both members. It caches ordinary and credential-export
+clients separately per resolved endpoint. The API and worker each construct it,
+so mount their required credential files there, never in the Harness or Agent
+Gateway. Restart these processes after rotating an operator certificate to replace
+cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 ## Driver and client contract
 

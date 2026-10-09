@@ -22,7 +22,7 @@ test("Console device login persists the actual OpenShell OAuth catalog source an
     {
       backend: {
         drivers: { credential_gateway: "credential-gateway-openshell" },
-        client: { clientForNamespace: () => client },
+        client: { clientForNamespace: () => client, credentialClientForNamespace: () => client },
       },
     },
   );

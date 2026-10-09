@@ -457,6 +457,30 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
     auth: { mode: "bearerTokenFile", path: "/etc/openclaw/openshell/token" },
   };
   await load(protectedTransport);
+
+  // Export credentials use a separate operator identity; they cannot make an
+  // otherwise unauthenticated ordinary RPC connection count as protected.
+  const operatorTls = {
+    certificatePath: "/etc/openclaw/openshell/operator.crt",
+    privateKeyPath: "/etc/openclaw/openshell/operator.key",
+  };
+  protectedTransport.backend[0].configuration.operatorTls = operatorTls;
+  await load(protectedTransport);
+  tlsOnly.backend[0].configuration.operatorTls = operatorTls;
+  await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile authentication/);
+
+  for (const invalid of [
+    { certificatePath: operatorTls.certificatePath },
+    { ...operatorTls, privateKeyPath: "operator.key" },
+  ]) {
+    protectedTransport.backend[0].configuration.operatorTls = invalid;
+    await assert.rejects(load(protectedTransport), /operatorTls requires absolute/);
+  }
+  protectedTransport.backend[0].configuration.operatorTls = operatorTls;
+  const plaintextOperator = sandboxInstallation();
+  plaintextOperator.backend[0].configuration.operatorTls = operatorTls;
+  await assert.rejects(load(plaintextOperator), /operatorTls requires a direct HTTPS/);
+
   // The declaration is only for unprotected transport, so it cannot mask a protected setup.
   protectedTransport.backend[0].configuration.insecureTransport = "network-policy";
   await assert.rejects(load(protectedTransport), /insecureTransport is only for unprotected/);
