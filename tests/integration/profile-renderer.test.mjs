@@ -1252,3 +1252,26 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
   assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
   assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
 });
+
+test("profiles refuse database CA keys the chart refuses", () => {
+  const withCa = (key) =>
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        databaseCa: { secretName: "occ-db-ca", ...(key === undefined ? {} : { key }) },
+      },
+    });
+  const accepted = render("openclaw", withCa("db_ca.pem"));
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, /caKey: db_ca.pem/);
+  const omitted = render("openclaw", withCa(undefined));
+  assert.equal(omitted.summary.ok, true, omitted.preflight.errors.join("\n"));
+  assert.match(omitted.values, /caKey: ca.pem/);
+  for (const key of [".", "..", "ca/pem", "ca pem"]) {
+    assertPreflightFailure(
+      "openclaw",
+      withCa(key),
+      /controlPlane.databaseCa.key must be a simple basename/,
+    );
+  }
+});

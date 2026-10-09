@@ -20,6 +20,7 @@
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
     "tests/conformance/kubernetes-preflight.test.mjs",
+    "tests/conformance/kubernetes-client.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
@@ -138,6 +139,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-preflight.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-client.test.mjs"
     },
     {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"

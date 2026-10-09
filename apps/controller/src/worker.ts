@@ -409,6 +409,36 @@ function firstPendingCredentialWithdrawal(
   return pending.find((withdrawal) => !credentialWithdrawalAwaitsReplay(withdrawal)) ?? pending[0];
 }
 
+/**
+ * A pending withdrawal that needs an attempt queued: it does not await a replay, and no attempt
+ * for its revision is queued or running. Every path that queues withdrawal work without an
+ * operator request (maintenance, a later series) checks this, so each revision keeps one chain.
+ */
+async function credentialWithdrawalNeedsAttempt(
+  unit: PlatformUnitOfWork,
+  withdrawal: Readonly<CredentialWithdrawal>,
+): Promise<boolean> {
+  return (
+    withdrawal.state === "pending" &&
+    !credentialWithdrawalAwaitsReplay(withdrawal) &&
+    !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
+      withdrawal.namespaceId,
+      withdrawal.revisionId,
+    ))
+  );
+}
+
+/** Each requester's withdrawn source ids, in attempt order. */
+function sourceIdsByRequester(
+  attempts: readonly CredentialWithdrawalAttempt[],
+): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const { requestedBy, credentialSourceId } of attempts) {
+    grouped.set(requestedBy, [...(grouped.get(requestedBy) ?? []), credentialSourceId]);
+  }
+  return grouped;
+}
+
 /** The revision's admitted sources once each: its Harness source first, then the others. */
 function revisionCredentialSourceIds(revision: Readonly<AgentRevision>): readonly string[] {
   const harnessSourceId = revisionHarnessSourceId(revision);
@@ -2539,13 +2569,13 @@ export class ControllerWorker {
     dispatched: CredentialWithdrawalDispatchResult,
   ): Promise<void> {
     let result = dispatched;
+    const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
+      outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
       result = dispatched;
-      const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
-        outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
       let terminalFailure = terminal(result);
       // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
       // them first, in admission order, before updating withdrawal rows: a concurrent
@@ -2577,12 +2607,7 @@ export class ControllerWorker {
       const attempts = result.attempts ?? [];
       // Each confirmed revocation is audited as its requester's mutation in the pass that
       // confirmed it, so a later retry cannot lose it.
-      const revokedBy = new Map<string, string[]>();
-      for (const { requestedBy, credentialSourceId, revoked } of attempts) {
-        if (revoked) {
-          revokedBy.set(requestedBy, [...(revokedBy.get(requestedBy) ?? []), credentialSourceId]);
-        }
-      }
+      const revokedBy = sourceIdsByRequester(attempts.filter(({ revoked }) => revoked));
       for (const [actorId, credentialSourceIds] of revokedBy) {
         await this.appendCredentialWithdrawalAudit(unit, claim, {
           actorId,
@@ -2610,10 +2635,7 @@ export class ControllerWorker {
         // A failure is audited against each unsettled withdrawal's requester, as a revocation
         // is, so a withdrawal a replay took over is not attributed to the claim's actor.
         if (terminalFailure) {
-          const failedBy = new Map<string, string[]>();
-          for (const { requestedBy, credentialSourceId } of unsettled) {
-            failedBy.set(requestedBy, [...(failedBy.get(requestedBy) ?? []), credentialSourceId]);
-          }
+          const failedBy = sourceIdsByRequester(unsettled);
           if (attempts.length === 0) {
             failedBy.set(claim.actorId, []);
           }
@@ -2638,10 +2660,7 @@ export class ControllerWorker {
         await queue.retry(claim, { code: result.code });
       }
     }, this.queueOptions);
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = terminal(result) ? "permanent" : result.outcome;
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -2720,8 +2739,8 @@ export class ControllerWorker {
    * as long as the one before, up to five minutes, and the chain ends after
    * MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES series. Where Compute schedules maintenance, each pass
    * re-queues the withdrawal instead (recoverPendingCredentialWithdrawals). A revision whose
-   * pending withdrawals all await a replay gets none (see credentialWithdrawalAwaitsReplay), and
-   * neither does one whose replay already queued an attempt. The Namespace and Agent are already
+   * pending withdrawals all await a replay gets none, and neither does one whose replay already
+   * queued an attempt (credentialWithdrawalNeedsAttempt). The Namespace and Agent are already
    * locked here, as for any terminal failure.
    */
   private async scheduleCredentialWithdrawalRecovery(
@@ -2736,20 +2755,10 @@ export class ControllerWorker {
     ) {
       return;
     }
-    const withdrawals = await unit.credentialSources.listCredentialWithdrawals(
-      claim.namespaceId,
-      claim.revisionId!,
+    const next = firstPendingCredentialWithdrawal(
+      await unit.credentialSources.listCredentialWithdrawals(claim.namespaceId, claim.revisionId!),
     );
-    if (
-      !withdrawals.some(
-        (withdrawal) =>
-          withdrawal.state === "pending" && !credentialWithdrawalAwaitsReplay(withdrawal),
-      ) ||
-      (await unit.operations.hasOutstandingCredentialWithdrawalWork(
-        claim.namespaceId,
-        claim.revisionId!,
-      ))
-    ) {
+    if (next === undefined || !(await credentialWithdrawalNeedsAttempt(unit, next))) {
       return;
     }
     await queue.enqueue({
@@ -3029,13 +3038,7 @@ export class ControllerWorker {
     pending: readonly Readonly<CredentialWithdrawal>[],
   ): Promise<void> {
     for (const withdrawal of pending) {
-      if (
-        credentialWithdrawalAwaitsReplay(withdrawal) ||
-        (await unit.operations.hasOutstandingCredentialWithdrawalWork(
-          withdrawal.namespaceId,
-          withdrawal.revisionId,
-        ))
-      ) {
+      if (!(await credentialWithdrawalNeedsAttempt(unit, withdrawal))) {
         continue;
       }
       await unit.operations.append({

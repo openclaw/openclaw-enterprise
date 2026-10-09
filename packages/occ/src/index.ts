@@ -6148,9 +6148,9 @@ export class OpenClawController {
    * A replay of a pending withdrawal makes the replaying operator its requester, so its next
    * attempt runs on their authority. It queues another attempt only when no earlier attempt is
    * still queued or running, and otherwise lets a queued one run now; a revoked withdrawal is
-   * left unchanged. The response describes the active revision's
-   * withdrawal, or, once that is revoked, a pending one of another revision that may still run
-   * with the source (see readAgentCredentialWithdrawal).
+   * left unchanged. The response describes the active revision's withdrawal, or, once that is
+   * revoked, a pending one of another revision that may still run with the source (see
+   * readAgentCredentialWithdrawal).
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6277,8 +6277,9 @@ export class OpenClawController {
   }
 
   /**
-   * A `pending` withdrawal whose attempts ran out has no outstanding work, whether the last
-   * attempt failed or its claim expired, so `withdrawalInProgress` is read from the queue.
+   * A `pending` withdrawal has no outstanding work once its attempts ran out with no later
+   * series queued (the chain ended, it awaits a replay, or maintenance has not re-queued it
+   * yet), so `withdrawalInProgress` is read from the queue.
    *
    * The source is withdrawn from the Agent only once every revision that may still run with it
    * confirmed its own withdrawal, so the read reports the active revision's withdrawal unless
