@@ -281,6 +281,43 @@ func TestServiceAccountDeleteForceReportsTheUnrevokedToken(t *testing.T) {
 	}
 }
 
+func TestServiceAccountForceDeleteRejectsAMalformedSuccess(t *testing.T) {
+	const accountID = "sa_66666666-6666-4666-8666-666666666666"
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A forced delete succeeds only with a bodyless 204 or a full 200 envelope.
+	for _, test := range []struct {
+		respond func(http.ResponseWriter)
+		message string
+	}{
+		{func(writer http.ResponseWriter) {
+			writer.Header().Set("content-type", "application/json")
+			_, _ = writer.Write([]byte(`{"data":{"revocation":"skipped"}}`))
+		}, "OCC returned an invalid response (HTTP 200)"},
+		{func(writer http.ResponseWriter) {
+			writer.WriteHeader(http.StatusAccepted)
+		}, "OCC returned an unexpected response (HTTP 202)"},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodDelete || request.URL.RawQuery != "force=true" {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			test.respond(writer)
+		}))
+		command := New(&bytes.Buffer{}, &bytes.Buffer{})
+		command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile,
+			"--namespace", testNamespaceID, "service-account", "delete", "--force", accountID})
+		err := command.Execute()
+		server.Close()
+		if err == nil || err.Error() != test.message {
+			t.Fatalf("expected %q, got %v", test.message, err)
+		}
+	}
+}
+
 func TestServiceAccountListShowsNamespaceAccounts(t *testing.T) {
 	const accountID = "sa_66666666-6666-4666-8666-666666666666"
 	out, _, err := runOCC(t, map[string]string{

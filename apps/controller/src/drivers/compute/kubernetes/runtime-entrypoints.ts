@@ -1514,37 +1514,25 @@ function codexConfigPathSegment(segment) {
   return /^[A-Za-z0-9_-]+$/.test(segment) ? segment : JSON.stringify(segment);
 }
 
-function codexAppConfigEdits(configuration) {
-  const features = isPlainObject(configuration.features) ? configuration.features : {};
-  const apps = isPlainObject(configuration.apps) ? configuration.apps : {};
-  const edits = [
-    { keyPath: "features.apps", mergeStrategy: "replace", value: features.apps === true },
-    { keyPath: "features.plugins", mergeStrategy: "replace", value: features.plugins === true },
-    {
-      keyPath: "features.remote_plugin",
+function codexPluginConfigEdits(configuration) {
+  return [
+    ...["apps", "plugins", "remote_plugin"].map((feature) => ({
+      keyPath: "features." + feature,
       mergeStrategy: "replace",
-      value: features.remote_plugin === true,
-    },
-    {
-      keyPath: 'apps."_default"',
+      value: configuration.features?.[feature] === true,
+    })),
+    // Project the complete OCE-owned policy without retaining native table entries.
+    ...["apps", "plugins"].map((keyPath) => ({
+      keyPath,
       mergeStrategy: "replace",
-      value: isPlainObject(apps._default) ? apps._default : { enabled: false },
-    },
+      value: configuration[keyPath],
+    })),
   ];
-  for (const [appId, config] of Object.entries(apps)) {
-    if (appId === "_default") continue;
-    edits.push({
-      keyPath: "apps." + codexConfigPathSegment(appId),
-      mergeStrategy: "replace",
-      value: config,
-    });
-  }
-  return edits;
 }
 
-async function writeCodexAppConfiguration(configuration) {
-  const effective = await readCodexAppConfiguration();
-  const edits = codexAppConfigEdits(configuration);
+async function writeCodexPluginConfiguration(configuration) {
+  const effective = await readCodexPluginConfiguration();
+  const edits = codexPluginConfigEdits(configuration);
   // Replacing a user table does not erase descendants inherited from other
   // config layers. Materialize the selection and approval policy at those keys.
   // Native requirements still apply independently; readback below remains mandatory.
@@ -1588,7 +1576,7 @@ async function writeCodexAppConfiguration(configuration) {
   });
 }
 
-async function readCodexAppConfiguration() {
+async function readCodexPluginConfiguration() {
   // Match the dedicated Harness workspace; a thread-agnostic read omits its
   // trusted .codex layers and can validate a different policy than the Agent uses.
   const response = await codexAppServerRequest("config/read", {
@@ -1597,8 +1585,14 @@ async function readCodexAppConfiguration() {
   return response?.config;
 }
 
-function verifyCodexAppConfiguration(configuration, effective) {
+function verifyCodexPluginConfiguration(configuration, effective) {
   assertConfigContainsOverlay(effective, configuration);
+  for (const [id, policy] of Object.entries(effective.plugins ?? {})) {
+    // Only explicit enablement overrides the verified default-off policy.
+    if (id !== "_default" && !hasOwn(configuration.plugins, id) && policy?.enabled === true) {
+      throw new Error("Codex effective plugins configuration enables an unselected entry; remove the native override or update the Agent selection.");
+    }
+  }
   for (const [appId, actual] of Object.entries(effective.apps ?? {})) {
     const app = configuration.apps?.[appId];
     if (app === undefined) {
@@ -1775,12 +1769,22 @@ async function installCodexSelectionSet(selections, failures = []) {
   const enabledPluginIds = enabledCodexSelectionIds(selections);
   const listed = await codexAppServerRequest("plugin/list", {});
   const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
-  if (readParamsList.length === 0) return { successfulPluginIds: [], failures: [] };
   const resolvedDetails = await readCodexPluginDetails(readParamsList);
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   const successfulPluginIds = [];
   const installs = pluginRuntimeTranslator.codexInstallPlan(selections, resolvedDetails);
+  // Native installation reports connector auth only for enabled plugins.
+  // Grant validated selections before installation; app grants still wait for revalidation.
+  await codexAppServerRequest("config/batchWrite", {
+    edits: [{ keyPath: "plugins", mergeStrategy: "replace", value: {
+      _default: { enabled: false },
+      ...Object.fromEntries(installs.map((plugin) => [plugin.nativeId, {
+        enabled: enabledPluginIds.has(plugin.pluginId) && !failedIds.has(plugin.pluginId),
+      }])),
+    } }],
+    reloadUserConfig: true,
+  });
   for (const readParams of readParamsList) {
     const selectedPlugin = installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
@@ -1846,7 +1850,6 @@ async function installCodexSelectionSet(selections, failures = []) {
     ? await readCodexToolStatuses()
     : [];
   const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed, toolStatuses);
-  await writeCodexAppConfiguration(effectiveResolvedArtifact.configuration);
   const installedDetails = await readCodexPluginDetails(readParamsList, (readParams, index) => {
     const selectedPlugin = installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
@@ -1866,21 +1869,29 @@ async function installCodexSelectionSet(selections, failures = []) {
   if (JSON.stringify(installedArtifact.configuration) !== JSON.stringify(effectiveResolvedArtifact.configuration)) {
     throw new Error("Codex plugin installed app mapping does not match startup resolution.");
   }
+  // Remote plugin/read reports catalog metadata, not cached bundle contents.
+  // Recheck the admitted release and app mapping before granting apps.
+  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration);
+  const enabledReadParams = readParamsList.filter((readParams) => installs.some(
+    (plugin) => plugin.remotePluginId === readParams.pluginName &&
+      !failedIds.has(plugin.pluginId) && enabledPluginIds.has(plugin.pluginId),
+  ));
+  const enabledDetails = await readCodexPluginDetails(enabledReadParams);
   for (const plugin of effectiveResolvedArtifact.installs) {
     if (failedIds.has(plugin.pluginId) || !enabledPluginIds.has(plugin.pluginId)) continue;
-    const readParams = readParamsList.find((candidate) => candidate.pluginName === plugin.remotePluginId);
+    const readParams = enabledReadParams.find((candidate) => candidate.pluginName === plugin.remotePluginId);
     if (readParams === undefined) {
       throw new Error("Codex plugin installed identity does not match the selected catalog entry.");
     }
-    const detail = installedDetails[readParamsList.indexOf(readParams)];
+    const detail = enabledDetails[enabledReadParams.indexOf(readParams)];
     verifyCodexPluginDetail(plugin, readParams, detail);
   }
   // TODO: use native effective app/tool policy introspection when available.
   // Codex 0.156 config/read omits managed app requirements applied at execution;
   // this readback verifies loaded configuration, not future thread policy.
-  const effectiveConfiguration = await readCodexAppConfiguration();
+  const effectiveConfiguration = await readCodexPluginConfiguration();
   await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
-  verifyCodexAppConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
+  verifyCodexPluginConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
   return { successfulPluginIds, failures: failed };
 }
 
@@ -1907,14 +1918,15 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
     const configuration = {
       features: { apps: false, plugins: false, remote_plugin: false },
       apps: { _default: { enabled: false } },
+      plugins: { _default: { enabled: false } },
     };
     // The app-server may still be starting: retry like the ChatGPT install path.
     const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
     let lastError = new Error("Codex plugin disable deadline expired before the first attempt.");
     while (Date.now() < deadline) {
       try {
-        await writeCodexAppConfiguration(configuration);
-        verifyCodexAppConfiguration(configuration, await readCodexAppConfiguration());
+        await writeCodexPluginConfiguration(configuration);
+        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration());
         lastError = undefined;
         break;
       } catch (error) {
@@ -2180,6 +2192,110 @@ function publishAgentPluginSkillPath() {
 
 `;
 
+/**
+ * OpenClaw's agent database schema (`OPENCLAW_AGENT_SCHEMA_VERSION` in
+ * src/state/openclaw-agent-db-contract.ts) at the runtime image's pinned
+ * OPENCLAW_COMMIT. The runtime image test that migrates a released Gateway
+ * fails when a pin moves it; update it with the pin.
+ */
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 24;
+
+// A Gateway keeps its agent databases across runtime image upgrades. OpenClaw
+// refuses one with an older schema (exit 78) until "openclaw doctor --fix"
+// migrates it, and its own image entrypoint runs that Doctor pass before every
+// Gateway start. This wrapper replaces that entrypoint, so it runs the same
+// pass, but only when a database needs it: fresh and current state start
+// without Doctor's ~15 s. Doctor must not rewrite the controller-owned
+// configuration (OPENCLAW_CONFIG_READONLY). The schema versions after Doctor,
+// not its exit status, decide: Doctor also exits non-zero for problems it can
+// only report here. A failure holds the Gateway unready with the step named,
+// rather than restarting into the same refusal and another Doctor backup.
+const GATEWAY_STATE_MIGRATION_HELPER = String.raw`
+function outdatedAgentDatabases() {
+  const agentsDirectory = join(process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw", "agents");
+  let agentIds;
+  try {
+    agentIds = require("node:fs").readdirSync(agentsDirectory);
+  } catch {
+    // Fresh state has no agents directory.
+    return [];
+  }
+  // Outside the per-database try: without the module, startup fails instead of skipping.
+  const { DatabaseSync } = require("node:sqlite");
+  const outdated = [];
+  for (const agentId of agentIds) {
+    const path = join(agentsDirectory, agentId, "agent", "openclaw-agent.sqlite");
+    let version;
+    try {
+      // A read-only open of a missing database fails here.
+      const database = new DatabaseSync(path, { readOnly: true });
+      try {
+        version = database.prepare("PRAGMA user_version").get().user_version;
+      } finally {
+        database.close();
+      }
+    } catch {
+      // OpenClaw's own startup check reports a database it cannot read.
+      continue;
+    }
+    // 0 is a database OpenClaw has not initialized; a newer one needs its backup.
+    if (version > 0 && version < ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION}) outdated.push({ path, version });
+  }
+  return outdated;
+}
+
+function runStateMigrationDoctor() {
+  return new Promise((resolve) => {
+    const doctor = spawn(
+      process.execPath,
+      ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
+      { stdio: "inherit", env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" } },
+    );
+    // Doctor's maintenance lease owns termination: let it stop its transaction.
+    const stop = (signal) => {
+      gatewayTerminating = true;
+      doctor.kill(signal);
+    };
+    const onTerm = () => stop("SIGTERM");
+    const onInt = () => stop("SIGINT");
+    process.on("SIGTERM", onTerm);
+    process.on("SIGINT", onInt);
+    const settle = (outcome) => {
+      process.off("SIGTERM", onTerm);
+      process.off("SIGINT", onInt);
+      resolve(outcome);
+    };
+    doctor.on("error", (error) => settle("error-" + (error?.code ?? "spawn")));
+    doctor.on("exit", (code, signal) => settle(signal ?? "exit-" + code));
+  });
+}
+
+// Resolves true once Doctor brought every outdated database current; otherwise holds.
+async function migrateGatewayState(outdated) {
+  const startedAt = Date.now();
+  console.error(
+    "Migrating " + outdated.length + " OpenClaw agent database(s) from schema " +
+      outdated.map(({ version }) => version).join(", ") + " to ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION} with openclaw doctor --fix.",
+  );
+  const doctorOutcome = await runStateMigrationDoctor();
+  if (gatewayTerminating) process.exit(0);
+  const remaining = outdatedAgentDatabases();
+  if (remaining.length === 0) {
+    logStartupPhase("state-migration", startedAt);
+    return true;
+  }
+  logStartupPhase("state-migration", startedAt, "failed");
+  publishRuntimeFailure("state-migration", "UNAVAILABLE");
+  console.error(
+    "Gateway state migration failed: openclaw doctor --fix (" + doctorOutcome + ") left " +
+      remaining.map(({ path, version }) => path + " at schema " + version).join(", ") +
+      ". OpenClaw was not started. Read the Doctor output above, fix the cause, then restart the Pod.",
+  );
+  setInterval(() => {}, 3600000);
+  return false;
+}
+`;
+
 export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
@@ -2192,6 +2308,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
+${GATEWAY_STATE_MIGRATION_HELPER}
 
 function gatewayRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
@@ -2702,6 +2819,10 @@ peerStatus = followsPeerStatus
   ? await timeStartupPhase("peer-plugin-status", waitForPeerPluginRuntimeStatus)
   : undefined;
 const started = configureGateway(peerStatus);
+// Doctor reads the configuration the Gateway starts with. Current state adds
+// no await before the spawn.
+const outdatedDatabases = outdatedAgentDatabases();
+if (outdatedDatabases.length > 0 && !(await migrateGatewayState(outdatedDatabases))) return;
 pluginResult = started.pluginResult;
 publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
 const startWorkspaceNodeId = started.workspaceNodeId;

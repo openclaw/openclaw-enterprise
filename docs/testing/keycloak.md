@@ -8,13 +8,13 @@ dependency yet. The proposed design is RFC-0019 ([#1117](https://github.com/open
 
 ## What it runs
 
-| Piece     | Source                                                                                          |
-| --------- | ----------------------------------------------------------------------------------------------- |
-| Realm     | [`tests/fixtures/keycloak/realm-oce.json`](../../tests/fixtures/keycloak/realm-oce.json)        |
-| Image pin | [`tests/fixtures/keycloak/image.json`](../../tests/fixtures/keycloak/image.json)                |
-| Server    | [`scripts/ci/keycloak.mjs`](../../scripts/ci/keycloak.mjs), started by `prepare.keycloak: true` |
-| Lane      | [`scripts/ci/test-suites/keycloak-oidc.json`](../../scripts/ci/test-suites/keycloak-oidc.json)  |
-| Tests     | [`keycloak-oidc-sign-in.test.mjs`](../../tests/integration/keycloak-oidc-sign-in.test.mjs)      |
+| Piece     | Source                                                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Realm     | [`tests/fixtures/keycloak/realm-oce.json`](../../tests/fixtures/keycloak/realm-oce.json)                                  |
+| Image pin | [`tests/fixtures/keycloak/image.json`](../../tests/fixtures/keycloak/image.json), shared with the OpenShell refresh proof |
+| Server    | [`scripts/ci/keycloak.mjs`](../../scripts/ci/keycloak.mjs), started by `prepare.keycloak: true`                           |
+| Lane      | [`scripts/ci/test-suites/keycloak-oidc.json`](../../scripts/ci/test-suites/keycloak-oidc.json)                            |
+| Tests     | [`keycloak-oidc-sign-in.test.mjs`](../../tests/integration/keycloak-oidc-sign-in.test.mjs)                                |
 
 The realm is `oce` with one confidential client, `oce-console`: authorization code
 only, PKCE `S256` required, one redirect URI and no audience mapper. Users `alice`
@@ -130,3 +130,4 @@ a line. Observed behaviour:
 
 To bump Keycloak, change `image.json` to a new 26.x digest and rerun the lane; the
 login-form selectors (`#username`, `#password`, `#kc-login`) are tied to that version.
+The Full Integration `openshell` lane's refresh proof shares the pin, so run it too.

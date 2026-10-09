@@ -35,7 +35,7 @@ const (
 // so repeating the version would only let the two drift apart on the next bump.
 // This checks the shape of an untrusted subprocess result: a relative path under
 // `openclaw/` naming a reviewed version and the profile's content digest.
-var developmentCodexProfile = regexp.MustCompile(`^openclaw/codex-[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]{64}\.json$`)
+var developmentCodexProfile = regexp.MustCompile(`^openclaw/codex-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?-[a-f0-9]{64}\.json$`)
 
 // validDevelopmentCodexSeccompResult reports whether the preparation script
 // returned a result the lifecycle can act on: either the node's RuntimeDefault

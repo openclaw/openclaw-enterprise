@@ -674,6 +674,16 @@ async function createInjectedConfiguration(fixture, namespaceId, values = {}) {
 
 test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", async () => {
   const controller = await configuredController();
+  // Before bootstrap a Preset write, whose grant check runs before its body is read, answers
+  // the same not-found as the handler would.
+  for (const [method, path] of [
+    ["POST", `/namespaces/ns_${randomUUID()}/presets`],
+    ["PATCH", `/namespaces/ns_${randomUUID()}/presets/pre_${randomUUID()}`],
+  ]) {
+    const early = await controller.request(method, path, { body: { name: "early", template: {} } });
+    assert.equal(early.status, 404, `${method}: ${JSON.stringify(early.body)}`);
+    assert.equal(early.body.error.code, "NOT_FOUND", method);
+  }
   const installation = await bootstrap(controller);
 
   const singleton = await controller.request("GET", "/installation");
@@ -1376,6 +1386,134 @@ test("Agent reads return the bound credentialSources; revision reads return only
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
   assert.deepEqual(revision.data.credentialSources, [{ sourceId: source.data.id }]);
+});
+
+test("refresh source PATCH and rotate refuse a stale refresh token and audit a failed gateway effect", async () => {
+  const fixture = await createInjectedFixture({
+    computeDriver: createReadyComputeDriver("compute-credential-refresh", {
+      async resolveSandboxNamespace(namespace) {
+        return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
+      },
+    }),
+  });
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "credential-source-refresh-audit");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const gateway = {
+    id: "credential-gateway-refresh-api",
+    capability: "credential_gateway",
+    implementation: "test-recording-gateway",
+    async listSourceTypes() {
+      return [
+        {
+          type: "oauth-user",
+          config: [{ name: "client_id", required: true }],
+          secrets: [{ name: "refresh_token", required: true, issuerRotated: true }],
+          rotation: "refresh",
+        },
+      ];
+    },
+    async registerSource() {
+      return { state: "ready" };
+    },
+    async updateSource() {
+      throw new Error("not exercised");
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    async removeSource() {},
+    async attachForRevision() {
+      throw new Error("not exercised");
+    },
+    async attachmentStatus() {
+      throw new Error("not exercised");
+    },
+    async withdraw() {
+      throw new Error("not exercised");
+    },
+  };
+  let mint = { state: "ready" };
+  const refresh = {
+    id: "credential-refresh-api",
+    capability: "credential_refresh",
+    implementation: "test-recording-refresh",
+    async configureRefresh() {
+      return { state: "pending" };
+    },
+    async rotate() {
+      return mint;
+    },
+    async refreshStatus() {
+      return mint;
+    },
+    async removeRefresh() {},
+  };
+  const sandbox = {
+    id: "sandbox-refresh-api",
+    capability: "sandbox",
+    implementation: "test-sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
+  };
+  for (const driver of [gateway, refresh, sandbox]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const secret = async () => {
+    const created = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+      body: { name: `refresh-token-${randomUUID()}`, value: "synthetic-refresh-token" },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.data.ref;
+  };
+  const source = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/credential-sources`,
+    {
+      body: {
+        name: "oauth-user",
+        type: "oauth-user",
+        config: { client_id: "occ-tools" },
+        secrets: { refresh_token: await secret() },
+      },
+    },
+  );
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources/${source.data.id}`;
+
+  // Re-sending the recorded refresh token is refused before any gateway effect.
+  const stale = await controller.request("PATCH", sourcePath, { body: {} });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.match(stale.body.error.message, /newer refresh_token.*new sign-in/);
+
+  mint = { state: "failed", failureCode: "oauth_invalid_grant", recoveryAction: "reauthorize" };
+  const rotated = await controller.request("POST", `${sourcePath}/rotate`);
+  assert.equal(rotated.status, 503, JSON.stringify(rotated.body));
+  const updated = await controller.request("PATCH", sourcePath, {
+    body: { secrets: { refresh_token: await secret() } },
+  });
+  assert.equal(updated.status, 503, JSON.stringify(updated.body));
+
+  // Both failures changed the gateway, so each is audited; the refusal changed nothing.
+  const events = fixture.auditSink.events.filter(
+    (event) => event.kind === "mutation" && event.resource.id === source.data.id,
+  );
+  assert.deepEqual(
+    events.map(({ action, outcome, reasonCode }) => [action, outcome, reasonCode]),
+    [
+      ["openclaw.credential_sources.create", "success", undefined],
+      ["openclaw.credential_sources.rotate", "failure", "CREDENTIAL_REFRESH_ROTATION_FAILED"],
+      ["openclaw.credential_sources.update", "failure", "CREDENTIAL_REFRESH_UPDATE_FAILED"],
+    ],
+  );
+  for (const event of events.slice(1)) {
+    assert.equal(event.actorId, fixture.principal.id);
+    assert.match(event.requestId, identifier("req"));
+  }
 });
 
 test("a duplicate Secret name answers 409 naming the taken Secret name", async () => {
@@ -3766,6 +3904,50 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   // `revocation` survives audit redaction, which a `tokenRevoked` key would not.
   assert.equal(deletion.details.force, true);
   assert.equal(deletion.details.revocation, "skipped");
+
+  // PostgreSQL state also reports the token's Backend binding (postgres-service-account-deletion
+  // pins the lookup). The response names only the Backend; the audit event keeps every binding
+  // ID, which redaction leaves alone because each key ends in "Id", so the token can be revoked.
+  const bound = await createServiceAccount(controller, namespace.id, "orphaned-bound-token");
+  await controller.fixture.controller.transact((unit) =>
+    unit.serviceAccounts.updateCredential(namespace.id, bound.id, {
+      kind: "access_token",
+      secretRef: { name: `account-${bound.id.slice(3)}`, key: "token" },
+    }),
+  );
+  const binding = {
+    backendId: "chatgpt",
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    externalAccountId: "user-account-bound",
+    credentialId: "key-bound",
+  };
+  const occ = controller.fixture.controller;
+  const deleteServiceAccount = occ.deleteServiceAccount;
+  occ.deleteServiceAccount = async (...args) => {
+    const deleted = await deleteServiceAccount.apply(occ, args);
+    return { ...deleted, unrevokedCredential: binding };
+  };
+  let boundForced;
+  try {
+    boundForced = await controller.request(
+      "DELETE",
+      `/namespaces/${namespace.id}/service-accounts/${bound.id}?force=true`,
+    );
+  } finally {
+    delete occ.deleteServiceAccount;
+  }
+  assert.equal(boundForced.status, 200, JSON.stringify(boundForced.body));
+  assert.deepEqual(boundForced.data, {
+    id: bound.id,
+    namespaceId: namespace.id,
+    revocation: "skipped",
+    backendId: "chatgpt",
+  });
+  const boundEvent = controller.fixture.auditSink.events.findLast(
+    (event) => event.action === "openclaw.service_accounts.delete",
+  );
+  assert.equal(boundEvent.resource.id, bound.id);
+  assert.deepEqual(boundEvent.details, { force: true, revocation: "skipped", ...binding });
 
   // An account without an issued token never needed revocation: force answers the usual 204.
   const native = await createServiceAccount(controller, namespace.id, "native");

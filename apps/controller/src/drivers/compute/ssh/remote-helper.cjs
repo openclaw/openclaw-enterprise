@@ -107,6 +107,19 @@ async function systemctl(...args) {
   return command("systemctl", args);
 }
 
+async function stopOwnedUnit(input, agent) {
+  if (verifyUnit(input, agent) === undefined) {
+    return false;
+  }
+  const unit = unitName(agent.agentId);
+  // disable removes load-path links. Make this owned file discoverable again
+  // for repeated cleanup when its configured directory is outside that path.
+  await systemctl("link", join(input.runtime.systemdUnitDirectory, unit));
+  await systemctl("stop", unit);
+  await systemctl("disable", unit);
+  return true;
+}
+
 async function userOwner(user) {
   const uid = Number((await command("id", ["-u", user])).stdout);
   const gid = Number((await command("id", ["-g", user])).stdout);
@@ -834,7 +847,7 @@ async function activate(input, agentDir, agent, current) {
     atomicWrite(unitPath, content, 0o644);
   }
   await systemctl("daemon-reload");
-  await systemctl("enable", unit);
+  await systemctl("enable", unitPath);
   if (
     !changed &&
     current?.revisionId === revision.id &&
@@ -895,10 +908,8 @@ async function removeNamespace(input, nsDir) {
     agents.push(agent);
   }
   for (const agent of agents) {
-    if (verifyUnit(input, agent) !== undefined) {
+    if (await stopOwnedUnit(input, agent)) {
       const unit = unitName(agent.agentId);
-      await systemctl("stop", unit);
-      await systemctl("disable", unit);
       fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
     }
   }
@@ -930,10 +941,8 @@ async function removeAgent(input, nsDir) {
   const agent = verifyAgent(input, agentDir);
   await verifyRuntimeIdentity(input, agent);
   verifySnapshots(input, agentDir);
-  if (verifyUnit(input, agent) !== undefined) {
+  if (await stopOwnedUnit(input, agent)) {
     const unit = unitName(agent.agentId);
-    await systemctl("stop", unit);
-    await systemctl("disable", unit);
     fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
   }
   await systemctl("daemon-reload");
@@ -1005,11 +1014,7 @@ async function run(input) {
     }
     if (input.operation === "stop-revision" || input.operation === "retire-revision") {
       if (current?.revisionId === revision.id) {
-        const unit = unitName(revision.agentId);
-        if (verifyUnit(input, agent) !== undefined) {
-          await systemctl("stop", unit);
-          await systemctl("disable", unit);
-        }
+        await stopOwnedUnit(input, agent);
         fs.unlinkSync(join(agentDir, "current"));
         fs.rmSync(join(agentDir, "served.json"), { force: true });
       }

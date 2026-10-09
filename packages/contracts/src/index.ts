@@ -55,6 +55,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "channel",
   "repo",
   "credential_gateway",
+  "credential_refresh",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -108,7 +109,12 @@ export interface OpenShellBackendDefinition {
   readonly id: string;
   readonly type: "openshell";
   readonly configuration: OpenShellBackendConfiguration;
-  readonly drivers: { readonly sandbox: string; readonly credential_gateway: string };
+  readonly drivers: {
+    readonly sandbox: string;
+    readonly credential_gateway: string;
+    /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
+    readonly credential_refresh?: string;
+  };
 }
 
 export type BackendDefinition =
@@ -295,6 +301,12 @@ export interface CredentialSourceFieldSpec {
   readonly name: string;
   readonly required: boolean;
   readonly description?: string;
+  /**
+   * The issuer may replace this value each time the gateway uses it (a rotating OAuth2 refresh
+   * token), so the gateway's copy can be newer than the Secret that supplied it. An update must
+   * reference a different Secret for the field; re-sending the recorded one would be stale.
+   */
+  readonly issuerRotated?: boolean;
 }
 
 /** One entry in a Credential Gateway implementation's catalog. */
@@ -302,7 +314,8 @@ export interface CredentialSourceType {
   readonly type: string;
   readonly config: readonly CredentialSourceFieldSpec[];
   readonly secrets: readonly CredentialSourceFieldSpec[];
-  readonly rotation: "none" | "external" | "gateway";
+  /** `refresh` types need the Backend's Credential Refresh Driver to mint their tokens. */
+  readonly rotation: "none" | "external" | "refresh";
   readonly harnessAuth?: {
     readonly modelProvider: string;
     readonly loginMode: CredentialSourceLoginMode;
@@ -1268,6 +1281,8 @@ export interface CredentialSourceInput {
 export interface CredentialSourceStatus {
   readonly state: "ready" | "pending" | "failed" | "absent";
   readonly reason?: string;
+  /** Present for a `refresh` type: the Credential Refresh Driver's view of its tokens. */
+  readonly refresh?: CredentialRefreshStatus;
 }
 
 export interface CredentialRevisionContext extends CredentialGatewayContext {
@@ -1317,7 +1332,6 @@ export interface CredentialGatewayDriver extends Driver {
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus>;
-  rotateSource(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   /** Idempotent; an already-absent source counts as removed. */
   removeSource(context: CredentialSourceContext): Promise<void>;
@@ -1333,6 +1347,42 @@ export interface CredentialGatewayDriver extends Driver {
    * resolve, `absent` when the Sandbox no longer exists, and `pending` otherwise.
    */
   withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus>;
+}
+
+export interface CredentialRefreshInput {
+  readonly config: Readonly<Record<string, string>>;
+  /** Resolved refresh material keyed by catalog field; never persisted by OCC. */
+  readonly secrets: Readonly<Record<string, string>>;
+  /** A UUID, stable per source and configuration attempt, so a replay is not applied twice. */
+  readonly requestId: string;
+}
+
+export interface CredentialRefreshStatus {
+  readonly state: "pending" | "ready" | "failed";
+  readonly expiresAt?: string;
+  readonly nextRefreshAt?: string;
+  readonly lastRefreshAt?: string;
+  /** Implementation-owned identifier, never provider-controlled text. */
+  readonly failureCode?: string;
+  readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
+}
+
+/**
+ * Mints and re-mints tokens for the paired Credential Gateway's `refresh` sources. OCC drives
+ * only setup, incident rotation, and status; the implementation refreshes before expiry.
+ */
+export interface CredentialRefreshDriver extends Driver {
+  readonly capability: "credential_refresh";
+  /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
+  configureRefresh(
+    context: CredentialSourceContext,
+    input: CredentialRefreshInput,
+  ): Promise<CredentialRefreshStatus>;
+  /** Forces one refresh; it does not revoke the previous token at the issuer. */
+  rotate(context: CredentialSourceContext, requestId: string): Promise<CredentialRefreshStatus>;
+  refreshStatus(context: CredentialSourceContext): Promise<CredentialRefreshStatus>;
+  /** Idempotent; deletes the stored refresh material. */
+  removeRefresh(context: CredentialSourceContext): Promise<void>;
 }
 
 export interface SandboxDriver extends Driver {

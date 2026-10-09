@@ -167,6 +167,11 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 
 	var installation struct {
 		Drivers struct {
+			CredentialGateway struct {
+				Configuration struct {
+					Binaries []string `yaml:"binaries"`
+				} `yaml:"configuration"`
+			} `yaml:"credential_gateway"`
 			Sandbox struct {
 				Configuration struct {
 					StartupDelayMs int `yaml:"startupDelayMs"`
@@ -198,6 +203,9 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	sandbox := installation.Drivers.Sandbox.Configuration
 	if sandbox.StartupDelayMs != 30_000 {
 		t.Fatalf("unexpected OpenShell startup delay: %d", sandbox.StartupDelayMs)
+	}
+	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{openShellCodexBinary}) {
+		t.Fatalf("unexpected OpenShell credential binary allowlist: %#v", installation.Drivers.CredentialGateway.Configuration.Binaries)
 	}
 	// Only OpenShell supervisors may use the tenant callback egress rule.
 	if len(sandbox.Gateway.NetworkPolicyResources) == 0 || !reflect.DeepEqual(

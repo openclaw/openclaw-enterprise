@@ -43,7 +43,11 @@ const backend = Object.freeze({
   drivers: Object.freeze({ service_account: "service-account-driver-conformance" }),
 });
 
-async function fixture({ selectServiceAccountDriver = true, createCredential } = {}) {
+async function fixture({
+  selectServiceAccountDriver = true,
+  createCredential,
+  configuredServiceAccountDriverId,
+} = {}) {
   const administrators = {
     namespace: ["create", "read"],
     service_account: ["create", "read", "update", "delete"],
@@ -86,6 +90,7 @@ async function fixture({ selectServiceAccountDriver = true, createCredential } =
   );
   const controller = new OpenClawController(installation, {
     backends: selectServiceAccountDriver ? [backend] : [],
+    ...(configuredServiceAccountDriverId === undefined ? {} : { configuredServiceAccountDriverId }),
   });
   // Records the account-owned token Secrets a forced deletion removes through Compute.
   const deletedCredentialSecrets = [];
@@ -408,6 +413,39 @@ test("a forced delete with a selected ServiceAccount Driver revokes the token as
   await assert.rejects(
     controller.getServiceAccount(administrator, namespace.id, account.id),
     ScopeViolationError,
+  );
+});
+
+test("force never deletes past a configured ServiceAccount Driver that is unavailable", async () => {
+  // The worker shape: a configured Driver id, but no Driver selected in this process.
+  const { controller, deletedCredentialSecrets, namespace } = await fixture({
+    selectServiceAccountDriver: false,
+    configuredServiceAccountDriverId: "service-account-driver-conformance",
+  });
+  const account = await controller.createServiceAccount(administrator, {
+    namespaceId: namespace.id,
+    name: "unavailable-driver-account",
+  });
+  await controller.transact((unit) =>
+    unit.serviceAccounts.updateCredential(namespace.id, account.id, {
+      kind: "access_token",
+      secretRef: { name: `account-${account.id.slice(3)}`, key: "token" },
+    }),
+  );
+  for (const options of [{}, { force: true }]) {
+    await assert.rejects(
+      controller.deleteServiceAccount(administrator, namespace.id, account.id, options),
+      (error) =>
+        error instanceof DependencyUnavailableError &&
+        !(error instanceof ServiceAccountDriverNotConfiguredError) &&
+        error.message === "The selected ServiceAccount Driver is unavailable.",
+      JSON.stringify(options),
+    );
+  }
+  assert.deepEqual(deletedCredentialSecrets, []);
+  assert.equal(
+    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential.kind,
+    "access_token",
   );
 });
 

@@ -107,6 +107,10 @@ RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
 RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
+# TODO: Remove this dependency pin when the selected OpenClaw source supports plugin defaults.
+COPY deploy/runtime/stock-codex-0.163.0-alpha.1-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.1-dependency-pin.patch
+RUN echo '00d44f40352fa9c5a7ae80b986eb25baf014d26f892b8849646c1922ef8c7a9c  /tmp/stock-codex-0.163.0-alpha.1-dependency-pin.patch' | sha256sum --check --strict \
+    && git apply --unidiff-zero /tmp/stock-codex-0.163.0-alpha.1-dependency-pin.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
@@ -221,7 +225,7 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
 FROM node-runtime-base AS runtime
 
 ARG TARGETARCH
-ENV OPENAI_CODEX_VERSION=0.160.0
+ENV OPENAI_CODEX_VERSION=0.163.0-alpha.1
 
 ENV NODE_ENV=production
 # Keep local npm commands from issuing unrelated background update requests.

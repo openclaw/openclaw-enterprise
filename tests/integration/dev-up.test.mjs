@@ -497,8 +497,9 @@ test("dev-up recognizes a docker command backed by Podman and uses the Podman pa
 });
 
 test("dev-up recognizes a JSON-capable Docker CLI connected to Podman", async (t) => {
-  // Podman's Docker-compatible API can provide DockerRootDir while Compose delegates to Docker
-  // Compose, so those capabilities cannot by themselves prove the server is Docker Engine.
+  // Docker CLI formatting adds Engine even when the server reports Podman Engine.
+  // The distribution-style platform, DockerRootDir and Compose availability
+  // cannot override that explicit Podman identity.
   const fixture = await createFixture(t, {
     engine: "podman",
     dockerAlias: true,
@@ -515,6 +516,74 @@ test("dev-up recognizes a JSON-capable Docker CLI connected to Podman", async (t
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Container engine: Podman/);
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
+});
+
+test("Compose dev-up refuses explicit Docker when its CLI is connected to Podman", async (t) => {
+  const fixture = await createFixture(t, {
+    engine: "podman",
+    dockerAlias: true,
+    podmanDockerApi: true,
+    podmanJsonConfig: true,
+  });
+  const keyOutput = join(fixture.directory, "podman-explicit-compose-service-key.json");
+  const result = runDevUp(["--key-output", keyOutput, "--", ...composeOptions(fixture)], {
+    ...fixture.env,
+    OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /a running Docker Engine with Docker Compose or Podman with podman-compose is required/,
+  );
+  const calls = await readJsonLines(fixture.podmanLog);
+  assert.ok(calls.some(({ args }) => args.join(" ") === "version --format {{json .Server}}"));
+  assert.equal(
+    calls.some(({ args }) => args[0] !== "version"),
+    false,
+  );
+  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
+});
+
+test("Kubernetes dev-up refuses explicit Docker when its CLI is connected to Podman", async (t) => {
+  const fixture = await createFixture(t, {
+    engine: "podman",
+    dockerAlias: true,
+    podmanDockerApi: true,
+  });
+  // These prerequisites must be discoverable, but selection must reject the
+  // server before invoking a cluster command or acquiring any state.
+  for (const name of ["k3d", "kubectl"]) {
+    await writeFile(join(fixture.directory, "bin", name), "#!/bin/sh\nexit 99\n", {
+      mode: 0o755,
+    });
+  }
+  await symlink(process.execPath, join(fixture.directory, "bin", "node"));
+  const stateDirectory = join(fixture.directory, "kubernetes-state");
+  const keyOutput = join(fixture.directory, "podman-explicit-docker-service-key.json");
+  const result = spawnSync(fixture.cli, ["dev", "up", "--key-output", keyOutput], {
+    cwd: fixture.fixtureRepository,
+    encoding: "utf8",
+    env: {
+      ...fixture.env,
+      OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
+      OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
+      OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /a running docker container engine with its Compose provider is required/,
+  );
+  assert.deepEqual(
+    (await readJsonLines(fixture.podmanLog)).map(({ args }) => args),
+    [["version", "--format", "{{json .Server}}"]],
+    "explicit Docker refusal must precede info, Compose and startup effects",
+  );
+  await assert.rejects(stat(stateDirectory), { code: "ENOENT" });
+  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
 });
 
 test("dev-up rejects the Docker Fluentd logging override when Podman is selected", async (t) => {

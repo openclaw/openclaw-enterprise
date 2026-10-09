@@ -603,10 +603,27 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values",
+		"JSON document with replacement secrets; omit to re-send the current Secret values (refused for oauth2-refresh-token: put a new sign-in's refresh token in a new Secret)",
 	)
 
-	command.AddCommand(create, list, get, update, deleteCommand)
+	rotate := &cobra.Command{
+		Use:   "rotate ID",
+		Short: "Force a refresh-type source to mint a new token",
+		Args:  idArgs(credentialSourceIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			source, err := client.RotateCredentialSource(namespace, args[0])
+			if err != nil {
+				return err
+			}
+			return app.printCredentialSource(source, false)
+		},
+	}
+
+	command.AddCommand(create, list, get, update, rotate, deleteCommand)
 	return command
 }
 

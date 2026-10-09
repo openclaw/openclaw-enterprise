@@ -410,11 +410,51 @@ jobs:
           cache: true
       - name: Set up CI tools
         run: bash scripts/ci/setup-tools.sh k3d
+      # Pulls carrying the hosted runner's built-in Docker Hub sign-in have been
+      # refused with the anonymous rate limit of addresses other users share,
+      # and that account's token endpoint has timed out (finding 973). Pull
+      # Docker Hub images through Google's public mirror instead. The mirror
+      # refuses any credentials, and the Engine forwards the runner's Docker Hub
+      # sign-in to it, so later steps use a Docker client configuration without
+      # credentials. Pinned digests are still verified, and an image the mirror
+      # lacks falls back to Docker Hub anonymously. Debug logging records which
+      # endpoint served each pull for the last step. This runs before Buildx
+      # starts its builder container, which the restart would stop.
+      - name: Pull Docker Hub images through a mirror
+        shell: bash
+        run: |
+          config=/etc/docker/daemon.json
+          current="$(sudo cat "$config" 2>/dev/null || true)"
+          [[ -n "$current" ]] || current='{}'
+          jq '. + {"registry-mirrors": ["https://mirror.gcr.io"], "debug": true}' <<<"$current" |
+            sudo tee "$config" >/dev/null
+          sudo systemctl restart docker
+          timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
+          source="${DOCKER_CONFIG:-$HOME/.docker}"
+          target="$RUNNER_TEMP/docker-config"
+          mkdir -p "$target"
+          client='{}'
+          removed=0
+          if [[ -s "$source/config.json" ]]; then
+            client="$(jq 'del(.auths, .credsStore, .credHelpers)' "$source/config.json")"
+            removed="$(jq '[.auths // {} | keys[]] | length' "$source/config.json")"
+          fi
+          printf '%s\n' "$client" >"$target/config.json"
+          if [[ -d "$source/cli-plugins" ]]; then
+            ln -s "$source/cli-plugins" "$target/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=$target" >>"$GITHUB_ENV"
+          docker info --format 'registry mirrors {{json .RegistryConfig.Mirrors}}'
+          echo "registry sign-ins removed from the Docker client configuration: $removed"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           # GitHub-hosted runners are per-job VMs; removing the builder took 8-33 s,
           # which a superseding run also waits for on cancellation.
           cleanup: false
+          # The builder container pulls base images itself, not through the engine.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - name: Enable Kubernetes bridge packet filtering
         run: |
           if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
@@ -443,6 +483,14 @@ jobs:
         run: node scripts/ci/first-agent-smoke.mjs images
       - name: Install, deploy, chat, stop and start
         run: node scripts/ci/first-agent-smoke.mjs run
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          # An empty list below proves nothing if the storage driver changed.
+          docker info --format 'driver {{.Driver}}, registry mirrors {{json .RegistryConfig.Mirrors}}'
+          sudo journalctl -u docker --no-pager -o cat |
+            grep -E 'Trying to pull|Attempting next endpoint|toomanyrequests' || true
 
   ci-required:
     name: CI Required

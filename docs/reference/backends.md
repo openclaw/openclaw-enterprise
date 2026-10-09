@@ -167,8 +167,11 @@ Its closed `configuration` accepts:
 Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
 `drivers.credential_gateway` are required and must match the selected bundled
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). One
-OpenShell Backend is supported. Composition builds one gateway client object
+[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). The
+optional `drivers.credential_refresh` member must match the selected
+[Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
+refresh state on the gateway's provider records, so the two roles share this
+Backend. One OpenShell Backend is supported. Composition builds one gateway client object
 and injects it into both members, which cache one client per resolved endpoint.
 The API and the worker each construct it, so both need the token file and gateway access.
 

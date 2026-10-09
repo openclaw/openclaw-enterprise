@@ -32,6 +32,8 @@ import type {
   Configuration,
   ConfigurationDriver,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
+  CredentialRefreshStatus,
   CredentialSource,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
@@ -683,8 +685,16 @@ export interface AgentCredentialSourceInput {
 export interface UpdateCredentialSourceInput {
   readonly namespaceId: string;
   readonly credentialSourceId: string;
-  /** Replacement references for the same fields; omit to re-send the current Secret values. */
+  /**
+   * Replacement references for the same fields; omit to re-send the current Secret values. A
+   * field the catalog marks `issuerRotated` must name a different Secret than the recorded one.
+   */
   readonly secrets?: Readonly<Record<string, SecretReference>>;
+}
+
+export interface RotateCredentialSourceInput {
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
 }
 
 export interface UpdateSecretInput {
@@ -778,6 +788,7 @@ type DriverByCapability = {
   channel: ChannelDriver;
   repo: RepoDriver;
   credential_gateway: CredentialGatewayDriver;
+  credential_refresh: CredentialRefreshDriver;
 };
 type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capability];
 
@@ -877,6 +888,57 @@ function revisionHoldsCredentialSource(
       revision.harnessAuth.sourceId === credentialSourceId) ||
     (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
   );
+}
+
+/** A name-based (version 5 layout) UUID, so a replayed registration step reuses its request ID. */
+function credentialRefreshRequestId(sourceId: string, step: "configure" | "rotate"): string {
+  const bytes = createHash("sha1")
+    .update(`openclaw.credential_source.refresh:${sourceId}:${step}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** A mint that did not produce a token is reported with the Driver's safe failure code. */
+function assertRefreshMinted(status: CredentialRefreshStatus): void {
+  if (status.state === "ready") {
+    return;
+  }
+  const code = status.failureCode === undefined ? "" : ` (${status.failureCode})`;
+  throw new DependencyUnavailableError(
+    `The Credential Refresh Driver did not mint a token${code}.`,
+  );
+}
+
+function assertCredentialGatewayHoldsSource(status: CredentialSourceStatus): void {
+  if (status.state === "failed" || status.state === "absent") {
+    throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
+  }
+}
+
+/**
+ * Refuses an update that would re-send an issuer-rotated value from the Secret it came from:
+ * the gateway may hold a newer one, and the issuer can reject the old one or revoke the grant.
+ */
+function refuseIssuerRotatedResend(
+  type: Readonly<CredentialSourceType>,
+  recorded: Readonly<Record<string, SecretReference>>,
+  next: Readonly<Record<string, SecretReference>>,
+): void {
+  for (const { name, issuerRotated } of type.secrets) {
+    if (
+      issuerRotated === true &&
+      recorded[name] !== undefined &&
+      next[name]?.id === recorded[name].id
+    ) {
+      throw new ResourceStateConflictError(
+        `The gateway may already hold a newer ${name} than the source's Secret, so the update must reference a new Secret, even if you replaced this Secret's value. Complete a new sign-in, store its ${name} in a new Secret, and update the source to reference that Secret.`,
+      );
+    }
+  }
 }
 
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
@@ -3957,7 +4019,7 @@ export class OpenClawController {
     const config = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
-    const { namespace, gateway, source, values } = await this.mutate(async (state) => {
+    const { namespace, gateway, refresh, source, values } = await this.mutate(async (state) => {
       await this.authorize(principalId, "create", {
         kind: "credential_source",
         id: input.namespaceId,
@@ -3973,6 +4035,8 @@ export class OpenClawController {
       const type = await this.credentialSourceType(selected, input.type);
       credentialSourceFieldsMatch("config", type.config, config);
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      const refreshDriver =
+        type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);
       const registering = await state.credentialSources.createCredentialSource(
         Object.freeze({
@@ -3987,7 +4051,13 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         }),
       );
-      return { namespace: locked, gateway: selected, source: registering, values: read };
+      return {
+        namespace: locked,
+        gateway: selected,
+        refresh: refreshDriver,
+        source: registering,
+        values: read,
+      };
     });
     const placed = await this.credentialNamespace(namespace);
     let status: CredentialSourceStatus;
@@ -4001,15 +4071,26 @@ export class OpenClawController {
             source,
             signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
           },
-          { type: source.type, config, secrets: values },
+          // A refresh type's secrets are issuer material, held only by the refresh Driver.
+          { type: source.type, config, secrets: refresh === undefined ? values : {} },
         ),
       );
       terminal = true;
       if (status.state === "failed" || status.state === "absent") {
         throw new DependencyUnavailableError("The Credential Gateway did not store the source.");
       }
+      if (refresh !== undefined) {
+        // A refresh type is usable only once the first token is minted. Registration happens
+        // once per source ID, so its request IDs are stable for the gateway's replay window.
+        terminal = false;
+        const minted = await this.mintFirstRefreshToken(refresh, placed, source, config, values);
+        // A definite mint outcome, even a failed one, leaves no refresh effect in flight.
+        terminal = true;
+        assertRefreshMinted(minted);
+        status = { ...status, refresh: minted };
+      }
     } catch (error) {
-      await this.abandonCredentialRegistration(placed, gateway, source, terminal);
+      await this.abandonCredentialRegistration(placed, gateway, source, terminal, refresh);
       throw error;
     }
     // A commit failure leaves the record `registering`; deleting it removes any stored copy.
@@ -4026,10 +4107,35 @@ export class OpenClawController {
     });
     if (ready === undefined) {
       // A concurrent deletion won; remove the copy this registration may have stored after it.
-      await this.abandonCredentialRegistration(placed, gateway, source, true);
+      await this.abandonCredentialRegistration(placed, gateway, source, true, refresh);
       throw new ResourceStateConflictError("The credential source changed during registration.");
     }
     return this.credentialSourceMetadata(ready, status);
+  }
+
+  /** Configures a new source's refresh material, then forces and returns the first mint. */
+  private async mintFirstRefreshToken(
+    refresh: CredentialRefreshDriver,
+    namespace: Readonly<Namespace>,
+    source: Readonly<CredentialSource>,
+    config: Readonly<Record<string, string>>,
+    secrets: Readonly<Record<string, string>>,
+  ): Promise<CredentialRefreshStatus> {
+    const context = () => ({
+      namespace,
+      source,
+      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    });
+    await this.credentialGatewayOperation(() =>
+      refresh.configureRefresh(context(), {
+        config,
+        secrets,
+        requestId: credentialRefreshRequestId(source.id, "configure"),
+      }),
+    );
+    return this.credentialGatewayOperation(() =>
+      refresh.rotate(context(), credentialRefreshRequestId(source.id, "rotate")),
+    );
   }
 
   /**
@@ -4046,9 +4152,15 @@ export class OpenClawController {
     if (Object.values(references).some((reference) => reference.namespaceId !== namespace.id)) {
       throw new SecretBindingValidationError("Credential source Secrets cannot cross Namespaces.");
     }
-    const values: Record<string, string> = {};
-    for (const [field, reference] of Object.entries(references)) {
+    for (const reference of Object.values(references)) {
       await this.authorize(principalId, "operate", reference);
+    }
+    // Locked in Secret ID order, so two updates whose sources share Secrets cannot deadlock.
+    const ordered = Object.entries(references).sort(([, left], [, right]) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+    );
+    const values: Record<string, string> = {};
+    for (const [field, reference] of ordered) {
       const secret = await state.secrets.lockSecret(namespace.id, reference.id);
       if (secret === undefined) {
         throw new ScopeViolationError("The credential source Secret is unavailable.");
@@ -4066,13 +4178,17 @@ export class OpenClawController {
   }
 
   /**
-   * Pushes current, or replacement, Secret values to the gateway copy. The gateway call runs
-   * under the source lock, like a Secret update; a failed commit leaves the gateway newer, and
-   * repeating the same request converges. Running Harness processes keep the previous value.
+   * Pushes current, or replacement, Secret values to the gateway copy. The gateway calls run
+   * under the source lock, which orders them against rotation, deletion, and Agent admission of
+   * this source; they do not hold the Namespace lock, because a refresh type's calls wait on the
+   * token issuer. A failed commit leaves the gateway newer, and repeating the same request
+   * converges. Running Harness processes keep the previous value. `failureAudit` builds the event
+   * committed on its own when the request fails after a gateway write began.
    */
   async updateCredentialSource(
     principalId: string,
     input: UpdateCredentialSourceInput,
+    failureAudit?: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
@@ -4081,12 +4197,15 @@ export class OpenClawController {
         id: input.credentialSourceId,
         namespaceId: input.namespaceId,
       });
-      const namespace = await this.lockNamespace(state, input.namespaceId);
+      const namespace = await this.exactNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace or source state.
       this.assertCredentialGatewaySelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
+      // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
+      // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
+      // this source, PostgreSQL ends the cycle by failing one request.
       const source = await state.credentialSources.lockCredentialSource(
         namespace.id,
         input.credentialSourceId,
@@ -4103,6 +4222,9 @@ export class OpenClawController {
       const type = await this.credentialSourceType(gateway, source.type);
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      if (type.rotation === "refresh") {
+        refuseIssuerRotatedResend(type, source.secrets, secretRefs);
+      }
       const values = await this.readCredentialSourceSecrets(
         state,
         principalId,
@@ -4111,18 +4233,41 @@ export class OpenClawController {
       );
       // The gateway sees Compute's runtime placement, the same Workspace as the paired Sandbox.
       const placed = await this.credentialNamespace(namespace);
-      const status = await this.credentialGatewayOperation(() =>
-        gateway.updateSource(
-          {
-            namespace: placed,
-            source,
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-          },
-          { type: source.type, config: source.config, secrets: values },
-        ),
-      );
-      if (status.state === "failed" || status.state === "absent") {
-        throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
+      const context = () => ({
+        namespace: placed,
+        source,
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      });
+      let status: CredentialSourceStatus;
+      if (type.rotation === "refresh") {
+        // A refresh type keeps no static value at the gateway: new material replaces the
+        // refresh configuration, and the next mint proves it before OCC commits the references.
+        const refresh = this.credentialRefreshDriver();
+        status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
+        assertCredentialGatewayHoldsSource(status);
+        this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_UPDATE_FAILED");
+        await this.credentialGatewayOperation(() =>
+          refresh.configureRefresh(context(), {
+            config: source.config,
+            secrets: values,
+            requestId: crypto.randomUUID(),
+          }),
+        );
+        const minted = await this.credentialGatewayOperation(() =>
+          refresh.rotate(context(), crypto.randomUUID()),
+        );
+        assertRefreshMinted(minted);
+        status = { ...status, refresh: minted };
+      } else {
+        this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_GATEWAY_UPDATE_FAILED");
+        status = await this.credentialGatewayOperation(() =>
+          gateway.updateSource(context(), {
+            type: source.type,
+            config: source.config,
+            secrets: values,
+          }),
+        );
+        assertCredentialGatewayHoldsSource(status);
       }
       const updated =
         input.secrets === undefined
@@ -4140,6 +4285,89 @@ export class OpenClawController {
   }
 
   /**
+   * Forces one refresh of a refresh-type source, for incidents such as a suspected token leak.
+   * It does not revoke the previous token at the issuer, and running Agents keep their stable
+   * placeholder, so no redeploy follows. Like an update, it holds only the source lock while the
+   * issuer answers. `failureAudit` builds the event committed on its own when the mint fails.
+   */
+  async rotateCredentialSource(
+    principalId: string,
+    input: RotateCredentialSourceInput,
+    failureAudit?: (reasonCode: string) => AuditEvent,
+  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+    this.namespaceIdentity(input.namespaceId);
+    return this.mutate(async (state) => {
+      await this.authorize(principalId, "update", {
+        kind: "credential_source",
+        id: input.credentialSourceId,
+        namespaceId: input.namespaceId,
+      });
+      const namespace = await this.exactNamespace(state, input.namespaceId);
+      // An Installation property, so it is reported before any Namespace or source state.
+      this.assertCredentialGatewaySelected();
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      const source = await state.credentialSources.lockCredentialSource(
+        namespace.id,
+        input.credentialSourceId,
+      );
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      if (source.state !== "ready") {
+        throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
+      }
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
+      const type = await this.credentialSourceType(gateway, source.type);
+      if (type.rotation !== "refresh") {
+        throw new ResourceStateConflictError(
+          "Only a refresh-type credential source can be rotated; update a static source instead.",
+        );
+      }
+      const refresh = this.credentialRefreshDriver();
+      const placed = await this.credentialNamespace(namespace);
+      const context = () => ({
+        namespace: placed,
+        source,
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      });
+      this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_ROTATION_FAILED");
+      const minted = await this.credentialGatewayOperation(() =>
+        refresh.rotate(context(), crypto.randomUUID()),
+      );
+      assertRefreshMinted(minted);
+      const status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
+      return this.credentialSourceMetadata(source, { ...status, refresh: minted });
+    });
+  }
+
+  /**
+   * A gateway write cannot roll back with OCC's transaction, so a request that fails after one
+   * began still records a failure event, in its own transaction once the request's has ended.
+   * A commit whose outcome is unknown runs no rollback, so it records neither event.
+   */
+  private auditUncommittedCredentialEffect(
+    failureAudit: ((reasonCode: string) => AuditEvent) | undefined,
+    reasonCode: string,
+  ): void {
+    if (failureAudit === undefined) {
+      return;
+    }
+    this.registerRollback(async () => {
+      try {
+        await this.transact(async (state) => {
+          await state.audit.append(failureAudit(reasonCode));
+        });
+      } catch {
+        // The request already failed; a lost failure event must not replace its error.
+      }
+    });
+  }
+
+  /**
    * Removes a failed registration's copy. The record is deleted only when the attempt is
    * terminal and removal succeeded; otherwise it stays `deleting` so DELETE can repeat removal
    * after any late gateway create.
@@ -4149,9 +4377,19 @@ export class OpenClawController {
     gateway: CredentialGatewayDriver,
     source: Readonly<CredentialSource>,
     terminal: boolean,
+    refresh?: CredentialRefreshDriver,
   ): Promise<void> {
     let removed = true;
     try {
+      if (refresh !== undefined) {
+        await this.credentialGatewayOperation(() =>
+          refresh.removeRefresh({
+            namespace,
+            source,
+            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          }),
+        );
+      }
       await this.credentialGatewayOperation(() =>
         gateway.removeSource({
           namespace,
@@ -4200,11 +4438,19 @@ export class OpenClawController {
     let status: CredentialSourceStatus;
     try {
       const gateway = this.ownedCredentialGatewayDriver(source.driverId);
-      status = await gateway.sourceStatus({
+      const context = {
         namespace: await this.credentialNamespace(namespace),
         source,
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      });
+      };
+      status = await gateway.sourceStatus(context);
+      const refresh =
+        status.state === "ready"
+          ? await this.refreshDriverForSource(gateway, source.type)
+          : undefined;
+      if (refresh !== undefined) {
+        status = { ...status, refresh: await refresh.refreshStatus(context) };
+      }
     } catch (error) {
       // After the grant and the lookup, so naming a driver change reveals nothing new.
       status = {
@@ -4292,13 +4538,16 @@ export class OpenClawController {
       return { namespace: locked, source: deleting, gateway: owner };
     });
     const placed = await this.credentialNamespace(namespace);
-    await this.credentialGatewayOperation(() =>
-      gateway.removeSource({
-        namespace: placed,
-        source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      }),
-    );
+    const context = () => ({
+      namespace: placed,
+      source,
+      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    });
+    const refresh = await this.refreshDriverForSource(gateway, source.type);
+    if (refresh !== undefined) {
+      await this.credentialGatewayOperation(() => refresh.removeRefresh(context()));
+    }
+    await this.credentialGatewayOperation(() => gateway.removeSource(context()));
     if (this.clock().getTime() < Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS) {
       throw new DependencyUnavailableError(
         "The credential source registration may still be completing; retry the deletion shortly.",
@@ -8974,6 +9223,38 @@ export class OpenClawController {
     } catch {
       throw new DependencyUnavailableError(
         "The selected Credential Gateway Driver is unavailable or does not own this source.",
+      );
+    }
+  }
+
+  /**
+   * Reading and deleting an existing source must not depend on the current catalog: a source
+   * stays observable and deletable after its type is no longer offered. An unoffered type
+   * cannot be classified, so it gets no refresh call; without the role, the gateway's own
+   * status and removal are all that is left.
+   */
+  private async refreshDriverForSource(
+    gateway: CredentialGatewayDriver,
+    type: string,
+  ): Promise<CredentialRefreshDriver | undefined> {
+    if (!this.selections.has("credential_refresh")) {
+      return undefined;
+    }
+    const catalog = await this.credentialGatewayOperation(() =>
+      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+    );
+    return catalog.some((entry) => entry.type === type && entry.rotation === "refresh")
+      ? this.credentialRefreshDriver()
+      : undefined;
+  }
+
+  /** The refresh role is selectable only on the Credential Gateway's own Backend. */
+  private credentialRefreshDriver(): CredentialRefreshDriver {
+    try {
+      return this.selectedDriver("credential_refresh");
+    } catch {
+      throw new DependencyUnavailableError(
+        "The selected Credential Refresh Driver is unavailable for this refresh-type source.",
       );
     }
   }

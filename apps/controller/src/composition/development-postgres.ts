@@ -142,6 +142,7 @@ export async function composePostgresDevelopment(
     }
     const sandboxDriver = drivers?.sandboxDriver;
     const credentialGatewayDriver = drivers?.credentialGatewayDriver;
+    const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
       options.configurationDriver ??
       ("installation" in options
@@ -257,6 +258,10 @@ export async function composePostgresDevelopment(
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
+    }
+    if (credentialRefreshDriver !== undefined) {
+      controller.registerDriver(credentialRefreshDriver);
+      controller.selectDriver("credential_refresh", credentialRefreshDriver.id);
     }
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);

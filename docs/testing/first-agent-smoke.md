@@ -74,6 +74,20 @@ resolver refuses queries. `occ dev up` therefore gives the node the runner's
 upstream resolver on Linux Docker by default, and the smoke sets nothing. See
 [Resolve node DNS failures](../guides/deploy/local-kubernetes-development.md#resolve-node-dns-failures).
 
+## Docker Hub mirror
+
+The job runs on a GitHub-hosted runner whose egress addresses other users share.
+Pulls carrying the runner's built-in Docker Hub sign-in have been refused with
+Docker Hub's anonymous rate limit. Before Buildx starts, the job points the runner's Docker
+Engine and the Buildx builder at the public `mirror.gcr.io` mirror. The mirror
+refuses any credentials, and the Engine forwards the client's Docker Hub
+sign-in to it, so later steps use a Docker client configuration without
+credentials. Pinned digests are still verified. An image the mirror lacks falls
+back to Docker Hub anonymously, which can still hit the limit. The last step
+prints which endpoint served each Engine pull; a fallback shows as
+`Attempting next endpoint`. Images that the k3d node's containerd pulls inside
+the cluster still come from their own registries.
+
 ## Limits
 
 The smoke does not prove real model compatibility, credentials, hosted search,

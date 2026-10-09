@@ -526,6 +526,33 @@
                 "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
+                  "refresh": {
+                    "additionalProperties": false,
+                    "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                    "properties": {
+                      "expiresAt": { "format": "date-time", "type": "string" },
+                      "failureCode": { "maxLength": 128, "type": "string" },
+                      "lastRefreshAt": { "format": "date-time", "type": "string" },
+                      "nextRefreshAt": { "format": "date-time", "type": "string" },
+                      "recoveryAction": {
+                        "anyOf": [
+                          { "const": "retry", "type": "string" },
+                          { "const": "reauthorize", "type": "string" },
+                          { "const": "fix_configuration", "type": "string" },
+                          { "const": "investigate", "type": "string" }
+                        ]
+                      },
+                      "state": {
+                        "anyOf": [
+                          { "const": "pending", "type": "string" },
+                          { "const": "ready", "type": "string" },
+                          { "const": "failed", "type": "string" }
+                        ]
+                      }
+                    },
+                    "required": ["state"],
+                    "type": "object"
+                  },
                   "state": {
                     "anyOf": [
                       { "const": "ready", "type": "string" },
@@ -23363,6 +23390,33 @@
                             "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
+                              "refresh": {
+                                "additionalProperties": false,
+                                "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                                "properties": {
+                                  "expiresAt": { "format": "date-time", "type": "string" },
+                                  "failureCode": { "maxLength": 128, "type": "string" },
+                                  "lastRefreshAt": { "format": "date-time", "type": "string" },
+                                  "nextRefreshAt": { "format": "date-time", "type": "string" },
+                                  "recoveryAction": {
+                                    "anyOf": [
+                                      { "const": "retry", "type": "string" },
+                                      { "const": "reauthorize", "type": "string" },
+                                      { "const": "fix_configuration", "type": "string" },
+                                      { "const": "investigate", "type": "string" }
+                                    ]
+                                  },
+                                  "state": {
+                                    "anyOf": [
+                                      { "const": "pending", "type": "string" },
+                                      { "const": "ready", "type": "string" },
+                                      { "const": "failed", "type": "string" }
+                                    ]
+                                  }
+                                },
+                                "required": ["state"],
+                                "type": "object"
+                              },
                               "state": {
                                 "anyOf": [
                                   { "const": "ready", "type": "string" },
@@ -23780,7 +23834,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+                "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
                 "properties": {
                   "secrets": {
                     "additionalProperties": {
@@ -23809,7 +23863,7 @@
               }
             }
           },
-          "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+          "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {
@@ -23884,6 +23938,87 @@
             "resourceKind": "secret",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate": {
+      "post": {
+        "description": "Requires update permission on the requested CredentialSource.",
+        "operationId": "rotateCredentialSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credentialSourceId",
+            "required": true,
+            "schema": {
+              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-13" } }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Force the Credential Refresh Driver to mint a new token for a refresh-type source",
+        "tags": ["Credential sources"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },

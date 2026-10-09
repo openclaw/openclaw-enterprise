@@ -2229,7 +2229,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
-        mutationEvent: (resource, details, authorization) => {
+        mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
             request,
@@ -2237,7 +2237,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             "mutation",
             context,
             undefined,
-            undefined,
+            failure === undefined
+              ? undefined
+              : { outcome: "failure", reasonCode: failure.reasonCode },
             undefined,
             authorization,
           );

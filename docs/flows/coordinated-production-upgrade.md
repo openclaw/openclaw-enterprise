@@ -203,7 +203,11 @@ record a verified accepted response and resume.
 
 The script polls each returned deployment through its authorized status
 operation, confirms active revision selection, and waits for all revision Pods
-to be `Running` and `Ready` on the candidate runtime digest. Embedded execution
+to be `Running` and `Ready` on the candidate runtime digest. Before OpenClaw
+starts, `GATEWAY_RUNTIME_ENTRYPOINT` runs `openclaw doctor --fix
+--non-interactive` once when an agent database uses an older schema, such as a
+2026-09-28 release Gateway's; a database still older holds the Gateway unready
+with check `state-migration`. Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway then runs read-only
 `openclaw doctor --lint --json --severity-min error`. Failures retain dispatch,
@@ -265,6 +269,8 @@ checks the exported inventory before following the recovery procedure. Empty
 ## Changelog
 
 - 2026-10-10 02:10: Require complete successful API responses before publishing the split-layout export bundle. (authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff - 0886f47d05fdeb2fa4359f4840fb77378d643bac)
+
+- 2026-10-09 21:10: Gateways migrate an older agent database with Doctor before OpenClaw starts. (fix-971)
 
 - 2026-10-09 20:10: Point the split-layout export at the split-layout upgrade page, where in-place adoption comes first. (fix-533-adopt)
 - 2026-10-07 21:20: Refuse a two-cluster upgrade before quiescence when the execution chart lacks this release's tenant grants. (fix-758)
