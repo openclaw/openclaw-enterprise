@@ -11,20 +11,11 @@ lifecycle. This page owns Kubernetes setup and operator procedures.
 
 The Driver stores values for environment delivery, transient server-side
 hosted plugin discovery, and [credential source](../credential-sources.md)
-registration. **Experimental** Codex OAuth device login keeps private provider
-state in the same backend and uses atomic compare-and-swap to fence concurrent
-completion and cancellation. Once an
-OAuth source is claimed for runtime handoff, ordinary value updates and
-compare-and-swap are rejected, so it can no longer be cancelled, only deleted;
-reconnect creates a new Secret. Hosted existing-Agent discovery uses its bound `codex_pat` Secret
-or a separate Agent-scoped OAuth login;
-Create Agent discovery can use a selected Secret. Curated discovery needs no
-Secret. Values never enter Console responses. The Driver does not issue
-credentials, share Secrets across Namespaces, keep value history, restart
-workloads after an update, roll values back, or broker per-access Secret reads.
-Native OpenClaw
-`SecretRef` handling for `env`, `file`, and `exec` configuration remains the
-gateway's responsibility.
+registration. **Experimental** Codex OAuth device login stores only a private
+Gateway handle and source reference here. Atomic compare-and-swap fences
+concurrent polling and cancellation. Provider tokens remain in the external
+credential service; no runtime handoff seals or consumes this Secret. See
+[Codex OAuth storage](kubernetes-compute/codex-oauth-storage.md).
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
 namespaces. The two-cluster profile retains separate control-cluster storage.

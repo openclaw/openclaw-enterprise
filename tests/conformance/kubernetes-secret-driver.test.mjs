@@ -4,7 +4,6 @@ import test, { mock } from "node:test";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
-  SecretConflictError,
   SecretOwnershipError,
   SecretValidationError,
 } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
@@ -435,7 +434,7 @@ test("kubernetes-secret-driver rejects malformed or oversized stored values on t
   }
 });
 
-test("kubernetes-secret-driver conditional writes preserve concurrent changes and Agent-owned credentials", async () => {
+test("kubernetes-secret-driver conditional writes preserve concurrent changes and Secret identity", async () => {
   const client = new FakeCoreV1Api();
   const nsId = namespaceId();
   const namespace = client.addNamespace(nsId);
@@ -470,16 +469,6 @@ test("kubernetes-secret-driver conditional writes preserve concurrent changes an
   const winner = results[0] ? "first-poller" : "second-poller";
   assert.equal(await driver.withValue(secret, async (value) => value), winner);
   assert.equal(client.secrets.get(key).metadata.resourceVersion, "2");
-
-  // The Agent's ownership marker fences both ordinary edits and stale conditional completion.
-  for (const phase of ["claimed", "consumed"]) {
-    const stored = client.secrets.get(key);
-    stored.metadata.annotations["openclaw.dev/oauth-phase"] = phase;
-    const before = clone(stored);
-    assert.equal(await driver.compareAndSwap(secret, winner, "stale-completion"), false);
-    await assert.rejects(driver.update(secret, "reset-login"), SecretConflictError);
-    assert.deepEqual(client.secrets.get(key), before);
-  }
 });
 
 test("kubernetes-secret-driver delete reports inaccessible backends instead of idempotent success", async () => {

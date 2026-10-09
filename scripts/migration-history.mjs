@@ -172,6 +172,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 50) {
         return "preCredentialWithdrawalRequester";
       }
+      if (receipts.length === 51) {
+        return "preCanonicalHarnessAuth";
+      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -263,6 +266,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 50) {
     return "preCredentialWithdrawalRequester";
+  }
+  if (receipts.length === 51) {
+    return "preCanonicalHarnessAuth";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

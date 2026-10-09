@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-29
-last_updated_session: 01a0eb0e-dbc1-78d1-91b0-ea91ee87c00f
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Console Agent editing and runtime requests
@@ -44,7 +44,7 @@ graph TD
     Z -->|stored| R
     Z -->|failed or uncertain| N["Show recovery; create no revision"]
     Y -->|missing after earlier revision| N
-    F -->|authentication saved| V["Confirm exact Agent Secret grant"]
+    F -->|authentication saved| V["Confirm exact credential grant"]
     V -->|confirmed| W["Reload saved draft"]
     V -->|denied or interrupted| X["Show partial save and grant-only retry"]
     X -->|binding unchanged| V
@@ -181,7 +181,7 @@ generation. The PATCH sends `{ values: updatedValues }`, adding `secretBindings`
 only for changed selections and preserving others. A rejected PATCH writes no
 new Secret grant.
 
-After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
+After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
 IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
 and asks a Namespace administrator to grant access without repeating the
@@ -197,12 +197,15 @@ describes the supported edits and their deployment boundaries.
 ### 5. Save authentication and deploy the first revision
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
-Agent before saving authentication and rejects changed bindings. After PATCH,
-`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
-grants the Agent service principal exact Secret `operate` for a direct source
-(`api_key` or `codex_pat`). It reuses or creates a role and binding through the
-signed-in actor's IAM authority. Issued accounts and runtime authentication
-skip this grant.
+Agent before saving authentication and rejects changed bindings. When changing
+the Harness source, the PATCH replaces its prior `credentialSources` entry and
+preserves unrelated entries; it does not delete the old source or revoke grants.
+After PATCH,
+`apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+grants the Agent service principal exact `operate` on the selected Secret
+(`api_key` or imported `codex_pat`) or CredentialSource. It reuses or creates a
+role and binding through the signed-in actor's IAM authority. Managed
+ServiceAccount PATs and runtime authentication skip this grant.
 
 A failed grant leaves authentication saved and freezes its controls.
 **Retry credential access** rereads the Agent, rejects changed bindings, and
@@ -235,7 +238,7 @@ and channel Secrets remain separate.
 
 On explicit submission, the browser rereads Agent and Configuration; a changed
 ID or generation requires reload. It then PATCHes selected Secret references while
-preserving other bindings, then calls `ensureSecretOperateBinding` for changed
+preserving other bindings, then calls `ensureCredentialOperateBinding` for changed
 and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
 deployment in the current view. Subsequent saves retry still-referenced pending
 grants. Picker edits and rejected PATCHes preserve that warning; only a confirmed
@@ -337,6 +340,10 @@ worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 20:35: Replace only the old Harness source binding while preserving unrelated sources. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
+
+- 2026-10-07 17:42: Trace exact CredentialSource grants alongside Secret grants after authentication saves. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 
 - 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)
 

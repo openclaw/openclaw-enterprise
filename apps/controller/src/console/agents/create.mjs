@@ -4,7 +4,7 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
@@ -412,7 +412,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { id: "agent-auth-method" },
     element("option", { value: "api_key" }, "OpenAI API key"),
     element("option", { value: "codex_pat" }, "Service Accounts"),
-    element("option", { value: "oauth" }, "ChatGPT OAuth (Experimental)"),
+    element("option", { value: "credential_source" }, "ChatGPT OAuth (Experimental)"),
   );
   authMethod.value = passwordAuth?.method ?? authDefault ?? binding?.method ?? "api_key";
   if (passwordAuth) {
@@ -504,9 +504,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
-    hint: "Sign in for this dedicated Codex Agent. You can browse plugins before deployment. Deployment transfers the login to the Agent; later plugin edits use a separate login.",
+    hint: "Sign in for this dedicated Codex Agent. The same saved login supports plugin browsing before deployment and when editing later versions.",
     onChange(source) {
-      if (authMethod.value === "oauth") {
+      if (authMethod.value === "credential_source") {
         modelCredentialSource = source;
         modelCredentialSecret = source;
         resetPluginDiscovery();
@@ -570,7 +570,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   harness.value =
     configuredHarnessId(rendered.configuration?.values) ??
     (mode.value === "dedicated" ? "codex" : "openclaw");
-  if (["codex_pat", "oauth"].includes(authMethod.value)) {
+  if (["codex_pat", "credential_source"].includes(authMethod.value)) {
     nativeProvider.value = "openai";
     harness.value = "codex";
     mode.value = "dedicated";
@@ -729,7 +729,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (
       !binding &&
       harness.value === "openclaw" &&
-      ["codex_pat", "oauth"].includes(authMethod.value)
+      ["codex_pat", "credential_source"].includes(authMethod.value)
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
@@ -812,15 +812,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (
       nativeProvider.value !== "openai" ||
       harness.value !== "codex" ||
-      !["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value)
+      !["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value)
     ) {
       return null;
     }
     const secretRef = binding?.source ?? modelCredentialSource;
+    if (secretRef?.kind === "credential_source") {
+      return { credentialSource: secretRef };
+    }
     if (secretRef?.kind === "secret") {
-      return (binding?.method ?? authMethod.value) === "oauth"
-        ? { oauthLogin: secretRef }
-        : { secretRef };
+      return { secretRef };
     }
     return apiKey.value.trim() ? { accessToken: apiKey.value } : null;
   }
@@ -837,7 +838,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
       pluginDiscoveryCredential !== null &&
-      ["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value) &&
+      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       Boolean(binding?.source ?? modelCredentialSource ?? apiKey.value.trim()),
     isPending: () => pending,
     requestBody: (body) => ({ ...discoveryCredential(), ...body }),
@@ -1197,7 +1198,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       if (!context.isCurrent()) {
         throw new Error("This view has changed. Reopen Agent creation before binding Secrets.");
       }
-      await ensureSecretOperateBinding(context, agent, secret);
+      await ensureCredentialOperateBinding(context, agent, secret);
     }
   }
   function renderChannelEditor() {
@@ -1276,8 +1277,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     channelEditor.replaceChildren(...[channels, modeWarning].filter(Boolean));
     updateControls();
   }
+  // TODO: Credential sources use the supported create-then-deploy path until guided
+  // provisioning can admit their source and Agent operate grant.
   const shouldProvision = () =>
-    mode.value === "dedicated" && provisionableExecutionModes.has(mode.value);
+    (binding?.method ?? authMethod.value) !== "credential_source" &&
+    mode.value === "dedicated" &&
+    provisionableExecutionModes.has(mode.value);
   const updateControls = () => {
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
     const planLocked =
@@ -1313,7 +1318,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
-    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
+    const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
     if (usesOAuth && !binding) {
       modelCredentialSource = oauthLogin.source;
       modelCredentialSecret = oauthLogin.source;
@@ -1369,7 +1374,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const patOption = authMethod.querySelector('[value="codex_pat"]');
     patOption.hidden = harness.value !== "codex";
     patOption.disabled = harness.value !== "codex";
-    const oauthOption = authMethod.querySelector('[value="oauth"]');
+    const oauthOption = authMethod.querySelector('[value="credential_source"]');
     oauthOption.hidden = harness.value !== "codex";
     oauthOption.disabled = harness.value !== "codex";
     credentialLabel.textContent = passwordAuth
@@ -1660,7 +1665,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     if (
-      ["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value) &&
+      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       (nativeProvider.value !== "openai" || harness.value !== "codex" || mode.value !== "dedicated")
     ) {
       feedback.textContent =
@@ -1689,9 +1694,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
+      ...(agent.credentialSources === undefined
+        ? {}
+        : { credentialSources: agent.credentialSources }),
     };
-    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
-    if (!binding && (!passwordAuth || usesOAuth) && modelCredentialSource?.kind !== "secret") {
+    const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
+    if (
+      !binding &&
+      (!passwordAuth || usesOAuth) &&
+      modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
+    ) {
       feedback.textContent = usesOAuth
         ? "Complete ChatGPT sign-in before creating the Agent."
         : "Choose a model credential Secret before creating the Agent.";
@@ -1721,7 +1733,20 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       const selectedCredentialSource =
         passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
-      body.harnessAuth = binding ?? { method: authMethod.value, source: selectedCredentialSource };
+      body.harnessAuth =
+        binding ??
+        (usesOAuth
+          ? { method: "credential_source", sourceId: selectedCredentialSource.id }
+          : { method: authMethod.value, source: selectedCredentialSource });
+      if (
+        body.harnessAuth.method === "credential_source" &&
+        !body.credentialSources?.some((source) => source.sourceId === body.harnessAuth.sourceId)
+      ) {
+        body.credentialSources = [
+          ...(body.credentialSources ?? []),
+          { sourceId: body.harnessAuth.sourceId },
+        ];
+      }
       if (shouldProvision()) {
         provisioningAttempt = {
           acknowledged: false,
@@ -1773,8 +1798,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         modelCredentialSecret ??
         presetExistingSecret ??
         (hasBoundModelCredential && binding.source.kind === "secret" ? binding.source : undefined);
-      if (modelSecret) {
-        await ensureSecretOperateBinding(context, savedAgent, modelSecret);
+      if (body.harnessAuth?.method === "credential_source") {
+        await ensureCredentialOperateBinding(context, savedAgent, {
+          kind: "credential_source",
+          namespaceId,
+          id: body.harnessAuth.sourceId,
+        });
+      } else if (modelSecret?.kind === "secret" || modelSecret?.ref?.kind === "secret") {
+        await ensureCredentialOperateBinding(context, savedAgent, modelSecret);
       }
       await grantConfigurationSecretAccess(savedAgent, stagedChannelSecrets);
       if (context.isCurrent()) {

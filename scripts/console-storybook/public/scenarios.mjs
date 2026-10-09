@@ -9,7 +9,7 @@ const candidateVersion =
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start with default Preset")];
-const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
+const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
@@ -2120,7 +2120,7 @@ export const scenarios = {
     pluginCapabilities,
     actions: oauthForm,
     description:
-      "Experimental first-deploy login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+      "Experimental login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
   },
   createOAuthPending: {
     group: "Pages/Create Agent",
@@ -2142,7 +2142,7 @@ export const scenarios = {
       "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
     steps: [
       "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
-      "Choose a model and create the Agent. Deployment is simulated; the runtime token handoff is not proved here.",
+      "Choose a model and create the Agent. Deployment is simulated; credential-service delivery is not proved here.",
     ],
   },
   createOAuthDenied: {
@@ -2183,16 +2183,15 @@ export const scenarios = {
   },
   pluginsOAuthRevision: {
     group: "Pages/Agent detail",
-    name: "Separate ChatGPT login for plugin editing (Experimental)",
+    name: "Saved ChatGPT login for plugin editing (Experimental)",
     path: `${draft}&tab=plugins`,
     deployed: true,
     auth: "oauth",
     agentPlugins: JSON.parse(pluginSelections),
     pluginCapabilities,
     pluginDiscovery,
-    actions: [click("Sign in with OAuth")],
     description:
-      "A separate configuration login enables plugin browsing while the deployed Agent retains its own credential. Saving plugin selections never replaces authentication.",
+      "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -2200,9 +2199,13 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     deployed: true,
     auth: "oauth",
-    actions: [click("Sign in with OAuth")],
+    credentialSources: [{ sourceId: "crs_demo_oauth" }, { sourceId: "crs_demo_tool" }],
     description:
-      "The current Agent login is preserved by default. A completed new login only replaces the saved source when Save authentication source is chosen; deployment remains separate.",
+      "Sign in and save a replacement explicitly. The Agent replaces its prior Harness source binding and retains unrelated tool bindings; deployment remains separate.",
+    steps: [
+      "Sign in with OAuth, wait for the simulated ready status, then Save authentication source.",
+      "Inspect the PATCH: credentialSources keeps the tool entry, removes the old Harness entry, and adds the new Harness source once.",
+    ],
   },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",

@@ -1,16 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +20,6 @@ import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
-  harnessStateRemovalScript,
   harnessWorkspacePreparationScript,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -5675,41 +5664,23 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   );
 });
 
-test("OAuth Harness authentication requires Compute-owned dedicated Codex", () => {
-  const oauth = { ...apiKeyAuth, method: "oauth" };
-  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  const configuration = { agents: { defaults: { model: "codex/gpt-5" } } };
+test("retired OAuth Harness authentication fails closed before workload preparation", () => {
   const driver = new KubernetesComputeDriver(options());
-  assert.equal(typeof driver.startHarnessDeviceAuthorization, "function");
-  assert.equal(typeof driver.pollHarnessDeviceAuthorization, "function");
-  driver.validateHarnessAuth(codex, oauth, configuration);
-  // Unsupported topologies fail at admission, before a deployment stops predecessors.
-  const sandboxDriver = {
-    id: "sandbox-openshell",
-    capability: "sandbox",
-    facets: ["networking", "filesystem", "process"],
-    provisionHarness() {},
-  };
-  const sandboxed = new KubernetesComputeDriver(options(), { sandboxDriver });
-  for (const harness of [codex, { id: "openclaw", version: "1.0.0", mode: "dedicated" }]) {
-    assert.throws(
-      () =>
-        sandboxed.validateHarnessAuth(
-          harness,
-          oauth,
-          harness.id === "codex"
-            ? configuration
-            : createHarnessConfiguration("openclaw", "gpt-4o-mini"),
-        ),
-      /OAuth requires the Compute-owned dedicated Codex Harness/,
-    );
-  }
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "codex", version: "1.0.0", mode: "dedicated" },
+        { ...apiKeyAuth, method: "oauth" },
+        { agents: { defaults: { model: "codex/gpt-5" } } },
+      ),
+    /incompatible with the selected topology/,
+  );
 });
 
 test("dedicated Codex admission rejects settings its Gateway entrypoint cannot rewrite", () => {
   // The Gateway entrypoint refuses to start on these shapes; admitting them let
   // a deployment replace a working Gateway with one that crash-looped (D201).
-  const oauth = { ...apiKeyAuth, method: "oauth" };
+  const auth = { ...apiKeyAuth, method: "codex_pat" };
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
   const base = { agents: { defaults: { model: "codex/gpt-5" } } };
   const withCodexConfig = (config) => ({ ...base, plugins: { entries: { codex: { config } } } });
@@ -5734,7 +5705,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
       },
     },
   ]) {
-    driver.validateHarnessAuth(codex, oauth, accepted);
+    driver.validateHarnessAuth(codex, auth, accepted);
   }
   for (const [rejected, message] of [
     [
@@ -5765,7 +5736,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   ]) {
     // Admission returns this message to the Configuration owner (D321).
     assert.throws(
-      () => driver.validateHarnessAuth(codex, oauth, rejected),
+      () => driver.validateHarnessAuth(codex, auth, rejected),
       (error) =>
         error instanceof ConfigurationHarnessError &&
         error.message ===
@@ -5785,7 +5756,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     ],
   ]) {
     assert.throws(
-      () => driver.validateHarnessAuth(codex, oauth, { ...base, models: { providers } }),
+      () => driver.validateHarnessAuth(codex, auth, { ...base, models: { providers } }),
       (error) => {
         assert.ok(error instanceof ConfigurationHarnessError);
         assert.equal(Array.from(error.message).length, 256, error.message);
@@ -5800,7 +5771,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   const padded = `${" ".repeat(room - 6)}OpenAI`;
   assert.throws(
     () =>
-      driver.validateHarnessAuth(codex, oauth, {
+      driver.validateHarnessAuth(codex, auth, {
         ...base,
         models: { providers: { [padded]: "stub" } },
       }),
@@ -5808,7 +5779,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   );
   assert.throws(
     () =>
-      driver.validateHarnessAuth(codex, oauth, {
+      driver.validateHarnessAuth(codex, auth, {
         ...base,
         models: { providers: { [` ${padded}`]: "stub" } },
       }),
@@ -5931,7 +5902,34 @@ test("credential-source authentication renders no model Secret and requires the 
     );
   }
 
-  const incompatible = /paired Sandbox and an OpenAI API key source/;
+  const incompatible = /paired Drivers and a matching supported OpenAI login mode/;
+  const externalSnapshot = { ...snapshot, loginMode: "chatgptAuthTokens" };
+  // External auth must match the catalog and can only reach a native Codex receiver.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        externalSnapshot,
+        revision.configuration,
+        {},
+        sourceType,
+      ),
+    incompatible,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        nativeRevision.harness,
+        externalSnapshot,
+        nativeRevision.configuration,
+        {},
+        {
+          ...sourceType,
+          harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+        },
+      ),
+    incompatible,
+  );
   assert.throws(
     () =>
       new KubernetesComputeDriver(options(), { sandboxDriver }).validateHarnessAuth(
@@ -11016,15 +11014,26 @@ test("Harness workspace preparation creates private directories and resumes an i
 });
 
 test(
-  "Harness workspace preparation moves read-only directories and removes read-only state",
+  "Harness workspace preparation moves read-only directories and reports blocked ownership",
   // Root ignores directory modes, so only a non-root run exercises these paths.
   { skip: process.getuid?.() === 0 && "root ignores directory permissions" },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "oce-harness-read-only-"));
     const run = (script) => spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
-    t.after(() => {
-      run(harnessStateRemovalScript(root));
-      return rm(root, { recursive: true, force: true });
+    t.after(async () => {
+      // Restore this fixture's deliberately restricted directories before cleanup.
+      const restore = async (path) => {
+        const info = await lstat(path);
+        if (!info.isDirectory()) {
+          return;
+        }
+        await chmod(path, 0o700);
+        for (const entry of await readdir(path)) {
+          await restore(join(path, entry));
+        }
+      };
+      await restore(root);
+      await rm(root, { recursive: true, force: true });
     });
     const prepare = () => {
       const result = run(
@@ -11079,28 +11088,6 @@ test(
     );
     assert.equal(await mode(`${root}/.workspace.kubelet-created/held`), 0o555);
     await rm(`${root}/.workspace.kubelet-created`, { recursive: true });
-
-    // State removal empties read-only directories at any depth and never follows a link.
-    const outside = `${root}/outside`;
-    await mkdir(outside);
-    await writeFile(`${outside}/kept.md`, "kept");
-    await chmod(outside, 0o555);
-    await mkdir(`${root}/codex-home/sessions/2026/10`, { recursive: true });
-    await writeFile(`${root}/codex-home/sessions/2026/10/rollout.jsonl`, "{}");
-    await mkdir(`${root}/codex-home/empty`);
-    await symlink(outside, `${root}/codex-home/link`);
-    await chmod(`${root}/codex-home/sessions/2026/10`, 0o555);
-    await chmod(`${root}/codex-home/sessions`, 0o500);
-    await chmod(`${root}/codex-home/empty`, 0o000);
-    await chmod(`${root}/codex-home`, 0o555);
-    const removal = run(harnessStateRemovalScript(`${root}/codex-home`));
-    assert.equal(removal.status, 0, removal.stderr);
-    assert.deepEqual((await readdir(root)).sort(), ["generated-images", "outside", "workspace"]);
-    assert.equal(await mode(outside), 0o555);
-    assert.equal(await readFile(`${outside}/kept.md`, "utf8"), "kept");
-    await chmod(outside, 0o700);
-    // A missing directory is not an error.
-    assert.equal(run(harnessStateRemovalScript(`${root}/codex-home`)).status, 0);
   },
 );
 
@@ -13057,6 +13044,7 @@ function workspaceSetupFixture(
   runtime = true,
   network = undefined,
   computeOptions = {},
+  driverDependencies = {},
   { adopted = false } = {},
 ) {
   const state = { ready: false, secretFailure: false, failedInitializer: false };
@@ -13080,6 +13068,7 @@ function workspaceSetupFixture(
       ...computeOptions,
     }),
     {
+      ...driverDependencies,
       nodeEnrollment: {
         async createSetup() {
           return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
@@ -13378,326 +13367,169 @@ function workspaceSetupFixture(
   return { driver, revision, namespace, objects, records, state, setup, context };
 }
 
-for (const dualCluster of [false, true]) {
-  test(`Kubernetes ${dualCluster ? "two-cluster" : "single-cluster"} OAuth handoff consumes the source before native startup and reuses private storage`, async () => {
-    const { driver, revision, namespace, objects, records, state, context } = workspaceSetupFixture(
-      false,
-      true,
-      undefined,
-      dualCluster
-        ? {
-            executionCluster: {
-              authentication: { mode: "kubeconfig", kubeconfigPath, context: "execution-cluster" },
-              harnessRouting: {
-                ...gatewayRouting,
-                gatewayName: "harnesses",
-                hostname: "harness.example.test",
-              },
-              network: {
-                dns: options().network.dns,
-                harnessEndpointCidrs: ["192.0.2.2/32"],
-                gatewayEndpointCidrs: ["192.0.2.1/32"],
-                pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
-              },
-            },
-          }
-        : {},
-    );
-    if (dualCluster) {
-      // Distinct transports reject requests sent to the wrong cluster. The production Driver
-      // must mutate the source on control while seeding and removing workloads on execution.
-      const transport = await driver.apiClients;
-      const scoped = (namespaceName) =>
-        Object.fromEntries(
-          Object.entries(transport).map(([group, methods]) => [
-            group,
-            Object.fromEntries(
-              Object.entries(methods).map(([method, invoke]) => [
-                method,
-                (...args) => {
-                  const request = args[0];
-                  const target =
-                    request?.namespace ??
-                    request?.metadata?.namespace ??
-                    request?.body?.metadata?.namespace;
-                  if (target !== undefined) {
-                    assert.equal(
-                      target,
-                      namespaceName,
-                      `${group}.${method} used the wrong cluster`,
-                    );
-                  }
-                  return invoke(...args);
-                },
-              ]),
-            ),
-          ]),
-        );
-      driver.apiClients = Promise.resolve(scoped(kubernetesGatewayNamespaceName(tenant.id)));
-      driver.executionApiClients = Promise.resolve(scoped(namespace));
-    }
-    const sourceKey = stageReadyOAuthSource(objects, revision, context);
-
-    // Only the trusted seed writer may run while OCE still holds a usable bundle.
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "claimed",
-    );
-    const bootstrap = [...objects.values()].find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("oauth-bootstrap-"),
-    );
-    assert.ok(bootstrap);
-    const seedPod = bootstrap.spec.template.spec;
-    assert.equal(seedPod.automountServiceAccountToken, false);
-    // Containment rests on the missing profile label: namespace default-deny then applies.
-    assert.equal(
-      bootstrap.spec.template.metadata.labels["openclaw.dev/network-profile"],
-      undefined,
-    );
-    assert.equal(seedPod.containers[0].securityContext.readOnlyRootFilesystem, true);
-    assert.deepEqual(seedPod.containers[0].securityContext.capabilities.drop, ["ALL"]);
-    // The idle seed writer and its init step run under tini, never as PID 1, so deleting
-    // the bootstrap Pod stops them on SIGTERM instead of waiting for SIGKILL.
-    assert.deepEqual(seedPod.containers[0].command, [...SETUP_WRAPPER_COMMAND]);
-    // The process holding the seed sees only codex-home, never the rest of the Harness claim.
-    const seedClaim = seedPod.volumes.find(({ persistentVolumeClaim }) => persistentVolumeClaim);
-    const claimMounts = seedPod.containers[0].volumeMounts.filter(
-      ({ name }) => name === seedClaim.name,
-    );
-    assert.deepEqual(claimMounts, [
-      { name: seedClaim.name, mountPath: "/auth", subPath: "codex-home" },
-    ]);
-    assert.equal(
-      seedPod.containers[0].env.find(({ name }) => name === "CODEX_HOME").value,
-      "/auth",
-    );
-    assert.match(
-      seedPod.containers[0].readinessProbe.exec.command[2],
-      /"\/auth\/\.oce-oauth\.json"/,
-    );
-    assert.equal(seedPod.containers[0].readinessProbe.httpGet, undefined);
-    // Only a credential-free init step sees the claim root, to create codex-home as uid 1000
-    // (a kubelet-created subPath is root-owned and world-writable).
-    assert.deepEqual(
-      seedPod.initContainers.map(({ name }) => name),
-      ["prepare-oauth-home"],
-    );
-    const [prepare] = seedPod.initContainers;
-    assert.deepEqual(prepare.volumeMounts, [
-      { name: seedClaim.name, mountPath: "/harness-workspace-state" },
-    ]);
-    assert.equal(prepare.env, undefined);
-    assert.deepEqual(prepare.command, [...SETUP_WRAPPER_COMMAND]);
-    assert.match(prepare.args[0], /chmodSync\(path, 0o700\)/);
-    assert.match(prepare.args[0], /isDirectory\(\) === false/);
-    assert.equal(prepare.securityContext.readOnlyRootFilesystem, true);
-    assert.deepEqual(prepare.securityContext.capabilities.drop, ["ALL"]);
-    assert.equal(
-      records.some(
-        ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
-      ),
-      false,
-    );
-
-    await assert.rejects(
-      driver.prepareRevision(
-        { ...revision, agentId: `${revision.agentId}-other` },
-        { harnessAuth: context.harnessAuth },
-      ),
-      /OAuth credentials belong to another Agent/,
-    );
-
-    // Stopping an unfinished handoff removes both seed objects but retains the claimed
-    // source, so the same login can resume without another authorization exchange.
-    await driver.stopRevision(revision);
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "claimed",
-    );
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    for (const kind of ["Deployment", "Secret"]) {
-      assert.ok(
-        [...objects.values()].some(
-          (object) => object.kind === kind && object.metadata.name.startsWith("oauth-bootstrap-"),
-        ),
-      );
-    }
-
-    // Transport reports the seed writer ready; production preparation must clear the source first.
-    state.ready = true;
-    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-    const consumed = objects.get(sourceKey);
-    const envelope = JSON.parse(Buffer.from(consumed.data.value, "base64"));
-    assert.equal(envelope.phase, "consumed");
-    assert.equal(envelope.agentId, revision.agentId);
-    assert.equal(envelope.credential, undefined);
-    assert.equal(envelope.privateState, undefined);
-    const consumeIndex = records.findIndex(
-      ({ kind, metadata }) =>
-        kind === "Secret" && metadata.annotations?.["openclaw.dev/oauth-phase"] === "consumed",
-    );
-    const launchIndex = records.findIndex(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
-    );
-    assert.ok(consumeIndex >= 0 && consumeIndex < launchIndex);
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    const harness = records[launchIndex];
-    assert.equal(
-      harness.spec.template.metadata.labels["openclaw.dev/network-profile"],
-      "broad-egress-v1",
-    );
-    const pod = harness.spec.template.spec;
-    assert.equal(
-      pod.initContainers
-        .find(({ name }) => name === "prepare-private-state")
-        .args[0].includes("codex-home"),
-      false,
-    );
-    const native = pod.containers[0];
-    assert.equal(native.env.find(({ name }) => name === "CODEX_LOGIN_MODE").value, "oauth");
-    assert.equal(
-      native.env.some(({ name }) => ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"].includes(name)),
-      false,
-    );
-    const authMount = native.volumeMounts.find(
-      ({ mountPath }) => mountPath === "/home/node/.codex",
-    );
-    assert.equal(authMount.subPath, "codex-home");
-    // OAuth keeps thread rollouts inside codex-home, which a new OAuth source empties;
-    // a separate rollout directory would outlive that reset, so it is neither mounted nor kept.
-    assert.equal(
-      native.volumeMounts.some(({ subPath }) => subPath === "codex-sessions"),
-      false,
-    );
-    assert.equal(
-      pod.initContainers
-        .find(({ name }) => name === "prepare-private-state")
-        .args[0].includes(harnessStateRemovalScript("/harness-workspace-state/codex-sessions")),
-      true,
-    );
-    const claimName = pod.volumes.find(({ name }) => name === authMount.name).persistentVolumeClaim
-      .claimName;
-    assert.equal(
-      envelope.volumeUid,
-      objects.get(`PersistentVolumeClaim:${namespace}:${claimName}`).metadata.uid,
-    );
-    const gateway = records.find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
-    );
-    assert.equal(
-      gateway.spec.template.spec.volumes.some(({ name }) => name === authMount.name),
-      false,
-    );
-
-    // A later revision has no usable OCE bundle: it selects the same durable native generation.
-    const later = { ...revision, id: `${revision.id}-next`, revision: revision.revision + 1 };
-    const previousWrites = records.length;
-    assert.equal((await driver.prepareRevision(later, context)).ready, true);
-    assert.equal(
-      records
-        .slice(previousWrites)
-        .some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    const laterHarness = records
-      .slice(previousWrites)
-      .find(({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"));
-    assert.equal(
-      laterHarness.spec.template.spec.volumes.find(({ name }) => name === authMount.name)
-        .persistentVolumeClaim.claimName,
-      claimName,
-    );
-
-    // Losing/replacing the volume must fail closed; the consumed source cannot restore stale tokens.
-    objects.get(`PersistentVolumeClaim:${namespace}:${claimName}`).metadata.uid =
-      "replacement-volume";
-    await assert.rejects(
-      driver.prepareRevision(later, context),
-      /require reconnect after storage loss/,
-    );
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-  });
-}
-
-function stageReadyOAuthSource(objects, revision, context) {
-  revision.harnessAuth = { ...apiKeyAuth, method: "oauth" };
-  context.harnessAuth = authContext(
-    revision,
-    context.harnessAuth.backendRef.namespaceName,
-  ).harnessAuth;
-  const sourceKey = `Secret:${context.harnessAuth.backendRef.namespaceName}:occ-model-key`;
-  const source = objects.get(sourceKey);
-  source.metadata.annotations = {
-    "openclaw.dev/namespace-id": tenant.id,
-    "openclaw.dev/secret-id": apiKeyAuth.source.id,
-    "openclaw.dev/secret-driver-id": apiKeyAuth.secretDriverId,
+test("external ChatGPT source preparation delivers the exact placeholder and account only to its Harness", async (t) => {
+  const account = {
+    accountId: "workspace-external",
+    planType: "enterprise",
+    userId: "user-external",
+    email: "agent@example.test",
+    isFedramp: false,
   };
-  source.data.value = Buffer.from(
-    JSON.stringify({
-      kind: "harness_device_authorization",
-      version: 1,
-      actorId: "admin",
-      namespaceId: tenant.id,
-      harnessId: "codex",
-      phase: "ready",
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      credential: JSON.stringify({
-        version: 1,
-        provider: "codex",
-        state: "ready",
-        auth: {
-          auth_mode: "chatgpt",
-          tokens: {
-            id_token: "test-id",
-            access_token: "test-access",
-            refresh_token: "test-refresh",
-          },
+  const placeholder = "openshell-placeholder:source/account-1";
+  const snapshot = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000001",
+    credentialGatewayId: "external-credential-gateway",
+    sourceType: "external-chatgpt",
+    loginMode: "chatgptAuthTokens",
+  };
+  const source = {
+    id: snapshot.sourceId,
+    namespaceId: tenant.id,
+    name: "ChatGPT connection",
+    type: snapshot.sourceType,
+    config: {},
+    secrets: {},
+    driverId: snapshot.credentialGatewayId,
+    state: "ready",
+    createdAt: tenant.createdAt,
+  };
+  const attachment = {
+    sourceId: source.id,
+    ref: "external-grant-reference",
+    externalChatgptAuth: { accessTokenPlaceholder: placeholder, ...account },
+  };
+  let attachments = [attachment];
+  const provisions = [];
+  const credentialGatewayDriver = {
+    id: snapshot.credentialGatewayId,
+    capability: "credential_gateway",
+    async listSourceTypes() {
+      return [
+        {
+          type: source.type,
+          config: [],
+          secrets: [],
+          rotation: "external",
+          harnessAuth: { modelProvider: "openai", loginMode: snapshot.loginMode },
         },
-      }),
-    }),
-  ).toString("base64");
-  return sourceKey;
-}
-
-test("Kubernetes OAuth source consumed by one Agent cannot start a second Agent", async () => {
-  const { driver, revision, objects, records, state, context } = workspaceSetupFixture(false, true);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
+      ];
+    },
+    async attachForRevision(context) {
+      assert.deepEqual(context.sources, [source]);
+      return structuredClone(attachments);
+    },
+  };
+  const sandboxDriver = {
+    id: "external-sandbox",
+    implementation: "openshell",
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "external-codex",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const { driver, revision, namespace, objects, records, state, context } = workspaceSetupFixture(
+    false,
+    true,
+    undefined,
+    {},
+    { credentialGatewayDriver, sandboxDriver },
+  );
+  revision.sandboxDriverId = sandboxDriver.id;
+  revision.harnessAuth = snapshot;
+  context.harnessAuth = { ...snapshot, source };
+  delete context.workspaceSetup;
+  // This admitted source has no model Secret available to Compute. The only
+  // credential material supplied by the selected gateway is an opaque placeholder.
+  objects.delete(`Secret:${namespace}:occ-model-key`);
   state.ready = true;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  const consumed = structuredClone(objects.get(sourceKey));
-  assert.equal(consumed.metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+  await driver.prepareRevision(revision, context);
+  await driver.prepareRevision(revision, context);
+  assert.ok(provisions.length > 0, "preparation must reach the selected Sandbox");
+  const requirements = provisions.at(-1).requirements;
+  const environment = Object.fromEntries(
+    requirements.environment.map(({ name, value }) => [name, value]),
+  );
+  assert.equal(requirements.loginMode, "chatgptAuthTokens");
+  assert.equal(environment.CODEX_ACCESS_TOKEN, placeholder);
+  assert.deepEqual(JSON.parse(environment.OCE_CODEX_CHATGPT_ACCOUNT), account);
+  assert.deepEqual(requirements.credentialAttachments, [attachment]);
+  assert.equal(
+    requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"),
+    false,
+  );
+  assert.equal(
+    requirements.environment.some(({ valueFrom }) =>
+      valueFrom?.secretKeyRef?.name.includes("harness-secrets"),
+    ),
+    false,
+  );
+  const gateways = records.filter(
+    (entry) => entry.kind === "Deployment" && entry.metadata.name.startsWith("gateway-"),
+  );
+  assert.ok(gateways.length > 0, "preparation must render the separate Agent Gateway");
+  assert.equal(JSON.stringify(gateways).includes(placeholder), false);
+  assert.equal(JSON.stringify(gateways).includes(account.accountId), false);
+  assert.equal(
+    records.some(
+      (entry) => entry.kind === "Secret" && entry.metadata.name.startsWith("harness-secrets-"),
+    ),
+    false,
+  );
 
-  // Admission does not enforce one Agent per login; preparation is the fence.
-  const otherAgentId = `${revision.agentId}-other`;
-  const other = { ...revision, agentId: otherAgentId, id: `${revision.id}-other` };
-  const writes = records.length;
-  await assert.rejects(
-    driver.prepareRevision(other, { harnessAuth: context.harnessAuth }),
-    /OAuth credentials belong to another Agent/,
-  );
-  // No Harness, seed writer, or seed Secret is created for the second Agent.
-  assert.deepEqual(
-    records
-      .slice(writes)
-      .filter(({ kind }) => kind === "Deployment" || kind === "Secret")
-      .map(({ kind, metadata }) => `${kind}/${metadata.name}`),
-    [],
-  );
-  assert.deepEqual(objects.get(sourceKey), consumed);
-  // The owning Agent keeps its generation.
-  const later = { ...revision, id: `${revision.id}-next`, revision: revision.revision + 1 };
-  assert.equal((await driver.prepareRevision(later, context)).ready, true);
+  await t.test("selects Harness authentication by source ID among multiple attachments", () => {
+    const toolAttachment = {
+      sourceId: "cs_00000000-0000-4000-8000-000000000002",
+      ref: "tool-grant-reference",
+    };
+    // Tool attachments may precede the model attachment. Only the selected
+    // Harness source supplies Codex's local authentication state.
+    const environment = driver.credentialSourceEnvironment(revision, [toolAttachment, attachment]);
+    assert.deepEqual(environment, [
+      { name: "CODEX_ACCESS_TOKEN", value: placeholder },
+      { name: "OCE_CODEX_CHATGPT_ACCOUNT", value: JSON.stringify(account) },
+    ]);
+  });
+
+  // A trusted Driver response still has to match the admitted source and
+  // receiver contract before any new Sandbox provisioning occurs.
+  for (const [name, invalid, expected] of [
+    ["missing attachment", [], /each bound source exactly once/],
+    ["duplicate attachment", [attachment, attachment], /each bound source exactly once/],
+    [
+      "foreign source",
+      [{ ...attachment, sourceId: "cs_00000000-0000-4000-8000-000000000002" }],
+      /each bound source exactly once/,
+    ],
+    [
+      "unexpected extra source",
+      [attachment, { sourceId: "cs_00000000-0000-4000-8000-000000000002", ref: "foreign-grant" }],
+      /each bound source exactly once/,
+    ],
+    ["missing account", [{ sourceId: source.id, ref: attachment.ref }], /invalid external ChatGPT/],
+    [
+      "empty account",
+      [
+        {
+          ...attachment,
+          externalChatgptAuth: { ...attachment.externalChatgptAuth, accountId: "" },
+        },
+      ],
+      /invalid external ChatGPT/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      attachments = invalid;
+      const before = provisions.length;
+      await assert.rejects(driver.prepareRevision(revision, context), expected);
+      assert.equal(provisions.length, before);
+    });
+  }
 });
 
 for (const embedded of [true, false]) {
@@ -13733,14 +13565,6 @@ for (const embedded of [true, false]) {
       assert.throws(
         () => driver.harnessRequirementsFromDeployment(harness, "api_key"),
         /cannot deliver workspace initialization/,
-      );
-      // Leaving OAuth removes the persisted personal login before the non-OAuth Harness starts.
-      const privateState = pod.initContainers.find(({ name }) => name === "prepare-private-state");
-      assert.equal(
-        privateState.args[0].includes(
-          harnessStateRemovalScript("/harness-workspace-state/codex-home"),
-        ),
-        true,
       );
     }
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
@@ -13811,6 +13635,7 @@ for (const embedded of [true, false]) {
       embedded,
       true,
       undefined,
+      {},
       {},
       { adopted: true },
     );
@@ -14390,6 +14215,47 @@ for (const method of ["api_key", "codex_pat"]) {
     );
   });
 }
+
+test("managed PAT preparation projects the account-owned token and rejects a changed owner", async () => {
+  const { driver, revision, namespace, context, objects, records } = workspaceSetupFixture(false);
+  const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
+  const secretRef = await driver.storeServiceAccountCredential({
+    namespaceId: tenant.id,
+    serviceAccountId,
+    accessToken: "at-managed-fixture",
+  });
+  revision.harnessAuth = {
+    method: "codex_pat",
+    source: { kind: "service_account", namespaceId: tenant.id, id: serviceAccountId },
+    credential: { kind: "access_token", secretRef },
+    backendBinding: {
+      backendId: "provider-chatgpt",
+      driverId: "chatgpt",
+      workspaceId: "ws_1",
+      credentialIssued: true,
+    },
+  };
+  context.harnessAuth = revision.harnessAuth;
+  await driver.prepareRevision(revision, context);
+  const source = objects.get(`Secret:${namespace}:${secretRef.name}`);
+  const material = [...objects.values()].find(
+    ({ kind, metadata }) => kind === "Secret" && metadata.name.startsWith("harness-secrets-"),
+  );
+  assert.equal(material.data.CODEX_ACCESS_TOKEN, source.data.token);
+  assert.deepEqual(Object.keys(material.data).sort(), ["CODEX_ACCESS_TOKEN", "app-server-token"]);
+
+  // Sharing the PAT login mode must retain the managed source's account ownership fence.
+  source.metadata.annotations["openclaw.dev/service-account-id"] = "another-account";
+  const before = records.length;
+  await assert.rejects(
+    driver.prepareRevision(revision, context),
+    /Refusing unowned Kubernetes Secret/,
+  );
+  assert.equal(
+    records.slice(before).some(({ kind }) => kind === "Deployment"),
+    false,
+  );
+});
 
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} stop removes the stopped revision's credential copies and snapshots`, async () => {

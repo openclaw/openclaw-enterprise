@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-10
-last_updated_session: fix-969
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent Workspace Files Flow
@@ -29,11 +29,11 @@ See [two-cluster transport](../testing/two-cluster-local.md) for CP/DP routing.
 - `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
   setup state; `apps/controller/src/worker.ts` passes it to Compute on deployment.
 
-Live access requires the Agent's private HTTPRoute and native gateway.
-Operators configure Envoy Gateway, native trust, and network restrictions through
-[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); see the
-[routing contract](../reference/gateway-routing.md) for transport, credentials,
-the default hostname and cert-manager CA, and existing issuers.
+Live access requires the Agent's private HTTPRoute and native gateway. Configure
+Envoy Gateway, trust, and network restrictions through
+[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); the
+[routing contract](../reference/gateway-routing.md) covers credentials, hostnames,
+and CAs.
 
 ## Flow
 
@@ -254,8 +254,8 @@ Remote channel menus remain deferred to [#241](https://github.com/openclaw/openc
 
 Only Harness mounts dedicated workspace, generated-image and Codex rollout
 storage. The rollouts let the Gateway resume its bound Codex thread after
-stop/start or Pod replacement; the rest of `CODEX_HOME` stays Pod-local unless
-OAuth keeps it on the claim. Codex's remote-media reader transfers reply
+stop/start or Pod replacement; the rest of `CODEX_HOME` stays Pod-local. External OAuth authentication
+uses an ephemeral placeholder and metadata, with refresh owned by the token service. Codex's remote-media reader transfers reply
 artifacts before cleanup. Embedded storage is unchanged.
 `KubernetesComputeDriver.verifyPersistentVolumeClaim` rejects RWX claims without
 mutating them. The worker stops predecessors and suppresses their maintenance
@@ -323,9 +323,8 @@ replays it. The native client closes in the operation's cleanup path.
 - A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
   reload the Console create form and resubmit. A create response alone
   does not prove runtime initialization; verify active revision and live content.
-- Structural and Driver checks do not replace
-  the [required real-workflow proof](../../specs/plans/34-agent-workspace-files-setup.md#verification)
-  for first use, retry, and redeploy.
+- First use, retry, and redeploy require
+  [real-workflow proof](../../specs/plans/34-agent-workspace-files-setup.md#verification).
 - For `503 DEPENDENCY_UNAVAILABLE`, check the Compute routing settings and key
   mount, then the Gateway, Certificate, SecurityPolicy, and HTTPRoute status.
   Check DNS/CA trust and exact NetworkPolicy peers before changing native auth.
@@ -334,9 +333,9 @@ replays it. The native client closes in the operation's cleanup path.
 - An authenticated native upgrade failure can indicate missing trusted-proxy
   configuration, a simultaneous token, a loopback real IP, or absent native
   identity scopes. Do not fix it by inventing a forwarded address.
-- [Testing](../testing/README.md) separates API conformance, Helm rendering, and the
-  real Envoy/cert-manager/native-runtime proof. A calculated URL, ready proxy,
-  or rendered chart does not establish file writes or model consumption.
+- [Testing](../testing/README.md) distinguishes fixture and runtime proof. A
+  calculated URL, ready proxy, or rendered chart does not establish file writes
+  or model consumption.
 
 ## Related docs
 
@@ -352,9 +351,13 @@ replays it. The native client closes in the operation's cleanup path.
 
 ## Changelog
 
+- 2026-10-09 20:28: Keep private workspace repair while removing retired native OAuth storage. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
+
 - 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
 
 - 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
+
+- 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
 
 - 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
 

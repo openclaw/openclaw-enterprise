@@ -1245,22 +1245,21 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
         undefined,
       ],
     ]) {
-      for (const field of ["secretRef", "oauthLogin"]) {
-        const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
-          body: { [field]: ref, ...extra },
-        });
-        const label = `${suffix || "list"} ${field}, ${description}: ${JSON.stringify(response.body)}`;
-        assert.equal(response.status, status, label);
-        assert.equal(response.body.error.code, code, label);
-        if (message !== undefined) {
-          assert.equal(response.body.error.message, message, label);
-        }
+      const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
+        body: { secretRef: ref, ...extra },
+      });
+      const label = `${suffix || "list"} secretRef, ${description}: ${JSON.stringify(response.body)}`;
+      assert.equal(response.status, status, label);
+      assert.equal(response.body.error.code, code, label);
+      if (message !== undefined) {
+        assert.equal(response.body.error.message, message, label);
       }
     }
   }
   assert.deepEqual(fixture.calls, []);
   for (const body of [
     { accessToken, secretRef: secret.ref },
+    { oauthLogin: secret.ref },
     { secretRef: secret.ref, accountId: "untrusted" },
   ]) {
     assert.equal((await fixture.request("POST", fixture.path, { body })).status, 400);

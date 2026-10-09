@@ -263,6 +263,24 @@ conformance tests cover credential source admission, provider RPC encoding, and
 Compute's credential-source rendering. None of these exercises the real
 OpenShell tools.
 
+### External ChatGPT authentication boundary
+
+`device-authorization-api.test.mjs` covers login, Agent admission, fencing,
+grants, warm discovery after session closure/expiry, and leakage through Fastify,
+OCC, IAM and storage. Gateway/provider responses are simulated. Console browser
+tests use real routes; Storybook is simulated.
+
+`kubernetes-compute.test.mjs` covers source matching, Harness-only projection and
+invalid-attachment rejection. Docker-based `codex-model-probe.test.mjs` checks
+authentication at probe/app-server startup with a substituted Codex executable;
+set its immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.
+
+[Real OAuth qualification](../reference/drivers/credential-gateway.md#external-chatgpt-authentication)
+requires native startup, inference, hosted app/MCP requests, rotation without
+restart, restart, and refusal after withdrawal. These fixtures do not prove
+refresh, injection or native token claims; the bundled real-runtime suite uses
+API keys.
+
 ### Development profile
 
 The opt-in development-profile integration installs PostgreSQL and OCE with

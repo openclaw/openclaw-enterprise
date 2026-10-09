@@ -104,13 +104,12 @@ it. A database still older afterwards holds the Gateway unready with check
 Each dedicated Agent receives a `40Gi` `ReadWriteOnce` filesystem claim
 from the default StorageClass, mounted only by its Harness:
 
-| Subpath                                        | Harness mount                        |
-| ---------------------------------------------- | ------------------------------------ |
-| `codex-home` ([OAuth](codex-oauth-storage.md)) | `/home/node/.codex`                  |
-| `workspace`                                    | `/home/node/workspace`               |
-| `generated-images`                             | `/home/node/.codex/generated_images` |
-| `codex-sessions`                               | `/home/node/.codex/sessions`         |
-| `workspace-node-<agent-hash>-<harness-hash>`   | `/home/node/.openclaw-node`          |
+| Subpath                                      | Harness mount                        |
+| -------------------------------------------- | ------------------------------------ |
+| `workspace`                                  | `/home/node/workspace`               |
+| `generated-images`                           | `/home/node/.codex/generated_images` |
+| `codex-sessions`                             | `/home/node/.codex/sessions`         |
+| `workspace-node-<agent-hash>-<harness-hash>` | `/home/node/.openclaw-node`          |
 
 The nonroot init container creates each subpath as uid 1000 with mode `0700`
 before the kubelet mounts it. Claims from the first release hold root-owned

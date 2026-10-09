@@ -2,7 +2,6 @@ import { button, element } from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
-import { createDeviceLogin } from "./device-login.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
 export const API_KEY_PLUGIN_MESSAGE =
@@ -88,21 +87,12 @@ export function renderAgentPlugins(
   let catalogCapabilityChecked = false;
   let catalogCapabilityError = false;
   const hasBoundCredential =
-    agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret";
+    agent.harnessAuth?.method === "credential_source" ||
+    (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
   const codex = configuredHarnessId(snapshot.values) === "codex";
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
   const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
-  const oauthLogin = createDeviceLogin({
-    context,
-    agentId: agent.id,
-    initial: retained?.oauthLogin,
-    hint: "Use a separate ChatGPT login to browse plugins for this version. This does not replace or refresh the deployed Agent's credential. Discard this login when you finish.",
-    onChange() {
-      discovery.reset();
-    },
-  });
-  oauthLogin.setActive(codex && agent.harnessAuth?.method === "oauth");
   const getSlackBotSecretId = () => {
     const source = snapshot.secretBindings?.SLACK_BOT_TOKEN?.source;
     return source?.kind === "secret" && source.namespaceId === context.namespaceId
@@ -113,13 +103,12 @@ export function renderAgentPlugins(
     context,
     input,
     catalogPath: `${path}/plugins`,
-    requestBody: (body) => (oauthLogin.source ? { ...body, oauthLogin: oauthLogin.source } : body),
+    requestBody: (body) => body,
     canDiscover: () =>
       codex &&
       !apiKeyAuth &&
-      (catalogCredential === "none" ||
-        (catalogCredential === "required" && (hasBoundCredential || Boolean(oauthLogin.source)))),
-    canPrefetch: () => codex && !apiKeyAuth && (hasBoundCredential || Boolean(oauthLogin.source)),
+      (catalogCredential === "none" || (catalogCredential === "required" && hasBoundCredential)),
+    canPrefetch: () => codex && !apiKeyAuth && hasBoundCredential,
     isPending: () => pending,
     unavailableMessage: () =>
       !codex
@@ -130,20 +119,16 @@ export function renderAgentPlugins(
             ? "Checking plugin catalog availability…"
             : catalogCapabilityError
               ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
-              : agent.harnessAuth?.method === "oauth"
-                ? "Use experimental ChatGPT OAuth below to browse plugins without changing the deployed Agent's login."
-                : "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+              : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
-      "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound Secret. Saved selections can still be edited.",
+      "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.",
     unsupportedMessage:
-      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs also require a saved Service Accounts token Secret under Credentials.",
+      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs also require a saved ChatGPT login or Service Accounts token Secret under Credentials.",
     availableMessage: () =>
       catalogCredential === "none"
         ? "Load the Installation's curated plugin catalog. Access and tool availability are checked separately."
-        : oauthLogin.source
-          ? "Load plugins with the separate configuration login. The deployed Agent's credential stays unchanged."
-          : "Load plugins using this Agent's saved Service Accounts token Secret. Your plugin selections stay unchanged.",
+        : "Load plugins using this Agent's saved credential. Your plugin selections stay unchanged.",
     createApproverField: (options) =>
       createSlackApproverField({
         context,
@@ -192,7 +177,15 @@ export function renderAgentPlugins(
       { className: "muted" },
       "Save selections on this Agent, then deploy a new version to apply them.",
     ),
-    oauthLogin.section,
+    ...(agent.harnessAuth?.method === "credential_source"
+      ? [
+          element(
+            "p",
+            { className: "notice" },
+            "Plugin browsing uses this Agent's saved credential source.",
+          ),
+        ]
+      : []),
     ...(apiKeyAuth ? [element("p", { className: "notice" }, API_KEY_PLUGIN_MESSAGE)] : []),
     discovery.fields.section,
     capabilitiesStatus,
@@ -204,7 +197,7 @@ export function renderAgentPlugins(
     const dirty =
       input.value !== initialText ||
       JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
-    return dirty || pending || outcomeUnknown || reloadRequired || oauthLogin.capture()
+    return dirty || pending || outcomeUnknown || reloadRequired
       ? {
           dirty,
           text: input.value,
@@ -214,7 +207,6 @@ export function renderAgentPlugins(
           baseline,
           outcomeUnknown: outcomeUnknown || pending,
           reloadRequired,
-          oauthLogin: oauthLogin.capture(),
         }
       : undefined;
   });
@@ -228,7 +220,6 @@ export function renderAgentPlugins(
     discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
     reload.hidden = !outcomeUnknown && !reloadRequired;
     discovery.fields.setDisabled(pending || outcomeUnknown || reloadRequired);
-    oauthLogin.setDisabled(pending || outcomeUnknown || reloadRequired);
     if (outcomeUnknown) {
       feedback.textContent =
         "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.";
@@ -305,9 +296,6 @@ export function renderAgentPlugins(
         pending = false;
         updateState();
         context.drafts.forget("plugins");
-        if (oauthLogin.capture()) {
-          context.drafts.track("plugins", () => ({ oauthLogin: oauthLogin.capture() }));
-        }
         onSaved();
       }
     } catch (error) {

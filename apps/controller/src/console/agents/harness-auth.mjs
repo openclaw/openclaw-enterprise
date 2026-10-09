@@ -45,8 +45,8 @@ export function harnessAuthDescription(binding) {
       ? `ChatGPT service account · ${binding.source.id}`
       : "Service Accounts · Secret configured";
   }
-  if (binding.method === "oauth") {
-    return "ChatGPT OAuth (Experimental) · Agent login configured";
+  if (binding.method === "credential_source") {
+    return "Credential source configured";
   }
   return "API key · Secret configured";
 }
@@ -58,11 +58,7 @@ export function renderHarnessAuthSummary(context, binding) {
   return element(
     "span",
     {},
-    binding.method === "api_key"
-      ? "API key · "
-      : binding.method === "oauth"
-        ? "ChatGPT OAuth (Experimental) · "
-        : "Service Accounts · ",
+    binding.method === "api_key" ? "API key · " : "Service Accounts · ",
     renderSecretReference(context, binding.source),
   );
 }
@@ -74,8 +70,14 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "API key"),
     harnessId === "codex" ? element("option", { value: "codex_pat" }, "Service Accounts") : null,
-    harnessId === "codex"
-      ? element("option", { value: "oauth" }, "ChatGPT OAuth (Experimental)")
+    harnessId === "codex" || binding?.method === "credential_source"
+      ? element(
+          "option",
+          { value: "credential_source" },
+          binding?.method === "credential_source"
+            ? "Credential source"
+            : "ChatGPT OAuth (Experimental)",
+        )
       : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     harnessId === "codex"
@@ -88,11 +90,12 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
       : (binding?.method ?? "");
   method.value = originalMethod;
   const originalSecretSource =
-    ["api_key", "codex_pat", "oauth"].includes(binding?.method) && binding.source?.kind === "secret"
+    ["api_key", "codex_pat"].includes(binding?.method) && binding.source?.kind === "secret"
       ? binding.source
       : null;
   let selectedSecretSource = originalSecretSource;
   let changedSecret = null;
+  let selectedCredentialSource = null;
   const account = element(
     "select",
     { id: "service-account-id", disabled: true },
@@ -144,16 +147,16 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     initial: draft?.oauthLogin,
     hint: "Sign in to explicitly replace this Agent's credential. Save authentication source, then deploy a new version. The deployed login stays in use until deployment.",
     onChange(source) {
-      if (method.value === "oauth") {
-        selectedSecretSource =
-          source ?? (binding?.method === "oauth" ? originalSecretSource : null);
+      if (method.value === "credential_source") {
+        selectedCredentialSource = source;
+        options.onChange?.();
       }
     },
   });
   const currentOAuth = element(
     "p",
     { className: "hint" },
-    "The Agent's current ChatGPT login is preserved unless you complete a new login and save it.",
+    "The Agent's current credential source is preserved until you select and save another authentication source.",
   );
   const accountField = element(
     "div",
@@ -192,11 +195,13 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
   function update() {
     runtimeHint.hidden = method.value !== "runtime";
     const directSecret = ["api_key", "codex_pat"].includes(method.value);
-    const usesOAuth = method.value === "oauth";
+    const usesOAuth = method.value === "credential_source" && harnessId === "codex";
+    feedback.hidden = usesOAuth;
     validationHint.hidden = usesOAuth;
     oauthLogin.setActive(usesOAuth);
     oauthLogin.setDisabled(disabled);
-    currentOAuth.hidden = !usesOAuth || binding?.method !== "oauth";
+    currentOAuth.hidden =
+      method.value !== "credential_source" || binding?.method !== "credential_source";
     secretField.hidden = !directSecret;
     secretField.querySelector("label").textContent =
       method.value === "codex_pat" ? "Service account token Secret" : "API key Secret";
@@ -211,8 +216,7 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
       changedSecret = null;
     }
     if (usesOAuth) {
-      selectedSecretSource =
-        oauthLogin.source ?? (binding?.method === "oauth" ? originalSecretSource : null);
+      selectedCredentialSource = oauthLogin.source;
     }
     secretPicker.setRequired(directSecret);
     secretPicker.setDisabled(disabled || !directSecret);
@@ -258,6 +262,7 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     capture: () => ({
       method: method.value,
       secretSource: selectedSecretSource,
+      credentialSource: selectedCredentialSource,
       changedSecret,
       account: account.value,
       oauthLogin: oauthLogin.capture(),
@@ -285,12 +290,17 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
           source: { kind: "service_account", namespaceId: context.namespaceId, id: account.value },
         };
       }
+      if (method.value === "credential_source") {
+        const sourceId =
+          selectedCredentialSource?.id ??
+          (binding?.method === "credential_source" ? binding.sourceId : undefined);
+        if (!sourceId) {
+          throw new Error("Complete ChatGPT sign-in before saving.");
+        }
+        return { method: "credential_source", sourceId };
+      }
       if (!selectedSecretSource?.id) {
-        throw new Error(
-          method.value === "oauth"
-            ? "Complete ChatGPT sign-in before saving."
-            : "Choose an OCC Secret.",
-        );
+        throw new Error("Choose an OCC Secret.");
       }
       return {
         method: method.value,

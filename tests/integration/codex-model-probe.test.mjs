@@ -23,6 +23,29 @@ const scenario = fs.readFileSync("/fixture/scenario", "utf8");
 fs.appendFileSync("/home/node/calls", JSON.stringify(args) + "\n");
 assert.equal(process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
 assert.equal(args.some((argument) => argument.includes("forced_chatgpt_workspace_id")), false);
+if (scenario === "external") {
+  // Inspect the actual launcher's output at both native process boundaries.
+  assert.equal(args.includes("login"), false);
+  assert.equal(process.env.CODEX_ACCESS_TOKEN, undefined);
+  assert.equal(process.env.OCE_CODEX_CHATGPT_ACCOUNT, undefined);
+  assert.ok(args.includes("cli_auth_credentials_store=file"));
+  const path = process.env.CODEX_HOME + "/auth.json";
+  const auth = JSON.parse(fs.readFileSync(path, "utf8"));
+  assert.equal(auth.auth_mode, "chatgptAuthTokens");
+  assert.equal(auth.tokens.access_token, "opaque-gateway-placeholder");
+  assert.equal(auth.tokens.refresh_token, "");
+  assert.equal(auth.tokens.account_id, "account-workspace");
+  assert.ok(Number.isFinite(Date.parse(auth.last_refresh)));
+  assert.equal(fs.statSync(path).mode & 0o777, 0o600);
+  const claims = JSON.parse(Buffer.from(auth.tokens.id_token.split(".")[1], "base64url"));
+  assert.equal(claims.email, "fixture@example.invalid");
+  assert.deepEqual(claims["https://api.openai.com/auth"], {
+    chatgpt_account_id: "account-workspace",
+    chatgpt_plan_type: "business",
+    chatgpt_user_id: "fixture-user",
+    chatgpt_account_is_fedramp: false,
+  });
+}
 if (args.includes("login")) {
   assert.equal(Object.hasOwn(process.env, "APP_SERVER_TOKEN"), false);
   const pat = scenario === "pat";
@@ -66,7 +89,12 @@ if (args.includes("login")) {
 }
 `;
 
-async function startLauncher(t, scenario, stopAfterTimeout = false) {
+async function startLauncher(
+  t,
+  scenario,
+  stopAfterTimeout = false,
+  auth = { CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "credential-canary" },
+) {
   const directory = await mkdtemp(join(tmpdir(), "oce-codex-probe-"));
   const name = `oce-codex-probe-${randomUUID()}`;
   let output = "";
@@ -111,12 +139,7 @@ async function startLauncher(t, scenario, stopAfterTimeout = false) {
       "CODEX_HOME=/home/node/codex",
       "-e",
       "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
-      "-e",
-      scenario === "pat" ? "CODEX_LOGIN_MODE=codex_pat" : "CODEX_LOGIN_MODE=api_key",
-      "-e",
-      scenario === "pat"
-        ? "CODEX_ACCESS_TOKEN=at-service-account-fixture"
-        : "OPENAI_API_KEY=credential-canary",
+      ...Object.entries(auth).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
       "-e",
       "OPENCLAW_HARNESS_MODEL=codex/fixture-model",
       "-e",
@@ -173,7 +196,7 @@ async function startLauncher(t, scenario, stopAfterTimeout = false) {
         const fs = require('node:fs');
         fetch('http://127.0.0.1:18791/openclaw/runtime/status').then(async response => {
           console.log(JSON.stringify({ status: await response.json(), ready: fs.existsSync('/home/node/ready'),
-            calls: fs.readFileSync('/home/node/calls', 'utf8').trim().split('\\n').map(JSON.parse),
+            calls: fs.readFileSync('/home/node/calls', 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse),
             probeDirectories: fs.readdirSync('/tmp').filter(name => name.startsWith('codex-auth-probe-')) }));
         });
       `,
@@ -197,31 +220,67 @@ async function waitFor(check, diagnostics) {
 }
 
 test(
-  "generated Codex launcher hands service-account tokens to native PAT login",
+  "generated Codex launcher hands model credentials to native processes",
   {
-    skip: image
-      ? false
-      : "Set OCC_TEST_CODEX_PROBE_IMAGE to an existing immutable Node 24+ image; requires Docker.",
-    timeout: 30000,
+    skip: image ? false : "Set OCC_TEST_CODEX_PROBE_IMAGE to an immutable Node 24+ image.",
+    timeout: 90000,
   },
   async (t) => {
     assert.match(image, /^(?:sha256:[a-f0-9]{64}|.+@sha256:[a-f0-9]{64})$/);
-    await execute("docker", ["image", "inspect", image], { timeout: 10000 });
     // Both imported and managed PATs reach this receiver; Compute tests verify
     // their distinct source ownership before selecting the same native login.
-    const launcher = await startLauncher(t, "pat");
+    await t.test("service-account token", async (t) => {
+      const launcher = await startLauncher(t, "pat", false, {
+        CODEX_LOGIN_MODE: "codex_pat",
+        CODEX_ACCESS_TOKEN: "at-service-account-fixture",
+      });
+      await waitFor(() => launcher.output().includes("APP_SERVER_STARTED"), launcher.errors);
+      const snapshot = await launcher.snapshot();
+      assert.equal(snapshot.ready, true);
+      assert.equal(snapshot.calls.length, 3);
+      assert.ok(snapshot.calls[0].includes("login"));
+      assert.ok(snapshot.calls[1].includes("exec"));
+      assert.ok(snapshot.calls[2].includes("app-server"));
+      assert.equal(snapshot.status.runtimeFailure, undefined);
+      assert.deepEqual(snapshot.probeDirectories, []);
+      assert.doesNotMatch(
+        launcher.output() + launcher.errors(),
+        /at-service-account-fixture|transport-canary/,
+      );
+    });
+
+    const auth = {
+      CODEX_LOGIN_MODE: "chatgptAuthTokens",
+      CODEX_ACCESS_TOKEN: "opaque-gateway-placeholder",
+      OCE_CODEX_CHATGPT_ACCOUNT: JSON.stringify({
+        accountId: "account-workspace",
+        planType: "business",
+        userId: "fixture-user",
+        email: "fixture@example.invalid",
+      }),
+    };
+    const launcher = await startLauncher(t, "external", false, auth);
     await waitFor(() => launcher.output().includes("APP_SERVER_STARTED"), launcher.errors);
     const snapshot = await launcher.snapshot();
     assert.equal(snapshot.ready, true);
-    assert.equal(snapshot.calls.filter((args) => args.includes("login")).length, 1);
-    assert.equal(snapshot.calls.filter((args) => args.includes("exec")).length, 1);
-    assert.equal(snapshot.calls.filter((args) => args.includes("app-server")).length, 1);
-    assert.equal(snapshot.status.runtimeFailure, undefined);
-    assert.deepEqual(snapshot.probeDirectories, []);
-    assert.doesNotMatch(
-      launcher.output() + launcher.errors(),
-      /at-service-account-fixture|transport-canary/,
+    assert.equal(snapshot.calls.length, 2);
+    assert.ok(snapshot.calls[0].includes("exec"));
+    assert.ok(snapshot.calls[1].includes("app-server"));
+    assert.doesNotMatch(launcher.output() + launcher.errors(), /opaque-gateway-placeholder/);
+
+    // Incomplete metadata must stop before any native process or readiness.
+    const invalid = await startLauncher(t, "external", false, {
+      ...auth,
+      OCE_CODEX_CHATGPT_ACCOUNT: JSON.stringify({ accountId: "account-workspace" }),
+    });
+    await waitFor(
+      () => invalid.errors().includes("Harness model authentication probe failed."),
+      invalid.errors,
     );
+    const failed = await invalid.snapshot();
+    assert.equal(failed.ready, false);
+    assert.equal(failed.status.runtimeFailure.code, "LOGIN_FAILED");
+    assert.deepEqual(failed.calls, []);
   },
 );
 

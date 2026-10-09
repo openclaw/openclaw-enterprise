@@ -94,70 +94,42 @@ inactive history alone does not retain the source indefinitely.
 
 ## Use a personal Codex login
 
-Codex OAuth login is **Experimental** and has limited, incomplete support.
-The launch MVP covers the first deployment of a new Agent on Kubernetes with
-Compute-owned dedicated Codex, no selected Sandbox or Credential Gateway, and
-fresh private credential storage. The normal deployment prerequisites still
-apply: configured runtime images, provisionable storage, provider connectivity,
-and access to the selected model. Readiness requires a successful native model probe.
+Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
+Credential Gateway with device login, warm access-token lookup and external-token
+attachments, plus its paired Sandbox's token injection. The bundled OpenShell
+catalog provides API-key sources only; operators must supply the OAuth service
+integration. There is no installation opt-in flag.
 
-Choose **ChatGPT OAuth (Experimental)** with dedicated Codex when creating an Agent. Open the
-provided verification link, enter the displayed code, and complete sign-in.
-Device authorization must be enabled for the upstream account or workspace.
-The API Pods start and complete the login at `auth.openai.com`, and the chart's
-default network policy grants them no such egress: add its IPv4 `/32` addresses to
-Helm `api.modelDiscoveryCidrs` (see
-[model discovery](../../reference/console/create-and-deploy.md#create-an-agent)) or
-allow it in your cluster's egress controls. Without it, **Sign in with OAuth**
-fails with `503 DEPENDENCY_UNAVAILABLE` ("OCC could not reach the sign-in
-service…"), at once when the connection is refused or after about 10 seconds when
-the network drops it, and the API logs a `device_authorization.start_failed`
-warning with the error code (for example `ECONNREFUSED` or `TimeoutError`).
-OCE stores the resulting native bundle in its Secret backend; the browser receives
-only a source reference. Use that login to search and select plugins, then create
-and deploy the Agent. Starting login requires Agent-create and Secret-create
-permission in the Namespace; polling and use also require exact Secret `operate`.
-Only the user who started a login can poll, cancel, or use it through these
-operations. The staged login is still an ordinary Secret: anyone with `operate`
-on it can bind or project it like any other Secret until the first deployment
-consumes it.
+1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
+   verification link, enter the displayed code, and complete sign-in.
+2. Search and select plugins using the resulting credential source, then create
+   and deploy the Agent. The Console grants the Agent service principal exact
+   source `operate` permission. Deployment still requires a successful native
+   model probe.
+3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
+   for a warm access token; the token service owns refresh. Another device login
+   is needed only when replacing or recovering the connection.
+4. To replace the connection, sign in from the credential editor, save the new
+   source, and deploy. Saving a draft does not change the running revision.
 
-The first deployment copies the bundle to the Agent's private persistent disk,
-confirms the copy, and erases OCE's credential copy before starting Codex. Codex
-then owns refresh. Later revisions preserve the selected source and reuse the
-current bundle on that disk. The Secret Driver refuses ordinary updates to a
-source once handoff starts; delete it through the Secret API when no Agent uses
-it. Its retained metadata identifies the owning Agent and storage.
+Starting requires Agent-create, Secret-create and credential-source-create in the
+Namespace, plus `operate` on the resulting session Secret and source. For an
+existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the actor
+who started a session can poll or close it. Source use has its own exact
+`credential_source:operate` authorization; it is not tied to the login session.
 
-For plugin changes on an existing Agent, connect again in the plugin editor.
-This login is scoped to that Agent and requires Agent `read`/`update` plus Secret
-permissions. It supplies discovery without changing the deployed source. Saving
-plugin selections preserves the running Agent's credential. Cancelling a login
-only discards OCE's local copy; OCE does not revoke the upstream session.
+The session Secret stores only an opaque login handle and source identity.
+Access and refresh tokens stay with the external service. A pending session uses
+the provider deadline; a completed session closes after 24 hours on its next
+access. **Close login** discards the handle without revoking the source or
+interrupting a deployed Agent. Failed and abandoned sources remain visible in
+credential-source management; delete unused sources separately and remove their
+unreferenced session Secrets. An uncertain exchange requires a new login.
 
-A pending login expires after the provider's device deadline, at most 15 minutes.
-A completed login is available in OCE for 24 hours before handoff; OCE does not
-refresh it. If discovery rejects an expired access token, start a fresh login.
-The first poll, cancel, or discovery request after expiry erases the stored
-credential bytes. A login nobody touches again keeps them, so discard abandoned
-logins, then delete their unreferenced Secrets through the normal Secret API.
-An interrupted token exchange requires a fresh login; a controller crash during
-polling can leave the old login pending until expiry.
-
-To rotate the login, or if private storage or its credential file is lost, use
-the Agent credential editor to connect again, save the new source, and deploy.
-The replacement empties the Agent's Codex home, including previous sessions and
-history, before installing the new bundle after the previous workload stops. An
-unchanged or consumed source can never reseed a bundle. Provider revocation also
-requires reconnecting. Ordinary revision changes do not need another runtime
-login. Deploying a revision with another authentication method removes the
-Codex home; switching back needs a new login.
-
-Durable token brokerage is separate work in progress. Automatic cleanup and
-replacement recovery are follow-up work; they are not
-first-deploy acceptance requirements. See the
-[known runtime limitations](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits)
-and [verification gaps](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md#device-login-verification).
+If sign-in is unavailable, check the selected Gateway's capabilities. For a
+`503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
+upstream provider. OCC does not exchange the device code directly with the
+provider. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
 
 ## Preserve administrator recovery
 

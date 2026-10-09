@@ -5,25 +5,16 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import {
+  createDeviceCredentialGateway,
+  DEVICE_ACCESS_TOKEN,
+  DEVICE_ACCOUNT_ID,
+} from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
-const accessToken = "oauth-access-private-fixture";
-const refreshToken = "oauth-refresh-private-fixture";
-const deviceId = "oauth-device-private-fixture";
-const authorizationCode = "oauth-code-private-fixture";
-const idToken = [
-  "eyJhbGciOiJSUzI1NiJ9",
-  Buffer.from(
-    JSON.stringify({
-      "https://api.openai.com/auth": { chatgpt_account_id: "workspace-fixture" },
-    }),
-  ).toString("base64url"),
-  "signature-fixture",
-].join(".");
 const plugin = {
   id: "remote-fixture",
   name: "fixture",
@@ -42,56 +33,51 @@ const plugin = {
   },
 };
 
-async function createFixture(t, { approve = async () => true, exchange = async () => {} } = {}) {
+async function createFixture(t, { logger, ...gatewayOptions } = {}) {
   const clock = createControlledClock();
   const auditSink = new InMemoryAuditSink();
   const secretDriver = createTestSecretDriver();
+  const gateway = createDeviceCredentialGateway({ now: () => clock.wallNow(), ...gatewayOptions });
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     secretDriver,
+    credentialGatewayDriver: gateway,
+    logger,
     now: () => new Date(clock.wallNow()),
+    // The existing Console fixture admits revisions without executing Compute.
+    // Selecting a Sandbox satisfies source admission, not runtime injection proof.
+    sandboxDriver: {
+      id: "device-test-sandbox",
+      capability: "sandbox",
+      implementation: "test-admission-only",
+      facets: ["networking", "filesystem", "process"],
+      async cleanup() {},
+    },
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Device login", { ready: true });
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const originalFetch = globalThis.fetch;
   const requests = [];
-  // Only provider HTTP is simulated. Fastify, session authentication, IAM, OCC,
-  // the native device protocol, and the hosted Plugin Driver run unchanged.
+  // Only the external Gateway service and catalog HTTP are simulated. Fastify,
+  // authentication, IAM, OCC, source storage, and the hosted Plugin Driver are real.
   t.mock.method(globalThis, "fetch", async (url, options) => {
     const address = new URL(url);
     if (address.hostname === "127.0.0.1") {
       return originalFetch(url, options);
     }
     requests.push(address.href);
-    if (address.href === "https://auth.openai.com/api/accounts/deviceauth/usercode") {
-      return Response.json({ device_auth_id: deviceId, user_code: "CODE-12345", interval: "5" });
-    }
-    if (address.href === "https://auth.openai.com/api/accounts/deviceauth/token") {
-      return (await approve())
-        ? Response.json({
-            authorization_code: authorizationCode,
-            code_verifier: "verifier-fixture",
-          })
-        : new Response(null, { status: 403 });
-    }
-    if (address.href === "https://auth.openai.com/oauth/token") {
-      await exchange();
-      return Response.json({
-        id_token: idToken,
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      });
-    }
     assert.equal(
       address.origin,
       "https://chatgpt.com",
-      "unexpected provider operation, including refresh or revocation",
+      "OCC must not exchange or refresh OAuth tokens",
     );
-    assert.equal(options.headers.Authorization, `Bearer ${accessToken}`);
-    assert.equal(options.headers["ChatGPT-Account-ID"], "workspace-fixture");
+    assert.equal(options.headers.Authorization, `Bearer ${DEVICE_ACCESS_TOKEN}`);
+    assert.equal(options.headers["ChatGPT-Account-ID"], DEVICE_ACCOUNT_ID);
     assert.equal(options.headers["OAI-Product-Sku"], "codex");
     if (address.pathname === "/backend-api/ps/plugins/search") {
       assert.equal(address.searchParams.get("q"), "knowledge");
@@ -122,13 +108,14 @@ async function createFixture(t, { approve = async () => true, exchange = async (
     request,
     namespace,
     secretDriver,
-    pluginDriver: driver,
+    gateway,
     auditSink,
     requests,
     responses,
     clock,
     path: `/namespaces/${namespace.id}/agents/device-authorizations`,
     pluginsPath: `/namespaces/${namespace.id}/agents/plugins`,
+    sourcesPath: `/namespaces/${namespace.id}/credential-sources`,
     async start(path = this.path, session) {
       const response = await request("POST", path, {
         body: { harnessId: "codex" },
@@ -136,29 +123,31 @@ async function createFixture(t, { approve = async () => true, exchange = async (
       });
       assert.equal(response.status, 200, JSON.stringify(response.body));
       assert.equal(response.data.status, "pending");
+      assert.equal(response.data.source, undefined, "a pending login cannot be bound to an Agent");
       return response.data;
     },
     async poll(login, path = this.path, session) {
-      return request("POST", `${path}/${login.source.id}/poll`, {
+      return request("POST", `${path}/${login.session.id}/poll`, {
         body: {},
         ...(session === undefined ? {} : { session }),
       });
     },
     async stored(login) {
-      return fixture.controller.transact((unit) =>
-        unit.secrets.findSecret(namespace.id, login.source.id),
+      const secret = await fixture.controller.transact((unit) =>
+        unit.secrets.findSecret(namespace.id, login.session.id),
       );
+      return JSON.parse(secretDriver.valueFor(secret));
     },
   };
 }
 
 function assertNoCredentials(fixture) {
   const publicOutput = JSON.stringify([fixture.responses, fixture.auditSink.events]);
-  for (const value of [accessToken, refreshToken, idToken, deviceId, authorizationCode]) {
+  for (const value of [DEVICE_ACCESS_TOKEN, "device-private-handle-"]) {
     assert.equal(
       publicOutput.includes(value),
       false,
-      "HTTP responses and audit must not expose credential material",
+      "HTTP responses and audit must not expose private credential material",
     );
   }
 }
@@ -177,75 +166,81 @@ function assertDeviceAudit(fixture, operation, agentId) {
   });
 }
 
-test("device login configures plugins and admits its opaque Secret reference in an Agent revision", async (t) => {
+async function readyLogin(fixture, path) {
+  const login = await fixture.start(path);
+  await fixture.clock.advance(5000);
+  const response = await fixture.poll(login, path);
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.data.status, "ready");
+  return response.data;
+}
+
+test("Gateway device login saves a source-backed Agent and reuses discovery after closing its login", async (t) => {
   let approved = false;
   const fixture = await createFixture(t, { approve: async () => approved });
   const login = await fixture.start();
   assertDeviceAudit(fixture, "start");
   assert.equal(login.verificationUrl, "https://auth.openai.com/codex/device");
   assert.equal(login.intervalSeconds, 5);
-  const audited = fixture.auditSink.events.length;
   assert.equal((await fixture.poll(login)).data.status, "pending");
   assert.equal(
-    fixture.requests.length,
-    1,
-    "polling before the provider interval must not call upstream",
+    fixture.gateway.calls.some((call) => call.operation === "pollDeviceAuthorization"),
+    false,
   );
+  const audited = fixture.auditSink.events.length;
   await fixture.clock.advance(5000);
   assert.equal((await fixture.poll(login)).data.status, "pending");
-  // Pending polls are not state transitions; only the start and the ready result are audited.
-  assert.equal(fixture.auditSink.events.length, audited);
+  assert.equal(
+    fixture.auditSink.events.length,
+    audited,
+    "pending polls are not audited transitions",
+  );
   approved = true;
   await fixture.clock.advance(5000);
-  const ready = await fixture.poll(login);
-  assert.equal(ready.status, 200, JSON.stringify(ready.body));
-  assert.equal(ready.data.status, "ready");
+  const ready = (await fixture.poll(login)).data;
+  assert.equal(ready.status, "ready");
+  assert.equal(ready.source.kind, "credential_source");
   assertDeviceAudit(fixture, "poll");
-  const secret = await fixture.stored(login);
-  const savedSession = JSON.parse(fixture.secretDriver.valueFor(secret));
-  const nativeAuth = JSON.parse(savedSession.credential).auth;
-  assert.deepEqual(nativeAuth.tokens, {
-    id_token: idToken,
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    account_id: "workspace-fixture",
-  });
+  const stored = await fixture.stored(login);
+  assert.equal(stored.sourceId, ready.source.id);
+  assert.equal(stored.privateState, undefined);
+  assert.equal(stored.credential, undefined);
+  assert.equal(JSON.stringify(stored).includes(DEVICE_ACCESS_TOKEN), false);
 
-  // The Plugin Driver receives the access token and identity, never the refresh token.
-  const discoveryInputs = [];
-  for (const method of ["discoverCatalog", "getCatalogPlugin"]) {
-    const original = fixture.pluginDriver[method].bind(fixture.pluginDriver);
-    t.mock.method(fixture.pluginDriver, method, (input, signal) => {
-      discoveryInputs.push(JSON.stringify(input));
-      return original(input, signal);
-    });
-  }
   const list = await fixture.request("POST", fixture.pluginsPath, {
-    body: { oauthLogin: login.source, q: "knowledge" },
+    body: { credentialSource: ready.source, q: "knowledge" },
   });
   assert.equal(list.status, 200, JSON.stringify(list.body));
   assert.equal(list.data.plugins[0].remoteId, plugin.id);
   const details = await fixture.request("POST", `${fixture.pluginsPath}/details`, {
-    body: { oauthLogin: login.source, pluginId: plugin.id },
+    body: { credentialSource: ready.source, pluginId: plugin.id },
   });
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.equal(details.data.tools[0].id, "fixture-app/search");
-  assert.equal(discoveryInputs.length, 2);
-  for (const input of discoveryInputs) {
-    assert.equal(input.includes(accessToken), true);
-    assert.equal(input.includes(refreshToken), false);
-  }
 
+  const harnessAuth = { method: "credential_source", sourceId: ready.source.id };
   const agent = await fixture.createAgent(
     fixture.namespace.id,
     "OAuth Agent",
     createHarnessConfiguration("codex", "gpt-5.1"),
     {
       executionMode: "dedicated",
-      harnessAuth: { method: "oauth", source: login.source },
+      harnessAuth,
+      credentialSources: [{ sourceId: harnessAuth.sourceId }],
     },
   );
-  fixture.grantAgentSecretOperate(agent, login.source);
+  fixture.policy.identities.push({
+    id: agent.servicePrincipalId,
+    kind: "service_principal",
+    namespaceId: agent.namespaceId,
+    agentId: agent.id,
+  });
+  grantRole(fixture.policy, agent.servicePrincipalId, {
+    id: "agent-source",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: ready.source,
+  });
   const plugins = {
     [details.data.id]: { enabled: true, tools: { "fixture-app/search": { enabled: true } } },
   };
@@ -254,77 +249,75 @@ test("device login configures plugins and admits its opaque Secret reference in 
     plugins,
   });
   const revision = await fixture.deployAgent(fixture.namespace.id, agent.id);
-  assert.deepEqual(updated.harnessAuth, { method: "oauth", source: login.source });
-  assert.deepEqual(revision.harnessAuth, { method: "oauth", source: login.source });
+  assert.deepEqual(updated.harnessAuth, harnessAuth);
+  assert.deepEqual(revision.harnessAuth, harnessAuth);
   assert.deepEqual(revision.plugins.plugins, plugins);
   fixture.responses.push(agent, updated, revision);
 
-  // The runtime's consumed tombstone is its external storage result; actual
-  // Kubernetes handoff is covered by Compute Driver tests, not this HTTP fixture.
-  await fixture.secretDriver.update(
-    secret,
-    JSON.stringify({
-      kind: "harness_device_authorization",
-      version: 1,
-      harnessId: "codex",
-      namespaceId: fixture.namespace.id,
-      agentId: agent.id,
-      phase: "consumed",
-      volumeUid: "volume-fixture",
-    }),
-  );
-  const before = fixture.requests.length;
-  const consumed = await fixture.request("POST", fixture.pluginsPath, {
-    body: { oauthLogin: login.source, q: "knowledge" },
-  });
-  assert.equal(consumed.status, 409);
+  // Closing the UI login erases only its opaque handle. The source remains usable
+  // by the saved Agent without another login, including after the handle expires.
+  const closed = await fixture.request("DELETE", `${fixture.path}/${login.session.id}`);
+  assert.equal(closed.status, 204);
+  assertDeviceAudit(fixture, "cancel");
   assert.equal((await fixture.poll(login)).status, 409);
-  assert.equal(
-    fixture.requests.length,
-    before,
-    "consumed credentials must fail before provider I/O",
+  await fixture.clock.advance(24 * 60 * 60 * 1000);
+  const saved = await fixture.request(
+    "POST",
+    `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`,
+    { body: { q: "knowledge" } },
   );
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.data.plugins[0].remoteId, plugin.id);
+  assert.equal(
+    fixture.gateway.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
+    1,
+  );
+  assert.equal(fixture.gateway.sources.get(ready.source.id), "ready");
+  assert.equal(
+    fixture.gateway.calls.some((call) => call.operation === "removeSource"),
+    false,
+  );
+  const sources = await fixture.request("GET", fixture.sourcesPath);
+  assert.equal(sources.data[0].id, ready.source.id);
+  assert.deepEqual(sources.data[0].secrets, {});
   assertNoCredentials(fixture);
 });
 
-test("device login is bound to its initiating actor, Namespace, and exact Agent scope", async (t) => {
+test("login handles are actor and Agent scoped while source discovery uses exact Namespace operate grants", async (t) => {
   const fixture = await createFixture(t);
   const account = await fixture.createAccountWithPolicy("other-actor", (principal) => {
     grantRole(fixture.policy, principal.id, {
       id: "reader-role",
-      bindingId: "reader-binding",
       namespaceId: fixture.namespace.id,
       permissions: { namespace: ["read"] },
     });
   });
   const otherSession = await fixture.signIn(account.credentials);
-  const deniedStart = await fixture.request("POST", fixture.path, {
-    session: otherSession,
-    body: { harnessId: "codex" },
-  });
-  assert.equal(deniedStart.status, 403);
-  assert.deepEqual(fixture.requests, []);
-  // Even another authorized administrator cannot operate the initiating actor's login.
+  assert.equal(
+    (
+      await fixture.request("POST", fixture.path, {
+        session: otherSession,
+        body: { harnessId: "codex" },
+      })
+    ).status,
+    403,
+  );
+  assert.deepEqual(fixture.gateway.calls, []);
   bindRole(fixture.policy, account.principal.id, {
     id: "other-admin-binding",
     roleId: fixture.policy.roles[0].id,
   });
-  const login = await fixture.start();
-  const before = fixture.requests.length;
+  const login = await readyLogin(fixture);
+  const before = fixture.gateway.calls.length;
   assert.equal((await fixture.poll(login, fixture.path, otherSession)).status, 404);
   assert.equal(
     (
-      await fixture.request("DELETE", `${fixture.path}/${login.source.id}`, {
+      await fixture.request("DELETE", `${fixture.path}/${login.session.id}`, {
         session: otherSession,
       })
     ).status,
     404,
   );
-  const deniedDiscovery = await fixture.request("POST", fixture.pluginsPath, {
-    session: otherSession,
-    body: { oauthLogin: login.source, q: "knowledge" },
-  });
-  assert.equal(deniedDiscovery.status, 404);
   const otherNamespace = await fixture.createNamespace("Other Namespace", { ready: true });
   assert.equal(
     (await fixture.poll(login, `/namespaces/${otherNamespace.id}/agents/device-authorizations`))
@@ -335,191 +328,179 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     fixture.namespace.id,
     "Exact Agent",
     createHarnessConfiguration("codex", "gpt-5.1"),
-    { executionMode: "dedicated" },
+    { executionMode: "dedicated", harnessAuth: null },
   );
   const agentPath = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/device-authorizations`;
   assert.equal((await fixture.poll(login, agentPath)).status, 404);
-
-  // An embedded Agent cannot acquire or use a Codex login even when its operator
-  // has full authority and supplies an otherwise valid login Secret reference.
   const embedded = await fixture.createAgent(
     fixture.namespace.id,
     "Embedded Agent",
     createHarnessConfiguration("openclaw", "gpt-5.1"),
-    { executionMode: "embedded" },
+    { executionMode: "embedded", harnessAuth: null },
   );
-  const embeddedPath = `/namespaces/${fixture.namespace.id}/agents/${embedded.id}`;
-  const unsupportedLogin = await fixture.request("POST", `${embeddedPath}/device-authorizations`, {
-    body: { harnessId: "codex" },
-  });
-  assert.equal(unsupportedLogin.status, 501);
-  assert.equal(unsupportedLogin.body.error.message, "Device login requires a dedicated Agent.");
-  const unsupportedDiscovery = await fixture.request("POST", `${embeddedPath}/plugins`, {
-    body: { oauthLogin: login.source, q: "knowledge" },
-  });
-  assert.equal(unsupportedDiscovery.status, 501);
-  // Another Harness is a permanent refusal, not a retryable provider outage.
-  const otherHarness = await fixture.request("POST", fixture.path, {
-    body: { harnessId: "openclaw" },
-  });
-  assert.equal(otherHarness.status, 501);
   assert.equal(
-    otherHarness.body.error.message,
-    "Device login is available only for the Codex Harness.",
+    (
+      await fixture.request(
+        "POST",
+        `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/device-authorizations`,
+        { body: { harnessId: "codex" } },
+      )
+    ).status,
+    501,
   );
-  assert.equal(fixture.requests.length, before);
+  assert.equal(
+    (await fixture.request("POST", fixture.path, { body: { harnessId: "openclaw" } })).status,
+    501,
+  );
+  assert.equal(
+    fixture.gateway.calls.length,
+    before,
+    "scope refusals must precede external operations",
+  );
 
-  const savedLogin = await fixture.start(agentPath);
-  assertDeviceAudit(fixture, "start", agent.id);
-  assert.equal((await fixture.poll(savedLogin)).status, 404);
-  await fixture.clock.advance(5000);
-  const ready = await fixture.poll(savedLogin, agentPath);
-  assert.equal(ready.status, 200, JSON.stringify(ready.body));
-  assert.equal(ready.data.status, "ready");
-  assertDeviceAudit(fixture, "poll", agent.id);
-  const discovery = await fixture.request(
-    "POST",
-    `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`,
-    { body: { oauthLogin: savedLogin.source, q: "knowledge" } },
+  // A CredentialSource is independently managed: an authorized second operator
+  // may discover with it, but cannot take over the first actor's login handle.
+  assert.equal(
+    (
+      await fixture.request("POST", fixture.pluginsPath, {
+        session: otherSession,
+        body: { credentialSource: login.source, q: "knowledge" },
+      })
+    ).status,
+    200,
   );
-  assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
-  // A login reference in another Namespace is an invalid request; a missing one stays not-found.
-  for (const [oauthLogin, status, code, message] of [
-    [
-      { ...savedLogin.source, namespaceId: `ns_${crypto.randomUUID()}` },
-      400,
-      "INVALID_REQUEST",
-      "Secret references cannot cross Namespaces.",
-    ],
-    [{ ...savedLogin.source, id: `sec_${crypto.randomUUID()}` }, 404, "NOT_FOUND", undefined],
-  ]) {
-    const refused = await fixture.request(
-      "POST",
-      `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`,
-      { body: { oauthLogin, q: "knowledge" } },
-    );
-    const label = JSON.stringify(refused.body);
-    assert.equal(refused.status, status, label);
-    assert.equal(refused.body.error.code, code, label);
-    if (message !== undefined) {
-      assert.equal(refused.body.error.message, message, label);
-    }
-  }
-  const discarded = await fixture.rawRequest("DELETE", `${agentPath}/${savedLogin.source.id}`, {
-    headers: authenticatedHeaders(await fixture.signIn(), { origin: fixture.origin }),
+  fixture.policy.bindings = fixture.policy.bindings.filter(
+    (binding) => binding.id !== "other-admin-binding",
+  );
+  grantRole(fixture.policy, account.principal.id, {
+    id: "agent-creator",
+    namespaceId: fixture.namespace.id,
+    permissions: { agent: ["create"] },
   });
-  assert.equal(discarded.response.status, 204);
+  const denied = await fixture.request("POST", fixture.pluginsPath, {
+    session: otherSession,
+    body: { credentialSource: login.source, q: "knowledge" },
+  });
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+  for (const [credentialSource, status] of [
+    [{ ...login.source, namespaceId: otherNamespace.id }, 400],
+    [{ ...login.source, id: `cs_${crypto.randomUUID()}` }, 409],
+  ]) {
+    const refused = await fixture.request("POST", fixture.pluginsPath, {
+      body: { credentialSource, q: "knowledge" },
+    });
+    assert.equal(refused.status, status, JSON.stringify(refused.body));
+  }
+  const savedLogin = await readyLogin(fixture, agentPath);
+  assertDeviceAudit(fixture, "start", agent.id);
+  assertDeviceAudit(fixture, "poll", agent.id);
+  assert.equal((await fixture.poll(savedLogin)).status, 404);
+  assert.equal(
+    (await fixture.request("DELETE", `${agentPath}/${savedLogin.session.id}`)).status,
+    204,
+  );
   assertDeviceAudit(fixture, "cancel", agent.id);
   assertNoCredentials(fixture);
 });
 
-test("one poll owns the exchange and cancellation fences its late completion without upstream revocation", async (t) => {
+test("one poll owns Gateway completion and cancellation fences its result without revoking the source", async (t) => {
   const entered = Promise.withResolvers();
   const release = Promise.withResolvers();
   t.after(() => release.resolve());
   const fixture = await createFixture(t, {
-    exchange: async () => {
+    beforePoll: async () => {
       entered.resolve();
       await release.promise;
     },
   });
   const login = await fixture.start();
+  const sourceId = (await fixture.stored(login)).sourceId;
   await fixture.clock.advance(5000);
   const first = fixture.poll(login);
   await Promise.race([
     entered.promise,
-    first.then(() => assert.fail("poll must begin its token exchange")),
+    first.then(() => assert.fail("poll must reach the Gateway")),
   ]);
   const second = await fixture.poll(login);
   assert.equal(second.status, 200);
   assert.equal(second.data.status, "pending");
-  assert.equal(fixture.requests.filter((url) => url.endsWith("/deviceauth/token")).length, 1);
-  assert.equal(fixture.requests.filter((url) => url.endsWith("/oauth/token")).length, 1);
-
-  const discarded = await fixture.rawRequest("DELETE", `${fixture.path}/${login.source.id}`, {
-    headers: authenticatedHeaders(await fixture.signIn(), { origin: fixture.origin }),
-  });
-  assert.equal(discarded.response.status, 204);
-  assert.equal(discarded.text, "");
-  assertDeviceAudit(fixture, "cancel");
+  assert.equal(
+    fixture.gateway.calls.filter((call) => call.operation === "pollDeviceAuthorization").length,
+    1,
+  );
+  assert.equal(
+    (await fixture.request("DELETE", `${fixture.path}/${login.session.id}`)).status,
+    204,
+  );
   release.resolve();
-  const late = await first;
-  assert.equal(late.status, 409);
-  const saved = JSON.parse(fixture.secretDriver.valueFor(await fixture.stored(login)));
-  assert.equal(saved.phase, "cancelled");
-  assert.equal(saved.credential, undefined);
-  assert.equal(saved.privateState, undefined);
+  assert.equal((await first).status, 409);
+  const stored = await fixture.stored(login);
+  assert.equal(stored.phase, "cancelled");
+  assert.equal(stored.privateState, undefined);
   assert.equal((await fixture.poll(login)).status, 409);
-  const discovery = await fixture.request("POST", fixture.pluginsPath, {
-    body: { oauthLogin: login.source, q: "knowledge" },
-  });
-  assert.equal(discovery.status, 409);
   assert.equal(
-    fixture.requests.length,
-    3,
-    "discarding a login must neither refresh nor revoke its upstream session",
+    fixture.gateway.sources.get(sourceId),
+    "ready",
+    "external completion remains managed after its UI handle is cancelled",
   );
+  assert.equal(
+    fixture.gateway.calls.some((call) => call.operation === "removeSource"),
+    false,
+  );
+  assert.equal((await fixture.request("GET", fixture.sourcesPath)).data[0].id, sourceId);
   assertNoCredentials(fixture);
 });
 
-test("an expired device login erases its provider material when next touched", async (t) => {
+test("expiry closes the login handle without removing the ready source or its discovery", async (t) => {
   const fixture = await createFixture(t);
-  const login = await fixture.start();
-  const sealed = await fixture.start();
-  await fixture.clock.advance(5000);
-  assert.equal((await fixture.poll(login)).data.status, "ready");
-  assert.equal((await fixture.poll(sealed)).data.status, "ready");
+  const login = await readyLogin(fixture);
   await fixture.clock.advance(24 * 60 * 60 * 1000);
-
   assert.equal((await fixture.poll(login)).status, 409);
-  const erased = JSON.parse(fixture.secretDriver.valueFor(await fixture.stored(login)));
-  assert.equal(erased.phase, "cancelled");
-  assert.equal(erased.credential, undefined);
-  assert.equal(erased.privateState, undefined);
+  const stored = await fixture.stored(login);
+  assert.equal(stored.phase, "cancelled");
+  assert.equal(stored.privateState, undefined);
   const discovery = await fixture.request("POST", fixture.pluginsPath, {
-    body: { oauthLogin: login.source, q: "knowledge" },
+    body: { credentialSource: login.source, q: "knowledge" },
   });
-  assert.equal(discovery.status, 409);
-  const discarded = await fixture.rawRequest("DELETE", `${fixture.path}/${login.source.id}`, {
-    headers: authenticatedHeaders(await fixture.signIn(), { origin: fixture.origin }),
-  });
-  assert.equal(discarded.response.status, 204);
-
-  // A source the runtime has sealed refuses the swap; it stays unusable and unchanged here.
-  const before = fixture.secretDriver.valueFor(await fixture.stored(sealed));
-  t.mock.method(fixture.secretDriver, "compareAndSwap", async () => false);
-  assert.equal((await fixture.poll(sealed)).status, 409);
-  assert.equal(fixture.secretDriver.valueFor(await fixture.stored(sealed)), before);
+  assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
+  // Explicit source deletion, unlike session closure, invokes external removal.
+  assert.equal(
+    (await fixture.request("DELETE", `${fixture.sourcesPath}/${login.source.id}`)).status,
+    204,
+  );
+  assert.equal(fixture.gateway.sources.has(login.source.id), false);
+  assert.equal(
+    (
+      await fixture.request("POST", fixture.pluginsPath, {
+        body: { credentialSource: login.source, q: "knowledge" },
+      })
+    ).status,
+    409,
+  );
   assertNoCredentials(fixture);
 });
 
-test("device login names the Driver that cannot hold a login session", async (t) => {
+test("missing login-session fencing refuses device authorization before Gateway I/O", async (t) => {
   const fixture = await createFixture(t);
   const login = await fixture.start();
-  const before = fixture.requests.length;
-  // compareAndSwap is optional in the Secret Driver contract (the bundled Kubernetes
-  // Driver implements it; another Driver may not). Without it OCC cannot
-  // fence a login session, so both start and poll refuse permanently and name which
-  // Driver is missing the capability.
+  const before = fixture.gateway.calls.length;
   delete fixture.secretDriver.compareAndSwap;
-  const start = await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } });
-  assert.equal(start.status, 501, JSON.stringify(start.body));
   assert.equal(
-    start.body.error.message,
-    "Device authorization is unavailable for the selected Drivers.",
+    (await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } })).status,
+    501,
   );
-  // Past the provider interval, a poll would otherwise call upstream.
   await fixture.clock.advance(5000);
   const poll = await fixture.poll(login);
-  assert.equal(poll.status, 501, JSON.stringify(poll.body));
+  assert.equal(poll.status, 501);
   assert.equal(
     poll.body.error.message,
     "Device authorization is unavailable for the Secret Driver.",
   );
-  assert.equal(fixture.requests.length, before, "a refused login must not contact the provider");
+  assert.equal(fixture.gateway.calls.length, before);
 });
 
-test("a device login start that cannot reach the sign-in service says so and logs the cause", async (t) => {
+test("a failed Gateway login start retains a manageable source and sanitizes the failure", async (t) => {
   const lines = [];
   const logger = createOccLogger({
     component: "occ-api",
@@ -536,39 +517,33 @@ test("a device login start that cannot reach the sign-in service says so and log
       },
     },
   });
-  const fixture = await createConsoleAppFixture(t, { logger });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Device login egress", { ready: true });
-  const originalFetch = globalThis.fetch;
-  const refused = Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:443"), {
-    code: "ECONNREFUSED",
+  const fixture = await createFixture(t, {
+    logger,
+    startError: new Error(`external service unavailable: ${DEVICE_ACCESS_TOKEN}`),
   });
-  // The chart's default network policy: the API Pod cannot connect to the sign-in service.
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (new URL(url).hostname === "127.0.0.1") {
-      return originalFetch(url, options);
-    }
-    throw new TypeError("fetch failed", { cause: refused });
-  });
-  const response = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/device-authorizations`,
-    { body: { harnessId: "codex" } },
-  );
+  const response = await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } });
   assert.equal(response.status, 503, JSON.stringify(response.body));
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(
-    response.body.error.message,
-    "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again.",
-  );
   const warning = lines.find((line) => line.event === "device_authorization.start_failed");
-  assert.ok(warning, "the API logs why device login could not start");
-  assert.equal(warning.severity, "WARN");
-  assert.equal(warning.reason, "unreachable");
-  assert.equal(warning.failure, "ECONNREFUSED");
-  assert.equal(warning.host, "auth.openai.com");
-  assert.equal(JSON.stringify(lines).includes("10.0.0.1"), false);
-  // Nothing was stored for a login that never started.
-  const secrets = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
-  assert.deepEqual(secrets.data, []);
+  assert.equal(warning?.severity, "WARN");
+  assert.equal(warning.reason, "unavailable");
+  assert.equal(JSON.stringify(lines).includes(DEVICE_ACCESS_TOKEN), false);
+  assert.deepEqual(
+    (await fixture.request("GET", `/namespaces/${fixture.namespace.id}/secrets`)).data,
+    [],
+  );
+  const sources = await fixture.request("GET", fixture.sourcesPath);
+  assert.equal(
+    sources.data.length,
+    1,
+    "an uncertain external login remains visible for source management",
+  );
+  // Source deletion fences uncertain external registration before final removal.
+  await fixture.clock.advance(71_000);
+  assert.equal(
+    (await fixture.request("DELETE", `${fixture.sourcesPath}/${sources.data[0].id}`)).status,
+    204,
+  );
+  assert.equal(fixture.gateway.sources.size, 0);
+  assertNoCredentials(fixture);
 });

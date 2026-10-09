@@ -854,13 +854,13 @@ const cases = [
     },
   ],
   [
-    "a device login when the API Pods cannot reach the sign-in service",
+    "a device login when OCC cannot reach the Credential Gateway",
     new DeviceAuthorizationStartError("unreachable", "ECONNREFUSED"),
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again.",
+        "OCC could not reach the Credential Gateway sign-in service. Ask an operator to check its connectivity, then try again.",
     },
   ],
   [
@@ -869,7 +869,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "The sign-in service could not start device login. Try again.",
+      message: "The Credential Gateway could not start device login. Try again.",
     },
   ],
   [

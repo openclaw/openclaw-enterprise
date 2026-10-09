@@ -61,7 +61,6 @@
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
     "tests/conformance/service-account-driver.test.mjs",
-    "tests/conformance/harness-device-auth.test.mjs",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
@@ -114,9 +113,6 @@
     },
     {
       "path": "tests/docs/generated-api-reference.test.mjs"
-    },
-    {
-      "path": "tests/conformance/harness-device-auth.test.mjs"
     },
     {
       "path": "tests/conformance/http-errors.test.mjs"

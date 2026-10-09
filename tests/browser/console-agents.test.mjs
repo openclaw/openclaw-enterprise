@@ -100,7 +100,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.deepEqual(await optionValues(page.getByLabel("Authentication method", { exact: true })), [
     { value: "api_key", text: "OpenAI API key" },
     { value: "codex_pat", text: "Service Accounts" },
-    { value: "oauth", text: "ChatGPT OAuth (Experimental)" },
+    { value: "credential_source", text: "ChatGPT OAuth (Experimental)" },
   ]);
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();

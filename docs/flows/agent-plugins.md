@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-08
-last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent Plugin Deployment Flow
@@ -68,27 +68,28 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
-transient PATs, same-Namespace Secrets, or supported credential-free access.
-OCC checks Namespace Agent `create` and caller Secret `operate` before Driver
-support, and again after the Secret read, before the Driver call; unsupported
-discovery reads no Secret. A `secretRef` or `oauthLogin` in
-another Namespace, here or in existing-Agent discovery, fails with
-`400 INVALID_REQUEST` before any Secret check; a Secret the Namespace does not
-hold is `404`.
+transient PATs, same-Namespace Secrets or CredentialSources, and supported
+credential-free access. OCC checks Namespace Agent `create` and exact source
+`operate` before credential access, and rechecks before calling the Plugin
+Driver. Cross-Namespace references fail with `400 INVALID_REQUEST`; a source the
+Namespace does not hold is `404`. Unsupported discovery reads no credential.
 
-Existing-Agent discovery requires active Agent `read`/`update`; inputs are queries,
-cursors, or plugin IDs. Hosted discovery resolves bound `codex_pat` and rechecks
-binding and caller/Agent Secret `operate` inside
-[`SecretDriver.withValue`](../reference/drivers/secret.md). Curated discovery needs
-no Secret. Missing, denied, or unavailable Secrets fail before discovery.
-Nontransactional reads may precede rotation; discovery persists neither state nor
-credentials.
+Existing-Agent discovery requires active Agent `read`/`update`. Hosted discovery
+resolves a bound Secret PAT through
+[`SecretDriver.withValue`](../reference/drivers/secret.md), or asks the selected
+Credential Gateway's `withSourceToken` for a warm access token and account metadata.
+OCC rechecks the binding and caller/Agent source `operate` inside the callback.
+CredentialSource discovery remains available after its login session closes; the
+[CredentialSource flow](credential-source-lifecycle.md) owns that lifecycle.
+Curated discovery needs no credential. Missing, denied, or unavailable sources
+fail before discovery. Nontransactional reads may precede rotation; discovery
+persists neither state nor credentials and never refreshes provider tokens.
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
 hosted identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
-preloads page one for Create Agent PATs and bound PATs in editable Agent Plugins
-tabs. The picker reuses prefetch; credential changes clear discovery, preserving
+preloads page one for Create Agent credentials and saved sources in editable
+Agent Plugins tabs. The picker reuses prefetch; credential changes clear discovery, preserving
 selections. Search marks loading and invalidates old responses before the
 [delay](../reference/drivers/plugin-bundled.md#selection-and-catalogs);
 Enter/paging bypass it. Closing, configured view, credential changes, and view
@@ -326,6 +327,8 @@ deadline.
 - 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
 
 - 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
+
+- 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 
 - 2026-10-04 05:00: Recheck Create Agent discovery grants after the Secret read. (bughunt-11)
 

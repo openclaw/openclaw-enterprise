@@ -35,7 +35,10 @@ The new policy paths still need
 [real Agent verification](../testing/plugins.md#current-proof-notes). There is
 no bundled Claude PluginDriver.
 
-**Experimental** OAuth discovery needs [login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
+**Experimental** OAuth discovery uses the saved credential source after
+[device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
+The Credential Gateway supplies a warm access token; closing the login session
+does not remove plugin-editing access.
 
 ## Lifecycle
 

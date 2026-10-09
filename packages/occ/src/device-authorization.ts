@@ -9,7 +9,8 @@ export interface DeviceAuthorizationSession {
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly harnessId: string;
-  readonly computeDriverId: string;
+  readonly credentialGatewayId: string;
+  readonly sourceId: string;
   readonly phase: "pending" | "polling" | "ready" | "cancelled";
   readonly expiresAt: string;
   readonly nextPollAt: string;
@@ -19,7 +20,6 @@ export interface DeviceAuthorizationSession {
     readonly intervalSeconds: number;
   };
   readonly privateState?: string;
-  readonly credential?: string;
 }
 
 export function deviceAuthorizationSession(value: string): DeviceAuthorizationSession {
@@ -36,7 +36,8 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
     !isNonEmptyString(record.actorId) ||
     !isNonEmptyString(record.namespaceId) ||
     !isNonEmptyString(record.harnessId) ||
-    !isNonEmptyString(record.computeDriverId) ||
+    !isNonEmptyString(record.credentialGatewayId) ||
+    !isNonEmptyString(record.sourceId) ||
     (record.agentId !== undefined && !isNonEmptyString(record.agentId)) ||
     !["pending", "polling", "ready", "cancelled"].includes(String(record.phase)) ||
     !isNonEmptyString(record.expiresAt) ||
@@ -47,9 +48,9 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
     !isNonEmptyString(authorization?.userCode) ||
     typeof authorization.intervalSeconds !== "number" ||
     authorization.intervalSeconds < 1 ||
-    (record.phase === "ready"
-      ? !isNonEmptyString(record.credential)
-      : record.phase !== "cancelled" && !isNonEmptyString(record.privateState))
+    (record.phase !== "ready" &&
+      record.phase !== "cancelled" &&
+      !isNonEmptyString(record.privateState))
   ) {
     throw new ResourceStateConflictError(
       "This login is no longer available in OCE. Connect again.",

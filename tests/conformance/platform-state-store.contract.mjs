@@ -2708,4 +2708,55 @@ async function verifyCredentialSourceContract(
       false,
     );
   });
+
+  // External auth snapshots retain a source reference and login mode, never workload metadata.
+  const externalSource = {
+    ...source,
+    id: identifier("cs"),
+    name: "External ChatGPT " + randomUUID(),
+    type: "chatgpt",
+    config: {},
+    secrets: {},
+  };
+  const externalAgent = {
+    ...sourceAgent,
+    id: identifier("agt"),
+    name: "External ChatGPT agent " + randomUUID(),
+    servicePrincipalId: identifier("service-agent"),
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: externalSource.id },
+    credentialSources: [{ sourceId: externalSource.id }],
+  };
+  const externalRevision = {
+    ...sourceRevision,
+    id: identifier("rev"),
+    agentId: externalAgent.id,
+    servicePrincipalId: externalAgent.servicePrincipalId,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: "sandbox-contract",
+    credentialSources: [
+      {
+        sourceId: externalSource.id,
+        credentialGatewayId: externalSource.driverId,
+        sourceType: externalSource.type,
+      },
+    ],
+    harnessAuth: {
+      ...externalAgent.harnessAuth,
+      credentialGatewayId: externalSource.driverId,
+      sourceType: externalSource.type,
+      loginMode: "chatgptAuthTokens",
+    },
+  };
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.createCredentialSource(externalSource);
+    await transaction.agents.createAgent(externalAgent);
+    await transaction.revisions.createRevision(externalRevision);
+  });
+  assert.deepEqual(
+    await store.read((state) =>
+      state.revisions.findRevision(sourceNamespace.id, externalAgent.id, externalRevision.id),
+    ),
+    externalRevision,
+  );
 }

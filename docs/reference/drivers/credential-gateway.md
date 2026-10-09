@@ -53,21 +53,71 @@ A `CredentialSourceType` declares:
   static value. The [Credential Refresh Driver](credential-refresh.md) on the
   same Backend mints and refreshes its tokens, and OCC calls that Driver, not
   `updateSource`, to change its material.
+- `deviceAuthorization`: optional `{ harnessId }` declaring device login for this
+  source type. The login path requires one matching type with no required user
+  config or Secret inputs.
 - `harnessAuth`: optional `{ modelProvider, loginMode }`. Only a type with this
-  entry can authenticate a Harness. The current login mode is `api_key`. An Agent
-  lists every source it uses, of any type, in `credentialSources`.
+  entry can authenticate a Harness. Login modes are `api_key` and, for dedicated
+  Codex, `chatgptAuthTokens`. An Agent lists every source it uses, of any type,
+  in `credentialSources`.
+
+### External ChatGPT authentication
+
+The `chatgptAuthTokens` mode receives externally managed ChatGPT authentication
+through a credential source. It is a receiving contract for a Credential
+Gateway and paired Sandbox that already provide OAuth token injection. The
+bundled OpenShell catalog does not yet offer this source type.
+
+For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
+`externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
+`accountId`, `planType`, and optional `userId`, `email`, and `isFedramp`. The
+trusted Driver supplies account metadata from the authenticated connection;
+these fields are not caller-selected Agent configuration. The placeholder must
+be the exact value recognized by the egress injector. Real access tokens,
+refresh tokens, and the original ID token stay outside the Harness.
+
+Compute validates one attachment per authorized source and selects the Codex
+attachment by `harnessAuth.sourceId`, independently of attachment order. It passes
+every attachment to the Sandbox and the selected placeholder and account metadata
+to the dedicated Codex entrypoint. The entrypoint writes an ephemeral `auth.json`
+with `auth_mode: "chatgptAuthTokens"`, the unchanged access-token placeholder, an
+empty refresh token, and a synthetic ID-token payload containing the account
+metadata. Native Codex uses that metadata for account identity, plan and
+workspace decisions. This external mode does not run native OAuth refresh;
+the existing native model probe must still succeed before app-server starts.
+
+The external credential service owns refresh and the gateway owns injection
+for inference, hosted app/MCP, and authenticated account/configuration requests.
+Metadata is projected at provisioning; account metadata changes require a new
+revision. A fresh device login creates a new source for explicit replacement. Native user-identity checks that depend on
+access-token claims are not established with an opaque placeholder.
+
+This replaces the legacy runtime-owned OAuth binding. No persistent credential
+bundle or native-refresh fallback is supported. See
+[Experimental OAuth storage](kubernetes-compute/codex-oauth-storage.md).
 
 ### Optional additions
 
-The contract has no optional methods. `SecretDriver.withValue` is the
-[Secret Driver](secret.md#interface) method OCC uses to obtain the values it
-passes to `registerSource` and `updateSource`. Withdrawal also needs two optional
-methods on its collaborators: Compute's `withdrawCredentialSource`, which the
-worker calls, and the Sandbox Driver's `harnessResource`, which returns the exact
-Sandbox a revision runs in without side effects. Compute throws
-`CredentialWithdrawalRefusedError` when its configuration cannot reach that
-Sandbox or it finds an object it does not own; the worker then fails the
-withdrawal without retrying.
+A device-login source requires `startDeviceAuthorization(context)` and
+`pollDeviceAuthorization(context, privateState)`. Start returns device instructions,
+expiry and an opaque handle. Poll returns `pending` or `ready`; `ready` means the
+external service durably owns the connection. Neither returns provider tokens to
+OCC. Calls operate on the exact registered source and must not recreate a removed
+source. OCC serializes polling with Secret compare-and-swap and does not replay
+an uncertain exchange.
+
+`withSourceToken(context, use)` supplies a warm `CredentialSourceToken` only for
+an authorized configuration callback: access token and optional trusted account
+ID/FedRAMP classification. It must not initiate refresh or return the refresh
+credential. The callback rechecks authorization before provider I/O; source
+withdrawal and token readiness remain the external service's responsibility.
+
+`SecretDriver.withValue` supplies static registration inputs. Withdrawal also
+uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`,
+which returns the exact Sandbox a revision runs in without side effects.
+Compute throws `CredentialWithdrawalRefusedError` when its configuration cannot
+reach that Sandbox or it finds an object it does not own; the worker then fails
+the withdrawal without retrying.
 
 ## IAM
 
@@ -161,9 +211,12 @@ adopt or delete the same stored copy.
   a configured Backend.
 - Rotation belongs to the [Credential Refresh Driver](credential-refresh.md).
   Update pushes new static values; running Agents use them after a redeploy.
-- Compute accepts a model credential source only for dedicated Codex with a
-  source type whose `harnessAuth` is `openai`/`api_key`. Other listed sources
-  need a SandboxDriver that provisions the Harness.
+- Compute accepts `openai`/`api_key` credential sources for dedicated Codex or
+  native OpenClaw. `openai`/`chatgptAuthTokens` is dedicated-Codex-only and
+  requires the external-auth attachment described above. The bundled catalog's
+  Harness authentication remains API-key-only; this contract does not implement
+  a Codex OAuth Token Service, source Driver, or token injection.
+  Other listed sources need a Sandbox Driver that provisions the Harness.
 - Guided Agent provisioning rejects credential-source Harness authentication.
   Create the Agent, then deploy it.
 - Installed Credential Gateway packages are unsupported.

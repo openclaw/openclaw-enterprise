@@ -1,18 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,7 +9,6 @@ import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs"
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
-  CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   NATIVE_WORKER_ENTRYPOINT,
@@ -55,82 +42,6 @@ import {
 } from "../helpers/runtime-image-startup.mjs";
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
-
-test("Codex OAuth bootstrap preserves rotated credentials and requires a new source after disk loss", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-oauth-bootstrap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const codexHome = join(directory, "codex-home");
-  const seedPath = join(directory, "seed.json");
-  const authPath = join(codexHome, "auth.json");
-  const auth = {
-    auth_mode: "chatgpt",
-    tokens: { id_token: "test-id", access_token: "test-access", refresh_token: "test-refresh" },
-    last_refresh: "2026-09-28T00:00:00Z",
-  };
-  await writeFile(seedPath, JSON.stringify(auth));
-  const run = (sourceUid = "source-1", volumeUid = "volume-1") =>
-    execute(process.execPath, ["-e", CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT], {
-      env: {
-        ...process.env,
-        CODEX_HOME: codexHome,
-        OCE_CODEX_OAUTH_SOURCE_UID: sourceUid,
-        OCE_CODEX_OAUTH_VOLUME_UID: volumeUid,
-        OCE_CODEX_OAUTH_SEED_PATH: seedPath,
-      },
-    });
-  await run();
-  assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), auth);
-  assert.equal((await stat(authPath)).mode & 0o777, 0o600);
-
-  // Exercise the real seed script against a native-style atomic replacement, without provider calls.
-  const refreshed = {
-    ...auth,
-    tokens: { ...auth.tokens, access_token: "rotated-access", refresh_token: "rotated-refresh" },
-  };
-  await writeFile(`${authPath}.native`, JSON.stringify(refreshed), { mode: 0o600 });
-  await rename(`${authPath}.native`, authPath);
-  await run();
-  assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), refreshed);
-  await assert.rejects(
-    run("source-1", "replacement-volume"),
-    /could not initialize private credentials/,
-  );
-  await rm(authPath);
-  await assert.rejects(run(), /could not initialize private credentials/);
-  await assert.rejects(readFile(authPath), { code: "ENOENT" });
-
-  // A replacement source starts from an empty Codex home. Links planted by the previous
-  // process must not redirect the new bundle into the served workspace.
-  const workspace = join(directory, "workspace");
-  await mkdir(workspace);
-  await mkdir(join(codexHome, "sessions"));
-  await writeFile(join(codexHome, "sessions", "previous.jsonl"), "previous login history");
-  for (const name of ["auth.json.bootstrap", ".oce-oauth.json.bootstrap"]) {
-    await symlink(join("..", "workspace", `${name}.leak`), join(codexHome, name));
-  }
-  await run("source-2");
-  assert.deepEqual(await readdir(workspace), []);
-  assert.deepEqual((await readdir(codexHome)).sort(), [".oce-oauth.json", "auth.json"]);
-  assert.ok((await lstat(authPath)).isFile());
-  assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), auth);
-  assert.deepEqual(JSON.parse(await readFile(join(codexHome, ".oce-oauth.json"), "utf8")), {
-    sourceUid: "source-2",
-    volumeUid: "volume-1",
-  });
-
-  // Restarting with the same source keeps the native generation and its history.
-  await mkdir(join(codexHome, "sessions"));
-  await writeFile(join(codexHome, "sessions", "current.jsonl"), "current login history");
-  await writeFile(authPath, JSON.stringify(refreshed), { mode: 0o600 });
-  await run("source-2");
-  assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), refreshed);
-  assert.deepEqual(await readdir(join(codexHome, "sessions")), ["current.jsonl"]);
-
-  // A linked credential file is not accepted as the native generation.
-  await rm(authPath);
-  await symlink(seedPath, authPath);
-  await assert.rejects(run("source-2"), /could not initialize private credentials/);
-});
 
 test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "oce-runtime-seccomp-profile-"));

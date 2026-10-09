@@ -208,7 +208,7 @@ export function installFixture(scenario, evidence) {
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
             : scenario.auth === "oauth"
-              ? { method: "oauth", source: secretRef("sec_demo_oauth_deployed") }
+              ? { method: "credential_source", sourceId: "crs_demo_oauth" }
               : auth;
   let selectedRevisionId = null;
   if (scenario.candidateDeploymentStatus) {
@@ -228,6 +228,10 @@ export function installFixture(scenario, evidence) {
     configurationId: config.id,
     executionMode: "dedicated",
     harnessAuth: selectedAuth,
+    credentialSources: structuredClone(
+      scenario.credentialSources ??
+        (selectedAuth?.method === "credential_source" ? [{ sourceId: selectedAuth.sourceId }] : []),
+    ),
     ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
     ...(scenario.agentPluginApprovers !== undefined
       ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }
@@ -575,20 +579,16 @@ export function installFixture(scenario, evidence) {
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const source = secretRef(nextId("sec"));
+          const session = secretRef(nextId("sec"));
           const login = {
-            source,
+            session,
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
             userCode: "DEMO-1234",
             expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
             intervalSeconds: 1,
           };
-          deviceLogins.set(source.id, login);
-          secrets.set(
-            source.id,
-            secretMetadata(source.id, "Codex OAuth login (Experimental, simulated)"),
-          );
+          deviceLogins.set(session.id, login);
           return response(login);
         }
         const login = deviceLogins.get(id);
@@ -598,6 +598,7 @@ export function installFixture(scenario, evidence) {
         if (poll && method === "POST") {
           if (!scenario.oauthPending) {
             login.status = "ready";
+            login.source ??= { kind: "credential_source", namespaceId, id: nextId("crs") };
           }
           return response(login);
         }

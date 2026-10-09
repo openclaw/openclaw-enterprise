@@ -7,6 +7,8 @@ import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/detail.mjs";
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
@@ -1243,7 +1245,7 @@ test("Agent draft plugin browsing explains a missing hosted credential", async (
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog
     .getByText(
-      "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+      "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     )
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
@@ -4909,4 +4911,84 @@ test("Credentials saves an issued service account as a PAT source without granti
     `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
   );
   await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
+});
+
+test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
+  const backend = createOpenShellBackend({
+    id: "openshell-browser",
+    type: "openshell",
+    configuration: { endpoint: "http://127.0.0.1:9" },
+    drivers: { credential_gateway: "credential-gateway-openshell" },
+  });
+  t.after(() => backend.client.close());
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/openclaw"] },
+    { backend },
+  );
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const input = await fixture.createSecret(
+    namespace.id,
+    "OpenAI source input",
+    "source-browser-fixture",
+  );
+  // Source registration is outside this Console test. This is the ready API-key
+  // source state the existing OpenClaw credential-gateway path supports.
+  const source = await fixture.controller.transact((state) =>
+    state.credentialSources.createCredentialSource({
+      id: `cs_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "OpenAI API key",
+      type: "openai",
+      config: {},
+      secrets: { api_key: input.ref },
+      driverId: gateway.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  const harnessAuth = { method: "credential_source", sourceId: source.id };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OpenClaw source Agent",
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth,
+      credentialSources: [{ sourceId: harnessAuth.sourceId }],
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  assert.equal(
+    await page.getByLabel("Authentication source", { exact: true }).inputValue(),
+    "credential_source",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isVisible(),
+    false,
+  );
+  const granted = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith("/access-bindings"),
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.equal((await granted).status(), 201);
+  assert.deepEqual(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+      .harnessAuth,
+    harnessAuth,
+  );
+  const save = requests.find(
+    (request) => request.method === "PATCH" && request.path.endsWith(`/agents/${agent.id}`),
+  );
+  assert.deepEqual(save.body.harnessAuth, harnessAuth);
 });

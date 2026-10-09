@@ -212,7 +212,7 @@ export class ModelDiscoveryError extends Error {
 
 /**
  * Device login could not start. `reason` is `unreachable` when the API could not open a
- * connection to the sign-in service (DNS, refused, reset, timeout), else `unavailable`.
+ * connection to the Credential Gateway (DNS, refused, reset, timeout), else `unavailable`.
  * `failure` is a bounded class for the server log only (an error code such as
  * `ECONNREFUSED`, `TimeoutError` or `HTTP_503`); no provider body or message is kept.
  */

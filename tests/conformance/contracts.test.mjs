@@ -346,7 +346,7 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
   assert.deepEqual(normalizeHarnessAuthBinding(managed), managed);
   assert.equal(isServiceAccountHarnessAuth(managed), true);
   assert.equal(isSecretHarnessAuth(managed), false);
-  for (const method of ["api_key", "codex_pat", "oauth"]) {
+  for (const method of ["api_key", "codex_pat"]) {
     const binding = { method, source: secret };
     assert.deepEqual(normalizeHarnessAuthBinding(binding), binding);
     assert.equal(isSecretHarnessAuth(binding), true, method);
@@ -361,6 +361,8 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
     // A managed account authenticates only through the Codex PAT login.
     { method: "api_key", source: account },
     { method: "oauth", source: account },
+    // Browser OAuth now binds a Gateway credential source, never a Secret.
+    { method: "oauth", source: secret },
     // The retired managed-account shape.
     { method: "chatgpt_service_account", serviceAccountId: account.id },
     // The account reference is closed and exactly typed.
