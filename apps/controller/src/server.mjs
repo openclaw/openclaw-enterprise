@@ -1,3 +1,4 @@
+import { refuseRewrittenIpv4AuthHost } from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -14,7 +15,7 @@ import { createOccMetrics } from "./metrics/index.ts";
 import { startupDependencyFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
-const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]"]);
+const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
@@ -217,12 +218,14 @@ function configuration() {
     mode === "production"
       ? requiredEnvironment("OCC_AUTH_BASE_URL")
       : (process.env.OCC_AUTH_BASE_URL ?? DEFAULT_BETTER_AUTH_BASE_URL);
-  let authBaseURL;
+  let parsedAuthBaseURL;
   try {
-    authBaseURL = new URL(configuredAuthBaseURL).toString().replace(/\/$/, "");
+    parsedAuthBaseURL = new URL(configuredAuthBaseURL);
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must be a valid absolute URL.");
   }
+  refuseRewrittenIpv4AuthHost(configuredAuthBaseURL, parsedAuthBaseURL);
+  const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
   if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {
     throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
   }

@@ -117,6 +117,23 @@ async function readRuntimeChannelChecksFromHandler(handler) {
   return readStatusFromHandlerAsync(handler, "/openclaw/runtime/diagnostics");
 }
 
+async function readReadyStatusFromHandler(handler) {
+  let body = "";
+  let status;
+  await handler(
+    { method: "GET", url: "/readyz" },
+    {
+      writeHead(value) {
+        status = value;
+      },
+      end(chunk = "") {
+        body += chunk;
+      },
+    },
+  );
+  return { status, body };
+}
+
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000016",
   name: "Plugin compute tenant",
@@ -2678,6 +2695,7 @@ test("gateway runtime status maps native Slack channel status without provider d
   let holdChannelStatusResponse = false;
   let pendingChannelSignal;
   let rpcTimeout;
+  let gatewayReadyStatus = 503;
   const sandbox = {
     AbortController,
     AbortSignal,
@@ -2715,6 +2733,10 @@ test("gateway runtime status maps native Slack channel status without provider d
             statusHandler = handler;
             return { listen() {} };
           },
+          get(_options, callback) {
+            callback({ statusCode: gatewayReadyStatus, resume() {} });
+            return { on() {}, destroy() {} };
+          },
         };
       }
       if (specifier === "node:fs") {
@@ -2750,7 +2772,8 @@ test("gateway runtime status maps native Slack channel status without provider d
             typeof error.retryable === "boolean" &&
             (error.retryAfterMs === undefined ||
               (Number.isInteger(error.retryAfterMs) && error.retryAfterMs >= 0)),
-          async callGatewayFromCli(method, options, params, { signal }) {
+          async callGatewayFromCli(method, options, params, { signal, sharedStateMode }) {
+            assert.equal(sharedStateMode, "read-only");
             assert.equal(method, "channels.status");
             assert.deepEqual(plain(params), { channel: "slack", probe: true, timeoutMs: 5000 });
             channelStatusCalls += 1;
@@ -2780,6 +2803,9 @@ test("gateway runtime status maps native Slack channel status without provider d
   const ready = await readRuntimeStatusFromHandler(statusHandler);
   assert.equal(ready.revisionId, revisionId);
   assert.equal(channelStatusCalls, 0);
+  assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 503, body: "" });
+  gatewayReadyStatus = 200;
+  assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 200, body: "" });
   const assertSlackDiagnostics = async (status, expected, description) => {
     channelStatus = status;
     const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
@@ -3418,6 +3444,8 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                 },
                 spawn(_command, args, options) {
                   assert.ok(args.includes("app-server"));
+                  // Plugin reviewer validation must observe the admitted model, not a native default.
+                  assert.ok(args.includes('model="gpt-4.1"'));
                   const tokenDigest = args[args.indexOf("--ws-token-sha256") + 1];
                   assert.equal(tokenDigest, sha256("fixture-transport-token"));
                   assert.equal(Object.hasOwn(options.env, "APP_SERVER_TOKEN"), false);
@@ -4571,6 +4599,10 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
       ["plugin-status", 18791],
     ],
   );
+  assert.deepEqual(container.readinessProbe, {
+    httpGet: { path: "/readyz", port: "plugin-status" },
+    periodSeconds: 2,
+  });
 });
 
 for (const withBroker of [false, true]) {

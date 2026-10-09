@@ -356,7 +356,6 @@ export async function composeProduction(config: ProductionConfig) {
         enabled: false,
         installationId: persistedInstallation.id,
       },
-      maxBodyBytes: 64 * 1024,
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });

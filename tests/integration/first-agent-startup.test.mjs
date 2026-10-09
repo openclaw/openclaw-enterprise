@@ -19,7 +19,7 @@ async function fixture(t, sandboxDriver) {
   await Promise.all([
     writeFile(
       join(tools, "docker"),
-      '#!/bin/sh\nprintf "%s\\n" "$*" > "$FIRST_AGENT_TEST_ENGINE_LOG"\nexit 23\n',
+      '#!/bin/sh\nprintf "%s\\n" "$*" "DOCKER_HOST=$DOCKER_HOST" "DOCKER_TLS=${DOCKER_TLS-unset}" "DOCKER_TLS_VERIFY=${DOCKER_TLS_VERIFY-unset}" "DOCKER_CERT_PATH=${DOCKER_CERT_PATH-unset}" > "$FIRST_AGENT_TEST_ENGINE_LOG"\nexit 23\n',
       { mode: 0o700 },
     ),
     writeFile(join(directory, ".openclaw-development"), "openclaw-enterprise-development-v3\n", {
@@ -79,11 +79,20 @@ function runFirstAgent(env, ...args) {
 
 test("first-Agent accepts current Compose-backed Kubernetes development state", async (t) => {
   const { engineLog, env } = await fixture(t, "none");
+  env.DOCKER_HOST = "unix:///tmp/other-first-agent.sock";
+  env.DOCKER_TLS = "1";
+  env.DOCKER_TLS_VERIFY = "1";
+  env.DOCKER_CERT_PATH = "/tmp/other-first-agent-certificates";
 
   // Reaching the engine proves state admission succeeded without replacing the
   // external Compose behavior that this focused test does not exercise.
   assert.match(runFirstAgent(env), /docker did not complete successfully/);
-  assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
+  const invocation = await readFile(engineLog, "utf8");
+  assert.match(invocation, /compose .* port controller 3000/);
+  assert.match(invocation, /^DOCKER_HOST=unix:\/\/\/tmp\/first-agent-startup-test.sock$/m);
+  assert.match(invocation, /^DOCKER_TLS=unset$/m);
+  assert.match(invocation, /^DOCKER_TLS_VERIFY=unset$/m);
+  assert.match(invocation, /^DOCKER_CERT_PATH=unset$/m);
 });
 
 test("first-Agent requires dedicated Codex for OpenShell before external calls", async (t) => {

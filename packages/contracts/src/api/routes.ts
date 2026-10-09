@@ -41,6 +41,7 @@ import {
   NamespaceParams,
   RevisionParams,
   SecretParams,
+  ServiceAccountDeleteQuery,
   ServiceAccountParams,
   UpdateAgentBody,
   UpdateConfigurationBody,
@@ -91,6 +92,7 @@ import {
   CredentialSourceListResponse,
   CredentialWithdrawalResponse,
   ServiceAccountListResponse,
+  ServiceAccountForceDeletionResponse,
   ServiceAccountResponse,
   WorkspaceFileResponse,
   WorkspaceFileUpdateResponse,
@@ -928,7 +930,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Get the withdrawal state of a credential source for an Agent's active revision",
+    summary: "Get the withdrawal state of a credential source for an Agent",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1030,9 +1032,9 @@ export const occApiRoutes = [
     summary: "Delete an exact unreferenced Namespace-owned ServiceAccount",
     tags: ["Service accounts"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: ServiceAccountDeleteQuery,
       params: ServiceAccountParams,
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: { 200: ServiceAccountForceDeletionResponse, 204: Type.Null(), ...mutationErrors },
     },
   },
   {

@@ -38,7 +38,9 @@
     "k3d-two-cluster": "./test-suites/k3d-two-cluster.json",
     "k3d-observability": "./test-suites/k3d-observability.json",
     "k3d-observability-demo": "./test-suites/k3d-observability-demo.json",
-    "runtime-image-fixture": "./test-suites/runtime-image-fixture.json"
+    "runtime-image-fixture": "./test-suites/runtime-image-fixture.json",
+    "qa-matrix": "./test-suites/qa-matrix.json",
+    "keycloak-oidc": "./test-suites/keycloak-oidc.json"
   },
   "groups": {
     "ci": [
@@ -93,7 +95,8 @@
       "repository-credentials-container",
       "repository-credentials-platform",
       "k3d-observability",
-      "k3d-observability-demo"
+      "k3d-observability-demo",
+      "keycloak-oidc"
     ]
   }
 }

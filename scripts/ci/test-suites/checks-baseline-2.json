@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
     "tests/integration/repository-credentials-admission.test.mjs",
@@ -43,6 +44,7 @@
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.mjs",
+    "tests/integration/ci-download-pinned.test.mjs",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/repository-runtime-materialization.test.mjs",
@@ -80,6 +82,7 @@
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
     "tests/conformance/slack-proxy-reset.test.mjs",
+    "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.mjs",
     "tests/conformance/repository-credentials-receive-pack.test.mjs",
     "tests/integration/runtime-assets.test.mjs",
@@ -95,6 +98,12 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/tls-peer-certificate.test.mjs"
+    },
+    {
+      "path": "tests/integration/qa-fixture-inputs.test.mjs"
+    },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
     },
@@ -146,7 +155,16 @@
       "path": "tests/integration/ci-prepare.test.mjs"
     },
     {
+      "path": "tests/integration/ci-prepare-k3d.test.mjs"
+    },
+    {
       "path": "tests/integration/ci-image-pull.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-keycloak.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-download-pinned.test.mjs"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"
@@ -195,6 +213,9 @@
     },
     {
       "path": "tests/conformance/slack-proxy-reset.test.mjs"
+    },
+    {
+      "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
     },
     {
       "path": "tests/conformance/slack-proxy-tunnel.test.mjs"

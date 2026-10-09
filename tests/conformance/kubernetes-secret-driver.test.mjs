@@ -1,16 +1,28 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { mock } from "node:test";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
   SecretOwnershipError,
   SecretValidationError,
 } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  currentComputeAbortSignal,
+  withComputeAbortSignal,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function injectedFailure(failureCode, method) {
+  if (failureCode === "dropped") {
+    // What the client throws when the API server closes the connection unanswered.
+    return Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+  }
+  return Object.assign(new Error(`${method} failed with ${failureCode}`), { code: failureCode });
 }
 
 function kubernetesNamespaceName(namespaceId) {
@@ -24,6 +36,31 @@ class FakeCoreV1Api {
   deletes = [];
   readSecretFailureCodes = [];
   readSecretTimesOut = false;
+  // Failures queued per method, each thrown before the call takes effect.
+  failureCodes = {
+    listNamespace: [],
+    createNamespacedSecret: [],
+    replaceNamespacedSecret: [],
+    deleteNamespacedSecret: [],
+  };
+  // Failures thrown after a create took effect, as when its response is lost.
+  createAppliedFailureCodes = [];
+  // Rewrites a Secret the create stored, before a later failure is thrown.
+  createAppliedMutation = undefined;
+  calls = {
+    listNamespace: 0,
+    createNamespacedSecret: 0,
+    replaceNamespacedSecret: 0,
+    deleteNamespacedSecret: 0,
+  };
+
+  called(method) {
+    this.calls[method] += 1;
+    const failureCode = this.failureCodes[method].shift();
+    if (failureCode !== undefined) {
+      throw injectedFailure(failureCode, method);
+    }
+  }
 
   addNamespace(namespaceId, layout = "shared") {
     const name =
@@ -59,6 +96,7 @@ class FakeCoreV1Api {
   }
 
   async listNamespace({ labelSelector }) {
+    this.called("listNamespace");
     const [label, namespaceId] = labelSelector.split("=");
     return {
       items: [...this.namespaces.values()].filter(
@@ -76,6 +114,7 @@ class FakeCoreV1Api {
   }
 
   async createNamespacedSecret({ namespace, body }) {
+    this.called("createNamespacedSecret");
     const key = `${namespace}/${body.metadata.name}`;
     if (this.secrets.has(key)) {
       throw Object.assign(new Error("conflict"), { code: 409 });
@@ -96,6 +135,11 @@ class FakeCoreV1Api {
     };
     delete stored.stringData;
     this.secrets.set(key, stored);
+    const appliedFailure = this.createAppliedFailureCodes.shift();
+    if (appliedFailure !== undefined) {
+      this.createAppliedMutation?.(stored);
+      throw injectedFailure(appliedFailure, "createNamespacedSecret");
+    }
     return clone(stored);
   }
 
@@ -103,7 +147,7 @@ class FakeCoreV1Api {
     this.reads += 1;
     const failureCode = this.readSecretFailureCodes.shift();
     if (failureCode !== undefined) {
-      throw Object.assign(new Error(`read failed with ${failureCode}`), { code: failureCode });
+      throw injectedFailure(failureCode, "read");
     }
     if (this.readSecretTimesOut) {
       const signal = currentComputeAbortSignal();
@@ -119,6 +163,7 @@ class FakeCoreV1Api {
   }
 
   async replaceNamespacedSecret({ namespace, name, body }) {
+    this.called("replaceNamespacedSecret");
     const key = `${namespace}/${name}`;
     const existing = this.secrets.get(key);
     if (existing === undefined) {
@@ -147,6 +192,7 @@ class FakeCoreV1Api {
   }
 
   async deleteNamespacedSecret({ namespace, name, body }) {
+    this.called("deleteNamespacedSecret");
     const key = `${namespace}/${name}`;
     const existing = this.secrets.get(key);
     if (existing === undefined) {
@@ -443,10 +489,16 @@ test("kubernetes-secret-driver delete reports inaccessible backends instead of i
     if (failure === "timeout") {
       client.readSecretTimesOut = true;
     } else {
-      client.readSecretFailureCodes.push(failure, failure, failure);
+      client.readSecretFailureCodes.push(...Array(6).fill(failure));
     }
 
-    await assert.rejects(() => driver.delete(secret), SecretBackendUnavailableError);
+    await assert.rejects(
+      () =>
+        failure === "timeout"
+          ? driver.delete(secret)
+          : withRetryTimers(() => driver.delete(secret)),
+      SecretBackendUnavailableError,
+    );
     assert.equal(client.secrets.has(`${namespace}/${backendRef.name}`), true);
     assert.deepEqual(client.deletes, []);
     assert.ok(client.reads > readCountBeforeDelete);
@@ -478,5 +530,300 @@ test("canonical storage discovery rejects ambiguous, foreign and insecure adopte
       SecretBackendUnavailableError,
     );
     assert.equal(client.secrets.size, 0);
+  }
+});
+
+test("kubernetes-secret-driver retries a read the API server dropped for a few seconds", async () => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  client.addNamespace(nsId);
+  const driver = driverWithClient(client);
+  const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
+  const backendRef = await driver.create(identity, "stored-value");
+  const secret = {
+    ...identity,
+    driverId: driver.id,
+    backendRef,
+    createdAt: new Date().toISOString(),
+  };
+
+  // Five dropped reads in a row, then an answer: the read succeeds.
+  client.readSecretFailureCodes.push(...Array(5).fill("dropped"));
+  let reads = client.reads;
+  assert.equal(
+    await withRetryTimers(() => driver.withValue(secret, async (value) => value)),
+    "stored-value",
+  );
+  assert.equal(client.reads - reads, 6);
+
+  // A sixth drop ends the read as an unavailable backend.
+  client.readSecretFailureCodes.push(...Array(6).fill("dropped"));
+  reads = client.reads;
+  await assert.rejects(
+    () => withRetryTimers(() => driver.resolve(secret)),
+    (error) =>
+      error instanceof SecretBackendUnavailableError &&
+      error.message === "The Kubernetes Secret read failed.",
+  );
+  assert.equal(client.reads - reads, 6);
+  client.readSecretFailureCodes.length = 0;
+
+  // A refused read is final at once.
+  client.readSecretFailureCodes.push(403);
+  reads = client.reads;
+  await assert.rejects(() => driver.resolve(secret), SecretBackendUnavailableError);
+  assert.equal(client.reads - reads, 1);
+});
+
+async function storedSecret(client) {
+  const nsId = namespaceId();
+  client.addNamespace(nsId);
+  const driver = driverWithClient(client);
+  const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
+  const backendRef = await driver.create(identity, "stored-value");
+  return {
+    driver,
+    secret: { ...identity, driverId: driver.id, backendRef, createdAt: new Date().toISOString() },
+  };
+}
+
+test("kubernetes-secret-driver retries 429, 5xx and dropped reads on the pause schedule", async () => {
+  for (const failure of ["dropped", 429, 500, 503]) {
+    const client = new FakeCoreV1Api();
+    const { driver, secret } = await storedSecret(client);
+
+    // Five failures, then an answer: the read succeeds after the five scheduled pauses.
+    client.readSecretFailureCodes.push(...Array(5).fill(failure));
+    let reads = client.reads;
+    let pauses = [];
+    assert.equal(
+      await withRetryTimers(() => driver.withValue(secret, async (value) => value), pauses),
+      "stored-value",
+      String(failure),
+    );
+    assert.equal(client.reads - reads, 6, String(failure));
+    assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, String(failure));
+
+    // A sixth failure ends the read once the schedule is spent.
+    client.readSecretFailureCodes.push(...Array(6).fill(failure));
+    reads = client.reads;
+    pauses = [];
+    await assert.rejects(
+      () => withRetryTimers(() => driver.resolve(secret), pauses),
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret read failed.",
+      String(failure),
+    );
+    assert.equal(client.reads - reads, 6, String(failure));
+    assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, String(failure));
+  }
+});
+
+test("kubernetes-secret-driver retries namespace verification like a read", async () => {
+  for (const failure of ["dropped", 429, 503]) {
+    const client = new FakeCoreV1Api();
+    const nsId = namespaceId();
+    client.addNamespace(nsId);
+    const driver = driverWithClient(client);
+
+    client.failureCodes.listNamespace.push(...Array(5).fill(failure));
+    let pauses = [];
+    await withRetryTimers(
+      () => driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value"),
+      pauses,
+    );
+    assert.equal(client.calls.listNamespace, 6, String(failure));
+    assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, String(failure));
+    assert.equal(client.secrets.size, 1, String(failure));
+
+    client.failureCodes.listNamespace.push(...Array(6).fill(failure));
+    pauses = [];
+    await assert.rejects(
+      () =>
+        withRetryTimers(
+          () => driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value"),
+          pauses,
+        ),
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret namespace verification failed.",
+      String(failure),
+    );
+    assert.equal(client.calls.listNamespace, 12, String(failure));
+    assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, String(failure));
+    assert.equal(client.calls.createNamespacedSecret, 1, String(failure));
+  }
+});
+
+test("kubernetes-secret-driver sends a failed write once, even when a read would retry", async () => {
+  for (const failure of ["dropped", 429, 503]) {
+    for (const [action, method, write] of [
+      ["create", "createNamespacedSecret", (driver, secret) => driver.create(secret, "new-value")],
+      ["update", "replaceNamespacedSecret", (driver, secret) => driver.update(secret, "new-value")],
+      [
+        "update",
+        "replaceNamespacedSecret",
+        (driver, secret) => driver.compareAndSwap(secret, "stored-value", "new-value"),
+      ],
+      ["delete", "deleteNamespacedSecret", (driver, secret) => driver.delete(secret)],
+    ]) {
+      const client = new FakeCoreV1Api();
+      const { driver, secret } = await storedSecret(client);
+      const target = action === "create" ? { ...secret, id: secretId() } : secret;
+      const before = client.calls[method];
+      client.failureCodes[method].push(failure);
+      const pauses = [];
+      await assert.rejects(
+        () => withRetryTimers(() => write(driver, target), pauses),
+        (error) =>
+          error instanceof SecretBackendUnavailableError &&
+          error.message === `The Kubernetes Secret ${action} failed.`,
+        `${method} ${failure}`,
+      );
+      assert.equal(client.calls[method] - before, 1, `${method} ${failure}`);
+      assert.deepEqual(pauses, [], `${method} ${failure}`);
+    }
+  }
+});
+
+test("kubernetes-secret-driver removes a Secret whose create applied but answered an error", async () => {
+  const create = (driver, nsId) =>
+    driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value");
+  const createFailed = (error) =>
+    error instanceof SecretBackendUnavailableError &&
+    error.message === "The Kubernetes Secret create failed.";
+  const cleanupFailed = (error) =>
+    error instanceof SecretBackendUnavailableError &&
+    error.message ===
+      "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.";
+
+  // The create lands but its response is lost: OCC records no metadata for it, so the driver
+  // removes the exact object it stored under its own name (finding 916).
+  let client = new FakeCoreV1Api();
+  let nsId = namespaceId();
+  client.addNamespace(nsId);
+  let driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.secrets.size, 0);
+  assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+
+  // A create that never applied reads nothing back, deletes nothing, and keeps its own error.
+  client.failureCodes.createNamespacedSecret.push("dropped");
+  const reads = client.reads;
+  const deletes = client.calls.deleteNamespacedSecret;
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.reads - reads, 1);
+  assert.equal(client.calls.deleteNamespacedSecret - deletes, 0);
+
+  // An object under that name without this identity's exact ownership is never deleted, and
+  // since it is not this create's, the create keeps its own error.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedMutation = (stored) => {
+    stored.metadata.annotations["openclaw.dev/secret-id"] = secretId();
+  };
+  client.createAppliedFailureCodes.push("dropped");
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 0);
+
+  // When the stored object cannot be read, the driver cannot tell whether the create applied,
+  // so it says so instead of reporting a plain failure that may have left a Secret behind.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  client.readSecretFailureCodes.push(403);
+  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 0);
+
+  // A failed cleanup delete is reported the same way.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  client.failureCodes.deleteNamespacedSecret.push(503);
+  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 1);
+});
+
+test("kubernetes-secret-driver ends a retry pause at once when the owner cancels", async () => {
+  const client = new FakeCoreV1Api();
+  const { driver, secret } = await storedSecret(client);
+  const owner = new AbortController();
+  const reads = client.reads;
+  client.readSecretFailureCodes.push("dropped", "dropped");
+
+  // The mocked clock never moves: only the owner's abort can end the 100 ms pause.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let settled = false;
+    const result = withComputeAbortSignal(owner.signal, () =>
+      driver.withValue(secret, async () => assert.fail("a cancelled read must not be used")),
+    );
+    result.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const turns = async (count) => {
+      for (let turn = 0; turn < count && !settled; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    };
+    // The fake client answers in microtasks, so a few turns reach the pause.
+    await turns(20);
+    assert.equal(settled, false, "the dropped read waits in its retry pause");
+    assert.equal(client.reads - reads, 1);
+
+    owner.abort();
+    await turns(20);
+    assert.equal(settled, true, "the owner's abort ends the pause");
+    await assert.rejects(
+      result,
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret read was cancelled.",
+    );
+    assert.equal(client.reads - reads, 1, "no read after the cancellation");
+  } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort();
+    mock.timers.reset();
+  }
+});
+
+test("kubernetes-secret-driver reports a read the owner cancels in flight as cancelled", async () => {
+  const client = new FakeCoreV1Api();
+  const { driver, secret } = await storedSecret(client);
+  const owner = new AbortController();
+  const reads = client.reads;
+  // The read waits for its abort signal, then rejects with the abort reason.
+  client.readSecretTimesOut = true;
+  const result = withComputeAbortSignal(owner.signal, () => driver.resolve(secret));
+  try {
+    for (let turn = 0; client.reads === reads; turn += 1) {
+      assert.ok(turn < 100, "the read was never sent");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    owner.abort(new Error("claim lost"));
+    await assert.rejects(
+      result,
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret read was cancelled.",
+    );
+    assert.equal(client.reads - reads, 1, "no read after the cancellation");
+  } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort(new Error("claim lost"));
+    await result.catch(() => {});
   }
 });

@@ -2,7 +2,7 @@
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOKEN = /^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
 const RESERVED = /\{\{\s*vars\./;
-const MAX_BYTES = 1024 * 1024;
+export const PRESET_JSON_MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
 const MAX_WORKSPACE_FILE_BYTES = 16 * 1024;
 const INITIAL_WORKSPACE_FILE_NAMES = Object.freeze([
@@ -49,7 +49,7 @@ function checkJson(value, path = "template", depth = 0) {
 }
 
 function checkSize(value) {
-  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_BYTES) {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > PRESET_JSON_MAX_BYTES) {
     fail("template", "JSON exceeds maximum size of 1 MiB.");
   }
 }

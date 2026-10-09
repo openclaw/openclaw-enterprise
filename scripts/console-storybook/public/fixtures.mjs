@@ -228,6 +228,10 @@ export function installFixture(scenario, evidence) {
     configurationId: config.id,
     executionMode: "dedicated",
     harnessAuth: selectedAuth,
+    credentialSources: structuredClone(
+      scenario.credentialSources ??
+        (selectedAuth?.method === "credential_source" ? [{ sourceId: selectedAuth.sourceId }] : []),
+    ),
     ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
     ...(scenario.agentPluginApprovers !== undefined
       ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }

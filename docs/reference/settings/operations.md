@@ -60,7 +60,9 @@ An exit-0 `migration.checked` record reports one reviewed history shape:
 `preHumanAuthentication`, `preAgentDeletionTakeover`,
 `preNamespaceDeletionTakeover`, `preRepositoryAccess`, `preRestrictionReadLogs`,
 `preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
-`preModelProbeFailureCause`, or `completed`.
+`preModelProbeFailureCause`, `preProvisioningConfigurationRelease`, `preAdministratorCredentialSourceGrants`,
+`preCodexPatSources`, `preAgentCredentialSources`,
+`preCredentialWithdrawalRequester`, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -86,8 +88,11 @@ has 38 through `0037_human_authentication`; `preNamespaceDeletionTakeover` has
 `0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`
 has 46 through `0046_model_probe_failure_cause`;
 `preAdministratorCredentialSourceGrants` has 47 through
-`0047_provisioning_configuration_release`. `completed` is the current canonical
-history with all receipts, including `0048_administrator_credential_source_grants`.
+`0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
+`0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
+through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
+through `0050_agent_credential_sources`. `completed` is the current canonical
+history with all receipts, including `0051_credential_withdrawal_requester`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
@@ -126,6 +131,37 @@ Do not edit the ledger, run Drizzle directly to bypass the check, or restore an
 old schema over the canonical one. A failed or disconnected migration is not
 proof of rollback: reconnect, run `--check`, and inspect the retained database
 before deciding whether another attempt is appropriate.
+
+### Clear legacy managed PAT bindings before `0049`
+
+Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
+authentication: recreate development Agents, revisions, and provisioning
+requests before migrating` when an Agent draft, any AgentRevision, or a
+provisioning plan still holds a retired `chatgpt_service_account` binding. No
+API deletes a revision or provisioning request on its own: delete each affected
+Agent, which also deletes its revisions and requests, and create it again after
+the upgrade. Changing an Agent's binding does not clear historical revisions.
+
+A provisioning request that never created an Agent survives Agent deletion.
+Let queued or running requests finish. Then, as the migration role, list the
+remaining ones and delete those that failed or were cancelled. Deleting the
+`occ.controller_work` row removes its request row, as Agent deletion does:
+
+```sql
+SELECT work_id, status FROM occ.agent_provisioning_work
+WHERE agent_id IS NULL
+  AND plan #>> '{harnessAuth,method}' = 'chatgpt_service_account';
+
+DELETE FROM occ.controller_work
+WHERE work_kind = 'provisioning'
+  AND idempotency_key IN (
+    SELECT work_id FROM occ.agent_provisioning_work
+    WHERE agent_id IS NULL AND status IN ('failed', 'cancelled')
+      AND plan #>> '{harnessAuth,method}' = 'chatgpt_service_account');
+```
+
+Alternatively, [recreate the disposable installation](#recreate-an-unsupported-disposable-development-installation).
+In-place conversion is unsupported.
 
 ### Recreate an unsupported disposable development installation
 

@@ -91,6 +91,13 @@ A failed provisioning request does not block
 deletion; reading or retrying it then names the deleted Secret. Otherwise OCC calls the
 Driver before removing its own record.
 
+After the Installation selects another Secret Driver, Secrets stored through the
+previous one keep their metadata, and exact reads still work. Updating or
+deleting one fails with `503` and a message naming the fix, only after the grant,
+lookup, and reference checks: create a new Secret through the selected driver and
+bind it instead, or delete the old Secret once the Installation selects its
+Driver again. OCC never calls a Driver that does not own the Secret.
+
 For plugin discovery, OCC checks permissions and reads current Secret metadata,
 then calls `withValue` without holding a platform transaction over backend or
 provider I/O. The callback passes the value to the selected PluginDriver and

@@ -138,7 +138,8 @@ function wait(ms) {
 
 // Failed provisioning codes that a retry of the same job cannot fix: the worker rejected
 // the request (a taken name, a scope or authorization rejection, a Namespace or Agent
-// lifecycle change) or the job was cancelled. Every other code, including the worker's
+// lifecycle change, an Installation Driver change the stored plan no longer passes, or a
+// Secret Driver switch) or the job was cancelled. Every other code, including the worker's
 // PROVISIONING_FAILED and PROVISIONING_WORK_NOT_FOUND, keeps Retry.
 const PERMANENT_PROVISIONING_CODES = new Set(["PROVISIONING_REJECTED", "PROVISIONING_CANCELLED"]);
 
@@ -1693,6 +1694,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
+      ...(agent.credentialSources === undefined
+        ? {}
+        : { credentialSources: agent.credentialSources }),
     };
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
     if (
@@ -1734,6 +1738,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         (usesOAuth
           ? { method: "credential_source", sourceId: selectedCredentialSource.id }
           : { method: authMethod.value, source: selectedCredentialSource });
+      if (
+        body.harnessAuth.method === "credential_source" &&
+        !body.credentialSources?.some((source) => source.sourceId === body.harnessAuth.sourceId)
+      ) {
+        body.credentialSources = [
+          ...(body.credentialSources ?? []),
+          { sourceId: body.harnessAuth.sourceId },
+        ];
+      }
       if (shouldProvision()) {
         provisioningAttempt = {
           acknowledged: false,

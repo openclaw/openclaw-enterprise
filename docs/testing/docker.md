@@ -48,6 +48,20 @@ with `--volumes`. It uses disposable project resources and no model credentials
 or Agent runtime image. Failure cleanup uses Compose directly without masking
 the CLI failure. This proves the cleanup lifecycle, not Agent execution.
 
+## Docker response interruption regression
+
+With workspace dependencies already installed, run:
+
+```sh
+node --test tests/conformance/docker-compute.test.mjs
+```
+
+The preflight interruption case runs the production Driver and Node HTTP client
+against a local HTTP fault server in an isolated child. Only the socket address
+is redirected; the server closes a partially delivered response. Expect prompt
+rejection followed by a successful preflight retry. This covers response handling,
+not a Docker daemon, Compose startup, Agent deployment, or model execution.
+
 ## Docker transport-token retry fixture
 
 With Docker Engine available at `/var/run/docker.sock` and workspace dependencies
@@ -65,6 +79,12 @@ and model-probe responses are simulated solely to satisfy launcher startup. The
 case checks both peer-loss directions, retained token reuse, token rotation,
 replacement of a healthy gateway holding a stale token, and preservation of
 foreign-owned same-name containers and their siblings.
+
+The suite also exercises Namespace cleanup through the real Driver and engine.
+It disconnects an inert owned container and removes its network externally, then
+requires Namespace deletion to remove the container and workspace volume while
+preserving a sibling Namespace. It also checks ordinary and repeated deletion.
+This cleanup case uses the selected Node base image without building or pulling.
 
 This is Driver regression coverage without an Agent authentication binding. It
 does not pass through current OCC Agent admission or prove genuine OpenClaw,

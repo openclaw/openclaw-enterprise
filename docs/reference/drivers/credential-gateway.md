@@ -40,6 +40,10 @@ method below. Startup rejects a Driver that omits one.
 | `attachmentStatus`  | The same context plus the provisioned `SandboxResourceRef`.                                | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                      | Compute blocks activation on any state other than `ready` or `pending`.           |
 | `withdraw`          | Placement, revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.  |
 
+`attachForRevision` throws `CredentialSourceRevisionError` when two sources would
+share a placeholder environment variable; the worker then fails the deployment
+at once instead of retrying.
+
 A `CredentialSourceType` declares:
 
 - `type`: an implementation-defined name, such as `openai`.
@@ -52,7 +56,8 @@ A `CredentialSourceType` declares:
   config or Secret inputs.
 - `harnessAuth`: optional `{ modelProvider, loginMode }`. Only a type with this
   entry can authenticate a Harness. Login modes are `api_key` and, for dedicated
-  Codex, `chatgptAuthTokens`.
+  Codex, `chatgptAuthTokens`. An Agent lists every source it uses, of any type,
+  in `credentialSources`.
 
 ### External ChatGPT authentication
 
@@ -106,7 +111,11 @@ credential. The callback rechecks authorization before provider I/O; source
 withdrawal and token readiness remain the external service's responsibility.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
-uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`.
+uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`,
+which returns the exact Sandbox a revision runs in without side effects.
+Compute throws `CredentialWithdrawalRefusedError` when its configuration cannot
+reach that Sandbox or it finds an object it does not own; the worker then fails
+the withdrawal without retrying.
 
 ## IAM
 
@@ -152,11 +161,17 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
    be `ready`, and its type must declare `harnessAuth`. A Sandbox must be
    selected, and Compute validates the combination; see
    [Harness authentication](../harness-execution.md#harness-authentication).
+   Every listed source, including the Harness source, is frozen as
+   `{ sourceId, credentialGatewayId, sourceType }` in `credentialSources`.
 3. **Dispatch.** The worker rechecks both `operate` grants, requires the
    selected gateway to match the snapshot, and loads the current source record.
    A missing, `deleting`, or mismatched source stops the revision. Compute
-   revalidates the binding against the gateway's current catalog entry.
-4. **Provisioning.** Compute calls `attachForRevision` and passes the result in
+   revalidates the binding against the gateway's current catalog entry. The
+   worker passes the other listed sources it loaded in
+   `ComputeRevisionContext.credentialSources`, omitting the Harness source and any
+   withdrawn from the revision.
+4. **Provisioning.** Compute calls `attachForRevision` with the Harness source
+   first and the other sources after it, and passes the result in
    `HarnessWorkloadRequirements.credentialAttachments` to `provisionHarness`.
    The paired Sandbox must consume every attachment and reject any it did not
    issue.
@@ -169,9 +184,14 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
    value until they restart.
 7. **Withdrawal.** The API records a `pending` withdrawal for the Agent's active
    revision and queues worker work. The worker rechecks `agent:operate`, and
-   Compute derives the revision's Sandbox and calls `withdraw`. Only `revoked`
-   or `absent` marks it `revoked`; otherwise the work retries. The revision
-   never re-attaches a withdrawn source.
+   Compute derives the revision's Sandbox and calls `withdraw` for each pending
+   withdrawal of the revision. Only `revoked` or `absent` marks one `revoked`;
+   otherwise the work retries. The revision never re-attaches a withdrawn
+   source. Because a Sandbox create accepted before a withdrawal can land after
+   it, each preparation, and each maintenance pass of a revision whose Harness
+   source is withdrawn, first calls `withdraw` with `recheck` for every
+   `revoked` source of the revision: the gateway then detaches only a source
+   the Sandbox still lists.
 8. **Deletion.** The API refuses deletion while an Agent draft, active revision,
    or pending deployment references the source. Otherwise it marks the record
    `deleting`, calls `removeSource`, then deletes the record. Revision stop
@@ -193,6 +213,7 @@ adopt or delete the same stored copy.
   requires the external-auth attachment described above. The bundled catalog
   still exposes only static API-key sources; this contract does not implement
   an OAuth Token Service, OAuth source Driver, or token injection.
+  Other listed sources need a Sandbox Driver that provisions the Harness.
 - Guided Agent provisioning rejects credential-source Harness authentication.
   Create the Agent, then deploy it.
 - Installed Credential Gateway packages are unsupported.
@@ -201,10 +222,11 @@ adopt or delete the same stored copy.
 
 | Symptom                                              | What to check                                                                                                                     |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Registration returns `400` or `404`                  | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
+| Registration returns `400`, `404`, or `409`          | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
 | Registration or binding returns `403`                | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
 | Deployment returns `409` with a gateway selected     | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
 | Registration, read status, or deletion returns `503` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
+| `503` naming the driver that registered the source   | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
 | A revision never activates                           | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
 
 ## Implementations

@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
+  ConfigurationBackendUnavailableError,
   ConfigurationConflictError,
   ConfigurationValidationError,
   KubernetesConfigurationDriver,
   kubernetesConfigurationName,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  currentComputeAbortSignal,
+  withComputeAbortSignal,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -534,5 +539,261 @@ test("Kubernetes Configuration cancels an in-flight request when its provisionin
     clearTimeout(timer);
     finishTransport(lost);
     await pending.catch(() => {});
+  }
+});
+
+// The fake API with failures queued per method, each thrown before the call takes
+// effect, and a method that can stall until its request is aborted.
+class FlakyConfigurationCoreV1Api extends FakeConfigurationCoreV1Api {
+  failureCodes = {
+    listNamespace: [],
+    readNamespacedConfigMap: [],
+    createNamespacedConfigMap: [],
+    replaceNamespacedConfigMap: [],
+    deleteNamespacedConfigMap: [],
+  };
+  calls = Object.fromEntries(Object.keys(this.failureCodes).map((method) => [method, 0]));
+  stalls = new Set();
+
+  async called(method) {
+    this.calls[method] += 1;
+    const failure = this.failureCodes[method].shift();
+    if (failure === "dropped") {
+      // What the client throws when the API server closes the connection unanswered.
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    }
+    if (failure !== undefined) {
+      throw Object.assign(new Error(`${method} failed with ${failure}`), { code: failure });
+    }
+    if (this.stalls.has(method)) {
+      const signal = currentComputeAbortSignal();
+      if (signal === undefined) {
+        throw new Error(`${method} would stall with no deadline`);
+      }
+      await new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
+    }
+  }
+
+  async listNamespace(request) {
+    await this.called("listNamespace");
+    return super.listNamespace(request);
+  }
+
+  async readNamespacedConfigMap(request) {
+    await this.called("readNamespacedConfigMap");
+    return super.readNamespacedConfigMap(request);
+  }
+
+  async createNamespacedConfigMap(request) {
+    await this.called("createNamespacedConfigMap");
+    return super.createNamespacedConfigMap(request);
+  }
+
+  async replaceNamespacedConfigMap({ namespace, name, body }) {
+    await this.called("replaceNamespacedConfigMap");
+    const stored = {
+      ...structuredClone(body),
+      metadata: { ...body.metadata, resourceVersion: "2" },
+    };
+    this.configMaps.set(`${namespace}/${name}`, stored);
+    return structuredClone(stored);
+  }
+
+  async deleteNamespacedConfigMap({ namespace, name }) {
+    await this.called("deleteNamespacedConfigMap");
+    this.configMaps.delete(`${namespace}/${name}`);
+    return {};
+  }
+}
+
+async function storedConfiguration() {
+  const client = new FlakyConfigurationCoreV1Api();
+  client.addNamespace(namespaceId);
+  const driver = createDriver();
+  driver.client = Promise.resolve(client);
+  await driver.create(configuration);
+  return { client, driver };
+}
+
+const nextGeneration = { ...configuration, generation: 2 };
+
+// Each read the driver sends, and an operation that sends it.
+const readPaths = [
+  ["listNamespace", "read", (driver) => driver.read(configuration)],
+  ["readNamespacedConfigMap", "read", (driver) => driver.read(configuration)],
+  ["readNamespacedConfigMap", "inspectExact", (driver) => driver.inspectExact(configuration)],
+  ["readNamespacedConfigMap", "update", (driver) => driver.update(nextGeneration)],
+  ["readNamespacedConfigMap", "delete", (driver) => driver.delete(configuration)],
+];
+
+test("Kubernetes Configuration retries 429, 5xx and dropped reads on the pause schedule", async () => {
+  for (const failure of ["dropped", 429, 500, 503]) {
+    for (const [method, name, operation] of readPaths) {
+      const label = `${name} ${method} ${failure}`;
+      let { client, driver } = await storedConfiguration();
+
+      // Five failures, then an answer: the operation succeeds after the five pauses.
+      client.failureCodes[method].push(...Array(5).fill(failure));
+      let before = client.calls[method];
+      let pauses = [];
+      await withRetryTimers(() => operation(driver), pauses);
+      assert.equal(client.calls[method] - before, 6, label);
+      assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, label);
+
+      // A sixth failure ends the operation with the client's error once the schedule is spent.
+      ({ client, driver } = await storedConfiguration());
+      client.failureCodes[method].push(...Array(6).fill(failure));
+      before = client.calls[method];
+      pauses = [];
+      await assert.rejects(
+        () => withRetryTimers(() => operation(driver), pauses),
+        (error) => error.code === (failure === "dropped" ? "ECONNRESET" : failure),
+        label,
+      );
+      assert.equal(client.calls[method] - before, 6, label);
+      assert.deepEqual(pauses, READ_RETRY_PAUSES_MS, label);
+      assert.equal(client.calls.replaceNamespacedConfigMap, 0, label);
+      assert.equal(client.calls.deleteNamespacedConfigMap, 0, label);
+    }
+  }
+});
+
+test("Kubernetes Configuration ends a refused or missing read at once", async () => {
+  for (const failure of [403, 404, 409, "EACCES"]) {
+    for (const [method, name, operation] of readPaths) {
+      const label = `${name} ${method} ${failure}`;
+      const { client, driver } = await storedConfiguration();
+      client.failureCodes[method].push(failure);
+      const before = client.calls[method];
+      const pauses = [];
+      if (failure === 404 && name === "inspectExact") {
+        assert.equal(await withRetryTimers(() => operation(driver), pauses), undefined, label);
+      } else {
+        await assert.rejects(
+          () => withRetryTimers(() => operation(driver), pauses),
+          (error) => error.code === failure,
+          label,
+        );
+      }
+      assert.equal(client.calls[method] - before, 1, label);
+      assert.deepEqual(pauses, [], label);
+    }
+  }
+});
+
+test("Kubernetes Configuration sends a failed write once, even when a read would retry", async () => {
+  const otherConfiguration = { ...configuration, id: "cfg_00000000-0000-4000-8000-000000000002" };
+  for (const failure of ["dropped", 429, 503]) {
+    for (const [name, method, write] of [
+      ["create", "createNamespacedConfigMap", (driver) => driver.create(otherConfiguration)],
+      [
+        "createExact",
+        "createNamespacedConfigMap",
+        (driver) => driver.createExact(otherConfiguration),
+      ],
+      ["update", "replaceNamespacedConfigMap", (driver) => driver.update(nextGeneration)],
+      ["delete", "deleteNamespacedConfigMap", (driver) => driver.delete(configuration)],
+    ]) {
+      const label = `${name} ${method} ${failure}`;
+      const { client, driver } = await storedConfiguration();
+      const stored = structuredClone([...client.configMaps.entries()]);
+      client.failureCodes[method].push(failure);
+      const before = client.calls[method];
+      const pauses = [];
+      await assert.rejects(
+        () => withRetryTimers(() => write(driver), pauses),
+        (error) => error.code === (failure === "dropped" ? "ECONNRESET" : failure),
+        label,
+      );
+      assert.equal(client.calls[method] - before, 1, label);
+      assert.deepEqual(pauses, [], label);
+      assert.deepEqual([...client.configMaps.entries()], stored, label);
+    }
+  }
+});
+
+test("Kubernetes Configuration ends a retry pause at once when the owner cancels", async () => {
+  const { client, driver } = await storedConfiguration();
+  const owner = new AbortController();
+  const lost = new Error("Configuration provisioning claim lost");
+  const before = client.calls.readNamespacedConfigMap;
+  client.failureCodes.readNamespacedConfigMap.push("dropped", "dropped");
+
+  // The mocked clock never moves: only the owner's abort can end the 100 ms pause.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let settled = false;
+    const result = withComputeAbortSignal(owner.signal, () => driver.read(configuration));
+    result.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const turns = async (count) => {
+      for (let turn = 0; turn < count && !settled; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    };
+    // The fake client answers in microtasks, so a few turns reach the pause.
+    await turns(20);
+    assert.equal(settled, false, "the dropped read waits in its retry pause");
+    assert.equal(client.calls.readNamespacedConfigMap - before, 1);
+
+    owner.abort(lost);
+    await turns(20);
+    assert.equal(settled, true, "the owner's abort ends the pause");
+    await assert.rejects(result, (error) => error === lost);
+    assert.equal(
+      client.calls.readNamespacedConfigMap - before,
+      1,
+      "no read after the cancellation",
+    );
+  } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort(lost);
+    mock.timers.reset();
+  }
+});
+
+test("Kubernetes Configuration gives up on a request at its deadline and never resends it", async (t) => {
+  // Each request's 10 s deadline is an AbortSignal.timeout; these deadlines fire on demand.
+  const deadlines = [];
+  t.mock.method(AbortSignal, "timeout", (delay) => {
+    assert.equal(delay, 10_000);
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    return deadline.signal;
+  });
+  for (const [method, action, operation] of [
+    ["readNamespacedConfigMap", "read", (driver) => driver.read(configuration)],
+    ["listNamespace", "namespace verification", (driver) => driver.read(configuration)],
+    ["replaceNamespacedConfigMap", "update", (driver) => driver.update(nextGeneration)],
+  ]) {
+    const { client, driver } = await storedConfiguration();
+    client.stalls.add(method);
+    const before = client.calls[method];
+    const result = operation(driver);
+    try {
+      for (let turn = 0; client.calls[method] === before; turn += 1) {
+        assert.ok(turn < 100, `${method} was never sent`);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      deadlines.at(-1).abort(new DOMException("deadline", "TimeoutError"));
+      await assert.rejects(
+        result,
+        (error) =>
+          error instanceof ConfigurationBackendUnavailableError &&
+          error.message === `The Kubernetes ConfigMap ${action} outcome is unknown after timeout.`,
+        method,
+      );
+      assert.equal(client.calls[method] - before, 1, method);
+    } finally {
+      // Settles the operation even when an assertion above failed first.
+      for (const deadline of deadlines) {
+        deadline.abort();
+      }
+      await result.catch(() => {});
+    }
   }
 });

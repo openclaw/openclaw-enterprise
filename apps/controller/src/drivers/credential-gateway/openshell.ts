@@ -11,7 +11,7 @@ import type {
   CredentialSourceStatus,
   CredentialSourceType,
 } from "@openclaw-enterprise/contracts";
-import { ScopeViolationError } from "@openclaw-enterprise/occ";
+import { CredentialSourceRevisionError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
@@ -28,8 +28,13 @@ import {
 } from "../sandbox/openshell-gateway-client.ts";
 
 export interface OpenShellCredentialGatewayOptions {
-  /** Absolute paths of the Harness binaries allowed to reach credentialed endpoints. */
+  /** Absolute paths of the Harness binaries allowed to reach model endpoints. */
   readonly binaries: readonly string[];
+  /**
+   * Absolute paths of the Sandbox binaries allowed to reach non-model sources' endpoints.
+   * Without it the catalog omits `bearer-token`.
+   */
+  readonly toolBinaries?: readonly string[];
 }
 
 export interface OpenShellCredentialGatewaySelection {
@@ -48,12 +53,39 @@ const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 
 interface OpenShellSourceType {
   readonly catalog: CredentialSourceType;
+  /** Rejects invalid non-secret configuration before any gateway effect. */
+  validate(config: Readonly<Record<string, string>>): void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
-  readonly credentials: Readonly<Record<string, string>>;
-  profile(binaries: readonly string[]): Omit<OpenShellProviderProfile, "annotations">;
+  credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
+  /** Shared by every source of the type, or owned by one source and removed with it. */
+  readonly profileScope: "type" | "source";
+  profileId(sourceId: string): string;
+  profile(
+    sourceId: string,
+    config: Readonly<Record<string, string>>,
+    options: OpenShellCredentialGatewayOptions,
+  ): Omit<OpenShellProviderProfile, "annotations">;
 }
 
-// TODO(credential-gateway next slice): add external and OAuth2 gateway-refresh source types.
+const HOST =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+const ENDPOINT_PATH = /^\/[A-Za-z0-9/._~*-]{0,255}$/;
+const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const RESERVED_ENVIRONMENT = new Set(["HOME", "LANG", "OPENAI_API_KEY", "PATH", "SHELL", "USER"]);
+const RESERVED_ENVIRONMENT_PREFIXES = ["CODEX_", "OCE_", "OPENCLAW_", "OPENSHELL_"];
+
+function bearerTokenEndpoint(config: Readonly<Record<string, string>>): {
+  readonly host: string;
+  readonly port: number;
+  readonly path: string;
+} {
+  return {
+    host: config.host ?? "",
+    port: config.port === undefined ? 443 : Number(config.port),
+    path: config.path ?? "/**",
+  };
+}
+
 const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   {
     catalog: Object.freeze({
@@ -65,8 +97,11 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       rotation: "none",
       harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "api_key" }),
     }),
-    credentials: Object.freeze({ api_key: "OPENAI_API_KEY" }),
-    profile: (binaries: readonly string[]) => ({
+    validate: () => {},
+    credentials: () => Object.freeze({ api_key: "OPENAI_API_KEY" }),
+    profileScope: "type",
+    profileId: () => "oce-openai",
+    profile: (_sourceId, _config, options) => ({
       id: "oce-openai",
       displayName: "OpenAI API key (OpenClaw Enterprise)",
       category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
@@ -80,11 +115,95 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         },
       ],
       endpoints: [{ host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" }],
-      binaries,
+      binaries: options.binaries,
       inferenceCapable: true,
     }),
   },
+  {
+    // TODO(credential-gateway gateway refresh): add oauth2-client-credentials and
+    // oauth2-refresh-token, which OpenShell mints and rotates without a restart.
+    catalog: Object.freeze({
+      type: "bearer-token",
+      config: Object.freeze([
+        Object.freeze({
+          name: "host",
+          required: true,
+          description: "Exact DNS name of the protected API.",
+        }),
+        Object.freeze({ name: "port", required: false, description: "Port; defaults to 443." }),
+        Object.freeze({
+          name: "path",
+          required: false,
+          description: "Path pattern the token may reach; defaults to /**.",
+        }),
+        Object.freeze({
+          name: "env_var",
+          required: true,
+          description: "Environment variable that holds the token placeholder in the Sandbox.",
+        }),
+      ]),
+      secrets: Object.freeze([
+        Object.freeze({ name: "token", required: true, description: "Static bearer token." }),
+      ]),
+      rotation: "none",
+    }),
+    validate: (config) => {
+      const { host, port, path } = bearerTokenEndpoint(config);
+      const name = config.env_var ?? "";
+      if (!HOST.test(host) || /^[0-9.]+$/.test(host)) {
+        throw new ScopeViolationError("The bearer-token host must be an exact DNS name.");
+      }
+      if ((config.port !== undefined && !/^[1-9][0-9]{0,4}$/.test(config.port)) || port > 65_535) {
+        throw new ScopeViolationError("The bearer-token port must be 1 to 65535.");
+      }
+      if (!ENDPOINT_PATH.test(path)) {
+        throw new ScopeViolationError("The bearer-token path must be an absolute path pattern.");
+      }
+      if (
+        !ENVIRONMENT_NAME.test(name) ||
+        RESERVED_ENVIRONMENT.has(name) ||
+        RESERVED_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix))
+      ) {
+        throw new ScopeViolationError(
+          "The bearer-token env_var must be an unreserved upper-case environment variable name.",
+        );
+      }
+    },
+    credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
+    profileScope: "source",
+    profileId: (sourceId) => openShellProviderName(sourceId),
+    profile: (sourceId, config, options) => ({
+      id: openShellProviderName(sourceId),
+      displayName: "Bearer token (OpenClaw Enterprise)",
+      category: "PROVIDER_PROFILE_CATEGORY_OTHER" as const,
+      credentials: [
+        {
+          name: "token",
+          envVars: [config.env_var ?? ""],
+          required: true,
+          authStyle: "bearer",
+          headerName: "authorization",
+        },
+      ],
+      endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
+      binaries: requiredToolBinaries(options),
+      inferenceCapable: false,
+    }),
+  },
 ]);
+
+/**
+ * OpenShell lets any binary use a profile with an empty binary list, so a bearer-token profile is
+ * never written without `toolBinaries`. Never reconcile existing profiles to an empty list.
+ */
+function requiredToolBinaries(options: OpenShellCredentialGatewayOptions): readonly string[] {
+  if (options.toolBinaries === undefined || options.toolBinaries.length === 0) {
+    throw new OpenShellCredentialGatewayFailure(
+      "OpenShell bearer-token profiles require configured toolBinaries.",
+    );
+  }
+  return options.toolBinaries;
+}
 
 function validateOptions(options: OpenShellCredentialGatewayOptions): void {
   const record = asRecord(options);
@@ -94,7 +213,7 @@ function validateOptions(options: OpenShellCredentialGatewayOptions): void {
     );
   }
   for (const key of Object.keys(record)) {
-    if (key !== "binaries") {
+    if (key !== "binaries" && key !== "toolBinaries") {
       throw new OpenShellCredentialGatewayFailure(
         `OpenShell Credential Gateway configuration contains unsupported option ${key}.`,
       );
@@ -109,21 +228,55 @@ function validateOptions(options: OpenShellCredentialGatewayOptions): void {
       "OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.",
     );
   }
+  if (
+    options.toolBinaries !== undefined &&
+    (!Array.isArray(options.toolBinaries) ||
+      options.toolBinaries.length === 0 ||
+      options.toolBinaries.some((path) => !isNonEmptyString(path) || !isAbsolute(path)))
+  ) {
+    throw new OpenShellCredentialGatewayFailure(
+      "OpenShell Credential Gateway toolBinaries must be a nonempty list of absolute paths.",
+    );
+  }
 }
 
-function sourceType(type: string): OpenShellSourceType {
-  const found = SOURCE_TYPES.find((entry) => entry.catalog.type === type);
+function catalogTypes(options: OpenShellCredentialGatewayOptions): readonly OpenShellSourceType[] {
+  return SOURCE_TYPES.filter(
+    (entry) => entry.catalog.harnessAuth !== undefined || options.toolBinaries !== undefined,
+  );
+}
+
+/** A type the current configuration offers: registration, update and attach need one. */
+function sourceType(type: string, options: OpenShellCredentialGatewayOptions): OpenShellSourceType {
+  return findSourceType(catalogTypes(options), type);
+}
+
+/**
+ * Any type this driver ever registered. Status and removal of an existing source must not
+ * depend on the current configuration: a source registered before `toolBinaries` was removed
+ * still has to be deletable.
+ */
+function knownSourceType(type: string): OpenShellSourceType {
+  return findSourceType(SOURCE_TYPES, type);
+}
+
+function findSourceType(types: readonly OpenShellSourceType[], type: string): OpenShellSourceType {
+  const found = types.find((entry) => entry.catalog.type === type);
   if (found === undefined) {
     throw new ScopeViolationError("The OpenShell Credential Gateway does not support this type.");
   }
   return found;
 }
 
-function ownedBy(provider: OpenShellProviderResponse, sourceId: string, type: string): boolean {
+function ownedBy(
+  provider: OpenShellProviderResponse,
+  sourceId: string,
+  type: OpenShellSourceType,
+): boolean {
   return (
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
     provider.labels[SOURCE_ID_LABEL] === sourceId &&
-    provider.type === sourceType(type).profile([]).id
+    provider.type === type.profileId(sourceId)
   );
 }
 
@@ -133,7 +286,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     type: "object",
     required: ["binaries"],
     additionalProperties: false,
-    properties: { binaries: { type: "array", items: { type: "string" }, minItems: 1 } },
+    properties: {
+      binaries: { type: "array", items: { type: "string" }, minItems: 1 },
+      toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
+    },
   });
 
   static validateConfiguration(configuration: unknown): void {
@@ -163,32 +319,45 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         "The OpenShell Backend does not declare this Credential Gateway Driver as a member.",
       );
     }
-    this.options = Object.freeze({ binaries: Object.freeze([...options.binaries]) });
+    this.options = Object.freeze({
+      binaries: Object.freeze([...options.binaries]),
+      ...(options.toolBinaries === undefined
+        ? {}
+        : { toolBinaries: Object.freeze([...options.toolBinaries]) }),
+    });
     this.backend = selection.backend;
   }
 
   async listSourceTypes(
     _context: CredentialGatewayContext,
   ): Promise<readonly CredentialSourceType[]> {
-    return SOURCE_TYPES.map((entry) => entry.catalog);
+    return catalogTypes(this.options).map((entry) => entry.catalog);
   }
 
   async registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
-    const type = sourceType(input.type);
+    const type = sourceType(input.type, this.options);
+    type.validate(input.config);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    await this.ensureProfile(client, workspace, type, context.signal);
-    const name = openShellProviderName(context.source.id);
     const credentials = providerCredentials(type, input);
+    await this.ensureProfile(
+      client,
+      workspace,
+      type,
+      context.source.id,
+      input.config,
+      context.signal,
+    );
+    const name = openShellProviderName(context.source.id);
     try {
       await client.createProvider(
         {
           workspace,
           name,
-          type: type.profile([]).id,
+          type: type.profileId(context.source.id),
           labels: {
             [MANAGED_BY_LABEL]: MANAGED_BY,
             [SOURCE_ID_LABEL]: context.source.id,
@@ -204,7 +373,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Replay after an uncertain create adopts only this exact source's provider.
       const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !ownedBy(existing, context.source.id, input.type)) {
+      if (existing === undefined || !ownedBy(existing, context.source.id, type)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -215,13 +384,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   /**
    * Replaces the stored static values. OpenShell gives them only to processes started after
-   * the update, so a running Harness keeps its value until its next deployment.
+   * the update, so a running Harness keeps its value until its next deployment. Also rewrites
+   * the source's profile when the configured binaries changed since it was written.
    */
   async updateSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
-    const type = sourceType(input.type);
+    const type = sourceType(input.type, this.options);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const name = openShellProviderName(context.source.id);
@@ -229,11 +399,21 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(existing, context.source.id, input.type)) {
+    if (!ownedBy(existing, context.source.id, type)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
     }
+    // The profile follows the current configuration, so a narrowed binary list applies here.
+    // Narrow first: if the credential update then fails, the old token is only less reachable.
+    await this.ensureProfile(
+      client,
+      workspace,
+      type,
+      context.source.id,
+      context.source.config,
+      context.signal,
+    );
     await client.updateProviderCredentials(
       workspace,
       name,
@@ -257,7 +437,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (provider === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(provider, context.source.id, context.source.type)) {
+    if (!ownedBy(provider, context.source.id, knownSourceType(context.source.type))) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
     return { state: "ready" };
@@ -267,9 +447,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const name = openShellProviderName(context.source.id);
     const client = this.client(context);
+    const type = knownSourceType(context.source.type);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      if (!ownedBy(existing, context.source.id, context.source.type)) {
+      if (!ownedBy(existing, context.source.id, type)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -279,9 +460,11 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         throw new OpenShellCredentialGatewayFailure("The OpenShell provider was not deleted.");
       }
     }
-    // Workspace deletion requires no profiles, so the last source of a type removes its profile.
-    const profileId = sourceType(context.source.type).profile([]).id;
-    const remaining = await client.listProviders(workspace, context.signal);
+    // Workspace deletion requires no profiles: a source-owned profile goes with its source, and
+    // the last source of a type removes the type's shared profile.
+    const profileId = type.profileId(context.source.id);
+    const remaining =
+      type.profileScope === "source" ? [] : await client.listProviders(workspace, context.signal);
     if (!remaining.some((provider) => provider.type === profileId)) {
       await client.deleteProviderProfile(workspace, profileId, context.signal);
     }
@@ -293,17 +476,32 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const attachments: CredentialSourceAttachment[] = [];
+    const environment = new Set<string>();
     for (const source of context.sources) {
       if (source.driverId !== this.id || source.namespaceId !== context.namespace.id) {
         throw new ScopeViolationError("The credential source is not owned by this gateway.");
       }
+      const type = sourceType(source.type, this.options);
+      // Two sources cannot place their placeholders in the same Sandbox variable.
+      for (const name of Object.values(type.credentials(source.config))) {
+        if (environment.has(name)) {
+          throw new CredentialSourceRevisionError(
+            "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+            "Two credential sources bound to the revision use the same environment variable.",
+          );
+        }
+        environment.add(name);
+      }
       const name = openShellProviderName(source.id);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id, source.type)) {
+      if (provider === undefined || !ownedBy(provider, source.id, type)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );
       }
+      // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
+      // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
+      await this.ensureProfile(client, workspace, type, source.id, source.config, context.signal);
       attachments.push(Object.freeze({ sourceId: source.id, ref: name }));
     }
     return Object.freeze(attachments);
@@ -347,6 +545,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const provider = openShellProviderName(context.sourceId);
     const sandbox = context.sandbox.resourceName;
+    if (context.recheck === true) {
+      // A recorded revocation needs a new detach only if the Sandbox lists the provider again,
+      // for example after a create that OpenShell accepted before the withdrawal landed after it.
+      const existing = await client.getSandbox({ name: sandbox, workspace }, context.signal);
+      if (existing === undefined) {
+        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+      }
+      const providers = existing.spec?.providers;
+      if (!Array.isArray(providers) || !providers.includes(provider)) {
+        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
+      }
+    }
     // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
     const detached = await client.detachSandboxProvider(
       workspace,
@@ -381,19 +591,35 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     client: OpenShellGatewayClient,
     workspace: string,
     type: OpenShellSourceType,
+    sourceId: string,
+    config: Readonly<Record<string, string>>,
     signal: AbortSignal,
   ): Promise<void> {
-    const base = type.profile(this.options.binaries);
+    const base = type.profile(sourceId, config, this.options);
     const digest = sha256Hex(JSON.stringify(base));
     const profile: OpenShellProviderProfile = {
       ...base,
       annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },
     };
     const existing = await client.getProviderProfile(workspace, base.id, signal);
-    if (existing === undefined) {
-      await client.importProviderProfile(workspace, profile, signal);
-    } else if (existing.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
-      await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
+    if (existing?.annotations[PROFILE_DIGEST_ANNOTATION] === digest) {
+      return;
+    }
+    try {
+      if (existing === undefined) {
+        await client.importProviderProfile(workspace, profile, signal);
+      } else {
+        await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
+      }
+    } catch (error) {
+      // A concurrent writer with the same configuration (another deployment, or a replay)
+      // already stored this exact profile.
+      const current = await client
+        .getProviderProfile(workspace, base.id, signal)
+        .catch(() => undefined);
+      if (current?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
+        throw error;
+      }
     }
   }
 }
@@ -403,7 +629,7 @@ function providerCredentials(
   input: CredentialSourceInput,
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(type.credentials).map(([field, key]) => {
+    Object.entries(type.credentials(input.config)).map(([field, key]) => {
       const value = input.secrets[field];
       if (!isNonEmptyString(value)) {
         throw new ScopeViolationError(`The credential source secret ${field} is required.`);

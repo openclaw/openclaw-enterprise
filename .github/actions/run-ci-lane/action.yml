@@ -53,7 +53,7 @@ runs:
         sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
         skopeo --version | grep -Fx 'skopeo version 1.13.3'
     - name: Enable Kubernetes bridge packet filtering
-      if: startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
+      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -70,11 +70,11 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth'
+      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -118,8 +118,8 @@ runs:
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
       run: pnpm build
-    - name: Build Go CLI for OpenShell development proof
-      if: inputs.lane == 'openshell'
+    - name: Build Go CLI for development installation proof
+      if: inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Prepare hosted platform disk capacity
@@ -149,10 +149,14 @@ runs:
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
+    - name: Install trusted browser certificate tooling
+      if: inputs.lane == 'qa-matrix'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libnss3-tools
     - name: Run lane
       shell: bash
       env:
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.
@@ -199,11 +203,12 @@ runs:
         retention-days: 7
     - name: Upload cluster diagnostics
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      # Setup failures and every k3d file's Agent namespace activity; lanes
-      # without a cluster write no report.
+      # Setup failures, failed files' details and every k3d file's Agent
+      # namespace activity; a lane with none writes no report. One per attempt,
+      # so a passing rerun cannot replace a failed attempt's report.
       if: always()
       with:
-        name: diagnostics-${{ inputs.artifact-prefix }}-${{ inputs.lane }}
+        name: diagnostics-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
         path: ${{ runner.temp }}/state/${{ inputs.lane }}.json.diagnostics.json
         overwrite: true
         if-no-files-found: ignore

@@ -71,9 +71,9 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   [deploy an Agent](../api.md#post-namespacesnamespaceidagentsagentiddeploy) also
   require `configuration:read`, `service_account:read` for current or new
   associations, `secret:operate` for bound Secrets, and `credential_source:operate`
-  for a bound credential source. At deployment the Agent’s own service principal
-  also needs `secret:operate` on each bound Secret and `credential_source:operate`
-  on its source.
+  for each source in `credentialSources`. At
+  deployment the Agent’s own service principal also needs `secret:operate` on each
+  bound Secret and `credential_source:operate` on each source.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.

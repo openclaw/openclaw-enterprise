@@ -41,6 +41,167 @@ function logRequests(requests, revisionId) {
   return requests.filter(({ path }) => path.includes(`/deployments/${revisionId}/runtime/logs`));
 }
 
+test("a failed deployment's Logs link opens its version in view without reloading", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  computeDriver.state.lines = [line(1, "startup failed before activation")];
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  // Simulate a recorded startup failure; navigation and runtime-log reads use the real app.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${failed.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: failed.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "failed",
+            error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." },
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_test_logs_navigation" },
+        }),
+      }),
+  );
+
+  // Draft and current-version views must both open the failed version; its own
+  // Configuration view switches tabs without replacing the document either.
+  for (const [index, selected] of ["draft", revisionId, failed.id].entries()) {
+    const url = detailUrl(fixture, namespace.id, agent.id, selected, "configuration");
+    if (index === 0) {
+      await login(page, fixture, url);
+    } else {
+      await page.goto(url.href);
+    }
+    const link = page.locator(".deployment-status").getByRole("link", { name: "Open v2 Logs" });
+    await link.waitFor();
+    await page.evaluate(() => {
+      globalThis.document.logsNavigationMarker = true;
+    });
+    await link.click();
+    await page.waitForURL(
+      (url) =>
+        url.searchParams.get("revision") === failed.id && url.searchParams.get("tab") === "logs",
+    );
+    const pane = page.getByRole("log", { name: "Runtime log output" });
+    await pane.getByText("startup failed before activation").waitFor();
+    assert.equal(await page.evaluate(() => globalThis.document.logsNavigationMarker), true);
+    await page.waitForFunction(() => {
+      const tab = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
+      const panel = globalThis.document.querySelector(".agent-logs");
+      if (!tab || !panel) {
+        return false;
+      }
+      const bounds = panel.getBoundingClientRect();
+      return (
+        tab.textContent === "Logs" &&
+        globalThis.document.activeElement === tab &&
+        bounds.top >= 0 &&
+        bounds.top < globalThis.innerHeight
+      );
+    });
+    assert.ok(
+      computeDriver.calls.some(
+        ({ operation, revisionId }) => operation === "read" && revisionId === failed.id,
+      ),
+    );
+  }
+});
+
+test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "phone-width output")];
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await trackSettledFetches(page);
+  // Simulate a terminal deployment record so Back can retain the whole mounted view.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: revisionId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "succeeded",
+            error: null,
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_tabs_back" },
+        }),
+      }),
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  await login(page, fixture, url);
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("phone-width output")
+    .waitFor();
+
+  async function assertSelectedTabVisible(name) {
+    const selected = page.locator('.agent-tabs button[aria-current="page"]');
+    assert.equal(await selected.textContent(), name);
+    await page.waitForFunction(() => {
+      const button = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
+      const strip = button.closest("nav").getBoundingClientRect();
+      const bounds = button.getBoundingClientRect();
+      return bounds.left >= strip.left && bounds.right <= strip.right;
+    });
+  }
+
+  // A direct route has no pointer action to scroll its off-screen selected tab.
+  await assertSelectedTabVisible("Logs");
+  const output = await page.getByRole("log", { name: "Runtime log output" }).elementHandle();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await assertSelectedTabVisible("Logs");
+  // Resizing the mounted view must also reveal the selection without recreating its panel.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertSelectedTabVisible("Logs");
+  assert.equal(await output.evaluate((node) => node.isConnected), true);
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByText("View admitted native configuration", { exact: true }).click();
+  await waitForIdleFetches(page);
+  const disclosure = await page.locator(".native-document").elementHandle();
+
+  // Browser history also selects tabs without scrolling them through a click.
+  await page.goBack();
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("phone-width output")
+    .waitFor();
+  await assertSelectedTabVisible("Logs");
+  await page.goForward();
+  await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+  await assertSelectedTabVisible("Configuration");
+  assert.equal(await disclosure.evaluate((node) => node.isConnected && node.open), true);
+
+  // A whole view retained for Back must resume observing after its tab strip was detached.
+  await page.goBack();
+  await page.getByRole("log", { name: "Runtime log output" }).waitFor();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const strip = await page.locator(".agent-tabs").elementHandle();
+  await waitForIdleFetches(page);
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.equal(await strip.evaluate((node) => node.isConnected), false);
+  await page.goBack();
+  await page.locator('.agent-tabs button[aria-current="page"]:enabled').waitFor();
+  assert.equal(await strip.evaluate((node) => node.isConnected), true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertSelectedTabVisible("Logs");
+});
+
 test("the Logs tab shows runtime status, sanitized output and follows with a cursor", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const secret = `ghp_${randomUUID().replaceAll("-", "")}`;

@@ -44,6 +44,9 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     repositoryBindings: agent.repositoryBindings,
     repositoryAccess: agent.repositoryAccess,
     harnessAuth: agent.harnessAuth,
+    ...(agent.credentialSources === undefined || agent.credentialSources.length === 0
+      ? {}
+      : { credentialSources: agent.credentialSources }),
     activeRevisionId: agent.activeRevisionId,
     desiredRuntimeState: agent.desiredRuntimeState,
     status: agent.status,
@@ -106,6 +109,9 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
           },
         }),
     harnessAuth: harnessAuthBindingFromSnapshot(revision.harnessAuth),
+    ...(revision.credentialSources === undefined
+      ? {}
+      : { credentialSources: revision.credentialSources.map(({ sourceId }) => ({ sourceId })) }),
     createdAt: revision.createdAt,
   };
 }

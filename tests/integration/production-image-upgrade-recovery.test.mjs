@@ -319,13 +319,15 @@ async function kubernetesApi(t, directory, namespaces, denied, execution = null)
           body += chunk;
         }
         const attributes = JSON.parse(body).spec.resourceAttributes;
-        const allowed = allows(attributes);
-        reviews.push({ ...attributes, allowed });
+        // `allows` answers a decision, or a whole review status such as an evaluation error.
+        const decision = allows(attributes);
+        const status = typeof decision === "object" ? decision : { allowed: decision };
+        reviews.push({ ...attributes, allowed: status.allowed });
         reply(201, {
           kind: "SelfSubjectAccessReview",
           apiVersion: "authorization.k8s.io/v1",
           spec: { resourceAttributes: attributes },
-          status: { allowed },
+          status,
         });
         return;
       }
@@ -524,7 +526,7 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
       secretName: "occ-installation-startup",
       key: "installation.yaml",
     };
-    values = JSON.stringify(exampleValues);
+    values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
     const exampleInstallation = await example("installation.yaml");
     exampleInstallation.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [
       "10.42.0.0/16",
@@ -1273,6 +1275,20 @@ test(
   },
 );
 
+// A startup preflight refusal stops the upgrade before quiescence: both writers keep the
+// old release, nothing migrates, and the temporary preflight resources are removed.
+async function assertStoppedBeforeWriters(f) {
+  const state = await f.state();
+  assert.equal(state.api, 1);
+  assert.equal(state.worker, 1);
+  assert.equal(state.version, 1);
+  assert.deepEqual(await f.events(), []);
+  assert.deepEqual(state.preflight.secrets, {});
+  assert.deepEqual(state.preflight.pods, {});
+  assert.deepEqual(state.preflight.networkpolicies, {});
+  return state;
+}
+
 // The 2026-09-28 release example offered DevDay Presets through presets.files; later
 // images no longer ship those files (finding 436). The selected controller image must
 // reject that Installation before quiescence, so the old release keeps serving.
@@ -1295,11 +1311,8 @@ test("an Installation the selected controller image cannot load stops before any
       error.stderr,
     ),
   );
-  const state = await f.state();
-  assert.equal(state.api, 1);
-  assert.equal(state.worker, 1);
-  assert.equal(state.version, 1);
-  assert.deepEqual(await f.events(), []);
+  // The temporary NetworkPolicy, Secret and both Pods are removed after the refusal.
+  const state = await assertStoppedBeforeWriters(f);
   // Both components fail the same way, and both logs are saved (finding 447).
   for (const component of ["api", "worker"]) {
     assert.match(
@@ -1307,10 +1320,6 @@ test("an Installation the selected controller image cannot load stops before any
       /Preset file \/app\/deploy\/presets\/devday\.json is unavailable\./,
     );
   }
-  // The temporary NetworkPolicy, Secret and both Pods are removed after the refusal.
-  assert.deepEqual(state.preflight.secrets, {});
-  assert.deepEqual(state.preflight.pods, {});
-  assert.deepEqual(state.preflight.networkpolicies, {});
   assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
     "networkpolicy.networking.k8s.io",
     "pod",
@@ -1322,86 +1331,54 @@ test("an Installation the selected controller image cannot load stops before any
 // The API and worker read the stored Installation name from the database and refuse
 // one that breaks the Name rule (INSTALLATION_NAME_INVALID). The preflight Pods check
 // the name OCC returns with the selected image's rule, so the refusal comes before any
-// writer stops instead of after (dogfood D525).
-test("a stored Installation name that breaks the Name rule stops before any writer stops", async (t) => {
-  if (!realHelm) {
-    t.skip("helm is unavailable to render the real chart");
-    return;
-  }
-  const f = await fixture(t, {
-    controllerOnly: true,
-    installationName: "Production\u00a0",
-    chart: { installation: (installation) => installation },
-  });
-  await assert.rejects(f.run(), (error) => {
-    for (const component of ["api", "worker"]) {
-      assert.match(
-        error.stderr,
-        new RegExp(
-          `the ${component} startup preflight stopped: The stored Installation name breaks the Name rule: 1 to 200 characters, .*\\. \\(INSTALLATION_NAME_INVALID\\) No OCC writer was stopped; the old release keeps serving\\. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery\\.md#correct-an-invalid-installation-name`,
-        ),
-      );
+// writer stops instead of after (dogfood D525). The Pod carries the stored name as JSON,
+// so a trailing no-break space survives and a line break (a control character) gets the
+// same refusal rather than a parse failure. Each case reads a different component's Pod.
+for (const [name, installationName, component] of [
+  [
+    "a stored Installation name that breaks the Name rule stops before any writer stops",
+    "Production\u00a0",
+    "api",
+  ],
+  [
+    "a stored Installation name with a line break gets the Name rule refusal",
+    "Production\n",
+    "worker",
+  ],
+]) {
+  test(name, async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
     }
-    return true;
+    const f = await fixture(t, {
+      controllerOnly: true,
+      installationName,
+      chart: { installation: (installation) => installation },
+    });
+    await assert.rejects(f.run(), (error) => {
+      for (const stopped of ["api", "worker"]) {
+        assert.match(
+          error.stderr,
+          new RegExp(
+            `the ${stopped} startup preflight stopped: The stored Installation name breaks the Name rule: 1 to 200 characters, .*\\. \\(INSTALLATION_NAME_INVALID\\) No OCC writer was stopped; the old release keeps serving\\. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery\\.md#correct-an-invalid-installation-name`,
+          ),
+        );
+      }
+      return true;
+    });
+    await assertStoppedBeforeWriters(f);
+    const pod = JSON.parse(
+      await readFile(join(f.evidence, `preflight-${component}-pod.json`), "utf8"),
+    );
+    assert.deepEqual(
+      pod.spec.containers[0].env.find(
+        (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME",
+      ),
+      { name: "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME", value: JSON.stringify(installationName) },
+    );
   });
-  const state = await f.state();
-  assert.equal(state.api, 1);
-  assert.equal(state.worker, 1);
-  assert.equal(state.version, 1);
-  assert.deepEqual(await f.events(), []);
-  // The Pod carries the stored name as JSON, so the trailing no-break space survives.
-  const pod = JSON.parse(await readFile(join(f.evidence, "preflight-api-pod.json"), "utf8"));
-  assert.deepEqual(
-    pod.spec.containers[0].env.find(
-      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME",
-    ),
-    { name: "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME", value: JSON.stringify("Production\u00a0") },
-  );
-  assert.deepEqual(state.preflight.secrets, {});
-  assert.deepEqual(state.preflight.pods, {});
-  assert.deepEqual(state.preflight.networkpolicies, {});
-});
-
-// JSON carries a control character to the Pod intact, so a line break in the stored
-// name gets the same Name rule refusal rather than a parse failure.
-test("a stored Installation name with a line break gets the Name rule refusal", async (t) => {
-  if (!realHelm) {
-    t.skip("helm is unavailable to render the real chart");
-    return;
-  }
-  const f = await fixture(t, {
-    controllerOnly: true,
-    installationName: "Production\n",
-    chart: { installation: (installation) => installation },
-  });
-  await assert.rejects(f.run(), (error) => {
-    for (const component of ["api", "worker"]) {
-      assert.match(
-        error.stderr,
-        new RegExp(
-          `the ${component} startup preflight stopped: The stored Installation name breaks the Name rule: 1 to 200 characters, .*\\. \\(INSTALLATION_NAME_INVALID\\) No OCC writer was stopped`,
-        ),
-      );
-    }
-    return true;
-  });
-  const state = await f.state();
-  assert.equal(state.api, 1);
-  assert.equal(state.worker, 1);
-  assert.equal(state.version, 1);
-  assert.deepEqual(await f.events(), []);
-  // The worker Pod this time: the #1556 test above reads the api Pod's value.
-  const pod = JSON.parse(await readFile(join(f.evidence, "preflight-worker-pod.json"), "utf8"));
-  assert.deepEqual(
-    pod.spec.containers[0].env.find(
-      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME",
-    ),
-    { name: "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME", value: JSON.stringify("Production\n") },
-  );
-  assert.deepEqual(state.preflight.secrets, {});
-  assert.deepEqual(state.preflight.pods, {});
-  assert.deepEqual(state.preflight.networkpolicies, {});
-});
+}
 
 // An OCC that returns no stored name cannot be checked, so the upgrade stops while
 // building the first preflight Pod, before it creates one or stops a writer.
@@ -1426,15 +1403,8 @@ test("an Installation read without a stored name stops before any preflight Pod"
     );
     return true;
   });
-  const state = await f.state();
-  assert.equal(state.api, 1);
-  assert.equal(state.worker, 1);
-  assert.equal(state.version, 1);
-  assert.deepEqual(await f.events(), []);
   // Only the NetworkPolicy and Secret were created, and both are removed again.
-  assert.deepEqual(state.preflight.pods, {});
-  assert.deepEqual(state.preflight.secrets, {});
-  assert.deepEqual(state.preflight.networkpolicies, {});
+  const state = await assertStoppedBeforeWriters(f);
   assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
     "networkpolicy.networking.k8s.io",
     "secret",
@@ -1583,14 +1553,7 @@ test("a two-cluster execution chart without the new tenant grants stops the star
       .sort(),
     ["apps list deployments", "core get pods"],
   );
-  const state = await f.state();
-  assert.equal(state.api, 1);
-  assert.equal(state.worker, 1);
-  assert.equal(state.version, 1);
-  assert.deepEqual(await f.events(), []);
-  assert.deepEqual(state.preflight.secrets, {});
-  assert.deepEqual(state.preflight.pods, {});
-  assert.deepEqual(state.preflight.networkpolicies, {});
+  await assertStoppedBeforeWriters(f);
 });
 
 test("a two-cluster execution chart with the new tenant grants passes the startup preflight", async (t) => {
@@ -1624,6 +1587,72 @@ test("a two-cluster execution chart with the new tenant grants passes the startu
     ],
   );
   assert.ok(f.executionReads.includes("/api/v1/namespaces/kube-system"));
+});
+
+// An execution authorizer that cannot evaluate the reviews leaves the check incomplete:
+// the helper says which kubeconfig and access the Pod needed, and still stops first.
+test("an unevaluated two-cluster tenant grant review stops the startup preflight as incomplete", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: { installation: (installation) => installation },
+    executionCluster: {
+      namespaces: tenantNamespaces,
+      allows: () => ({ allowed: false, evaluationError: "webhook authorizer unavailable" }),
+    },
+  });
+  await assert.rejects(f.run(), (error) => {
+    for (const component of ["api", "worker"]) {
+      assert.match(
+        error.stderr,
+        new RegExp(
+          `the ${component} startup preflight stopped: Kubernetes Compute startup preflight could not complete: The execution cluster tenant grant review failed: could not evaluate .* in Namespace oce-unbound: webhook authorizer unavailable No OCC writer was stopped; the old release keeps serving\\. The Pod used its execution cluster kubeconfig, which must list Namespaces and create SelfSubjectAccessReviews there`,
+        ),
+      );
+    }
+    assert.doesNotMatch(error.stderr, /refused the candidate release|openclaw-execution chart/);
+    return true;
+  });
+  await assertStoppedBeforeWriters(f);
+});
+
+// With runtime logs off, the release's tenant API role carries no log or Event reads, so
+// the preflight asks only for the rules that release needs.
+test("a two-cluster upgrade with runtime logs off needs no log grants in the execution chart", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: {
+      installation: (installation) => installation,
+      values: (values) => ({ ...values, agentRuntimeLogs: { enabled: false } }),
+    },
+    executionCluster: {
+      namespaces: tenantNamespaces,
+      allows: tenantGrants([...releaseTenantRules, "core patch pods"]),
+    },
+  });
+  await f.run();
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+  assert.deepEqual(
+    f.accessReviews
+      .filter((review) => review.namespace === "oce-tenant")
+      .map(rule)
+      .sort(),
+    [
+      "apps list deployments",
+      "core get pods",
+      "core get pods",
+      "core get pods/proxy",
+      "core list pods",
+      "core patch pods",
+    ],
+  );
 });
 
 // The helper waits for every preflight Pod and saves its status and log before it

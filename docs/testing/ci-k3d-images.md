@@ -26,6 +26,12 @@ OpenShell retains its separately pinned image. Mutable overrides fail before
 resource creation. Clean up a failed run's owned resources with
 `node scripts/ci/cleanup.mjs --state <private-state-file>` before reusing its state path.
 
+`k3d cluster create` times out after five minutes (hosted runners take under a
+minute, node image pull included; `OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` overrides
+it). The timeout stops k3d's whole process group. Preparation then writes the
+lane's cluster diagnostics, deletes the partial cluster and retries once; a second
+timeout fails preparation and leaves the cluster to lane cleanup.
+
 Preparation reuses a supplied immutable workload image in the local Docker daemon
 only when `docker image inspect` records the requested digest in `RepoDigests`;
 a mutable tag or unverified image is insufficient. Missing or mismatched images
@@ -44,3 +50,21 @@ serialized, and all in-flight operations settle before failure cleanup.
 Image imports time out after ten minutes. Preparation verifies each immutable
 reference on every schedulable node. Errors and timeouts fail preparation; lane
 cleanup removes the owned cluster and partial imports.
+
+## Reuse an image the engine already holds
+
+Hosted image lanes that only restore the BuildKit cache first resolve each image
+from it without its layers (`reuseEngineImage` in `scripts/ci/prepare.mjs`). If
+the runner's Docker engine already holds that image ID, as hosted runners often
+do from their shared image cache, preparation tags it instead of downloading
+and loading every layer (about 20 s for the runtime image). The ID is the
+digest of a config that names each layer's content digest. Any other result,
+or a lane that exports the cache, builds and loads as before.
+
+The shared image cache keeps images a job leaves tagged, and lane cleanup
+removes every owned tag. So main's never-cancelled cache workflow also tags its
+runtime image as `localhost/openclaw-ci-main/runtime:<first 12 hex of its ID>`
+and logs it as `runtime-image-kept`; compare that ID with the lanes'
+`runtime-image-reuse` lines. Cleanup does not own that name, nothing pushes it,
+and the cache evicts images unused for 8 days. Without it, the cache keeps
+whichever older image a job happened to leave behind.

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-03
-last_updated_session: authoring-run/264cfb8c-8627-40cb-8ac4-0b67ef3134dc
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent Workspace Files Flow
@@ -234,8 +234,7 @@ Other Harnesses are replaced, restarting their Gateway.
   with `400 INVALID_REQUEST` naming the setting path, and no revision is
   created. A provider row that is not an object, or whose `models` is not a
   list of catalog entries for the Agent's configured models, is refused earlier by OCC's
-  model check: also `400 INVALID_REQUEST`, but with fixed text such as "The
-  configured Agent model provider is invalid." that does not name the path.
+  model check, also `400 INVALID_REQUEST` and naming the setting path.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
   roots for previews, browsing, bootstrap and outputs. Symlinks are not followed;
   explicit policies remain authoritative.
@@ -294,8 +293,14 @@ hello grants `operator.admin`; reads also accept `operator.read`.
 
 ### 8. Native file access returns a bounded result
 
-The same client invokes `agents.files.get` or `agents.files.set` for native Agent
-`main`. Reads enforce the response content limit and return
+`gateway/workspace-files-client.ts:requestNativeWorkspaceFile` uses Hello's
+`sessionDefaults.defaultAgentId` when embedded OpenClaw composition opts in and native ownership
+is `sole` with `selectionRequired: false`. Other rosters retain the explicit
+`main` target; other callers retain their explicit targets. Dedicated Codex
+binds only `main` to its workspace node, so deployment refuses a roster without
+it (`requireDedicatedMainAgentDefault`). No roster RPC or
+additional scope is required. The same client invokes `agents.files.get` or
+`agents.files.set`. Reads enforce the response content limit and return
 `{ name, content }`; writes return `{ name, size }`. There is no list, delete,
 compare-and-swap, generic RPC, chat bridge, or PostgreSQL file copy.
 
@@ -346,6 +351,12 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 20:28: Keep private workspace repair while removing retired native OAuth storage. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
+
+- 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
+
+- 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
 
 - 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
 

@@ -54,7 +54,7 @@ startup is unsupported.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584'
+export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0'
 if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
   OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
@@ -196,15 +196,17 @@ before running the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
-  password claim. Keep native admin enabled for the password profile, and gateway
+  password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
+  refuses relative paths. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
-  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even a
-  bare `?` or `#`), or contains Unicode spaces or invisible characters (ASCII
-  spaces at either end are ignored) or compatibility forms the API's URL parser
-  refuses, such as full-width `？`. A joiner (U+200C, U+200D) in a position IDNA
-  does not allow passes Helm but fails the bootstrap Job. With native admin, it
-  must be `https` and its host inside `agentNativeAdmin.sharedCookieDomain`.
+  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even
+  bare `?` or `#`), an IPv4 host other than four decimal octets without leading
+  zeros, Unicode spaces or invisible characters (outer ASCII spaces are ignored)
+  or compatibility forms the API's URL parser refuses, such as full-width `？`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
+  native admin, it must be `https` and its host inside
+  `agentNativeAdmin.sharedCookieDomain`.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set
@@ -223,6 +225,8 @@ Configure native admin domains through [native admin setup](native-admin.md#step
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
+
+`images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
 
 Run every check below before provisioning the password profile:
 
@@ -270,7 +274,9 @@ without quotes or assignment.
 In both database URLs, replace placeholders and preserve required TLS options. For managed PostgreSQL roots supplied through
 `database.caSecretName`, set `sslmode=verify-full` and `sslrootcert` to the
 mounted CA file in both URLs: `/etc/openclaw/database-ca/ca.pem` with the
-example mount settings, otherwise `<database.caMountPath>/<database.caKey>`. Start query parameters with `?` and
+example mount settings, otherwise `<database.caMountPath>/<database.caKey>`.
+With a CA Secret, Helm requires a path distinct from bootstrap and active
+API/worker mounts. Start query parameters with `?` and
 join further ones with `&`. Generate the auth secret for a
 new Installation; this command refuses to overwrite an existing file:
 
@@ -385,7 +391,8 @@ scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CON
 
 Replace `--node-selector oce-role=control` with the `controlPlane.nodeSelector`
 labels, one option per label, so preparation and initialization share volume
-topology.
+topology. Helm refuses keys and values that helper refuses; values may be
+empty, as in `--node-selector node-role.kubernetes.io/infra=`.
 
 The helper refuses any nonfresh mounted root except `lost+found`, schedules with
 the supplied node selector before storage binds, reports `Prepared bootstrap

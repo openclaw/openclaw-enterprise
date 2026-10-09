@@ -16,6 +16,7 @@ import {
   CredentialSourceType,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
+  AgentCredentialSourcesSchema,
   InstallationId,
   KubernetesNamespaceName,
   Meta,
@@ -313,6 +314,7 @@ export const AgentSchema = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Union([BackendId, Type.Null()]),
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -335,6 +337,7 @@ const ConfigurationReadErrorSchema = Type.Object(
       Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
       Type.Literal("harnessAuth"),
+      Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
       Type.Literal("repositoryCredentials"),
       Type.Literal("configuration"),
@@ -344,7 +347,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -357,6 +360,7 @@ export const AgentReadSchema = Type.Union(
           "repositoryBindings",
           "repositoryAccess",
           "harnessAuth",
+          "credentialSources",
         ]).properties,
         configurationReadError: ConfigurationReadErrorSchema,
       },
@@ -769,7 +773,11 @@ export const CredentialWithdrawalSchema = Type.Object(
   {
     namespaceId: NamespaceId,
     agentId: AgentId,
-    revisionId: RevisionId,
+    revisionId: Type.String({
+      ...RevisionId,
+      description:
+        "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+    }),
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
@@ -817,6 +825,29 @@ export const SecretListResponse = Type.Object(
 export const ServiceAccountResponse = Type.Object(
   { data: ServiceAccountSchema, meta: Meta },
   { additionalProperties: false },
+);
+
+export const ServiceAccountForceDeletionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        id: ServiceAccountId,
+        namespaceId: NamespaceId,
+        revocation: Type.Literal("skipped", {
+          description:
+            "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+        }),
+        backendId: Type.Optional(BackendId),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+  },
 );
 
 export const ServiceAccountListResponse = Type.Object(
@@ -971,6 +1002,7 @@ export const AgentRevisionSchema = Type.Object(
     ),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: HarnessAuthBindingSchema,
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     repositoryCredentials: Type.Optional(RepositoryRevisionStateSchema),
     createdAt: Timestamp,
   },
@@ -1470,6 +1502,9 @@ export type CredentialWithdrawalWire = Type.Static<typeof CredentialWithdrawalSc
 export type CredentialWithdrawalResponse = Type.Static<typeof CredentialWithdrawalResponse>;
 export type SecretListResponse = Type.Static<typeof SecretListResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
+export type ServiceAccountForceDeletionResponse = Type.Static<
+  typeof ServiceAccountForceDeletionResponse
+>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
 export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;

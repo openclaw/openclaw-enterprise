@@ -142,9 +142,11 @@ change lands, not on its pull request.
 that the native Harness requests no inbound OpenShell service exposure and
 completes a real model turn through its outbound enrolled-worker connection.
 The selected network policy permits provider egress from the Codex executable
-for Codex or from the Node executable for native OpenClaw. Native enrollment
-egress uses the Workspace Gateway's configured endpoint port, including the
-high loopback port allocated by the Podman verification relay. The real fixture
+for Codex or from the Node executable for native OpenClaw. The native verification
+fixture explicitly admits enrollment egress for the Node executable and the
+Workspace Gateway's exact host and configured port, including the
+high loopback port allocated by the Docker Desktop or Podman Machine verification
+relay on macOS. The real fixture
 also gives the delegated Sandbox the same 2 GiB Harness memory limit as
 Kubernetes Compute; the cluster's 1 GiB container default is insufficient while
 the native worker installs its Gateway bundle.
@@ -231,7 +233,17 @@ checkpoint, and symptom-based recovery notes, see
 
 The native OpenClaw selector retains its verification-only bootstrap Job and
 PVC bridge. It is a separate containment experiment, not a supported
-first-Agent path. See the
+first-Agent path. The pinned Kubernetes driver chooses workload identity independently
+of `policy.process`: this k3d fixture uses its default UID/GID `10001:10001`.
+The bridge prepares private storage for that identity and verifies the resulting
+workload Pod identity. Preparing it for the image or policy UID `1000` leaves
+foreign-owned ancestors that fs-safe rejects, even when Kubernetes grants group
+write access. The supervisor launches with `TMPDIR=/tmp`; the bridge switches the
+native worker to its private temporary mount before running its entrypoint.
+It places bootstrap code inside the compressed program, preserving the Driver's
+fixed-loader contract. Readiness retries reuse the completed bootstrap Job because
+deleting its Pod invalidates the copied ServiceAccount token. The Job remains until
+the token's admitted lifetime ends or the test cleans it up. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
 and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
 

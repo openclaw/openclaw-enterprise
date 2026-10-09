@@ -31,7 +31,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database.                                                               |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                      |
 | `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                 |
-| `OCC_AUTH_BASE_URL`                        | Absolute HTTP(S) origin without a path, query, fragment or user info.                                              | Defines the production Better Auth base URL and cookie origin.                                                          |
+| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                     |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.    |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
@@ -108,14 +108,14 @@ scope, and revocation, and the [deployment guide](../../guides/deploy/service-ke
 for the procedure. Normal issuance and verification require no additional
 settings; initial-key delivery uses the bootstrap settings below.
 Auth-secret rotation takes effect after
-replacing the mounted Secret and restarting the process; it also invalidates every
+replacing the mounted Secret and restarting; it also invalidates every
 [known-device cookie](../authentication.md#known-devices) until each browser's next sign-in.
 Revoking one account's cookies needs no rotation: reset its password.
 
 ### GitHub sign-in and trusted proxies
 
 These optional variables apply to the API only. The chart never passes them to
-the worker or initialization Job.
+other workloads.
 
 | Variable                           | Helm value                                 | Behavior                                                                                                                                                                                                                 |
 | ---------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -244,7 +244,9 @@ parent directory must be private and neither destination may already exist.
 Helm sets the key path from `bootstrap.password.mountPath` and
 `bootstrap.serviceKey.fileName` (default `initial-admin-service-key.json`). The
 key filename must be a simple basename distinct from `bootstrap.password.fileName`.
-Both use the existing `bootstrap.password.claimName` PVC. Reruns do not inspect,
+`bootstrap.password.claimName` must follow Kubernetes' DNS-subdomain name rule:
+253 characters total, the same rule `prepare-bootstrap-volume` applies to
+`--claim`. Both use that existing PVC. Reruns do not inspect,
 replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 ## Production operational logging collection
@@ -288,6 +290,14 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 [security reference](../security.md#operational-log-collection-boundary) owns the
 credential, runtime-export, and workload isolation boundaries.
 
+The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
+`1K` in top-level `resources`, Collector `resources`, and Collector volume size
+limits, with an error naming the setting. Kubernetes remains responsible for
+complete quantity validation; exponent ranges and numeric parsing edge cases
+are not checked during rendering. A successful render does not prove API
+acceptance. Setting a resource map or Collector size limit to `null` clears its
+chart default; a null size limit leaves that volume unlimited.
+
 ### Private telemetry defaults
 
 `metrics.enabled` defaults to `true`, with API and worker listeners on their Pod
@@ -297,7 +307,8 @@ both are set. Partial selectors and invalid or API-colliding ports fail renderin
 See [scraping and discovery](../../guides/observability/metrics.md).
 
 For an in-cluster log receiver, set both
-`logging.collector.exporter.namespaceLabels` and `podLabels`, set its `port`,
+`logging.collector.exporter.namespaceLabels` and `podLabels`, set decimal `port`
+(1–65535, no leading zeros),
 and leave `cidr` empty. This alternative cannot be combined with a CIDR.
 Collector metrics use the same paired selector contract under
 `logging.collector.metrics`, on fixed port `8888`; metrics ingress is opt-in.

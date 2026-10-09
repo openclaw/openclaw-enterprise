@@ -394,8 +394,10 @@ placeholder. The current contract is owned by
 [Credential Gateway](https://github.com/openclaw/openclaw-enterprise/blob/ec103d947abb40b21411e5b8bdede7774ae35df1/docs/reference/drivers/credential-gateway.md) and
 [credential sources](https://github.com/openclaw/openclaw-enterprise/blob/ec103d947abb40b21411e5b8bdede7774ae35df1/docs/reference/credential-sources.md).
 
-The gateway copy does not follow Secret changes or grant removal; refresh and
-bounded withdrawal remain future work.
+[#553](https://github.com/openclaw/openclaw-enterprise/pull/553) added `PATCH`
+updates and durable per-Agent withdrawal. Agent `credentialSources` bind
+non-model sources, starting with `bearer-token`. Gateway refresh remains future
+work.
 
 Hosted evidence: none as of 2026-09-28; the `openshell` full-integration lane
 has not executed on main.

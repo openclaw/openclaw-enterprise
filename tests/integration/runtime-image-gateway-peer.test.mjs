@@ -6,7 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
-  GATEWAY_READINESS_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -60,6 +59,8 @@ test(
         `${bindingPath}:/etc/openclaw-workspace-node/workspace-node.json:ro`,
       ],
       extraEnvironment: [
+        // This isolated fixture uses synthetic credentials; retain startup causes.
+        "OPENCLAW_DEBUG=1",
         "APP_SERVER_URL=ws://[::1]:4500",
         `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
         "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
@@ -86,8 +87,6 @@ test(
           "-e",
           `OCC_TEST_WORKSPACE_NODE_ID=${workspaceNodeId}`,
           "-e",
-          `OCC_TEST_GATEWAY_READINESS=${GATEWAY_READINESS_ENTRYPOINT}`,
-          "-e",
           `OCC_TEST_TOKEN_DOMAIN=${PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN}`,
           containerName,
           "node",
@@ -99,7 +98,16 @@ test(
       ));
     } catch (error) {
       const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-      throw new Error(`${commandOutput(error)}\n${commandOutput(logs)}`, { cause: error });
+      // CI truncates error messages; preserve complete container logs separately.
+      t.diagnostic(commandOutput(logs));
+      const runtimeErrors = jsonLogEntries(commandOutput(logs))
+        .filter((entry) => entry.level === "error")
+        .map((entry) => entry.message)
+        .join("\n");
+      throw new Error(
+        `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${runtimeErrors || commandOutput(error).trim() || "no fixture output"}`,
+        { cause: error },
+      );
     }
     const result = JSON.parse(stdout.trim().split("\n").at(-1));
     assert.ok(result.samePeerOutageResponses >= 2);
@@ -164,7 +172,7 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
       "OPENCLAW_POD_UID=pod-peer-respawn",
       "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
       // The stale-replacement fixture answers its verification read only after
-      // checking the replacement (a readiness command and two local reads), so
+      // checking the replacement (an HTTP readiness request and two local reads), so
       // the wrapper's peer read must outlast that work on a slow runner.
       `OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS=${30_000 * imageSmokeTimeoutMultiplier}`,
     ],
@@ -181,8 +189,6 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
         "exec",
         "-e",
         `OCC_TEST_GATEWAY_SCENARIO=${scenario}`,
-        "-e",
-        `OCC_TEST_GATEWAY_READINESS=${GATEWAY_READINESS_ENTRYPOINT}`,
         "-e",
         `OCC_TEST_TOKEN_DOMAIN=${PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN}`,
         containerName,

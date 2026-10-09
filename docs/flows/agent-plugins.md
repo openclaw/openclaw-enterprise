@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent Plugin Deployment Flow
@@ -191,6 +191,11 @@ Workspace-aware readback rejects policy conflicts before readiness. Disabled app
 retain inherited fields. Categories resolve app → global → native `true`; equivalent
 values/nulls pass. Tool enablement cannot bypass categories.
 
+`runtime-entrypoints.ts:startAuthenticatedCodex` passes the admitted Harness model,
+without its provider prefix, to the app-server after the authentication probe
+succeeds. Native configuration readback therefore exposes the model used for
+startup policy validation.
+
 `runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks explicit app/link
 reviewers and `configRequirements/read`, rejecting forbidden reviewers, incompatible
 automatic-review settings, or conflicting model requirements. Startup checks do not
@@ -301,6 +306,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
 
 - 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 

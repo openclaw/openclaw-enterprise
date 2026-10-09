@@ -184,6 +184,10 @@ async function loadLocalInstallation(harness) {
   }
 
   const environment = { ...process.env, DOCKER_HOST: state.dockerHost };
+  // The recorded endpoint is a local Unix socket, not a TLS daemon connection.
+  delete environment.DOCKER_TLS;
+  delete environment.DOCKER_TLS_VERIFY;
+  delete environment.DOCKER_CERT_PATH;
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
   if (state.containerEngine === "podman") {
@@ -519,10 +523,18 @@ function expectedHarnessAuth(record) {
       };
 }
 
+/** The Agent lists every bound source; harnessAuth names the listed credential source. */
+function expectedCredentialSources(record) {
+  return record.sandboxDriver === "openshell"
+    ? [{ sourceId: record.credentialSourceId }]
+    : undefined;
+}
+
 function assertManagedAgent(agent, record) {
   if (
     agent.configurationId !== record.configurationId ||
     !isDeepStrictEqual(agent.harnessAuth, expectedHarnessAuth(record)) ||
+    !isDeepStrictEqual(agent.credentialSources, expectedCredentialSources(record)) ||
     agent.executionMode !== (record.harness === "codex" ? "dedicated" : "embedded") ||
     agent.backendId !== null ||
     Object.keys(agent.plugins ?? {}).length
@@ -892,6 +904,9 @@ async function main(options) {
         configurationId: record.configurationId,
         executionMode: record.harness === "codex" ? "dedicated" : "embedded",
         harnessAuth: expectedHarnessAuth(record),
+        ...(expectedCredentialSources(record) === undefined
+          ? {}
+          : { credentialSources: expectedCredentialSources(record) }),
       });
     }
     assertManagedAgent(agent, record);

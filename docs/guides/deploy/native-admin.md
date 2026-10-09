@@ -208,6 +208,7 @@ may try the Agent hostname on port 8081 and report a refused connection.
 Provision a wildcard HTTPS certificate and DNS for a separate preview domain,
 for example `*.previews.example.net`. This domain must be outside
 `agentNativeAdmin.sharedCookieDomain`; it must not receive OCE session cookies.
+Keep it to 214 characters or fewer so each `agent-<32 hex>.` hostname fits.
 Store the wildcard certificate in a TLS Secret in the Helm release namespace.
 Enable a separate Envoy listener with explicit public ingress peers:
 
@@ -249,6 +250,13 @@ Compute derives each Agent's hostname, renders `mcp.apps.sandboxOrigin` and
 `sandboxPort`, and creates its Service and route. New Agents need no manual
 hostname mapping. Remove conflicting tenant overrides of those two native
 fields rather than redirecting the sandbox to the admin origin.
+
+With or without preview routing, OpenClaw binds its MCP Apps sandbox listener on
+an Agent's `mcp.apps.sandboxPort`, else the Gateway port plus one. TCP/18791 is
+the private runtime status port, so Compute refuses a `sandboxPort` of 18791,
+and enabled MCP Apps without a `sandboxPort` when `network.gatewayPort` is
+`18790`. With that Gateway port, set `sandboxPort` for canvas and board
+previews too.
 
 Open a generated HTML file from the native chat. Verify it renders on the preview
 domain, the request carries no OCE session cookie, and the preview host cannot

@@ -48,13 +48,13 @@ kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespa
 In a single cluster, a row with an empty `NAMESPACE` column is a split-layout
 tenant. The two-cluster profile's control-cluster rows are expected.
 
-If an Installation has split-layout tenants, keep its existing controller release
-and both namespaces. Preserve their Secrets, ConfigMaps, PVCs and database
-references. Do not delete the old namespace, remove its storage-role label or
-add a tenant label to bypass preflight: those changes do not move the Gateway's
-private state or update UID-bound credential references. A supported migration
-must preserve these identities and state before this release can manage that
-Installation. This release provides no such migration command.
+No migration moves split-layout tenants. Export, delete and re-create them
+through OCC with the steps in the
+[breaking-change notice](../../guides/deploy/breaking-changes.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade);
+chat history and Harness workspace state are not carried over. Do not delete
+the old namespace, remove its storage-role label or add a tenant label to
+bypass preflight: the Gateway's private state and UID-bound credential
+references would not move.
 
 ## Requirements
 
@@ -329,9 +329,9 @@ model turn.
   permissions, CPU and memory limits, namespace quotas, required Secrets, and
   workload readiness, including the
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
-  label. Dedicated Codex Harness containers clear the plugin readiness marker at
-  process start, so a marker from a previous container attempt cannot make a
-  restarted runtime ready. Access-token login retries only native process
+  label. Private HTTP readiness returns `503` until native, plugin,
+  authentication, or identity gates pass. Dedicated Codex clears its plugin
+  marker at process start to reject stale readiness. Access-token login retries only native process
   timeouts, up to three 30-second attempts. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)

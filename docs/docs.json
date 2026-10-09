@@ -447,6 +447,10 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes",
+                    "label": "Breaking Changes"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
                   },
@@ -473,6 +477,10 @@
                   {
                     "page": "guides/deploy/oidc-sign-in",
                     "label": "OIDC Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-keycloak",
+                    "label": "Keycloak Sign-in"
                   },
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
@@ -829,6 +837,10 @@
                         "label": "First Agent Smoke"
                       },
                       {
+                        "page": "testing/keycloak",
+                        "label": "Keycloak OIDC Lane"
+                      },
+                      {
                         "page": "testing/ci-manual-integration",
                         "label": "Manual Integration Lanes"
                       },
@@ -925,6 +937,7 @@
               "flows/container-package-bootstrap",
               "flows/container-publication",
               "flows/cli-publication",
+              "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",
@@ -936,6 +949,7 @@
               "testing/gateway-routing",
               "testing/production-tui",
               "testing/slack",
+              "testing/qa-matrix",
               "testing/service-accounts",
               "testing/plugins",
               "testing/openshell",

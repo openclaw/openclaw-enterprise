@@ -55,14 +55,16 @@ supported runtime policy.
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
 
-Selectable model catalogs and model fallbacks under Agent defaults or entries
-must retain the selected provider. Additional catalog models also need an
+Selectable model catalogs and fallbacks under Agent defaults or entries
+must retain the selected provider. Additional catalog models need an
 explicit matching Harness runtime; fallbacks must resolve through the same
-policy checks to the same Harness. A provider's native `models` array is limited
+policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
-reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-native `agents.list` configurations remain unsupported. Admission preserves the
-fallback order in the immutable revision but does not implement fallback
+reference or the ID after its first slash, and IDs may contain slashes.
+Configuration save and Kubernetes deployment refuse a nonempty `agents.list` and
+the other rosters OpenClaw rejects ([Configuration](configuration.md#create-read-update-and-delete));
+dedicated execution's `main` Agent rules apply only at deployment. Admission
+preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 
 ## Admission and immutable execution
@@ -290,8 +292,11 @@ explicitly, and test bridges do not establish turnkey production support. See it
 
 ### Native worker support
 
-The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) lacks required
-worker placement (`cloudWorkers.requiredProfile`) and native worker inference.
+The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) supports required
+worker placement (`cloudWorkers.requiredProfile`), but is not yet qualified for
+the complete native worker flow. Native worker models and environment SecretRefs
+are rendered in the node’s canonical `models.providers` configuration; there is
+no separate node inference-config setting.
 Deploy and provisioning therefore refuse dedicated native OpenClaw with
 `400 INVALID_REQUEST`, and the console withholds that choice. Provisioning
 status reads do not recheck this support, so work accepted before it was

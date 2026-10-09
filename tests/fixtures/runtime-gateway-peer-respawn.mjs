@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { setTimeout } from "node:timers/promises";
-import { promisify } from "node:util";
 
 // Runs inside a runtime image Gateway container started by the Kubernetes
 // Gateway wrapper for a dedicated Codex Harness with a plugin selection. It
 // stands in for the Harness plugin status endpoint, replaces the Harness (a new
 // startup, pod and plugin result), and checks that the wrapper respawns only
-// the OpenClaw process: readiness, judged by the production readiness command,
+// the OpenClaw process: readiness, judged by the production HTTP endpoint,
 // drops and returns only when the new process serves with the new credential
 // and plugin result, and the new process re-acknowledges the workspace node.
-// The launcher passes the readiness command and the credential derivation domain.
-const execute = promisify(execFile);
-const readinessSource = process.env.OCC_TEST_GATEWAY_READINESS;
+// The launcher passes the credential derivation domain.
 const tokenDomain = process.env.OCC_TEST_TOKEN_DOMAIN;
 const revisionId = process.env.OPENCLAW_AGENT_REVISION_ID;
 const statusPort = Number(process.env.OPENCLAW_PLUGIN_STATUS_PORT);
@@ -109,8 +105,11 @@ function appServerToken(startupId) {
 
 async function ready() {
   try {
-    await execute(process.execPath, ["-e", readinessSource], { timeout: 5_000 });
-    return true;
+    const response = await fetch(`http://127.0.0.1:${statusPort}/readyz`, {
+      signal: AbortSignal.timeout(5_000),
+      redirect: "error",
+    });
+    return response.status === 200;
   } catch {
     return false;
   }

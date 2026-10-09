@@ -141,6 +141,9 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     method: "credential_source",
     sourceId: discovery.body.credentialSource.id,
   });
+  assert.deepEqual(creation.body.credentialSources, [
+    { sourceId: discovery.body.credentialSource.id },
+  ]);
   assert.ok(creation.body.plugins["codex-plugin:calendar@openai-curated-remote"]);
   const agentId = new URL(page.url()).pathname.split("/").at(-1);
   const agentPath = `/namespaces/${namespace.id}/agents/${agentId}`;
@@ -186,6 +189,32 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.deepEqual(edited.harnessAuth, originalAuth);
   assert.deepEqual(edited.plugins, {});
 
+  // A separate ready source already belongs to this Agent for another purpose.
+  // Only the external service is simulated; the replacement must preserve its real API binding.
+  const otherSource = await fixture.controller.transact(async (state) => {
+    const original = await state.credentialSources.findCredentialSource(
+      namespace.id,
+      originalAuth.sourceId,
+    );
+    assert.ok(original);
+    return state.credentialSources.createCredentialSource({
+      ...original,
+      id: `cs_${crypto.randomUUID()}`,
+      name: "Other credential source",
+    });
+  });
+  gateway.sources.set(otherSource.id, "ready");
+  const withOtherSource = await fixture.request("PATCH", agentPath, {
+    body: {
+      configurationId: edited.configurationId,
+      credentialSources: [
+        { sourceId: originalAuth.sourceId },
+        { sourceId: otherSource.id },
+      ],
+    },
+  });
+  assert.equal(withOtherSource.status, 200, JSON.stringify(withOtherSource.body));
+
   // Reconnection is a separate, explicit authentication save with a newly completed login.
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
@@ -212,6 +241,16 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const replaced = (await fixture.request("GET", agentPath)).data.harnessAuth;
   assert.equal(replaced.method, "credential_source");
   assert.notEqual(replaced.sourceId, originalAuth.sourceId);
+  assert.deepEqual((await fixture.request("GET", agentPath)).data.credentialSources, [
+    { sourceId: otherSource.id },
+    { sourceId: replaced.sourceId },
+  ]);
+  const oldSource = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/credential-sources/${originalAuth.sourceId}`,
+  );
+  assert.equal(oldSource.status, 200);
+  assert.equal(gateway.calls.some((call) => call.operation === "removeSource"), false);
   const replacementGrants = requests.filter(
     (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
   );

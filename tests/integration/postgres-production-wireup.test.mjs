@@ -17,6 +17,7 @@ import { composePostgresDevelopment } from "../../apps/controller/src/compositio
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -50,9 +51,7 @@ async function defaultNamespaceRows(pool) {
 }
 
 function createPassiveComputeDriver() {
-  return {
-    id: "compute-production-wireup",
-    capability: "compute",
+  return createReadyComputeDriver("compute-production-wireup", {
     implementation: "production-wireup-memory-compute",
     async preflight() {
       return {
@@ -64,22 +63,7 @@ function createPassiveComputeDriver() {
         ],
       };
     },
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
+  });
 }
 
 function memoryLog() {
@@ -544,6 +528,36 @@ test(
       } finally {
         await worker.stop();
       }
+      // Production composition must retain the same contract-sized route budget as development.
+      const workspaceContent = (
+        "# Workspace guidance\n" + "Routine fixture instructions.\n".repeat(600)
+      ).slice(0, 16 * 1024);
+      const workspaceTemplate = {
+        agent: {
+          initialWorkspaceFiles: Object.fromEntries(
+            ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => [
+              name,
+              workspaceContent,
+            ]),
+          ),
+        },
+      };
+      const largePreset = await request("POST", presetPath, {
+        name: "Full workspace",
+        template: workspaceTemplate,
+      });
+      assert.equal(largePreset.status, 201);
+      const replacedPreset = await request("PATCH", `${presetPath}/${largePreset.data.id}`, {
+        name: "Full workspace updated",
+        template: workspaceTemplate,
+      });
+      assert.equal(replacedPreset.status, 200);
+      assert.deepEqual(
+        (await request("GET", `${presetPath}/${largePreset.data.id}`)).data.template,
+        workspaceTemplate,
+      );
+      assert.equal((await request("DELETE", `${presetPath}/${largePreset.data.id}`)).status, 204);
+
       const customized = await request("PATCH", `${presetPath}/${copied.id}`, {
         template: { agent: { name: "Kept across restart" } },
       });

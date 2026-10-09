@@ -172,9 +172,6 @@ export function createSecretReferenceField({
   const status = element("p", { id: `${id}-status`, className: "hint", role: "status" });
   const metadataLink = credentialLink("#", metadataLabel);
   const secrets = [];
-  let loaded = false;
-  let loading = false;
-  let selectedSecret = null;
   // Set once a binding is staged, so a Secret list that arrives later keeps its hint.
   let staged = false;
   let manuallyDisabled = disabled;
@@ -372,7 +369,6 @@ export function createSecretReferenceField({
     input.disabled = true;
     closeListbox({ restoreSelection: false });
     status.className = "hint";
-    selectedSecret = secret;
     try {
       await onSecretSelected(secret);
       if (!secrets.some((item) => item.id === secret.id)) {
@@ -584,7 +580,6 @@ export function createSecretReferenceField({
   } else {
     setSecretOptions();
     status.textContent = "Loading available Secrets...";
-    loading = true;
     context
       .request(`${namespacePath(context.namespaceId)}/secrets`)
       .then((items) => {
@@ -597,8 +592,6 @@ export function createSecretReferenceField({
         // A Secret created or chosen while this read was pending is newer than the list.
         const added = secrets.filter((secret) => !listed.some((item) => item.id === secret.id));
         secrets.splice(0, secrets.length, ...listed, ...added);
-        loaded = true;
-        loading = false;
         setSecretOptions({ preserveSearch: true });
         if (!staged) {
           status.className = "hint";
@@ -612,7 +605,6 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        loading = false;
         status.className = "error";
         status.textContent =
           error.status === 401
@@ -705,18 +697,6 @@ export function createSecretReferenceField({
     refresh() {
       setSecretOptions();
       updateValidity();
-    },
-    get selectedSecret() {
-      return selectedSecret;
-    },
-    get selectedSecretId() {
-      return currentSecretId();
-    },
-    get loaded() {
-      return loaded;
-    },
-    get loading() {
-      return loading;
     },
   };
 }

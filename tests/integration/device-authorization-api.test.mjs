@@ -223,7 +223,11 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
     fixture.namespace.id,
     "OAuth Agent",
     createHarnessConfiguration("codex", "gpt-5.1"),
-    { executionMode: "dedicated", harnessAuth },
+    {
+      executionMode: "dedicated",
+      harnessAuth,
+      credentialSources: [{ sourceId: harnessAuth.sourceId }],
+    },
   );
   fixture.policy.identities.push({
     id: agent.servicePrincipalId,

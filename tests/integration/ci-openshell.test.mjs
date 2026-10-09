@@ -144,7 +144,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   const gatewayPolicies = policies.filter((policy) =>
     matches(policy.spec.podSelector, gatewayLabels),
   );
-  assert.equal(gatewayPolicies.length, 2);
+  assert.equal(gatewayPolicies.length, 3);
   const controlPlane = gatewayPolicies.find((policy) => policy.spec.egress !== undefined);
   assert.deepEqual(
     controlPlane.spec.egress.map((rule) => rule.ports),
@@ -159,7 +159,9 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   );
   assert.deepEqual(controlPlane.spec.egress[1].to, apiPeers);
   assert.deepEqual(controlPlane.spec.egress[2].to, apiPeers);
-  const callbackIngress = gatewayPolicies.find((policy) => policy.spec.ingress !== undefined);
+  const callbackIngress = gatewayPolicies.find(
+    (policy) => policy.metadata.name === "allow-openshell-gateway-callback",
+  );
   assert.equal(callbackIngress.metadata.name, "allow-openshell-gateway-callback");
   assert.deepEqual(callbackIngress.spec.ingress[0].ports, [
     { protocol: "TCP", port: 8080 },
@@ -169,6 +171,19 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   assert.equal(callers.length, 1);
   assert.equal(callers[0].namespaceSelector, undefined);
   assert.equal(matches(callers[0].podSelector, supervisor), true);
+  // Dedicated Agent Gateways reach the OpenShell-exposed Codex endpoint on the service port only.
+  const agentGatewayIngress = gatewayPolicies.find(
+    (policy) => policy.metadata.name === "allow-openshell-gateway-agent-gateways",
+  );
+  assert.deepEqual(agentGatewayIngress.spec.ingress[0].ports, [{ protocol: "TCP", port: 8080 }]);
+  const agentGatewayCallers = agentGatewayIngress.spec.ingress[0].from;
+  assert.equal(agentGatewayCallers.length, 1);
+  assert.equal(agentGatewayCallers[0].namespaceSelector, undefined);
+  const agentGateway = {
+    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+    "openclaw.dev/workload-role": "gateway",
+  };
+  assert.equal(matches(agentGatewayCallers[0].podSelector, agentGateway), true);
 
   // The Harness workload (any profile) is not the gateway caller, and no additive fixture policy
   // may select an openclaw Pod, classified or not.
@@ -184,6 +199,13 @@ test("OpenShell fixture networking admits the supervisor callback without granti
       ...(profile === undefined ? {} : { "openclaw.dev/network-profile": profile }),
     };
     assert.equal(matches(callers[0].podSelector, agent), false);
+    assert.equal(
+      matches(agentGatewayCallers[0].podSelector, {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        ...agent,
+      }),
+      false,
+    );
     assert.equal(
       policies.some((policy) => matches(policy.spec.podSelector, agent)),
       false,

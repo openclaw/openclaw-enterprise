@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-01
-last_updated_session: authoring-run/53c6746c-9551-4f70-9d1f-e0540ce29868
+updated: 2026-10-09
+last_updated_session: authoring-run/ec403753-6547-4dcb-8624-26628a124b7d
 ---
 
 # Compose development flow
@@ -53,7 +53,14 @@ graph TD
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
   KPre --> KControl{"Control-plane profile"}
-  KControl -->|Kubernetes| KOnly["Install PostgreSQL, OCE, and<br/>OpenShell in the owned cluster"]
+  KControl -->|Kubernetes| KOwned["Create owned cluster,<br/>verify DNS/API and select kubeconfig"]
+  KOwned --> KDriver{"Sandbox Driver"}
+  KDriver -->|none| KCodex["Import runtime and verify<br/>the normal Codex sandbox"]
+  KCodex -->|success| KRoutingFirst["Install routing controllers<br/>and remaining images"]
+  KCodex -->|failure| KRollback
+  KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
+  KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
+  KOpenFirst --> KOnly
   KOnly --> KWorkspace
   KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
   KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
@@ -131,6 +138,15 @@ their platform deletion workflows; follow [safe development shutdown](../guides/
 [The Kubernetes startup and cleanup trace](docker-compose-development/startup.md#12-select-kubernetes-development-and-preserve-cleanup-ownership)
 follows profile selection, the private Compose snapshot, k3d creation, runtime
 import, authenticated readiness, and cleanup through the recorded engine.
+
+For the Kubernetes-only profile, `internal/occdev/openshell_k3d.go:upK3d`
+creates the owned cluster, checks node DNS, and writes and selects its kubeconfig.
+With Sandbox Driver `none`, it then imports the runtime image and runs
+`prepareDevelopmentCodexSandbox` before installing private routing controllers.
+A sandbox refusal rolls back the owned cluster before controller or PostgreSQL
+image imports, Installation setup, or credential delivery. OpenShell retains its
+preparation, routing-controller installation, then runtime-import order. Both
+paths retain the later network-isolation and authenticated readiness gates.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -215,6 +231,8 @@ OCC Namespace becomes ready. See the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 03:27: Run the unchanged Codex sandbox preflight before routing for the Kubernetes-only none profile; preserve OpenShell ordering and later readiness checks. (authoring-run/ec403753-6547-4dcb-8624-26628a124b7d - 259702d92a9ebb094c5f9bea0465bd6b09681d08)
 
 - 2026-10-01 16:58: Added automatic private Envoy routing for the Compose-backed OpenShell profile. (authoring-run/53c6746c-9551-4f70-9d1f-e0540ce29868 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 

@@ -163,6 +163,7 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     { className: "form-field" },
     element("label", { for: account.id }, "Issued ChatGPT service account"),
     account,
+    feedback,
   );
   const runtimeHint = element(
     "p",
@@ -178,14 +179,17 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     "fieldset",
     { className: "harness-auth-fields" },
     element("legend", {}, "Harness authentication"),
-    element("label", { for: method.id }, "Authentication source"),
-    method,
+    element(
+      "div",
+      { className: "form-field" },
+      element("label", { for: method.id }, "Authentication source"),
+      method,
+    ),
     secretField,
     currentOAuth,
     oauthLogin.section,
     accountField,
     runtimeHint,
-    feedback,
     validationHint,
   );
   function update() {

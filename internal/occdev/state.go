@@ -2,6 +2,7 @@ package occdev
 
 import (
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,11 +46,20 @@ type developmentState struct {
 func (s *developmentState) composeCommand() []string {
 	return []string{"compose", "--project-directory", s.Repository, "--project-name", s.ComposeProject, "-f", filepath.Join(s.directory, "compose.yaml")}
 }
-func exclusiveWrite(path string, data []byte, mode os.FileMode) error {
+func exclusiveWrite(path string, data []byte, mode os.FileMode) (result error) {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
+	// OpenFile transferred ownership only after exclusive creation succeeded.
+	// A partial output must not block the caller's next startup attempt.
+	defer func() {
+		if result != nil {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				result = errors.Join(result, fmt.Errorf("remove failed exclusive output: %w", err))
+			}
+		}
+	}()
 	if err := file.Chmod(mode); err != nil {
 		file.Close()
 		return err

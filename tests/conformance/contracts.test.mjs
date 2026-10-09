@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   CONFIGURATION_KINDS,
@@ -11,8 +12,11 @@ import {
   SANDBOX_FACETS,
   freezeAgentRevision,
   isDriverCapability,
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
   isResourceKind,
   isSandboxFacet,
+  normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
 } from "../../packages/contracts/src/index.ts";
 
@@ -331,4 +335,45 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
       "repos/list"
     ].enabled = false;
   }, TypeError);
+});
+
+test("only a codex_pat Harness binding names a ServiceAccount source, and only exactly", () => {
+  const namespaceId = `ns_${randomUUID()}`;
+  const account = { kind: "service_account", namespaceId, id: `sa_${randomUUID()}` };
+  const secret = { kind: "secret", namespaceId, id: `sec_${randomUUID()}` };
+  const managed = { method: "codex_pat", source: account };
+  assert.deepEqual(normalizeHarnessAuthBinding(managed), managed);
+  assert.equal(isServiceAccountHarnessAuth(managed), true);
+  assert.equal(isSecretHarnessAuth(managed), false);
+  for (const method of ["api_key", "codex_pat"]) {
+    const binding = { method, source: secret };
+    assert.deepEqual(normalizeHarnessAuthBinding(binding), binding);
+    assert.equal(isSecretHarnessAuth(binding), true, method);
+    assert.equal(isServiceAccountHarnessAuth(binding), false, method);
+  }
+  // The predicates read the method and the source kind together.
+  for (const method of ["api_key", "oauth"]) {
+    assert.equal(isServiceAccountHarnessAuth({ method, source: account }), false, method);
+    assert.equal(isSecretHarnessAuth({ method, source: account }), false, method);
+  }
+  for (const invalid of [
+    // A managed account authenticates only through the Codex PAT login.
+    { method: "api_key", source: account },
+    { method: "oauth", source: account },
+    // Browser OAuth now binds a Gateway credential source, never a Secret.
+    { method: "oauth", source: secret },
+    // The retired managed-account shape.
+    { method: "chatgpt_service_account", serviceAccountId: account.id },
+    // The account reference is closed and exactly typed.
+    { method: "codex_pat", source: { ...account, name: "extra" } },
+    { method: "codex_pat", source: { ...account, namespaceId: "default" } },
+    { method: "codex_pat", source: { ...account, id: secret.id } },
+    { method: "codex_pat", source: { ...account, kind: "secret" } },
+  ]) {
+    assert.throws(
+      () => normalizeHarnessAuthBinding(invalid),
+      /one supported exact source binding/,
+      JSON.stringify(invalid),
+    );
+  }
 });

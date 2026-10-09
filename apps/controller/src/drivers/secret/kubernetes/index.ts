@@ -22,10 +22,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
-import {
-  currentComputeAbortSignal,
-  withComputeAbortSignal,
-} from "../../compute/operation-context.ts";
+import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
   validateKubernetesAuthentication,
@@ -53,8 +50,6 @@ const MANAGER = "openclaw-enterprise";
 const IMPLEMENTATION = "occ/kubernetes-secret";
 const SECRET_KEY = "value";
 const MAX_SECRET_VALUE_BYTES = 65_536;
-const REQUEST_TIMEOUT_MS = 10_000;
-const REQUEST_TIMEOUT_SECONDS = Math.ceil(REQUEST_TIMEOUT_MS / 1000);
 const NAMESPACE_LABEL = "openclaw.dev/namespace";
 const SECRET_LABEL = "openclaw.dev/secret";
 const NAMESPACE_ANNOTATION = "openclaw.dev/namespace-id";
@@ -207,16 +202,82 @@ export class KubernetesSecretDriver implements SecretDriver {
     const namespace = await this.readyNamespace(client, identity.namespaceId);
 
     const name = kubernetesSecretName(identity);
-    const observed = await this.request(
-      () =>
-        client.createNamespacedSecret({
-          namespace,
-          body: this.manifest(identity, namespace, name, value),
-        }),
-      "create",
-      { mutating: true },
-    );
+    let observed: V1Secret;
+    try {
+      observed = await this.request(
+        () =>
+          client.createNamespacedSecret({
+            namespace,
+            body: this.manifest(identity, namespace, name, value),
+          }),
+        "create",
+        { mutating: true },
+      );
+    } catch (error) {
+      await this.discardFailedCreate(client, namespace, name, identity);
+      throw error;
+    }
     return this.checkedBackendRef(observed, identity, namespace);
+  }
+
+  /**
+   * A create that applied but answered with an error (the request deadline, a lost response)
+   * would leave a Secret no OCC metadata names, under a name only this call knows (finding
+   * 916). So a failed create reads its own name and deletes the object it finds, but only when
+   * it carries this exact identity's ownership; an absent object, or one that is not this
+   * Secret's, means the create never applied and its own error stands. When that cannot be
+   * checked, the outcome is reported as unknown and uncleaned. A create still in flight that
+   * lands after this read is not covered.
+   */
+  private async discardFailedCreate(
+    client: CoreV1Api,
+    namespace: string,
+    name: string,
+    identity: SecretIdentity,
+  ): Promise<void> {
+    let existing: V1Secret;
+    let uid: string;
+    try {
+      existing = await this.request(() => client.readNamespacedSecret({ namespace, name }), "read");
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
+    }
+    try {
+      ({ uid } = this.checkedBackendRef(existing, identity, namespace));
+    } catch {
+      // Someone else's object under this name: nothing of this create's is stored.
+      return;
+    }
+    try {
+      const resourceVersion = existing.metadata?.resourceVersion;
+      if (!isNonEmptyString(resourceVersion)) {
+        throw new SecretOwnershipError("Secret resource version is required for delete.");
+      }
+      await this.request(
+        () =>
+          client.deleteNamespacedSecret({
+            namespace,
+            name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        "delete",
+        { mutating: true },
+      );
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
+    }
+  }
+
+  private unknownCreateOutcome(): Error {
+    return new SecretBackendUnavailableError(
+      "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.",
+    );
   }
 
   async update(secret: Secret, value: string): Promise<void> {
@@ -454,34 +515,16 @@ export class KubernetesSecretDriver implements SecretDriver {
     action: string,
     options: { readonly mutating?: boolean } = {},
   ): Promise<T> {
-    const ownerSignal = currentComputeAbortSignal();
-    for (let attempt = 1; ; attempt += 1) {
-      ownerSignal?.throwIfAborted();
-      const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-      const signal =
-        ownerSignal === undefined ? deadline : AbortSignal.any([ownerSignal, deadline]);
-      try {
-        return await withComputeAbortSignal(signal, operation);
-      } catch (error) {
-        if (ownerSignal?.aborted) {
-          throw new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`);
-        }
-        if (deadline.aborted) {
-          throw timeoutFailure(action);
-        }
-        const status = numericErrorStatus(error);
-        const retryable =
-          status === 429 ||
-          (status !== undefined && status >= 500) ||
-          (status === undefined &&
-            !(error instanceof SecretValidationError) &&
-            !(error instanceof SecretOwnershipError));
-        if (!retryable || options.mutating === true || attempt >= 3) {
-          throw sanitizedFailure(error, action);
-        }
-        await new Promise((resolve) => setTimeout(resolve, attempt * 25));
-      }
-    }
+    return kubernetesRequest(
+      operation,
+      {
+        cancelled: () =>
+          new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`),
+        timedOut: () => timeoutFailure(action),
+        failed: (error) => sanitizedFailure(error, action),
+      },
+      options,
+    );
   }
 
   private async core(): Promise<CoreV1Api> {

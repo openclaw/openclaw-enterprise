@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   assertSourceRef,
@@ -7,6 +11,42 @@ import {
   validateEnvironmentPolicy,
   validateFullIntegrationPreflight,
 } from "../../scripts/ci/full-integration-preflight.mjs";
+
+test("full integration workflow carries QA job outcomes into targeted aggregation only", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "qa-aggregate-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  const step = workflow.split("- name: Write selected job state")[1];
+  const source = step.match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
+  for (const lane of ["qa-matrix", "all"]) {
+    // `all` excludes qa-matrix until the integration-qa environment exists, so
+    // a full run must neither require nor record the QA job.
+    const expectRecorded = lane === "qa-matrix";
+    for (const result of ["success", "failure", "cancelled", "skipped", "missing"]) {
+      const needs = { preflight: { result: "success" } };
+      if (result !== "missing") {
+        needs["qa-matrix"] = { result };
+      }
+      // Execute the shipped workflow step: omission here previously made even
+      // a successful QA artifact fail aggregate validation with missing-need.
+      const process = spawnSync(globalThis.process.execPath, ["--input-type=commonjs"], {
+        input: source,
+        encoding: "utf8",
+        env: { RUNNER_TEMP: directory, NEEDS_JSON: JSON.stringify(needs), SELECTED_LANE: lane },
+      });
+      assert.equal(process.status, 0, process.stderr);
+      const recorded = JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
+      assert.deepEqual(
+        recorded["qa-matrix"],
+        expectRecorded ? { result } : undefined,
+        `${lane}: ${result}`,
+      );
+    }
+  }
+});
 
 function providerEnvironment(patch = {}) {
   return {
@@ -68,6 +108,7 @@ test("full integration preflight selects only manual workflow lanes", async () =
   assert.deepEqual(requiredEnvironmentsForLane("provider-account"), [
     "integration-provider-account",
   ]);
+  assert.deepEqual(requiredEnvironmentsForLane("qa-matrix"), ["integration-qa"]);
   assert.deepEqual(requiredEnvironmentsForLane("all"), [
     "integration-model",
     "integration-otel",
