@@ -417,31 +417,41 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 }
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [13, 15, 16].includes(args.length)) {
+  if (equals(args.slice(0, 2), ["cluster", "create"]) && [15, 17, 18].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
     // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
     // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
     assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
-    if (args.length >= 15) {
+    if (args.length >= 17) {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
     const storage = args[10].split(":");
     assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
     assert.ok(existsSync(storage[0]), "both nodes must mount an existing shared host directory");
     assert.equal(args[11], "--api-port");
     assert.match(args[12], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(13, 15), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
+    assert.deepEqual(args.slice(13, 17), [
+      "--kubeconfig-update-default=false",
+      "--kubeconfig-switch-context=false",
+      "--lb-config-override",
+      "settings.workerConnections=8192",
+    ]);
     // The creation-failure case models k3d's default rollback so it can prove
     // that the preparation owner retains containers for diagnosis and cleanup.
     if (scenario !== "cluster-create-failed") {
-      assert.deepEqual(args.slice(15), ["--no-rollback"]);
+      assert.deepEqual(args.slice(17), ["--no-rollback"]);
     } else {
-      assert.ok(equals(args.slice(15), []) || equals(args.slice(15), ["--no-rollback"]));
+      assert.ok(equals(args.slice(17), []) || equals(args.slice(17), ["--no-rollback"]));
     }
     } else {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
     assert.match(args[10], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(11), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
+    assert.deepEqual(args.slice(11), [
+      "--kubeconfig-update-default=false",
+      "--kubeconfig-switch-context=false",
+      "--lb-config-override",
+      "settings.workerConnections=8192",
+    ]);
     }
     state.cluster = args[2];
     state.clusterDeleted = false;
