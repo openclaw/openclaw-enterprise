@@ -247,7 +247,10 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     `/namespaces/${namespace.id}/credential-sources/${originalAuth.sourceId}`,
   );
   assert.equal(oldSource.status, 200);
-  assert.equal(gateway.calls.some((call) => call.operation === "removeSource"), false);
+  assert.equal(
+    gateway.calls.some((call) => call.operation === "removeSource"),
+    false,
+  );
   const replacementGrants = requests.filter(
     (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
   );
