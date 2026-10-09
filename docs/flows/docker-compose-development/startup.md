@@ -139,8 +139,8 @@ operator-owned directory; otherwise the helper creates a private temporary
 directory. It never overwrites an existing file, prints `data.key`, or reruns
 bootstrap to replace a missing key.
 
-`./bin/occ installation get` uses the copied key; its ID must match
-`meta.installationId`. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
+`./bin/occ installation get` uses the copied key. The returned Installation ID
+must match the key's `meta.installationId`. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
 resolves the Installation-scoped service administrator; IAM authorizes each
 operation. The [service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
 owns admission and `401` rejection without cookie fallback.
