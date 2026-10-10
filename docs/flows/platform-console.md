@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-08
-last_updated_session: 01a11d68-d6e8-7033-ab93-03767bced2da
+updated: 2026-10-09
+last_updated_session: authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2
 ---
 
 # Platform console request flow
@@ -123,6 +123,12 @@ First loads show loading. Return navigation and Refresh can restore one of at mo
 16 document-local views keyed by route, Namespace, and session owner while reads
 run. Password fields and their derived discovery state clear before retention.
 Controls stay inert until admission succeeds; navigation remains available.
+
+`apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
+abort signal through JSON and text body consumption. After headers arrive,
+cancellation retains the signal's reason and socket failures reach the caller's
+interrupted-read recovery. Only JSON syntax failures become invalid-response
+errors; a failed body never causes an automatic replay.
 
 Completed views retain their DOM, handlers, and draft capture callbacks. On return,
 `loadPage` rereads their GET dependencies and compares data and user identity.
@@ -372,6 +378,8 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 
 - 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
 - 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)

@@ -10,4 +10,8 @@ export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Names
 export const NamespaceMissing = { ...story("namespaceMissing"), name: "Namespace unavailable" };
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
+export const AgentsInterruptedResponse = {
+  ...story("agentsInterruptedResponse"),
+  name: "Interrupted response",
+};
 export const AgentsLoading = { ...story("agentsLoading"), name: "Loading" };

@@ -787,6 +787,24 @@ export const scenarios = {
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", hold: true }],
     description: "The collection read remains pending until the real 15-second client timeout.",
   },
+  agentsInterruptedResponse: {
+    group: "Pages/Agents",
+    name: "Interrupted response",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        bodyError: true,
+        once: true,
+      },
+    ],
+    description:
+      "A collection response body fails after its headers arrive. Retry reloads the list.",
+    gap: "This preview simulates a stream failure; the socket tests verify real HTTP interruption.",
+    workflow: [
+      "Check that Request interrupted appears with Retry instead of an empty Agent collection.",
+      "Select Retry. The populated Agent list returns without changing Namespace or saved resources.",
+    ],
+  },
   backends: {
     group: "Pages/Backends",
     name: "Configured",

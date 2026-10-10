@@ -541,6 +541,19 @@ export function installFixture(scenario, evidence) {
           }
         });
       }
+      if (rule.bodyError) {
+        // A simulated after-headers failure exercises the production body reader.
+        // Real socket interruption is proved separately by the transport tests.
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"data":'));
+              queueMicrotask(() => controller.error(new TypeError("Response body interrupted")));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
       if (rule.status) {
         return error(rule.status, rule.code);
       }

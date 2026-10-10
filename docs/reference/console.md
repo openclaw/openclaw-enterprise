@@ -248,6 +248,9 @@ dependencies, missing resources, and network failures clear affected rows and
 offer recovery. Backend error text is not rendered; include any displayed request
 ID when reporting an API failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
+Interrupted response bodies and request deadlines keep the interrupted-read
+recovery path. View cancellation does not show a new failure, and a failed
+response never automatically retries a mutation.
 Backend discovery shows only configured IDs and types; see its
 [limits](backends.md#read-configured-backends).
 

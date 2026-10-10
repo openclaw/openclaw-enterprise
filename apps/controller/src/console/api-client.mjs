@@ -20,15 +20,16 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...(pinned ? { "x-occ-session-key": pinned } : {}),
     };
+    const requestSignal = AbortSignal.any([
+      ...(outlivesView ? [] : [lifetime.signal]),
+      ...(signal ? [signal] : []),
+      AbortSignal.timeout(15_000),
+    ]);
     const response = await fetch(path, {
       method,
       credentials: "same-origin",
       cache: "no-store",
-      signal: AbortSignal.any([
-        ...(outlivesView ? [] : [lifetime.signal]),
-        ...(signal ? [signal] : []),
-        AbortSignal.timeout(15_000),
-      ]),
+      signal: requestSignal,
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -39,18 +40,24 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
     if (response.status === 204 && response.ok && expectedStatus === 204) {
       return undefined;
     }
-    // Attachments (runtime log downloads) are text; failures stay JSON error envelopes.
-    if (
-      responseType === "text" &&
-      response.status === 200 &&
-      response.headers.get("content-type")?.startsWith("text/plain")
-    ) {
-      return await response.text();
-    }
     let payload;
     try {
+      // Attachments (runtime log downloads) are text; failures stay JSON error envelopes.
+      if (
+        responseType === "text" &&
+        response.status === 200 &&
+        response.headers.get("content-type")?.startsWith("text/plain")
+      ) {
+        return await response.text();
+      }
       payload = await response.json();
-    } catch {
+    } catch (error) {
+      // Body reads can fail after fetch returned headers. Keep cancellation,
+      // deadline and socket failures distinct from a complete, malformed JSON body.
+      requestSignal.throwIfAborted();
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
       payload = null;
     }
     if (
