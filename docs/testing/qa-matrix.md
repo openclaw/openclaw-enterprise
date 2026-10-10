@@ -134,7 +134,7 @@ arguments or commit the environment file.
 | `OCC_TEST_QA_REPOSITORY_AUTHORIZED`                                    | `1`, authorizing disposable branches and PRs in the registry repository.                                                                                                                                                                                             |
 | `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`                               | Private directory containing `registry.json`, `private-key.pem`, and `upstream-cidrs.json`, as described below.                                                                                                                                                      |
 | `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE`                               | Independent GitHub observer/cleanup credential for the default fixture. Alternatively select an absolute managed gh wrapper with `OCC_TEST_QA_GITHUB_OBSERVER_BINARY`, or use `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY` for the isolated GitHub App fixture. |
-| `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY`                      | Private directory with `registry.json` and `private-key.pem`; isolated fixture only. The runner mints short-lived observer installation tokens from this App key.                                                                                                    |
+| `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY`                      | Private directory with `registry.json` and `private-key.pem`; isolated fixture only. The runner mints short-lived observer installation tokens from the same GitHub App identity that owns the isolated repository fixture.                                          |
 | `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`                                    | Exact native transcript name of an available harmless Calendar read tool.                                                                                                                                                                                            |
 | `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`                                | Pattern establishing a genuine successful Calendar read.                                                                                                                                                                                                             |
 | `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE` | Approved Socket Mode app and gateway bot token files.                                                                                                                                                                                                                |
@@ -225,9 +225,12 @@ name the one approved isolated fixture repository as lowercase
 `owner/repository`. The isolated path checks the registry's repository target
 before materializing credential files: the registry must contain exactly one
 repository, that repository must match `QA_ISOLATED_REPOSITORY_FULL_NAME`, and
-it must not be the workflow repository. The runner uses the isolated App key to
-mint a separate repository-scoped observer installation token on demand; it does
-not require a static `QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN` secret. The
+it must not be the workflow repository. The runner uses the isolated App key to mint a separate repository-scoped
+observer installation token on demand. This is a separate token from the broker
+tokens, but it comes from the same GitHub App identity that owns the isolated
+repository fixture. The workflow does not require a static
+`QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN` secret, and that secret should not be
+created. The
 isolated path still shares the approved model, Codex, Slack, Calendar, and
 upstream CIDR settings from `integration-qa`. If any isolated repository secret
 or target is missing or mismatched, credential materialization fails; the
@@ -263,8 +266,9 @@ above. See [fixture and scenario conventions](fixtures-and-scenarios.md).
   own Agent and must clean up only that Agent. Keep dependent steps sequential
   within the worker. Installation-wide changes belong before or after the
   joined worker group, never inside a parallel scenario.
-- Register cleanup with the fixture, preserve uncertain credential-disposal
-  recovery, and record only nonsecret evidence.
+- Register cleanup with the fixture and record only nonsecret evidence. GitHub
+  App observer tokens are short-lived and expire at GitHub; the runner does not
+  revoke each minted observer token during normal cleanup.
 - For new required inputs, update
   [`qa-matrix.json`](../../scripts/ci/test-suites/qa-matrix.json), the protected
   workflow credential setup when needed, and this page's prerequisites.

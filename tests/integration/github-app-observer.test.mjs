@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createGitHubAppRepositoryObserver } from "../helpers/github-app-observer.mjs";
+import {
+  createGitHubAppRepositoryObserver,
+  loadGitHubAppObserverInput,
+} from "../helpers/github-app-observer.mjs";
 
 const repository = "fixture-owner/fixture-repo";
 const repositoryId = 789;
@@ -147,6 +150,38 @@ async function fixture(
   return { directory, origin, seen, issuedTokens };
 }
 
+test("GitHub App observer input rejects symlinked private key files", async (t) => {
+  const f = await fixture(t);
+  const target = join(f.directory, "private-key-target.pem");
+  const keyPath = join(f.directory, "private-key.pem");
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  await rm(keyPath);
+  await writeFile(target, privateKey.export({ type: "pkcs1", format: "pem" }), { mode: 0o600 });
+  await symlink(target, keyPath);
+
+  await assert.rejects(
+    loadGitHubAppObserverInput(f.directory, repository),
+    /ELOOP|symlink|private regular file|too many levels/i,
+  );
+  assert.equal(f.seen.length, 0);
+});
+
+test("GitHub App observer input rejects FIFO private key files without hanging", async (t) => {
+  const f = await fixture(t);
+  const keyPath = join(f.directory, "private-key.pem");
+  await rm(keyPath);
+  const fifo = spawnSync("mkfifo", [keyPath], { encoding: "utf8" });
+  assert.equal(fifo.status, 0, fifo.stderr);
+  await chmod(keyPath, 0o600);
+
+  const result = runLoadObserverInput(f.directory);
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", result.stderr);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /private regular file/);
+  assert.equal(f.seen.length, 0);
+});
+
 test("GitHub App observer mints a one-repository runner token and reuses it before expiry", async (t) => {
   const f = await fixture(t);
   const observe = await createGitHubAppRepositoryObserver({
@@ -245,7 +280,7 @@ async function runCredentialHelper(f, operation, request, env = {}) {
     new URL("../../scripts/ci/github-app-observer-credential-helper.mjs", import.meta.url),
   );
   const child = spawn(process.execPath, [helper, f.directory, repository, operation], {
-    env: { ...process.env, ...env },
+    env: childEnv(env),
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
@@ -268,6 +303,30 @@ async function runCredentialHelper(f, operation, request, env = {}) {
 
 function credentialRequest({ protocol = "https", host = "github.com", path = repository } = {}) {
   return `protocol=${protocol}\nhost=${host}\npath=${path}.git\n\n`;
+}
+
+function childEnv(overrides = {}) {
+  const env = { ...process.env };
+  delete env.NODE_ENV;
+  return { ...env, ...overrides };
+}
+
+function runLoadObserverInput(inputDirectory) {
+  const helper = new URL("../helpers/github-app-observer.mjs", import.meta.url).href;
+  return spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { loadGitHubAppObserverInput } from ${JSON.stringify(helper)};
+await loadGitHubAppObserverInput(process.env.OBSERVER_INPUT_DIRECTORY, ${JSON.stringify(repository)});`,
+    ],
+    {
+      encoding: "utf8",
+      env: childEnv({ OBSERVER_INPUT_DIRECTORY: inputDirectory }),
+      timeout: 1000,
+    },
+  );
 }
 
 test("GitHub App observer credential helper mints only for valid get operations", async (t) => {
@@ -329,6 +388,15 @@ test("GitHub App observer credential helper rejects unsupported operations and w
 
 test("GitHub App observer credential helper keeps API origin override test-only and loopback", async (t) => {
   const f = await fixture(t);
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  t.after(() => {
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
   const notTest = await runCredentialHelper(f, "get", credentialRequest(), {
     OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin,
   });

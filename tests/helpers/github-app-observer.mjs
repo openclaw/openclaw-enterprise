@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { constants, createPrivateKey, sign } from "node:crypto";
+import { constants as cryptoConstants, createPrivateKey, sign } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, join } from "node:path";
@@ -19,7 +20,10 @@ function assertNumericId(value, label) {
 
 async function readPrivateFile(path, label) {
   assert.ok(path && isAbsolute(path), `${label} requires an absolute path`);
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const file = await open(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+  );
   try {
     const info = await file.stat();
     assert.ok(info.isFile() && info.nlink === 1, `${label} must be a private regular file`);
@@ -92,7 +96,7 @@ function createJwt(input, now) {
   const unsigned = `${header}.${payload}`;
   return `${unsigned}.${sign("sha256", Buffer.from(unsigned), {
     key: input.privateKey,
-    padding: constants.RSA_PKCS1_PADDING,
+    padding: cryptoConstants.RSA_PKCS1_PADDING,
   }).toString("base64url")}`;
 }
 

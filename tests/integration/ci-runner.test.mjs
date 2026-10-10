@@ -35,8 +35,10 @@ async function writeJson(path, value) {
 }
 
 function runnerEnv(env = {}) {
+  const baseEnv = { ...process.env };
+  delete baseEnv.NODE_ENV;
   return {
-    ...process.env,
+    ...baseEnv,
     GITHUB_SHA: currentSha(),
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
@@ -522,14 +524,60 @@ test("run clears inherited selectors and keep flags while preserving explicit la
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("run does not inherit parent NODE_ENV unless explicitly selected", async (t) => {
+  const root = await fixture(t);
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  t.after(() => {
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      isolated: {
+        files: [{ path: "tests/integration/node-env.test.mjs" }],
+      },
+    },
+    groups: { ci: ["isolated"] },
+  });
+  await writeFile(
+    join(root, "tests/integration/node-env.test.mjs"),
+    [
+      'import assert from "node:assert/strict";',
+      'import test from "node:test";',
+      'test("NODE_ENV is scrubbed", () => {',
+      "  assert.equal(process.env.NODE_ENV, undefined);",
+      "});",
+      "",
+    ].join("\n"),
+  );
+
+  const result = run(root, [
+    "run",
+    "isolated",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/node-env.jsonl",
+    "--results",
+    "results/node-env.json",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("QA lane forwards selected models and observer input and retains outcomes at the requested path", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/qa-matrix.json"), "utf8"),
   );
-  const observer = join(root, "observer.txt");
   const artifacts = join(root, "evidence");
-  await writeFile(observer, "synthetic-observer", { mode: 0o600 });
   await mkdir(artifacts);
   const file = "tests/integration/qa-inputs.test.mjs";
   const qaSelectionHelper = pathToFileURL(
@@ -548,7 +596,7 @@ test("QA inputs", async () => {
   assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
   assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
   assert.equal(process.env.OCC_TEST_CODEX_CALENDAR_PROMPT, "selected calendar read");
-  assert.equal(await readFile(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, "utf8"), "synthetic-observer");
+  assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, undefined);
   assert.equal(process.env.QA_REPOSITORY_FIXTURE, "isolated");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY, "selected-app-input");
   const selection = selectQaMatrix(process.env);
@@ -585,7 +633,6 @@ test("QA inputs", async () => {
       OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
       OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
       OCC_TEST_CODEX_CALENDAR_PROMPT: "selected calendar read",
-      OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: observer,
       OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
       QA_REPOSITORY_FIXTURE: "isolated",
       OCC_TEST_QA_ARTIFACTS: artifacts,
