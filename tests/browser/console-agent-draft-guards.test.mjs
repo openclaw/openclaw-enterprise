@@ -307,6 +307,104 @@ for (const tab of ["configuration", "repositories"]) {
   });
 }
 
+test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) => {
+  const { fixture, namespace, modelSecret, grantModelAccess } =
+    await createConsoleRepositoryLaunchFixture(t);
+  // A loopback listener cannot serve the Gateway Service's Pod-IP traffic, so deployment
+  // refuses it. The Configuration itself saves, as it does for an operator.
+  const values = createHarnessConfiguration("codex", "gpt-5.1");
+  values.gateway.bind = "loopback";
+  const configuration = await fixture.createConfiguration(namespace.id, values);
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Typed deploy refusals",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: modelSecret.ref },
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agent = created.data;
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+  );
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+  const deployResponse = () =>
+    page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${path}/deploy` &&
+        response.request().method() === "POST",
+    );
+  async function refusal(status) {
+    const response = deployResponse();
+    await deploy.click();
+    const body = await (await response).json();
+    assert.equal((await response).status(), status, JSON.stringify(body));
+    return body.error.message;
+  }
+
+  // The caller may operate the model Secret, but the Agent's own service principal may not.
+  // The API names that principal and the grant to add; the console shows the same sentence.
+  const denied = await refusal(403);
+  assert.match(
+    denied,
+    new RegExp(`^The Agent service principal ${agent.servicePrincipalId} is not authorized`),
+  );
+  await page.getByText(denied, { exact: true }).waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+
+  // With that grant in place, the next refusal is the Configuration setting itself.
+  await grantModelAccess(agent);
+  const conflict = await refusal(409);
+  assert.match(conflict, /^Configuration setting gateway\.bind /);
+  await page.getByText(conflict, { exact: true }).waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+  const revisions = await fixture.request("GET", `${path}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.data.length, 0, "a refused deployment creates no version");
+
+  // The API's untyped answers (a caller's own denial, a conflict with no reason, or a proxy
+  // reply with no error envelope) name nothing to fix, so the console keeps its own guidance.
+  for (const [status, body, expected] of [
+    [
+      403,
+      {
+        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+      },
+      "Deployment denied. Check Agent deploy permission",
+    ],
+    [
+      409,
+      {
+        error: {
+          code: "RESOURCE_CONFLICT",
+          message: "The requested platform resource already exists.",
+        },
+      },
+      "Deployment conflicts with the saved Agent state.",
+    ],
+    [409, null, "Deployment conflicts with the saved Agent state."],
+  ]) {
+    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: body === null ? "" : JSON.stringify(body),
+      }),
+    );
+    await deploy.click();
+    await page.getByText(expected, { exact: false }).waitFor();
+    assert.equal(await deploy.isEnabled(), true);
+    await page.unroute(`${fixture.origin}${path}/deploy`);
+  }
+});
+
 for (const mutation of ["authentication", "channel Secrets"]) {
   test(`Agent deployment waits for ${mutation} writes and their recovery`, async (t) => {
     const { fixture, namespace, modelSecret, grantModelAccess } =

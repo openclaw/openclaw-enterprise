@@ -22,6 +22,7 @@ import {
   message,
   rejectionMessage,
   assertReadableConfiguration,
+  NAMESPACE_NOT_READY_MESSAGE,
 } from "./list.mjs";
 import {
   createChannelSecretsPanel,
@@ -29,6 +30,35 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
+
+// The API's catch-all answers to a refused deployment: a caller's own denial and an untyped
+// conflict. They name nothing the caller can act on, so the console keeps its own sentences.
+const GENERIC_DEPLOY_REFUSALS = new Set([
+  "The exact platform operation was not authorized.",
+  "The requested platform resource already exists.",
+]);
+
+function deployFailureText(error, submitted) {
+  if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
+    return "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again.";
+  }
+  if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
+    return NAMESPACE_NOT_READY_MESSAGE;
+  }
+  if (error.status !== 403 && error.status !== 409) {
+    return rejectionMessage(error, submitted);
+  }
+  // A typed refusal is written for the caller: a 409 names the setting or state to fix, and a
+  // 403 other than the caller's own denial names the Agent's service principal and a resource
+  // the caller was already authorized to operate. Showing it reveals nothing the API did not
+  // already tell this caller (D94).
+  if (error.serverMessage !== undefined && !GENERIC_DEPLOY_REFUSALS.has(error.serverMessage)) {
+    return error.serverMessage;
+  }
+  return error.status === 403
+    ? "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask a Namespace administrator to confirm the required grants."
+    : "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them.";
+}
 
 function errorPanel(error, context, retry, { version = false } = {}) {
   if (error.status === 401) {
@@ -1669,13 +1699,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
           // The cluster refused the credential check before admission: no version was created.
           const clusterRbac = error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC";
-          deployFeedback.textContent = clusterRbac
-            ? "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again."
-            : error.status === 403
-              ? "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask a Namespace administrator to confirm the required grants."
-              : error.status === 409
-                ? "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them."
-                : rejectionMessage(error, submitted);
+          deployFeedback.textContent = deployFailureText(error, submitted);
           if (!submitted || clusterRbac || [400, 403, 404, 409, 429].includes(error.status)) {
             deployPending = false;
           }

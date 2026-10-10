@@ -3111,6 +3111,42 @@ export const scenarios = {
     actions: [click("Deploy new version")],
     description: "A rejected deployment reports failure and re-enables the action.",
   },
+  deployRefusedSetting: {
+    group: "Pages/Agent detail",
+    name: "Deployment refused by a Configuration setting",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Configuration setting gateway.bind must listen on all interfaces to serve routed traffic: use lan or omit the setting.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "A typed conflict shows the API's sentence, which names the setting to change. No version is created.",
+  },
+  deployAgentPrincipalDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment denied for the Agent's service principal",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "The Agent service principal service-agent-agt_00000000-0000-4000-8000-000000000001 is not authorized to operate secret sec_00000000-0000-4000-8000-000000000001. Grant that principal operate on the secret, then deploy again.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "A denial for the Agent's own service principal names the principal and the grant to add. A caller's own denial keeps the console's guidance.",
+  },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
     name: "New version deployment denied",
