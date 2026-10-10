@@ -1,23 +1,21 @@
 # Console Storybook
 
-Browse production Console pages, components, and Agent workflows against an
-in-memory fixture. Previews contact no services and run no workloads. Use dummy
-credentials.
+Browse production Console pages, components, and Agent workflows with in-memory
+fixtures. Previews use no services or workloads. Use dummy credentials.
 
 ## Run locally
 
-From the repository root, with Node.js 24+ and the pinned pnpm version:
+From the repository root, using Node.js 24+ and pinned pnpm:
 
 ```sh
 npm run storybook:install
 npm run storybook
 ```
 
-Open `http://127.0.0.1:6006`. Each story starts an independent fixture, ignoring
-existing Installations and other tabs' sessions; **Reset story** discards its
-changes.
+Open `http://127.0.0.1:6006`. Stories ignore existing Installations and other tabs.
+**Reset story** discards fixture changes.
 
-To build and serve a static copy:
+Build and serve a static copy:
 
 ```sh
 npm run storybook:build
@@ -25,25 +23,23 @@ python3 -m http.server 6006 --bind 127.0.0.1 \
   --directory scripts/console-storybook/dist/site
 ```
 
-Serve at the origin root for absolute `/console/` URLs. Build fingerprints keep
-cached fixture pages and module imports current. CI uploads a static artifact
-without publishing the documentation site.
+Serve at the origin root for absolute `/console/` URLs. Build fingerprints
+refresh cached pages and imports. CI uploads a static artifact without
+publishing the documentation site.
 
 ## Appearance review
 
 Use **Pages/Agents → Populated** to review the shared shell and controls at
 desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844).
 Check keyboard focus, search, navigation, an open dialog, and empty, loading,
-error, permission-denied, and missing-credential stories. The console stays light
-with either system appearance preference.
+error, permission-denied, and missing-credential stories. The console stays light under either system preference.
 
-The Claw palette, type scale, and surface geometry reference
+Palette, typography, and geometry follow
 [OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
-particularly `src/styles/base.css`, `layout.css`, and `components.css`.
+specifically `src/styles/{base,layout,components}.css`.
 OCE keeps its own navigation and workflows. Input borders are stronger than
-the reference's decorative dividers so controls stay distinguishable. The
-self-hosted Instrument Sans subset keeps its SIL Open Font License beside
-the font; unsupported glyphs use the system fallback.
+the reference's decorative dividers so controls stay distinguishable. Self-hosted Instrument Sans includes its SIL Open Font License; unsupported
+glyphs use the system fallback.
 
 Compare [before](../assets/console-style/agents-before.png),
 [after](../assets/console-style/agents-1440-light.png),
@@ -69,13 +65,12 @@ Stories reach error states through real controls after loading fixture data.
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                              |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials             | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
-| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                                                          |
+| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. Launch opens an explanatory fixture.                                                                                                                                                                                                                                                                                                       |
 | Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                                                                |
 | Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                                                      |
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                                                      |
 
-Pending-read stories use the real client's 15-second timeout; reset them to replay
-loading.
+Pending-read stories use the client's 15-second timeout; reset to replay loading.
 
 ## Return navigation
 
