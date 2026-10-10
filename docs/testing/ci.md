@@ -114,17 +114,18 @@ redacts environment values and secret shapes in lines and event messages, and
 adds the record to the same report under `containerLogs`. The platform recovery
 test follows its fixture gateway, which logs its drain, across Agent stop.
 
-The job log and results keep 600 characters of a failure message. In every lane,
-the runner adds each failed file's whole messages and stacks (16 KiB each, 20
-cases) and its last 400 stdout, stderr and diagnostic lines to the same report
-under `failures`, for the first 8 failed files (`omittedFailureFiles` counts the rest). They get the failure-message
-redaction, and lines naming a credential are dropped whole. Test output reaches an
-artifact only here; a runtime-minted value without a known shape is not redacted,
-so tests must not print secrets. Each record has a `reason`. A file stopped at the
-runner timeout gets `timeout`, its elapsed time, the running tests and the output tail
-so far (a long tail can lose its oldest lines; `omittedLines` counts them). A
-preparation failure gets `prepare` with the redacted error message, which can quote a
-command's output, and stack.
+Results/job logs keep 600-character failure messages. For eight files,
+diagnostic `failures` retain 20 cases, fields captured within 16,384 JavaScript
+UTF-16 units each, and 400 output lines; `omittedFailureFiles` counts the rest.
+Labelled causes/siblings share each cap across 32 values/eight levels; cycles/limits
+are marked. Long reported test-failure fields retain complete leading lines (up to 4,096 units) and
+tail lines within the remaining budget, including a counted marker. Oversized
+single lines may be omitted. This reporter path normalizes controls and multiline
+key shapes first, and re-budgets after redaction; private flags never reach artifacts. Existing redaction and
+credential-line drops apply; unrecognized runtime-minted values can remain,
+so tests must not print secrets. Each record's `reason` distinguishes timeout
+(running tests and output so far, with `omittedLines`) from preparation failure
+(redacted message/stack using its unchanged prefix capture and conservative cut guard).
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 

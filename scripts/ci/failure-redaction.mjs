@@ -86,6 +86,24 @@ export function failureSecrets(environments) {
   return [...values].sort(([a], [b]) => b.length - a.length);
 }
 
+// Capture keeps bounded complete lines from both ends. Normalize controls and
+// whole multiline key shapes before windowing, so a window cannot orphan a body.
+// The budget is JavaScript UTF-16 units, including the omission marker.
+export function captureFailureText(text) {
+  const value = stripControl(text).replace(privateKeyShape, "[redacted]");
+  if (value.length <= failureInputLimit) {
+    return value;
+  }
+  const headEnd = value.lastIndexOf("\n", 4_096 - 1);
+  const head = headEnd < 0 ? "" : value.slice(0, headEnd + 1);
+  const marker = (count) => `[... ${count} chars cut ...]\n`;
+  const tailBudget = failureInputLimit - head.length - marker(value.length).length;
+  const boundary = value.indexOf("\n", value.length - tailBudget - 1);
+  const tail = boundary < 0 ? "" : value.slice(boundary + 1);
+  // An oversized single line is omitted, rather than retaining a new partial line.
+  return `${head}${marker(value.length - head.length - tail.length)}${tail}`;
+}
+
 // `cut` says the reporter cut the text at failureInputLimit (a caller may have
 // shortened it since).
 function redactText(text, limit, secrets, root, cut = text?.length >= failureInputLimit) {
@@ -125,10 +143,21 @@ export function redactFailure(error, secrets, root) {
   if (!error || typeof error !== "object") {
     return error;
   }
-  const { stack: _stack, ...rest } = error;
+  const {
+    stack: _stack,
+    messageCompleteLines,
+    stackCompleteLines: _stackCompleteLines,
+    ...rest
+  } = error;
   return {
     ...rest,
-    message: redactText(error.message, failureMessageLimit, secrets, root),
+    message: redactText(
+      error.message,
+      failureMessageLimit,
+      secrets,
+      root,
+      messageCompleteLines === true ? false : undefined,
+    ),
     frame: redactText(error.frame, failureFrameLimit, secrets, root),
   };
 }
@@ -155,24 +184,34 @@ function dropCredentialLines(text) {
 // dropped on the raw text first, since a token shape can consume the keyword and
 // keep the rest of its line, and again after redaction. A private key spans
 // lines, so it is replaced whole before that.
-function redactDetailText(text, secrets, root) {
+function redactDetailText(text, secrets, root, completeLines) {
   if (typeof text !== "string") {
     return undefined;
   }
   const raw = dropCredentialLines(
     stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );
-  return dropCredentialLines(
-    redactText(raw, failureInputLimit, secrets, root, text.length >= failureInputLimit),
+  const complete = completeLines === true;
+  const redacted = dropCredentialLines(
+    redactText(
+      raw,
+      complete ? Infinity : failureInputLimit,
+      secrets,
+      root,
+      complete ? false : text.length >= failureInputLimit,
+    ),
   );
+  // Environment labels can grow the safe text. Re-budget complete lines after
+  // redaction too; legacy callers retain their prefix cut and conservative guard.
+  return complete && redacted !== undefined ? captureFailureText(redacted) : redacted;
 }
 
 export function redactFailureDetail(error, secrets, root) {
   if (!error || typeof error !== "object") {
     return undefined;
   }
-  const message = redactDetailText(error.message, secrets, root);
-  const stack = redactDetailText(error.stack, secrets, root);
+  const message = redactDetailText(error.message, secrets, root, error.messageCompleteLines);
+  const stack = redactDetailText(error.stack, secrets, root, error.stackCompleteLines);
   return message === undefined && stack === undefined ? undefined : { message, stack };
 }
 

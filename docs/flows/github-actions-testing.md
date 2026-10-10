@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-10-05
-last_updated_session: authoring-run/5808365b-c590-4c11-92d6-4ee32efc3626
+updated: 2026-10-10
+last_updated_session: authoring-run/32d914e3-aba3-48ff-a536-1bf407c4f564
 ---
 
 # GitHub Actions testing flow
@@ -129,9 +129,26 @@ manual profile. Production node provisioning remains outside CI ownership; see
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include bounded Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+Each file receives one lane and invocation-scoped inputs; distinct prerequisites
+require separate files. The reporter emits names, locations and outcomes.
+The runner redacts messages (600 characters) and frames (240) for paths,
+nonpublic job/child environment values of eight or more characters, and known
+credential shapes; job logs use that text. Unrecognized runtime-generated values
+can remain. Structured provider, traffic and plugin diagnostics use closed
+allowlists without addresses, response bodies, credentials or identities.
+The [CI guide](../testing/ci.md) owns retained fields and redaction markers.
 
 Required named cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
+
+The reporter projects `cause` and `AggregateError.errors` into message/stack
+fields with context labels, at most 32 values/eight levels. Cycles/limits are
+marked; shared siblings remain separate. `scripts/ci/failure-redaction.mjs:captureFailureText`
+normalizes controls and multiline key shapes before retaining complete leading/tail
+lines within 16,384 JavaScript UTF-16 units, including omission markers.
+Oversized single lines may be omitted. Reporter-generated boundary flags preserve
+safe tails through redaction; expanded labels are re-budgeted. Flags stay out of artifacts. Top-frame and
+600-character summary limits remain unchanged. Integration covers actual Node
+events and diagnostic artifacts; passing files gain no text.
 
 ### 4. Clean up and publish the bounded result
 
@@ -191,6 +208,10 @@ Per-file cleanup releases its disposable database; job cleanup removes only stat
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 13:15: Retain complete leading/trailing diagnostic lines within the existing field budget and consume private boundary flags before publishing. (authoring-run/32d914e3-aba3-48ff-a536-1bf407c4f564 - 1005ea3085b91665f1f470cd49c7590143b221a2)
+
+- 2026-10-10 06:00: Preserve bounded nested failure causes and aggregate siblings through the existing CI diagnostic text projection. (authoring-run/92364dff-b3af-4ab2-8297-9dfaa98d7e31 - cd30d20a297fdb0f2b712122b705aa4c168564ff)
 
 - 2026-10-06 02:00: Per-file Agent namespace watch files. (audit-followup-ci-runner)
 

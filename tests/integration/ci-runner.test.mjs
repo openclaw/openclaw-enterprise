@@ -1782,7 +1782,8 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   // A value split by the cut survives as neither the value nor a prefix of it.
   const long = await render(new Error(`${"x".repeat(16_370)} jobonlyopaque123`));
   assert.ok(long.message.length < 700);
-  assert.match(long.message, /\.\.\. \[truncated\]$/);
+  assert.match(long.message, /^\[\.\.\. \d+ chars cut \.\.\.\]\n$/);
+  assert.doesNotMatch(long.message, /jobonly/);
   const straddle = await render(new Error(`${"y ".repeat(296)}key jobonlyopaque123 tail`));
   assert.doesNotMatch(straddle.message, /jobonly/);
   assert.equal((await render("thrown string")).message, "thrown string");
@@ -1977,6 +1978,48 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       '  t.diagnostic("phase timings 1234 ms");',
       '  assert.fail(`${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
+      'test("plain failure", () => { throw new Error("ordinary plain failure"); });',
+      'test("nested cause", () => { throw new Error("ordinary wrapper", { cause: new Error("ordinary underlying failure") }); });',
+      'test("aggregate failure", () => {',
+      '  throw new AggregateError([new Error("ordinary primary failure"), new Error("ordinary cleanup failure", { cause: new Error("ordinary cleanup cause") })], "ordinary aggregate");',
+      "});",
+      'test("shared sibling", () => {',
+      '  const shared = new Error("ordinary shared failure");',
+      '  throw new AggregateError([shared, shared], "ordinary sibling aggregate");',
+      "});",
+      'test("circular aggregate", () => {',
+      '  const aggregate = new AggregateError([new Error("ordinary first sibling")], "ordinary circular aggregate");',
+      '  aggregate.errors.push(aggregate, new Error("ordinary later sibling"));',
+      "  throw aggregate;",
+      "});",
+      'test("wide circular aggregate", () => {',
+      '  const aggregate = new AggregateError([], "ordinary wide circular aggregate");',
+      "  aggregate.errors.push(...Array(100).fill(aggregate));",
+      "  throw aggregate;",
+      "});",
+      'test("deep cause", () => {',
+      '  let error = new Error("ordinary deepest failure");',
+      '  for (let i = 0; i < 20; i += 1) error = new Error("ordinary cause wrapper " + i, { cause: error });',
+      "  throw error;",
+      "});",
+      'test("wide aggregate", () => {',
+      '  throw new AggregateError(Array.from({ length: 100 }, (_, i) => new Error("ordinary branch " + i)), "ordinary wide aggregate");',
+      "});",
+      'test("bounded aggregate text", () => {',
+      '  throw new AggregateError(Array.from({ length: 3 }, (_, i) => new Error("ordinary long branch " + i + " " + "x".repeat(10_000))), "ordinary bounded aggregate");',
+      "});",
+      'test("primitive cause", () => { throw new Error("ordinary primitive wrapper", { cause: "ordinary primitive cause" }); });',
+      'test("multiline tail", () => {',
+      '  const output = Array.from({ length: 1000 }, (_, i) => "ordinary progress " + i + " " + process.env.LONG_SYNTHETIC_ENVIRONMENT_FIXTURE_NAME);',
+      '  throw new Error(["ordinary wrapper failed", ...output, "ordinary wrapper stderr: final dependency failure", `final env ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`].join("\\n"));',
+      "});",
+      'test("multiline key boundary", () => {',
+      '  const before = "ordinary before\\n".repeat(500);',
+      '  const body = Array.from({ length: 500 }, (_, i) => "synthetic-pem-body-" + i + " " + "x".repeat(80));',
+      '  const key = ["-----BEGIN RSA PRIVATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----"].join("\\n");',
+      '  const after = "ordinary after\\n".repeat(50);',
+      '  throw new Error(before + key + "\\n" + after + "ordinary final after key");',
+      "});",
       "",
     ].join("\n"),
   );
@@ -1997,18 +2040,22 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     groups: { ci: ["details"] },
   });
 
-  const result = run(root, [
-    "run",
-    "details",
-    "--manifest",
-    "manifest.json",
-    "--root",
+  const result = run(
     root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+    [
+      "run",
+      "details",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    { LONG_SYNTHETIC_ENVIRONMENT_FIXTURE_NAME: "fictional-value" },
+  );
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -2022,7 +2069,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     /run-tests: whole failure messages, stacks and output tails are in .*state\/details\.json\.diagnostics\.json \(artifact diagnostics-<prefix>-details-attempt-(?:\d+|<N>)\)/,
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|passing output/);
+  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|passing output|fictional-value/);
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -2041,6 +2088,264 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     "stdout: progress before the failure",
   ]);
   assert.equal(record.output.omittedLines, 0);
+  const details = new Map(record.tests.map((entry) => [entry.name, entry]));
+  assert.equal(details.get("plain failure").message, "ordinary plain failure");
+  assert.equal(details.get("plain failure").stack.includes("cause:"), false);
+  assert.match(details.get("nested cause").message, /cause: ordinary underlying failure/);
+  assert.match(details.get("nested cause").stack, /cause:\nat /);
+  const aggregate = details.get("aggregate failure");
+  assert.match(aggregate.message, /errors\[0\]: ordinary primary failure/);
+  assert.match(aggregate.message, /errors\[1\]: ordinary cleanup failure/);
+  assert.match(aggregate.message, /errors\[1\]\.cause: ordinary cleanup cause/);
+  assert.match(aggregate.stack, /errors\[0\]:\nat /);
+  assert.match(aggregate.stack, /errors\[1\]\.cause:\nat /);
+  const siblings = details.get("shared sibling").message;
+  assert.match(siblings, /errors\[0\]: ordinary shared failure/);
+  assert.match(siblings, /errors\[1\]: ordinary shared failure/);
+  assert.doesNotMatch(siblings, /circular reference/);
+  const circular = details.get("circular aggregate").message;
+  assert.match(circular, /errors\[0\]: ordinary first sibling/);
+  assert.match(circular, /errors\[2\]: ordinary later sibling/);
+  // Process isolation serializes the backlink as a shallow Error. The native
+  // in-process runner below also exercises the actual cyclic object graph.
+  const cycleFile = join(root, "cycle-fixture.mjs");
+  await writeFile(
+    cycleFile,
+    [
+      'import test from "node:test";',
+      'test("circular aggregate", () => {',
+      '  const aggregate = new AggregateError([new Error("ordinary first sibling")], "ordinary circular aggregate");',
+      '  aggregate.errors.push(aggregate, new Error("ordinary later sibling"));',
+      "  throw aggregate;",
+      "});",
+      'test("wide circular aggregate", () => {',
+      '  const aggregate = new AggregateError([], "ordinary wide circular aggregate");',
+      "  aggregate.errors.push(...Array(100).fill(aggregate));",
+      "  throw aggregate;",
+      "});",
+    ].join("\n"),
+  );
+  const cycleReader = join(root, "cycle-reader.mjs");
+  await writeFile(
+    cycleReader,
+    [
+      'import { run } from "node:test";',
+      `import reporter from ${JSON.stringify(join(repositoryRoot, "scripts/ci/reporter.mjs"))};`,
+      `import { failureSecrets, redactFailureDetail } from ${JSON.stringify(join(repositoryRoot, "scripts/ci/failure-redaction.mjs"))};`,
+      `const events = run({ files: [${JSON.stringify(cycleFile)}], isolation: "none" });`,
+      "for await (const line of reporter(events)) {",
+      "  const event = JSON.parse(line);",
+      '  if (event.type === "test:fail") {',
+      `    console.log(JSON.stringify({ name: event.data.name, ...redactFailureDetail(event.data.error, failureSecrets([process.env]), ${JSON.stringify(root)}) }));`,
+      "  }",
+      "}",
+    ].join("\n"),
+  );
+  const cycleRun = spawnSync(process.execPath, [cycleReader], {
+    cwd: root,
+    env: runnerEnv(),
+    encoding: "utf8",
+  });
+  assert.equal(cycleRun.status, 0, cycleRun.stderr);
+  const cycleDetails = cycleRun.stdout
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const cycleDetail = cycleDetails.find((entry) => entry.name === "circular aggregate");
+  assert.match(cycleDetail.message, /errors\[1\]: \[error details omitted: circular reference\]/);
+  assert.match(cycleDetail.message, /errors\[2\]: ordinary later sibling/);
+  const wideCycleDetail = cycleDetails.find((entry) => entry.name === "wide circular aggregate");
+  assert.match(wideCycleDetail.message, /circular reference/);
+  assert.match(wideCycleDetail.message, /traversal limit/);
+  assert.match(details.get("deep cause").message, /traversal limit/);
+  assert.doesNotMatch(details.get("deep cause").message, /ordinary deepest failure/);
+  assert.match(details.get("wide aggregate").message, /errors\[0\]: ordinary branch 0/);
+  assert.match(details.get("wide aggregate").message, /traversal limit/);
+  assert.doesNotMatch(details.get("wide aggregate").message, /ordinary branch 99/);
+  const bounded = details.get("bounded aggregate text");
+  assert.ok(bounded.message.length <= 16_384);
+  assert.ok(bounded.stack.length <= 16_384);
+  assert.match(bounded.message, /^ordinary bounded aggregate/);
+  assert.match(bounded.message, /\[\.\.\. \d+ chars cut \.\.\.\]/);
+  assert.match(bounded.message, /errors\[2\]: ordinary long branch 2/);
+  assert.doesNotMatch(bounded.message, /ordinary long branch 0/);
+  const multiline = details.get("multiline tail");
+  assert.match(multiline.message, /^ordinary wrapper failed\n/);
+  assert.match(multiline.message, /\[\.\.\. \d+ chars cut \.\.\.\]/);
+  assert.match(multiline.message, /ordinary wrapper stderr: final dependency failure/);
+  assert.match(multiline.message, /final env \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
+  assert.ok(multiline.message.length <= 16_384);
+  assert.ok(multiline.stack.length <= 16_384);
+  assert.match(details.get("multiline key boundary").message, /ordinary final after key$/);
+  assert.doesNotMatch(text, /synthetic-pem-body/);
+  assert.doesNotMatch(text, /messageCompleteLines|stackCompleteLines/);
+  assert.doesNotMatch(JSON.stringify(summary), /messageCompleteLines|stackCompleteLines/);
+  assert.doesNotMatch(result.stderr, /messageCompleteLines|stackCompleteLines/);
+  assert.match(details.get("primitive cause").message, /cause: ordinary primitive cause/);
+  assert.equal(report.failures.length, 1, "passing files still add no diagnostics record");
+  for (const entry of summary.files[0].tests) {
+    assert.equal(entry.error?.stack, undefined);
+  }
+});
+
+test("the reporter keeps native failures when nested error accessors throw", async (t) => {
+  const root = await fixture(t);
+  const testFile = join(root, "accessor-fixture.mjs");
+  await writeFile(
+    testFile,
+    [
+      'import test from "node:test";',
+      'const refuse = () => { throw new Error("private accessor diagnostic"); };',
+      'test("unreadable aggregate", () => {',
+      '  const error = new Error("ordinary original failure");',
+      '  Object.defineProperty(error, "errors", { get: refuse });',
+      "  throw error;",
+      "});",
+      'test("unreadable nested message", () => {',
+      '  const nested = { get message() { return refuse(); }, stack: "    at ordinary-frame" };',
+      '  throw new AggregateError([nested, new Error("ordinary later sibling")], "ordinary outer aggregate");',
+      "});",
+    ].join("\n"),
+  );
+  const reader = join(root, "accessor-reader.mjs");
+  await writeFile(
+    reader,
+    [
+      'import { run } from "node:test";',
+      `import reporter from ${JSON.stringify(join(repositoryRoot, "scripts/ci/reporter.mjs"))};`,
+      `const events = run({ files: [${JSON.stringify(testFile)}], isolation: "none" });`,
+      "for await (const line of reporter(events)) {",
+      "  const event = JSON.parse(line);",
+      '  if (event.type === "test:fail") console.log(JSON.stringify(event.data));',
+      "}",
+    ].join("\n"),
+  );
+  const result = spawnSync(process.execPath, [reader], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /private accessor diagnostic/);
+  const failures = new Map(
+    result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .map((entry) => [entry.name, entry.error]),
+  );
+  assert.match(failures.get("unreadable aggregate").message, /ordinary original failure/);
+  assert.match(failures.get("unreadable aggregate").message, /unreadable property/);
+  assert.match(failures.get("unreadable nested message").message, /ordinary outer aggregate/);
+  assert.match(
+    failures.get("unreadable nested message").message,
+    /errors\[0\]: .*unreadable property/,
+  );
+  assert.match(
+    failures.get("unreadable nested message").message,
+    /errors\[1\]: ordinary later sibling/,
+  );
+});
+
+test("the reporter reads nested properties once and bounds unreadable siblings", async () => {
+  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const reads = new Map();
+  const once = (label, result) => () => {
+    const count = (reads.get(label) ?? 0) + 1;
+    reads.set(label, count);
+    assert.equal(count, 1, `${label} was read again`);
+    return result;
+  };
+  const refuse = () => {
+    throw new Error("private accessor diagnostic");
+  };
+  const shared = { message: "ordinary shared child" };
+  const nested = {
+    get message() {
+      return refuse();
+    },
+    get stack() {
+      return once("stack", "    at ordinary-frame")();
+    },
+    get cause() {
+      return once("cause", shared)();
+    },
+    get errors() {
+      return once("nested errors", [shared])();
+    },
+  };
+  const errors = [nested, undefined, { message: "ordinary final sibling" }];
+  Object.defineProperty(errors, 1, { get: refuse });
+  const outer = {
+    message: "ordinary outer",
+    get cause() {
+      return refuse();
+    },
+    get errors() {
+      return once("outer errors", errors)();
+    },
+  };
+  const render = async (error) => {
+    const lines = [];
+    for await (const line of reporter([
+      { type: "test:fail", data: { name: "accessor case", details: { error: { cause: error } } } },
+    ])) {
+      lines.push(JSON.parse(line));
+    }
+    return lines.find((line) => line.type === "test:fail").data.error;
+  };
+  const detail = await render(outer);
+  assert.match(detail.message, /^ordinary outer\ncause: .*unreadable property/);
+  assert.match(detail.message, /errors\[0\]: .*unreadable property/);
+  assert.match(detail.message, /errors\[0\]\.cause: ordinary shared child/);
+  assert.match(detail.message, /errors\[0\]\.errors\[0\]: ordinary shared child/);
+  assert.match(detail.message, /errors\[1\]: .*unreadable property/);
+  assert.match(detail.message, /errors\[2\]: ordinary final sibling/);
+  assert.match(detail.stack, /errors\[0\]:\nat ordinary-frame/);
+  assert.doesNotMatch(JSON.stringify(detail), /private accessor diagnostic/);
+  assert.deepEqual([...reads.values()], [1, 1, 1, 1]);
+
+  const unreadableStack = await render({
+    message: "ordinary stack wrapper",
+    cause: {
+      message: "ordinary readable message",
+      get stack() {
+        return refuse();
+      },
+    },
+    errors: [{ message: "ordinary stack sibling" }],
+  });
+  assert.match(unreadableStack.message, /cause: ordinary readable message/);
+  assert.match(unreadableStack.message, /unreadable property/);
+  assert.match(unreadableStack.message, /errors\[0\]: ordinary stack sibling/);
+  const unreadableLength = new Proxy([], {
+    get(target, key) {
+      return key === "length" ? refuse() : Reflect.get(target, key);
+    },
+  });
+  const revoked = Proxy.revocable([], {});
+  revoked.revoke();
+  for (const errors of [unreadableLength, revoked.proxy]) {
+    const inaccessible = await render({ message: "ordinary array wrapper", errors });
+    assert.match(inaccessible.message, /^ordinary array wrapper\nerrors: .*unreadable property/);
+    assert.doesNotMatch(JSON.stringify(inaccessible), /private accessor diagnostic/);
+  }
+
+  let unreadableChildren = 0;
+  const wide = Array.from({ length: 100 }, () => undefined);
+  for (let index = 0; index < wide.length; index += 1) {
+    Object.defineProperty(wide, index, {
+      get() {
+        unreadableChildren += 1;
+        return refuse();
+      },
+    });
+  }
+  const bounded = await render({ message: "ordinary wide", errors: wide });
+  assert.equal(unreadableChildren, 31);
+  assert.match(bounded.message, /errors\[31\]: .*traversal limit/);
+  assert.ok(bounded.message.length <= 16_384);
+  assert.doesNotMatch(JSON.stringify(bounded), /private accessor diagnostic/);
 });
 
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {

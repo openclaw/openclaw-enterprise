@@ -1,4 +1,4 @@
-import { failureInputLimit } from "./failure-redaction.mjs";
+import { captureFailureText, failureInputLimit } from "./failure-redaction.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -581,10 +581,26 @@ function upstreamDiagnostic(value) {
 // raw here and travel only over the pipe to run-tests, which redacts and
 // truncates them (failure-redaction.mjs) before anything reaches an artifact
 // or the job log.
-function failureText(cause) {
-  const message =
-    typeof cause === "string" ? cause : typeof cause?.message === "string" ? cause.message : "";
-  const stack = typeof cause?.stack === "string" ? cause.stack : "";
+const unreadableErrorProperty = Symbol("unreadable error property");
+const unreadableErrorText = "[error details omitted: unreadable property]";
+
+function readErrorProperty(value, key) {
+  try {
+    return value?.[key];
+  } catch {
+    return unreadableErrorProperty;
+  }
+}
+
+function errorText(cause) {
+  const rawMessage = typeof cause === "string" ? cause : readErrorProperty(cause, "message");
+  const rawStack = readErrorProperty(cause, "stack");
+  const message = typeof rawMessage === "string" ? rawMessage : "";
+  const stack = typeof rawStack === "string" ? rawStack : "";
+  const unreadable = rawMessage === unreadableErrorProperty || rawStack === unreadableErrorProperty;
+  const detailMessage = unreadable
+    ? `${message}${message ? "\n" : ""}${unreadableErrorText}`
+    : message;
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
     message && stack.includes(message) ? stack.indexOf(message) + message.length : 0;
@@ -594,11 +610,94 @@ function failureText(cause) {
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim());
   return {
-    message: message ? message.slice(0, failureInputLimit) : undefined,
+    message: detailMessage ? captureFailureText(detailMessage) : undefined,
+    // Internal transport flags are generated here, never copied from the Error.
+    messageCompleteLines: true,
     frame: frames[0]?.slice(0, failureInputLimit),
     // The whole stack goes only to the failure details in the diagnostics report.
-    stack: frames.length > 0 ? frames.join("\n").slice(0, failureInputLimit) : undefined,
+    stack: frames.length > 0 ? captureFailureText(frames.join("\n")) : undefined,
+    stackCompleteLines: true,
   };
+}
+
+function failureText(error) {
+  const first = errorText(error);
+  let message = first.message ?? "";
+  let stack = first.stack ?? "";
+  let count = 1;
+  const ancestors = new Set();
+  const append = (path, detail) => {
+    if (detail.message) {
+      message = captureFailureText(`${message}${message ? "\n" : ""}${path}: ${detail.message}`);
+    }
+    if (detail.stack) {
+      stack = captureFailureText(`${stack}${stack ? "\n" : ""}${path}:\n${detail.stack}`);
+    }
+  };
+  const visit = (value, path, depth) => {
+    if (count >= 32) {
+      append(path, { message: "[error details omitted: traversal limit]" });
+      return;
+    }
+    count += 1;
+    if (depth > 8) {
+      append(path, { message: "[error details omitted: traversal limit]" });
+      return;
+    }
+    if (value === unreadableErrorProperty) {
+      append(path, { message: unreadableErrorText });
+      return;
+    }
+    if (ancestors.has(value)) {
+      append(path, { message: "[error details omitted: circular reference]" });
+      return;
+    }
+    append(path, errorText(value));
+    children(value, path, depth);
+  };
+  const children = (value, path, depth) => {
+    if (value === null || typeof value !== "object") {
+      return;
+    }
+    ancestors.add(value);
+    try {
+      const causePath = path ? `${path}.cause` : "cause";
+      const cause = readErrorProperty(value, "cause");
+      if (cause !== undefined) {
+        visit(cause, causePath, depth + 1);
+      }
+      const errorsPath = path ? `${path}.errors` : "errors";
+      const errors = readErrorProperty(value, "errors");
+      let isArray = false;
+      try {
+        isArray = Array.isArray(errors);
+      } catch {
+        visit(unreadableErrorProperty, errorsPath, depth + 1);
+        return;
+      }
+      if (errors === unreadableErrorProperty) {
+        visit(errors, errorsPath, depth + 1);
+      } else if (isArray) {
+        const length = readErrorProperty(errors, "length");
+        if (!Number.isSafeInteger(length) || length < 0) {
+          visit(unreadableErrorProperty, errorsPath, depth + 1);
+          return;
+        }
+        for (let index = 0; index < length; index += 1) {
+          const nextPath = `${errorsPath}[${index}]`;
+          if (count >= 32) {
+            append(nextPath, { message: "[error details omitted: traversal limit]" });
+            break;
+          }
+          visit(readErrorProperty(errors, index), nextPath, depth + 1);
+        }
+      }
+    } finally {
+      ancestors.delete(value);
+    }
+  };
+  children(error, "", 0);
+  return { ...first, message: message || undefined, stack: stack || undefined };
 }
 
 // A failed file's last output lines (test stdout, stderr and diagnostics), raw
