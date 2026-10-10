@@ -60,7 +60,10 @@ const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_BASE_URL_CONFIG = "base_url";
 
-function openAiProfileId(baseUrl: string): string {
+function openAiProfileId(baseUrl: string, config: Readonly<Record<string, string>>): string {
+  if (config.auth_header === "x-api-key") {
+    return `oce-openai-${sha256Hex(JSON.stringify([baseUrl, "x-api-key"]), 12)}`;
+  }
   return baseUrl === OPENAI_DEFAULT_BASE_URL
     ? "oce-openai"
     : `oce-openai-${sha256Hex(baseUrl, 12)}`;
@@ -279,6 +282,12 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           required: false,
           description: "HTTPS base URL for the OpenAI-compatible endpoint.",
         }),
+        Object.freeze({
+          name: "auth_header",
+          required: false,
+          description:
+            "authorization (Bearer, default); x-api-key (raw key, dedicated Codex only).",
+        }),
       ]),
       secrets: Object.freeze([
         Object.freeze({ name: "api_key", required: true, description: "OpenAI API key." }),
@@ -287,6 +296,12 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "api_key" }),
     }),
     validate: (config) => {
+      if (!validOpenAiAuthHeader(config)) {
+        throw new CredentialSourceConfigError(
+          "auth_header",
+          "The OpenAI auth_header must be authorization or x-api-key.",
+        );
+      }
       if (normalizedSourceBaseUrl(config) === undefined) {
         throw new CredentialSourceConfigError(OPENAI_BASE_URL_CONFIG, SOURCE_ENDPOINT_REQUIREMENTS);
       }
@@ -295,13 +310,13 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     profileScope: "type",
     profileId: (_sourceId, config) => {
       const baseUrl = sourceBaseUrl(config);
-      return openAiProfileId(baseUrl);
+      return openAiProfileId(baseUrl, config);
     },
     profile: (_sourceId, config, options) => {
       const baseUrl = sourceBaseUrl(config);
       const endpoint = new URL(baseUrl);
       return {
-        id: openAiProfileId(baseUrl),
+        id: openAiProfileId(baseUrl, config),
         displayName:
           baseUrl === OPENAI_DEFAULT_BASE_URL
             ? "OpenAI API key (OpenClaw Enterprise)"
@@ -312,8 +327,8 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
             name: "api_key",
             envVars: ["OPENAI_API_KEY"],
             required: true,
-            authStyle: "bearer",
-            headerName: "authorization",
+            authStyle: config.auth_header === "x-api-key" ? "header" : "bearer",
+            headerName: config.auth_header ?? "authorization",
           },
         ],
         endpoints: [
@@ -501,6 +516,14 @@ function ownedBy(
   );
 }
 
+function validOpenAiAuthHeader(config: Readonly<Record<string, string>>): boolean {
+  return (
+    config.auth_header === undefined ||
+    config.auth_header === "authorization" ||
+    config.auth_header === "x-api-key"
+  );
+}
+
 function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): string | undefined {
   const baseUrl = normalizeOpenAiBaseUrl(config[OPENAI_BASE_URL_CONFIG] ?? OPENAI_DEFAULT_BASE_URL);
   // IPv6 brackets are URI syntax, but HostPattern interprets them as character classes.
@@ -641,6 +664,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
+    type.validate(input.config);
+    type.validate(context.source.config);
     if (type.refresh !== undefined) {
       throw new ScopeViolationError(
         "A refresh-type source has no static value; reconfigure its refresh material instead.",
@@ -689,7 +714,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     if (
       type.catalog.type === "openai" &&
-      normalizedSourceBaseUrl(context.source.config) === undefined
+      (normalizedSourceBaseUrl(context.source.config) === undefined ||
+        !validOpenAiAuthHeader(context.source.config))
     ) {
       return { state: "failed", reason: "The OpenShell provider's ownership cannot be verified." };
     }
@@ -709,7 +735,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     // resource is not absence. Never guess its owner or delete another profile.
     if (
       type.catalog.type === "openai" &&
-      normalizedSourceBaseUrl(context.source.config) === undefined
+      (normalizedSourceBaseUrl(context.source.config) === undefined ||
+        !validOpenAiAuthHeader(context.source.config))
     ) {
       if (existing !== undefined) {
         throw new ScopeViolationError("The OpenShell provider's ownership cannot be verified.");
@@ -749,6 +776,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         throw new ScopeViolationError("The credential source is not owned by this gateway.");
       }
       const type = sourceType(source.type, this.options, this.refresh);
+      type.validate(source.config);
       if (type.catalog.type === "openai") {
         if (
           (context.revision.harness.id !== "codex" && context.revision.harness.id !== "openclaw") ||
@@ -760,11 +788,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         }
         if (
           context.revision.harness.id === "openclaw" &&
-          sourceBaseUrl(source.config) !== OPENAI_DEFAULT_BASE_URL
+          (sourceBaseUrl(source.config) !== OPENAI_DEFAULT_BASE_URL ||
+            source.config.auth_header === "x-api-key")
         ) {
           // TODO(dedicated-native-custom-endpoints): validate source-bound model endpoints when supported.
           throw new ScopeViolationError(
-            "Dedicated native OpenClaw credential sources require the default OpenAI endpoint.",
+            "Dedicated native OpenClaw credential sources require the default OpenAI endpoint and Bearer authentication.",
           );
         }
       }

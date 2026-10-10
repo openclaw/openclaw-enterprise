@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-10
-last_updated_session: agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110
+last_updated_session: agent:roboclaw:dashboard:454e7243-aa89-4a35-b0f8-2eef00f6184e
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -153,34 +153,38 @@ and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-With `provisionHarness`, Compute derives image, command, labels, environment,
-mounts, optional identity, and resources from its ordinary Deployment shape.
-First-deploy preparation starts the Gateway on fail-closed transport, leaving
-the Agent Service inactive. Until Gateway readiness and its Agent-owned node
-setup Secret exist, preparation stays incomplete without attaching credentials
-or creating providers/Sandboxes. Compute then adds that Secret reference and
-invokes the SandboxDriver.
-The local OpenShell profile disables projected workload identity. If it is
-enabled, OpenShell rejects the revision before Gateway mutation because the
-pinned API cannot preserve the exact Agent ServiceAccount and token.
-For a `credential_source` revision it renders only `CODEX_LOGIN_MODE=api_key`,
-no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
-attachments, one provider name per source, go into
-`requirements.credentialAttachments`. Compute passes those requirements and the
-immutable revision to OpenShell instead of creating the Deployment itself.
-For Codex, it reads the exact Agent transport Secret in the control plane and
-adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
-plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
-requirements and removes their ConfigMap paths from the remaining environment.
+Compute derives Harness requirements from its ordinary Deployment shape. It starts
+the Gateway on fail-closed transport with an inactive Agent Service. Until Gateway
+readiness and its node-setup Secret exist, it creates no credential attachments,
+providers, or Sandboxes.
+The local profile disables projected workload identity; explicitly requesting it
+fails before Gateway mutation because OpenShell cannot preserve the exact
+ServiceAccount and token.
 
-The credential gateway derives the profile from immutable `config.base_url`,
-defaulting to OpenAI `/v1`. Its shared validator rejects invalid endpoints before
-[registration](credential-source-lifecycle.md#1-admit-the-registration-request).
-The profile binds credentials to the full base path, including prefixes such as
-`/api/v1`, followed by `/**`. `attachForRevision` rejects custom endpoints for
-native OpenClaw. For Codex,
+For `credential_source`, Compute renders `CODEX_LOGIN_MODE=api_key`, not a model
+Secret. `CredentialGatewayDriver.attachForRevision` supplies provider names in
+`requirements.credentialAttachments`. Compute passes requirements and the
+immutable revision to OpenShell rather than creating a Deployment. It reads the
+Agent transport Secret but sends only its `APP_TOKEN_SHA` verifier. Revision-owned
+`runtime.json` and `config.toml` become workload files, replacing ConfigMap paths.
+
+`apps/controller/src/drivers/credential-gateway/openshell.ts:openAiProfileId`
+isolates profiles by immutable endpoint and header selector. Defaults remain
+OpenAI `/v1` and Bearer. Validation precedes
+[Secret reads](credential-source-lifecycle.md#1-admit-the-registration-request).
+Profiles restrict the full base path plus `/**`; native OpenClaw rejects custom
+endpoints and raw headers.
+
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
-selects a named provider with the normalized endpoint and HTTPS Responses transport.
+renders the HTTPS Responses provider. For `x-api-key`, it sets
+`requires_openai_auth = false` and
+`env_http_headers = { "x-api-key" = "OPENAI_API_KEY" }`, never the key.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
+skips login and passes the placeholder to both the configuration-ignoring probe
+and app-server. Bearer mode retains login and clears its environment key.
+OpenShell substitutes the incoming header value; profile metadata cannot translate
+Bearer into `x-api-key`. Repairs and updates retain that profile identity;
+[removal](credential-source-lifecycle.md#7-delete-the-source) waits for its last provider.
 
 ### 3. Validate and serialize the Sandbox
 
@@ -335,13 +339,12 @@ namespace only after this cleanup succeeds.
 
 ## Debugging and verification
 
-The [OpenShell testing guide](../testing/openshell.md) owns commands and
-prerequisites. In the Compose profile, confirm `network.providerHarness.address`
-matches the `openshell-gateway` ClusterIP, the Agent Gateway uses the advertised
-`ws://*.openshell.localhost:8080/` origin, and its direct Agent Service stays
-inactive. The protected k3d case must still prove provider files, verifier-only
-authorization, node enrollment, model turns, cleanup, containment, and
-networking. Native OpenClaw remains a separate verification-only path.
+The [testing guide](../testing/openshell.md) owns prerequisites and proof. In
+Compose, check `network.providerHarness.address` against the Gateway ClusterIP
+and verify advertised WebSocket routing with an inactive direct Agent Service.
+Local API, Compute, and wrapper tests use transport/process doubles. Only the
+selected raw-header Sandbox case proves substitution; native OpenClaw remains
+a separate verification-only path.
 
 ## Related docs
 
@@ -356,6 +359,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 13:25: Trace source-selected raw headers, isolated profiles, and native probe/app-server placeholder delivery. (agent:roboclaw:dashboard:454e7243-aa89-4a35-b0f8-2eef00f6184e - 3ecb541f6560a00554b4051c31ee978ed04a446b)
 
 - 2026-10-10 13:04: Reconcile native hook HOME/CA flow with endpoint safeguards; trim repeated narration. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 

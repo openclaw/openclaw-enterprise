@@ -501,6 +501,25 @@ test("compute pins the credential source endpoint in dedicated Codex configurati
   );
   const environment = JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]);
   assert.equal(environment.codexConfigurationToml, data[PLUGIN_RUNTIME_CODEX_CONFIG]);
+  // Both plugin-selected and plugin-free Codex revisions must carry the placeholder
+  // header, without using the login store or a second Bearer authentication path.
+  for (const selected of [revision(), { ...revision(), plugins: undefined }]) {
+    const headerRuntime = pluginRuntimeSpecForRevision(selected, undefined, baseUrl, "x-api-key");
+    const headerData = pluginRuntimeConfigMapData(headerRuntime);
+    assert.equal(
+      JSON.parse(headerData[PLUGIN_RUNTIME_MANIFEST]).modelEndpoint.authHeader,
+      "x-api-key",
+    );
+    assert.match(headerData[PLUGIN_RUNTIME_CODEX_CONFIG], /requires_openai_auth = false/);
+    assert.match(
+      headerData[PLUGIN_RUNTIME_CODEX_CONFIG],
+      /env_http_headers = \{ "x-api-key" = "OPENAI_API_KEY" \}/,
+    );
+    assert.doesNotMatch(
+      headerData[PLUGIN_RUNTIME_CODEX_CONFIG],
+      /requires_openai_auth = true|env_key|http_headers = \{ "authorization"/,
+    );
+  }
 });
 
 test("plugin-free revisions apply explicit Slack approvers for configured Slack and keep unrelated approvals", () => {

@@ -28,6 +28,10 @@ async function fixture(t, { toolSources = false } = {}) {
       mutations.push("importProfile");
       profiles.set(key(workspace, profile.id), structuredClone(profile));
     },
+    async updateProviderProfile(workspace, profile) {
+      mutations.push("updateProfile");
+      profiles.set(key(workspace, profile.id), structuredClone(profile));
+    },
     async deleteProviderProfile(workspace, id) {
       mutations.push("deleteProfile");
       profiles.delete(key(workspace, id));
@@ -386,5 +390,133 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   );
   assert.deepEqual(f.mutations, []);
   assert.equal(f.providers.size, 0);
+  assert.equal(f.profiles.size, 0);
+});
+
+test("OpenShell auth_header rejects unsafe values before Secret reads or gateway effects", async (t) => {
+  const f = await fixture(t);
+  for (const auth_header of [
+    "",
+    "Authorization",
+    "bearer",
+    "X-API-Key",
+    "x-other-key",
+    "x-api-key\r\nx-extra: value",
+    "synthetic-secret-value",
+  ]) {
+    const response = await f.create("invalid-header", { auth_header });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.deepEqual(response.body.error.details, [
+      { path: "/config/auth_header", code: "INVALID_VALUE" },
+    ]);
+    assert.equal(JSON.stringify(response.body).includes(auth_header), auth_header === "");
+    assert.deepEqual((await f.request("GET", f.path)).data, []);
+  }
+  assert.equal(
+    f.secretDriver.calls.some(({ operation }) => operation === "withValue"),
+    false,
+  );
+  assert.deepEqual(f.mutations, []);
+});
+
+test("OpenShell headers isolate profiles through registration, rotation, repair and removal", async (t) => {
+  const f = await fixture(t);
+  const base_url = "https://models.example.test/v1";
+  const bearer = await f.create("bearer", { base_url });
+  const explicitBearer = await f.create("explicit-bearer", {
+    base_url,
+    auth_header: "authorization",
+  });
+  const header = await f.create("header", { base_url, auth_header: "x-api-key" });
+  const sharedHeader = await f.create("shared-header", {
+    base_url: "https://MODELS.example.test:443/v1/",
+    auth_header: "x-api-key",
+  });
+  for (const created of [bearer, explicitBearer, header, sharedHeader]) {
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.data.status.state, "ready");
+    assert.equal(JSON.stringify(created.body).includes("synthetic-model-key"), false);
+  }
+  assert.equal(f.profiles.size, 2);
+  const profileFor = (created) => {
+    const provider = [...f.providers.values()].find(
+      (row) => row.name === openShellProviderName(created.data.id),
+    );
+    return f.profiles.get(provider.workspace + "/" + provider.type);
+  };
+  const bearerProfile = profileFor(bearer);
+  const headerProfile = profileFor(header);
+  assert.notEqual(headerProfile.id, bearerProfile.id);
+  assert.equal(profileFor(explicitBearer).id, bearerProfile.id);
+  assert.equal(profileFor(sharedHeader).id, headerProfile.id);
+  assert.deepEqual(headerProfile.credentials, [
+    {
+      name: "api_key",
+      envVars: ["OPENAI_API_KEY"],
+      required: true,
+      authStyle: "header",
+      headerName: "x-api-key",
+    },
+  ]);
+  assert.deepEqual(headerProfile.endpoints, bearerProfile.endpoints);
+  assert.deepEqual(headerProfile.binaries, ["/app/bin/codex"]);
+  assert.equal(bearerProfile.credentials[0].authStyle, "bearer");
+  assert.equal(bearerProfile.credentials[0].headerName, "authorization");
+  const source = await f.controller.transact((unit) =>
+    unit.credentialSources.findCredentialSource(f.namespace.id, header.data.id),
+  );
+  const provider = [...f.providers.values()].find(
+    (row) => row.name === openShellProviderName(source.id),
+  );
+  const context = {
+    namespace: { ...f.namespace, name: provider.workspace },
+    source,
+    signal: AbortSignal.timeout(5000),
+  };
+  // A stale profile is repaired only within its auth/endpoint scope.
+  f.profiles.get(provider.workspace + "/" + provider.type).annotations = {};
+  await f.driver.attachForRevision({
+    ...context,
+    sources: [source],
+    revision: { harness: { id: "codex", mode: "dedicated" } },
+  });
+  assert.equal(profileFor(header).credentials[0].headerName, "x-api-key");
+  assert.deepEqual(profileFor(bearer), bearerProfile);
+  await assert.rejects(
+    f.driver.attachForRevision({
+      ...context,
+      sources: [source],
+      revision: { harness: { id: "openclaw", mode: "dedicated" } },
+    }),
+    /Bearer authentication/,
+  );
+  const replacement = await f.createSecret(
+    f.namespace.id,
+    "rotated-header-key",
+    "synthetic-rotated-key",
+  );
+  const rotated = await f.request("PATCH", f.path + "/" + source.id, {
+    body: { secrets: { api_key: replacement.ref } },
+  });
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  assert.equal(provider.type, headerProfile.id);
+  assert.equal(
+    f.providers.get(provider.workspace + "/" + provider.name).credentials.OPENAI_API_KEY,
+    "synthetic-rotated-key",
+  );
+  assert.equal(JSON.stringify(rotated.body).includes("synthetic-rotated-key"), false);
+  // Correct source labels alone do not authorize adopting a Bearer profile.
+  provider.type = bearerProfile.id;
+  assert.equal((await f.driver.sourceStatus(context)).state, "failed");
+  await assert.rejects(f.driver.removeSource(context), /not owned/);
+  provider.type = headerProfile.id;
+  f.passRegistrationFence();
+  assert.equal((await f.request("DELETE", f.path + "/" + source.id)).status, 204);
+  assert.equal(f.profiles.size, 2, "the shared raw-header source still needs its profile");
+  assert.equal((await f.request("DELETE", f.path + "/" + sharedHeader.data.id)).status, 204);
+  assert.deepEqual([...f.profiles.values()], [bearerProfile]);
+  for (const created of [bearer, explicitBearer]) {
+    assert.equal((await f.request("DELETE", f.path + "/" + created.data.id)).status, 204);
+  }
   assert.equal(f.profiles.size, 0);
 });

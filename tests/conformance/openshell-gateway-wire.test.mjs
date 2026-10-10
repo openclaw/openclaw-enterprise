@@ -868,6 +868,39 @@ test("OpenShell client serializes v0.1.3-pre.2 credential providers, profiles, a
       AbortSignal.timeout(2_000),
     );
 
+    // Raw header placement uses the same pinned wire fields as Bearer placement.
+    await client.importProviderProfile(
+      "tenant-workspace",
+      {
+        id: "oce-openai-header",
+        displayName: "OpenAI-compatible raw header",
+        category: "PROVIDER_PROFILE_CATEGORY_INFERENCE",
+        credentials: [
+          {
+            name: "api_key",
+            envVars: ["OPENAI_API_KEY"],
+            required: true,
+            authStyle: "header",
+            headerName: "x-api-key",
+          },
+        ],
+        endpoints: [{ host: "models.example.test", port: 443, protocol: "rest", path: "/v1/**" }],
+        binaries: ["/app/bin/codex"],
+        inferenceCapable: true,
+        annotations: {},
+      },
+      AbortSignal.timeout(2_000),
+    );
+    assert.deepEqual(requests.profiles[1].profiles[0].profile.credentials, [
+      {
+        name: "api_key",
+        env_vars: ["OPENAI_API_KEY"],
+        required: true,
+        auth_style: "header",
+        header_name: "x-api-key",
+      },
+    ]);
+
     const [profileImport] = requests.profiles;
     assert.deepEqual(profileImport.workspace_scope, {
       workspace: "tenant-workspace",

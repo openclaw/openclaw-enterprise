@@ -7,6 +7,7 @@
     "tests/integration/dev-up.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/codex-header-runtime.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
@@ -326,6 +327,9 @@
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/codex-header-runtime.test.mjs"
     },
     {
       "path": "tests/conformance/split-layout-tenants.test.mjs"

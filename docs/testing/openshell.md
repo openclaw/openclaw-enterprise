@@ -131,6 +131,13 @@ the Agent Gateway. Exact workload identity, approved mounts and privileges,
 source withdrawal, denied egress, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+For raw-header verification, select `OCC_TEST_OPENSHELL_MODEL_AUTH_HEADER=x-api-key`
+and `OCC_TEST_OPENSHELL_MODEL_BASE_URL` for an authorized HTTPS Responses endpoint
+that rejects missing/incorrect raw keys and Bearer authentication. The same
+API → OCC → worker → OpenShell → native Codex scenario then covers model startup,
+turns, replacement, source update, and withdrawal. It uses real OpenShell
+substitution; local API/provider-store and wrapper tests do not establish that outcome.
+
 The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
@@ -312,6 +319,7 @@ scoped environment file for this suite.
 | `OPENAI_API_KEY`                          | Existing authorized provider credential, registered as a credential source for the required real model turn.                                        |
 | `OCC_TEST_OPENSHELL_HARNESS`              | `codex` (default) selects the app-server proof; `openclaw` selects the dedicated native worker without an inbound Harness exposure.                 |
 | `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                               |
+| `OCC_TEST_OPENSHELL_MODEL_AUTH_HEADER`    | Optional `authorization` (default) or `x-api-key`; raw-header proof needs a Codex endpoint requiring that header instead of Bearer authentication.  |
 | `OCC_TEST_OPENSHELL_MODEL_BASE_URL`       | Optional HTTPS `/v1` endpoint for the Codex credential source; requires Responses API compatibility.                                                |
 | `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                  |
 | `OCC_TEST_KUBERNETES_CONTEXT`             | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                        |

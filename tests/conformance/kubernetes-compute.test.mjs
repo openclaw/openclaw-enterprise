@@ -991,7 +991,12 @@ test("activation refuses a missing or foreign workspace node before changing the
 // With `clock` ({ now }), enrollment waits are simulated on that fake clock: an
 // observation advances it by its whole wait, or to `state.pairAtMs` if the node
 // pairs within the wait, and never sleeps.
-function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint } = {}) {
+function dedicatedFirstDeployFixture({
+  statusProxy = true,
+  clock,
+  modelEndpoint,
+  selection = {},
+} = {}) {
   const state = {
     setupCalls: 0,
     connected: false,
@@ -1024,6 +1029,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
       ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
     }),
     {
+      ...selection,
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -1501,6 +1507,87 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       baseUrl: "https://models.example.test/api/v1",
       modelProvider: "openai-compatible",
     });
+  }
+});
+
+test("credential-source header reaches Codex files through regular revision preparation", async () => {
+  const gateway = {
+    id: "credential-gateway",
+    capability: "credential_gateway",
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+  };
+  const sandbox = {
+    id: "sandbox-header",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      assert.fail("the Gateway must become ready before Harness provisioning");
+    },
+  };
+  for (const auth_header of [undefined, "authorization", "x-api-key"]) {
+    const fixture = dedicatedFirstDeployFixture({
+      selection: { credentialGatewayDriver: gateway, sandboxDriver: sandbox },
+    });
+    const source = {
+      id: "cs_00000000-0000-4000-8000-000000000021",
+      namespaceId: tenant.id,
+      name: "compatible-model",
+      type: "openai",
+      config: {
+        base_url: "https://models.example.test/v1",
+        ...(auth_header === undefined ? {} : { auth_header }),
+      },
+      secrets: {},
+      driverId: gateway.id,
+      state: "ready",
+      createdAt: tenant.createdAt,
+    };
+    const auth = {
+      method: "credential_source",
+      sourceId: source.id,
+      credentialGatewayId: gateway.id,
+      sourceType: "openai",
+      loginMode: "api_key",
+    };
+    fixture.revision.harnessAuth = auth;
+    fixture.revision.sandboxDriverId = sandbox.id;
+    // The real Compute caller must derive the runtime files from the resolved
+    // source without reading its model Secret. Kubernetes transport is recorded.
+    const readSecret = fixture.clients.core.readNamespacedSecret;
+    fixture.clients.core.readNamespacedSecret = async (request) => {
+      assert.notEqual(request.name, "occ-model-key");
+      return readSecret(request);
+    };
+    const result = await fixture.driver.prepareRevision(fixture.revision, {
+      harnessAuth: { ...auth, source },
+    });
+    assert.equal(result.ready, false);
+    const runtime = [...fixture.objects.values()].find(
+      (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+    );
+    assert.ok(runtime);
+    assert.equal(
+      JSON.parse(runtime.data["runtime.json"]).modelEndpoint.authHeader,
+      auth_header === "x-api-key" ? "x-api-key" : undefined,
+    );
+    assert.equal(
+      runtime.data["config.toml"].includes('"x-api-key" = "OPENAI_API_KEY"'),
+      auth_header === "x-api-key",
+    );
+    assert.equal(
+      runtime.data["config.toml"].includes("requires_openai_auth = true"),
+      auth_header !== "x-api-key",
+    );
   }
 });
 
