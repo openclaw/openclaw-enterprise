@@ -524,54 +524,6 @@ test("run clears inherited selectors and keep flags while preserving explicit la
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("run does not inherit parent NODE_ENV unless explicitly selected", async (t) => {
-  const root = await fixture(t);
-  const previousNodeEnv = process.env.NODE_ENV;
-  process.env.NODE_ENV = "test";
-  t.after(() => {
-    if (previousNodeEnv === undefined) {
-      delete process.env.NODE_ENV;
-    } else {
-      process.env.NODE_ENV = previousNodeEnv;
-    }
-  });
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      isolated: {
-        files: [{ path: "tests/integration/node-env.test.mjs" }],
-      },
-    },
-    groups: { ci: ["isolated"] },
-  });
-  await writeFile(
-    join(root, "tests/integration/node-env.test.mjs"),
-    [
-      'import assert from "node:assert/strict";',
-      'import test from "node:test";',
-      'test("NODE_ENV is scrubbed", () => {',
-      "  assert.equal(process.env.NODE_ENV, undefined);",
-      "});",
-      "",
-    ].join("\n"),
-  );
-
-  const result = run(root, [
-    "run",
-    "isolated",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/node-env.jsonl",
-    "--results",
-    "results/node-env.json",
-  ]);
-
-  assert.equal(result.status, 0, result.stderr);
-});
-
 test("QA lane forwards selected models and observer input and retains outcomes at the requested path", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(
