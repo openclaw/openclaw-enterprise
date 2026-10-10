@@ -134,6 +134,7 @@ function render(
   input,
   directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
   root = repository,
+  profileFile,
 ) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
@@ -145,6 +146,7 @@ function render(
         "scripts/render-installation-profile.mjs",
         "--profile",
         profile,
+        ...(profileFile === undefined ? [] : ["--profile-file", profileFile]),
         "--input",
         inputPath,
         "--out-dir",
@@ -282,7 +284,52 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
     /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
   );
   assert.match(codex.preflight.prerequisites.join("\n"), /Slack consumers remain inactive/);
-  assert.match(codex.preflight.warnings.join("\n"), /existing codex_pat token/);
+  assert.match(codex.preflight.prerequisites.join("\n"), /Hosted plugin discovery.*PAT/);
+  assert.match(codex.preflight.prerequisites.join("\n"), /runtime credentials.*Agent/);
+});
+
+test("an explicit profile selects the startup PluginDriver and its credential diagnostics", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const profile = JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8"));
+  profile.installation.drivers.plugin.configuration.catalogSource = "openai-curated";
+  const profileFile = join(directory, "curated-profile.json");
+  writeFileSync(profileFile, JSON.stringify(profile));
+
+  // Selecting a curated catalog must reach real startup without imposing hosted PAT login.
+  const output = render("codex", codexInput(), directory, repository, profileFile);
+  const runtime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
+  });
+  assert.equal(runtime.installation.drivers.plugin.configuration.catalogSource, "openai-curated");
+  const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join("\n");
+  assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
+  assert.match(diagnostics, /runtime credentials.*Agent/);
+  assert.match(diagnostics, /seccomp profile installed/);
+});
+
+test("an invalid explicit profile revokes prior outputs without falling back to the bundled profile", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-invalid-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const profileFile = join(directory, "selected-profile.json");
+  for (const [contents, expected] of [
+    [undefined, /unavailable or invalid JSON/],
+    ["{", /unavailable or invalid JSON/],
+    [JSON.stringify({ name: "openclaw" }), /must declare matching name/],
+  ]) {
+    render("codex", codexInput(), directory);
+    if (contents !== undefined) {
+      writeFileSync(profileFile, contents);
+    }
+    const error = renderError(() =>
+      render("codex", codexInput(), directory, repository, profileFile),
+    );
+    assert.match(error.profileRendererOutput, expected);
+    for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
+      assert.equal(existsSync(join(directory, name)), false);
+    }
+  }
 });
 
 // Tenant runtimes may burst to four cores; 100m requests keep the scheduling
@@ -526,25 +573,47 @@ test(
 );
 
 test(
-  "profile preset files reach startup YAML and roll both controllers",
+  "profile preset selection reaches startup and rolls both controllers",
   { skip: helmSkip },
-  () => {
+  async (t) => {
     const original = render("codex", codexInput());
-    const changed = render(
-      "codex",
-      codexInput({ presets: { files: ["/app/deploy/presets/swe-preset.json"] } }),
-    );
-    assert.match(
-      changed.installation,
-      /presets:\n {2}includeDefaults: true\n {2}files:\n {4}- \/app\/deploy\/presets\/swe-preset.json/,
-    );
+    t.after(() => rmSync(original.directory, { recursive: true, force: true }));
+    const originalRuntime = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: join(original.directory, "installation.yaml") },
+    });
+    assert.deepEqual(originalRuntime.defaultPresets.map((preset) => preset.name).sort(), [
+      "Standard Codex",
+      "Standard OpenClaw",
+      "default-codex",
+    ]);
     const originalManifests = helmTemplate(original);
-    const changedManifests = helmTemplate(changed);
-    for (const component of ["api", "worker"]) {
-      assert.notEqual(
-        deploymentChecksum(originalManifests, component),
-        deploymentChecksum(changedManifests, component),
-      );
+    const customPresetPath = fileURLToPath(
+      new URL("../../deploy/presets/swe-preset.json", import.meta.url),
+    );
+    for (const [presets, expectedNames] of [
+      [
+        { files: [customPresetPath] },
+        ["SWE Agent", "Standard Codex", "Standard OpenClaw", "default-codex"],
+      ],
+      [{ includeDefaults: false, files: [customPresetPath] }, ["SWE Agent"]],
+      [{ includeDefaults: false }, []],
+    ]) {
+      // The renderer's choice must control the catalog loaded by both controller processes.
+      const changed = render("codex", codexInput({ presets }));
+      t.after(() => rmSync(changed.directory, { recursive: true, force: true }));
+      const runtime = await loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: join(changed.directory, "installation.yaml") },
+      });
+      assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), expectedNames);
+      const changedManifests = helmTemplate(changed);
+      for (const component of ["api", "worker"]) {
+        assert.notEqual(
+          deploymentChecksum(originalManifests, component),
+          deploymentChecksum(changedManifests, component),
+        );
+      }
     }
   },
 );
@@ -1060,6 +1129,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     input: codexInput,
     cases: [
       ["presets.files", ["presets/custom.json", [""], [42]], /presets\.files/],
+      ["presets.includeDefaults", ["false", null, 0], /presets\.includeDefaults must be a boolean/],
       ["presets.unknown", [true], /presets\.unknown/],
     ],
   },

@@ -1,21 +1,18 @@
 ---
 created: 2026-09-28
 updated: 2026-10-10
-last_updated_session: authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c
+last_updated_session: authoring-run/f39c7c2c-32e4-4409-8333-c018f226985c
 ---
 
 # Installation Profile Rendering Flow
 
 ## Overview
 
-An operator runs `scripts/render-installation-profile.mjs` with a profile, a
-JSON input file, and an output directory. The renderer checks that every
-supplied input belongs to the profile contract, then writes the Helm values
-overlay, Installation startup YAML, and a preflight report. This flow stops at
-the rendered files. The operator still creates Kubernetes Secrets, applies Helm,
-provisions the cluster, sets up hosted plugin and `codex_pat` tokens and the
-optional ChatGPT service account, creates the repository registry, and
-configures Slack consumers.
+An operator runs `scripts/render-installation-profile.mjs` to validate site
+inputs and write Helm values, Installation startup YAML, and a preflight report.
+This flow stops at rendered files. The operator still provisions infrastructure,
+creates Secrets, applies Helm, supplies catalog and Agent credentials, and sets
+up optional service accounts, repository registries, and Slack consumers.
 
 ## Entry Points
 
@@ -24,8 +21,8 @@ configures Slack consumers.
   `scripts/render-installation-profile.mjs:buildInput`, and
   `scripts/render-installation-profile.mjs:buildRendered`.
 - Assumptions: The caller runs from the repository root with installed
-  dependencies, a trusted profile under `deploy/profiles/`, and site inputs that
-  contain no plaintext credentials.
+  dependencies, a trusted bundled or explicitly selected profile, and site inputs
+  that contain no plaintext credentials.
 
 ## Flow
 
@@ -35,8 +32,9 @@ graph TD
   B --> C{"Profile is openclaw or codex?"}
   C -->|No| X["Exit before reading input"]
   C -->|Yes| R["Clear prior generated files and preflight"]
-  R --> D["Load deploy/profiles/<profile>.json and input JSON"]
-  D --> E["Reject unsupported sections and fields"]
+  R --> D["Load selected or bundled profile and input JSON"]
+  D -->|Unreadable or mismatched| Y["Exit without rendered files or preflight"]
+  D -->|Valid| E["Reject unsupported sections and fields"]
   E --> F["Validate consumed image, CIDR, proxy, label, and Backend inputs"]
   F --> G{"Any diagnostics errors?"}
   G -->|Yes| H["Write preflight.json with ok:false"]
@@ -52,11 +50,10 @@ graph TD
 
 `scripts/render-installation-profile.mjs:parseArgs`
 
-The command accepts exactly three operator inputs: `--profile`, `--input`, and
-`--out-dir`. Any other flag fails before a file is rendered. `--profile` must be
-`openclaw` or `codex`; there is no `default` profile. The release name and
-namespace come only from the JSON input, which feeds both the Helm instructions
-and the Installation settings.
+The command requires `--profile`, `--input`, and `--out-dir`, and accepts
+`--profile-file`. Unknown flags fail before rendering. `--profile` must be
+`openclaw` or `codex`. The release name and namespace come from site inputs and
+feed both Helm instructions and Installation settings.
 
 Once the arguments are valid, the renderer deletes any prior `values.yaml`,
 `installation.yaml`, and `preflight.json` from the output directory and leaves
@@ -67,10 +64,14 @@ malformed input cannot leave deployable files or an old success report behind.
 
 `scripts/render-installation-profile.mjs:readProfile`
 
-The renderer reads the profile definition from `deploy/profiles/`. The profile
-owns only its identity and PluginDriver selection. The input JSON supplies
-environment-specific image names, domains, CIDRs, Secrets, and repository
-registry names, so the same profile and input always render the same output.
+The renderer reads `--profile-file` or `deploy/profiles/<profile>.json`, resolving
+relative paths from the working directory. It checks that `name` matches
+`--profile`; loading failures never fall back to the bundled definition.
+
+The trusted profile selects the PluginDriver. Site inputs supply infrastructure
+settings. Credential diagnostics follow that Driver's catalog: Codex hosted
+discovery needs a PAT; curated discovery does not. Runtime credentials remain
+per Agent.
 
 ### 3. Validate every supplied input
 
@@ -80,12 +81,9 @@ Every input section is closed: an unknown field is a preflight error, not
 ignored, so the renderer never accepts an unused readiness flag. The OpenClaw
 profile rejects Codex-only inputs.
 
-The input schema has no field for the hosted discovery and `codex_pat` runtime
-token because Installation startup configuration does not consume it.
-`preflight.json` tells the operator to add that credential later as a
-same-Namespace Secret or through the Console. Managed ServiceAccount
-provisioning for `codex_pat` is optional and renders only when `codex.managedServiceAccounts` is
-supplied.
+Catalog and model credentials belong to later Agent setup. Optional
+`codex.managedServiceAccounts` inputs render managed ServiceAccount provisioning;
+preflight identifies its prerequisites without claiming issuance works.
 
 Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
 syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
@@ -193,7 +191,7 @@ and the same DNS-1035 check cannot fail after a successful preflight.
 `scripts/render-installation-profile.mjs:buildRendered`
 
 The Installation output selects Kubernetes Configuration, native IAM,
-Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
+Kubernetes Compute, Kubernetes Secrets, selected Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
 storage class, node selectors, and transport Secret prefix. The Codex profile
@@ -202,8 +200,8 @@ the Compute driver's localhost-profile rule and refuses an absolute path, a
 backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
 before writing `installation.yaml`. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
-matching ServiceAccount Driver; otherwise Codex Agents use the existing
-`codex_pat` token path configured at Agent creation. If the chart-managed Slack
+matching ServiceAccount Driver. Without those inputs it renders no managed
+issuance; each Agent still selects its own runtime credential binding. If the chart-managed Slack
 proxy is enabled, Compute receives the generated Service DNS URL and selector
 for gateway-to-proxy egress; the chart grants API-to-proxy egress. Repository
 opt-in adds the GitHub Backend, Repo Driver,
@@ -214,11 +212,10 @@ truncates `<releaseName>-agent-gateways` to 63 characters and removes a trailing
 hyphen. HTTPRoute parent references therefore match the Gateway the chart
 renders.
 
-Optional `presets.files` adds operator-selected Preset JSON paths and keeps both
-standard Presets. The renderer rejects a non-list value and empty or non-string
-entries, but it does not read the files; controller startup resolves the paths
-and validates their contents. Preset input changes alter the Installation
-checksum like any other startup configuration.
+`presets.includeDefaults` defaults to `true`; `presets.files` adds Preset JSON
+paths independently. Disabling defaults with no files seeds nothing. The
+renderer validates the boolean and path list; controller startup reads and
+validates files. Preset changes alter the Installation checksum.
 
 `runtime.transportSecretPrefix` must produce the same DNS-safe name that
 Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
@@ -241,7 +238,7 @@ U+0085 into a space and refuses the others), U+2028, U+2029, U+FEFF, U+FFFE and
 U+FFFF; preflight refuses lone UTF-16 surrogates, which YAML cannot spell.
 On validation failure, it writes only `preflight.json`
 with `ok:false`, lists only that report in `outputs`, and exits nonzero.
-Input-loading failures exit without a preflight report.
+Input or profile-loading failures exit without a preflight report.
 
 The preflight report lists warnings, external prerequisites, and the next
 operator steps. It tells the operator to update the Installation startup Secret
@@ -283,6 +280,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 22:12: Added explicit profile-file selection, configurable bundled Preset seeding, and catalog-specific credential diagnostics. (authoring-run/f39c7c2c-32e4-4409-8333-c018f226985c - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
 

@@ -16,16 +16,16 @@ PluginDriver. Operators select plugins manually or through the API. Embedded
 OpenClaw cannot enable external Slack channels; the Standard OpenClaw preset
 must leave channels disabled.
 
-Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver. By
-default, hosted plugin discovery and Codex runtime authentication both use a
-`codex_pat` token that you supply later: add a same-Namespace Secret or enter
-the PAT during Agent creation. The renderer does not create the token or make
-catalog discovery ready.
+Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver. Its
+stock hosted catalog needs a PAT supplied later through a same-Namespace Secret
+or the Console. Runtime authentication is selected per Agent; see
+[Harness authentication](../../reference/agents.md#harness-authentication).
+The renderer does not create credentials or verify catalog discovery.
 
 Both profiles enable:
 
 - Native admin UI and private gateway routing.
-- Standard OpenClaw and Standard Codex Preset seeding.
+- Bundled Preset seeding, unless `presets.includeDefaults` is `false`.
 - Kubernetes Compute, Kubernetes Configuration, Kubernetes Secrets, native IAM,
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
@@ -75,9 +75,12 @@ created from the other profile's Preset still needs a compatible driver,
 runtime, harness mode, credentials, and channel support.
 
 To seed additional Presets, add `"presets": { "files": ["/app/deploy/presets/swe-preset.json"] }`
-to the input JSON and rerender. This example adds **SWE Agent** alongside the
-standard Presets. Both controller processes must be able to read the files at
-startup; the renderer validates the list but does not read container files. See
+to the input JSON and rerender. This adds **SWE Agent** alongside the bundled
+Presets. Set `presets.includeDefaults` to `false` to seed only the listed files;
+omit `files` as well to seed no Presets. The renderer defaults `includeDefaults`
+to `true`. Both controller processes must be able to read the files at startup;
+the renderer validates the list but does not read container files. Disabling
+seeding does not delete saved Presets. See
 [Preset initialization](../../reference/presets.md#installation-defaults) for path
 resolution and startup validation.
 
@@ -287,6 +290,15 @@ node scripts/render-installation-profile.mjs \
   --out-dir .build/profile-renders/codex
 ```
 
+To select an operator-maintained profile definition, add
+`--profile-file .build/profiles/codex.json`. Copy the matching file from
+`deploy/profiles/` and adjust its PluginDriver configuration, for example
+[selecting the curated catalog](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+This is trusted configuration, separate from site inputs. Its `name` must match
+`--profile`, which remains `openclaw` or `codex`. The selected file replaces the
+bundled definition; an unreadable, invalid or mismatched file fails without
+falling back. Relative file paths resolve from the command's working directory.
+
 On success, the output directory contains:
 
 - `values.yaml`: Helm values for `deploy/helm/openclaw-enterprise`, including
@@ -302,7 +314,8 @@ the output directory before it reads the input. It keeps other files. If
 required input is missing or unsupported input is present, it writes
 `preflight.json` with `ok: false` and only the report path in `outputs`, leaves
 both YAML files absent, and exits nonzero. If the input JSON is unreadable or
-malformed, it exits without writing a preflight report.
+malformed, or the selected profile cannot be loaded, it exits without writing a
+preflight report.
 
 ## Use rendered files
 
@@ -362,8 +375,9 @@ the install as ready:
   proxy authorizes Slack hostnames, so connectivity survives Slack DNS rotation.
   For an external proxy, omit `managedSlackProxy` and provide literal IPv4
   `runtimeProxyUrl` and `directoryProxyUrl` inputs.
-- For Codex hosted plugin discovery and runtime authentication, a
-  same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
+- For the stock Codex hosted catalog, a discovery PAT supplied through a
+  same-Namespace Secret or the Console. A curated catalog needs no discovery
+  credential. Configure runtime credentials separately for each Agent.
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed
