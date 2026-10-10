@@ -265,23 +265,48 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       Object.keys(agent.initialWorkspaceFiles).every((filename) =>
         workspaceFileNames.includes(filename),
       ));
-  if (
-    (agent.name !== undefined && typeof agent.name !== "string") ||
-    (agent.executionMode !== undefined &&
-      !["embedded", "dedicated"].includes(agent.executionMode)) ||
-    (agent.backendId != null && typeof agent.backendId !== "string") ||
-    (agent.plugins !== undefined && !isObject(agent.plugins)) ||
-    (agent.pluginApprovers !== undefined &&
+  // Name the first field the form cannot use, so a Preset editor knows what to fix.
+  const invalidField = (() => {
+    if (agent.name !== undefined && typeof agent.name !== "string") {
+      return "agent.name must be text";
+    }
+    if (
+      agent.executionMode !== undefined &&
+      !["embedded", "dedicated"].includes(agent.executionMode)
+    ) {
+      return 'agent.executionMode must be "embedded" or "dedicated"';
+    }
+    if (agent.backendId != null && typeof agent.backendId !== "string") {
+      return "agent.backendId must be text";
+    }
+    if (agent.plugins !== undefined && !isObject(agent.plugins)) {
+      return "agent.plugins must be an object";
+    }
+    if (
+      agent.pluginApprovers !== undefined &&
       (!Array.isArray(agent.pluginApprovers) ||
         !agent.pluginApprovers.every(
           (entry) =>
             isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
-        ))) ||
-    !hasRenderableWorkspaceFiles ||
-    (rendered.configuration?.secretBindings !== undefined &&
-      !isObject(rendered.configuration.secretBindings))
-  ) {
-    throw new Error("Rendered Preset contains invalid Agent fields or Secret bindings.");
+        ))
+    ) {
+      return "agent.pluginApprovers must list objects with text channel and id";
+    }
+    if (!hasRenderableWorkspaceFiles) {
+      return `agent.initialWorkspaceFiles must be an object with only ${workspaceFileNames.join(", ")}`;
+    }
+    if (
+      rendered.configuration?.secretBindings !== undefined &&
+      !isObject(rendered.configuration.secretBindings)
+    ) {
+      return "configuration.secretBindings must be an object";
+    }
+    return undefined;
+  })();
+  if (invalidField) {
+    throw new Error(
+      `Rendered Preset contains invalid Agent fields or Secret bindings: ${invalidField}. Check the variables you entered, or ask a Preset editor to fix the template.`,
+    );
   }
   const passwordAuth =
     isObject(agent.harnessAuth) && Object.hasOwn(agent.harnessAuth, "secret")
@@ -907,6 +932,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   );
   let capabilityDiscoveryDone = false;
   let capabilityDiscoveryFailed = false;
+  let capabilityDiscoveryDenied = false;
   const provisionableExecutionModes = new Set();
   let nativeWorkersAvailable = false;
   let provisioningRequestId = createClientRequestId();
@@ -1451,7 +1477,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       Boolean(provisioningAttempt);
     retryProvisioning.hidden = !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
-    retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed;
+    retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
     retryCapabilityDiscovery.disabled = pending;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
   };
@@ -1476,6 +1502,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   async function loadInstallationCapabilities() {
     capabilityDiscoveryDone = false;
     capabilityDiscoveryFailed = false;
+    capabilityDiscoveryDenied = false;
     updateControls();
     try {
       const installation = await request("/installation");
@@ -1506,7 +1533,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         return;
       }
       capabilityDiscoveryFailed = true;
-      capabilityStatus.textContent = `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
+      // A denial is permanent for this account: creating Agents needs Installation access,
+      // which only Installation administrators hold, so retrying cannot help.
+      capabilityDiscoveryDenied = error.status === 403;
+      capabilityStatus.textContent = capabilityDiscoveryDenied
+        ? "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent."
+        : `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
     } finally {
       if (context.isCurrent()) {
         updateControls();

@@ -1317,7 +1317,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByLabel("Execution", { exact: true }).fill("invalid");
   await apply.click();
   await page
-    .getByText("Rendered Preset contains invalid Agent fields or Secret bindings.")
+    .getByText(
+      'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
+    )
     .waitFor();
   assert.equal(await save.count(), 0);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
@@ -2366,7 +2368,9 @@ test("invalid Preset application retains chooser edits and preserves the selecte
     await mode.fill("invalid");
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await page
-      .getByText("Rendered Preset contains invalid Agent fields or Secret bindings.")
+      .getByText(
+        'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
+      )
       .waitFor();
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();

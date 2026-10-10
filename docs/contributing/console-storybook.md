@@ -185,6 +185,11 @@ workspace Save changes only the selected simulated file.
 In **Flows → Restart Agent creation**, enter a default starter form, leave, and
 confirm re-entry shows the initial choices and an empty form.
 
+In **Pages/Create Agent → Preset with an invalid field**, Use Preset names
+`agent.executionMode` and keeps the chooser. **Agent creation needs an
+administrator** shows the denied capability check without a retry; **Capability
+check failure** keeps the retry.
+
 Use **Pages/Create Agent → Keep Preset variables** before applying a Preset and
 **Keep an unsaved Preset draft** afterward. Ordinary fields survive; token
 inputs clear. Revisit the Agents list to check its search filter. Denied,

@@ -95,9 +95,12 @@ selected runtime before relying on it.
 ## Use it in the console
 
 1. Sign in, select the same Namespace, and open **Agents → Create Agent**.
-   You need `read` on the Preset and the normal Agent/Configuration creation
-   permissions. An administrator can grant exact Preset access through
-   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy).
+   You need `read` on the Preset and Agent and Configuration `create` in the
+   Namespace. An administrator can grant exact Preset access through
+   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy), but
+   Namespace IAM cannot grant `create`, so only Installation administrators can save
+   the Agent. Other members can render a Preset into a draft, and the console says
+   that creating it needs Installation access.
 2. Choose your Preset in **Preset template**, fill its variables,
    and select **Use Preset**. The chooser closes and the Agent form opens with
    the rendered copy. To load the installed `default-codex` copy, select **Start with default Preset**.

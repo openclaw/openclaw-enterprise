@@ -113,6 +113,18 @@ export const CreateBoundCredentialPreset = {
   ...story("createBoundCredentialPreset"),
   name: "Preset with saved model credential",
 };
+export const CreatePresetInvalidField = {
+  ...story("createPresetInvalidField"),
+  name: "Preset with an invalid field",
+};
+export const CreateCapabilitiesDenied = {
+  ...story("createCapabilitiesDenied"),
+  name: "Agent creation needs an administrator",
+};
+export const CreateCapabilitiesError = {
+  ...story("createCapabilitiesError"),
+  name: "Capability check failure",
+};
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
 export const CreateWithoutPreset = {
   ...story("createWithoutPreset"),
