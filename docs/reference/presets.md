@@ -223,16 +223,17 @@ Declare variables inside `template.variables`, then refer to them with
 }
 ```
 
-This is a partial template, not a complete deployment configuration. Add the
-native settings and credentials required by your Installation before deploying.
+This partial template needs your Installation's native settings and credentials
+before deployment.
 
-- Names match `[A-Za-z_][A-Za-z0-9_]*`. Types are `string`, `number`, `boolean`, and
-  `password`; numbers must be finite. Optional `description` text labels inputs.
-- Defaults must match the declared type. Omitted inputs use defaults; `false`,
-  `0`, and empty strings override them. Referenced variables without defaults
-  require input. Unknown names and wrong types fail; the `400` message names the
-  template path, such as `Preset variables.model:`, and what that field accepts,
-  not the submitted value.
+- Names match `[A-Za-z_][A-Za-z0-9_]*`; types are `string`, `number`, `boolean`, or
+  `password`. Numbers are finite; optional `description` labels inputs.
+- String controls accept multiple lines. Unedited defaults and restored drafts
+  retain exact line endings, including CRLF; edits use browser LF.
+- Defaults must match their type; omission uses them. Explicit `false`, `0`, and
+  empty strings override defaults. Referenced variables without defaults require
+  input. Unknown names or wrong types fail with `400`, naming the path and accepted
+  shape (e.g. `Preset variables.model:`), without values.
 - Whole-string tokens retain scalar type; embedded tokens require strings.
   `"{{ vars.count }}"` can become a JSON number; `"worker-{{ vars.name }}"` stays a string.
 - `configuration.values` keys, including model catalog keys, can use string

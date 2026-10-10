@@ -463,6 +463,9 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
+  if (scenario.presetVariables) {
+    Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
+  }
   const presets = [
     preset,
     {

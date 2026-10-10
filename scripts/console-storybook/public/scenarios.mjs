@@ -1609,6 +1609,44 @@ export const scenarios = {
     description:
       "The creation form seeds AGENTS.md, SOUL.md, IDENTITY.md, and USER.md before the Agent's first deployment. Clearing a field creates an empty file.",
   },
+  createPresetMultiline: {
+    group: "Pages/Create Agent",
+    name: "Multiline Preset strings",
+    path: create,
+    presetVariables: {
+      notes: {
+        type: "string",
+        default: "# Notes\r\n- First instruction\r\n- Second instruction\r\n",
+      },
+    },
+    presetWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Multiline preset example" },
+    ],
+    description:
+      "String variables accept multiple lines. An untouched CRLF default retains its original value; editing uses the browser's LF text.",
+  },
+  createPresetMultilineApplied: {
+    group: "Pages/Create Agent",
+    name: "Multiline Preset applied",
+    path: create,
+    presetVariables: {
+      notes: {
+        type: "string",
+        default: "# Notes\r\n- First instruction\r\n- Second instruction\r\n",
+      },
+    },
+    presetWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Multiline preset example" },
+      click("Use Preset"),
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "Use Preset preserves the line structure in the editable workspace copy. Workspace textareas follow the existing LF submission contract; no Agent is created by this story.",
+  },
   createDedicatedOpenclaw: {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",

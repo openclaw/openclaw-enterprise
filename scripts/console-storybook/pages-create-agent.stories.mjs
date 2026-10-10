@@ -64,6 +64,8 @@ export const CreatePresetWorkspaceFiles = {
   name: "Preset workspace files",
 };
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
+export const CreatePresetMultiline = story("createPresetMultiline");
+export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
 export const CreateDedicatedOpenclawExperimental = {
