@@ -185,14 +185,17 @@ without `OCC_TEST_QA_MATRIX=1` is not a matrix pass.
 
 [QA Matrix Advisory](../../.github/workflows/qa-advisory.yml) runs `model-ui`
 and `calendar` in both Codex cells on every trusted
-same-repository PR. Compose and Kubernetes run in separate jobs. Failures remain
+same-repository PR. Compose and Kubernetes run in separate jobs. The same workflow also runs the
+[full OpenShell lane](#automatic-openshell-coverage) in a third job. Failures remain
 visible, but these jobs are outside `CI Required` and must not be configured as
 required branch checks. New pushes cancel superseded runs. Fork and Dependabot
 PRs report that a trusted run is needed; they do not receive model credentials.
 
 The advisory workflow uses `integration-qa-pr`: no required reviewers, deployment
-branch policies allowing `refs/pull/*/merge` and `main`, and only the
-`CODEX_ACCESS_TOKEN` secret. Set the Codex model and Calendar
+branch policies allowing `refs/pull/*/merge` and `main`, and the
+`CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` secrets. The OpenShell job uses
+`OPENAI_API_KEY` with `OCC_TEST_OPENAI_MODEL`; the two QA matrix jobs use
+`CODEX_ACCESS_TOKEN`. Set the Codex model and Calendar
 variables from the table above; the Codex account must have Calendar connected.
 These credentials are available to trusted PR code. Manual dispatch on `main`
 can replay the same selection. Runner resources are disposable; always-run steps
@@ -287,3 +290,22 @@ specific run's outcome and evidence files.
 The direct installed repository suite retains its pre-existing safety guard
 pending qualification of that entry point's remote cleanup; its retained cases
 are not claimed as runnable acceptance coverage.
+
+## Automatic OpenShell coverage
+
+The [QA advisory workflow](../../.github/workflows/qa-advisory.yml) runs the full
+`openshell` lane on trusted same-repository PRs, alongside the Compose and
+Kubernetes Codex checks. Fork and Dependabot PRs require trusted execution.
+The OpenShell job uses GitHub Ubuntu with an early Landlock ABI check; the
+Blacksmith kernel cannot enforce its sandbox filesystem policy. It is outside
+`CI Required`: failures remain visible without
+blocking merges. Its result artifact is `qa-advisory-openshell`.
+
+The [lane manifest](../../scripts/ci/test-suites/openshell.json) selects five
+real-runtime scenarios: installation with each control-plane mode, sandbox
+policy and credential enforcement, and first-Agent deployment and reuse with
+each mode. One job runs all four files, rejecting skips and cleaning up its
+owned clusters and databases. It builds runtime images from the tested revision
+and covers credential projection. The `integration-qa-pr` environment
+supplies `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; the existing protected
+manual OpenShell environment remains available for targeted dispatch.

@@ -5344,23 +5344,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   requirements,
                 }),
               );
+        let providerGatewayReady = true;
         if (
           providerEndpoint !== undefined &&
           (existingGateway === undefined || existingGatewayRevisionId === revision.id)
         ) {
           await reconcileGatewayDeployment({}, providerEndpoint);
-          if (
-            !(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace, revision.id))
-          ) {
-            // The setup observer uses this Gateway. Do not turn its expected
-            // provider-endpoint rollout into a failed enrollment attempt.
-            return incomplete();
-          }
+          providerGatewayReady = await this.gatewayReady(
+            gatewayOwnership,
+            gatewayName,
+            gatewayNamespace,
+            revision.id,
+          );
         }
-        if (
-          !(await this.providerHarnessReady(revision, namespace, requirements.labels)) ||
-          !(await this.workspaceNodeReady(revision, namespace))
-        ) {
+        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
           return incomplete();
         }
         if (credentialContext !== undefined) {
@@ -5410,6 +5407,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           if (harness.state !== "serving") {
             return incomplete();
           }
+        }
+        // A failed Harness may keep its Gateway unready. Read that failure
+        // first, but wait for the Gateway before observing node enrollment.
+        if (!providerGatewayReady || !(await this.workspaceNodeReady(revision, namespace))) {
+          return incomplete();
         }
         return ready();
       }

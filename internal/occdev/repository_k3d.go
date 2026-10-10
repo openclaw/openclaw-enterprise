@@ -269,8 +269,15 @@ func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) 
 }
 
 func replaceDevelopmentFile(path string, data []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("development file must be regular: %s", path)
+	}
 	temporary := path + ".next"
-	if err := exclusiveWrite(temporary, data, 0600); err != nil {
+	if err := exclusiveWrite(temporary, data, info.Mode().Perm()); err != nil {
 		return err
 	}
 	if err := os.Rename(temporary, path); err != nil {

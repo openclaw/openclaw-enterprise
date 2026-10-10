@@ -273,7 +273,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
-	if err := r.compose(ctx, state, "up", "--build", "-d", "controller", "worker-kubernetes"); err != nil {
+	buildOption := "--build"
+	if routing != nil {
+		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
+			return err
+		}
+		buildOption = "--no-build"
+	}
+	if err := r.compose(ctx, state, "up", buildOption, "-d", "controller", "worker-kubernetes"); err != nil {
 		return err
 	}
 	if routing != nil {

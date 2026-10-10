@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-09
-last_updated_session: authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67
+updated: 2026-10-10
+last_updated_session: authoring-run/d40976ed-123a-43e8-9a7b-a10b618aa496
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -22,10 +22,9 @@ Gateway receives, while network policy limits its use to the node executable
 and Agent Gateway endpoint. This exposes the token to the Sandbox and is not a
 production credential-delivery contract.
 
-The local Kubernetes development profile installs the pinned Gateway and
-renders the workspace chart into the Installation configuration, in either a
-Kubernetes-only or Compose control plane. Neither uses the verification-only
-compatibility projection.
+Both development control planes install the pinned Gateway and render the
+workspace chart into Installation configuration, without verification-only
+compatibility projections.
 
 ## Entry Points
 
@@ -63,12 +62,15 @@ graph TD
   K --> M["<b>Wait for Harness</b><br/>Compute readiness"]
   V -- "OpenClaw" --> T["<b>Sandbox ready</b><br/>No inbound exposure"]
   T --> M
-  M --> Y{"<b>Workspace node</b><br/>Connected?"}
-  Y -- "no" --> R1["<b>Retry node</b><br/>Relaunch after process exit"]
-  R1 --> Y
-  Y -- "yes" --> S{"<b>Attachment status</b><br/>All ready?"}
+  M --> S{"<b>Attachment status</b><br/>All ready?"}
   S -- "failed, withheld, revoked" --> R
-  S -- "ready" --> Z{"<b>Active Harness</b>"}
+  S -- "ready" --> HS{"<b>Harness status</b>"}
+  HS -- "failed" --> R
+  HS -- "starting" --> R1["<b>Retry preparation</b>"]
+  HS -- "serving or no exposure" --> Y{"<b>Gateway and node</b><br/>Ready?"}
+  Y -- "no" --> R1
+  R1 --> M
+  Y -- "yes" --> Z{"<b>Active Harness</b>"}
   Z -- "Codex" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
   Z -- "OpenClaw" --> U["<b>Run two sessions</b>"]
   L --> N["<b>Delete Sandbox</b><br/>Revision cleanup"]
@@ -82,7 +84,7 @@ graph TD
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F state
   class D,E,Q,W,H,J,K,L,M,N,O,P,R1,T,U operation
-  class C,G,S,V,Y,Y0,Z gate
+  class C,G,HS,S,V,Y,Y0,Z gate
   class X,R,R0 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -126,6 +128,11 @@ Workspace resources, and restrict OpenShell Gateway access to the API, worker,
 supervisor callbacks, and dedicated Agent Gateways. See
 the [local deployment guides](../guides/deploy/local-kubernetes-development.md)
 for startup, RBAC, image, and cleanup details.
+
+`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` assigns `0600`
+routing files to the shared non-root container UID/GID before startup, rolling
+back on failure. `internal/occdev/repository_k3d.go:replaceDevelopmentFile`
+preserves `0644` Installation permissions within `0700` state.
 
 Cleanup validates the recorded engine and state before deleting the named
 cluster and, in Compose mode, the recorded project and volumes. Partial cleanup
@@ -307,23 +314,21 @@ the candidate endpoint again before cutover. A provisioning Driver without
 `harnessEndpoint` keeps the Kubernetes Service or private-route path and the
 canonical `/home/node/workspace` root.
 
-Compute then waits for the provider-owned Harness Pod and exact workspace node.
-Missing enrollment keeps the revision inactive. The dedicated Harness wrapper
-rereads the provider setup before every node retry and retains the latest valid
-value while the projection is unavailable. It relaunches the workspace-node
-process one second after every exit without capping attempts, so Gateway rollout
-does not strand the Sandbox. Shutdown stops the retry loop.
+After Pod readiness, Compute reads attachment status through
+`GetSandboxProviderStatus`: missing or `pending` retries; `failed`, `withheld`,
+`revoked`, or `absent` fails. Once attachments are ready, `harnessStatus` reports
+held startup failures before Gateway or node readiness can hide them. A serving
+Harness still needs a ready Gateway and connected node; enrollment is observed
+only after Gateway readiness.
 
-For bound sources
-Compute calls `attachmentStatus`, which reads
-`GetSandboxProviderStatus`. `pending` or a missing status retries; `failed`,
-`withheld`, `revoked`, or `absent` fails the revision; only `ready` for every
-attachment completes preparation. On revision
-shutdown, `shutdownRevisionRuntime` calls `cleanup` with the revision. The
-Gateway client sends `DeleteSandbox` with the same `workspace_scope`; a missing
-Sandbox is an idempotent success. Codex cleanup then verifies and deletes the
-revision provider. Namespace cleanup removes the shared profile after its
-runtime providers are gone.
+The wrapper rereads provider setup on each node retry, retaining its latest
+valid value during projection gaps. It relaunches the node one second after
+every exit until shutdown.
+
+On shutdown, `shutdownRevisionRuntime` calls `cleanup` with the revision.
+`DeleteSandbox` uses the same `workspace_scope`; absence is success. Codex cleanup
+verifies and deletes the revision provider. Namespace cleanup removes the shared
+profile after its runtime providers are gone.
 
 The current unified `cleanup` contract receives the immutable revision during
 revision shutdown and no revision during Namespace deletion. Namespace deletion
@@ -357,6 +362,10 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 09:39: Observe Harness failures before dependent readiness. (authoring-run/d40976ed-123a-43e8-9a7b-a10b618aa496 - 8bc95d7698a167d8912db2e9c5739269d04e6ea2)
+
+- 2026-10-10 09:15: Preserve Compose routing and Installation permissions. (authoring-run/069ad14e-b91f-4b9c-aa37-4c39947e1e83 - e2dccebf4df04215e915e624be1ddc95c87c66e9)
 
 - 2026-10-10 12:40: Declare the Sandbox HOME for native hook credentials; hooks trust the file-delivered Gateway CA. (fix-1017)
 

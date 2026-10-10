@@ -2379,6 +2379,13 @@ async function prepareProductionInstallation(
     await waitFor(`OpenShell revision ${deployed.data.id} activation`, async () => {
       const observed = await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`);
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      // A rejected deployment cannot become active; report its public failure now.
+      const deployment = await request(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/deployments/${deployed.data.id}`,
+      );
+      assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+      assert.notEqual(deployment.data.status, "failed", JSON.stringify(deployment.data.error));
       return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
     });
   } catch (error) {
@@ -2391,6 +2398,26 @@ async function prepareProductionInstallation(
         GATEWAY_API_KEY: workspaceGateway.apiKey,
       },
     ]);
+    // A held startup failure returns 404 to a WebSocket upgrade. Read the
+    // authenticated status path before cleanup so that 404 is not misdiagnosed.
+    const serviceUrl = createSandboxDriver.harnessServiceUrls.get(deployed.data.id);
+    if (harnessId === "codex" && serviceUrl !== undefined) {
+      try {
+        const status = await createSandboxDriver
+          .gatewayClientForNamespace(placement)
+          .getServiceDocument(
+            serviceUrl,
+            "/openclaw/runtime/status",
+            transport.appServerToken,
+            AbortSignal.timeout(5_000),
+          );
+        process.stderr.write(
+          `OpenShell Harness startup status: ${redactLogLine(JSON.stringify(status), secrets, 1_600)}\n`,
+        );
+      } catch {
+        process.stderr.write("OpenShell Harness startup status unavailable\n");
+      }
+    }
     for (const namespace of new Set([placement, gatewayPlacement])) {
       try {
         for (const pod of await resources("pods", namespace)) {

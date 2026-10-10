@@ -37,11 +37,11 @@ async function startDevelopment(environment) {
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch (error) {
-    // Image-build progress can fill the reporter's budget before the actual startup error.
+    // Keep enough context to include the startup error before rollback logs.
     const secrets = failureSecrets([environment]);
     const tail = String(error.stderr ?? error.message)
       .split("\n")
-      .slice(-12)
+      .slice(-80)
       .map((line) => redactLogLine(line, secrets, 800))
       .join("\n");
     // Node's direct test reporter would print the raw subprocess output from a cause.
@@ -701,6 +701,10 @@ test(
     assert.equal(state.sandboxDriver, "openshell");
     assert.equal(state.deploymentMode, undefined);
     assert.equal(existsSync(join(stateDirectory, "compose.yaml")), true);
+    // Routing rewrites must keep the individually mounted Installation readable
+    // by the non-root control plane; the enclosing state directory stays private.
+    assert.equal((await stat(stateDirectory)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(stateDirectory, "installation.yaml"))).mode & 0o777, 0o644);
     const installation = loadYaml(
       await readFile(join(stateDirectory, "installation.yaml"), "utf8"),
     );
