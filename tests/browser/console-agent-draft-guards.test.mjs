@@ -369,37 +369,40 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   assert.equal(revisions.status, 200);
   assert.equal(revisions.data.length, 0, "a refused deployment creates no version");
 
-  // The API's untyped answers (a caller's own denial, a conflict with no reason, or a proxy
-  // reply with no error envelope) name nothing to fix, so the console keeps its own guidance.
-  for (const [status, body, expected] of [
-    [
-      403,
-      {
-        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+  // The caller's own denial is generic by design: it names nothing the caller may not read,
+  // and nothing to fix, so the console keeps its guidance about the grants deploy needs.
+  fixture.policy.restrictions.push({
+    id: "deny-typed-refusal-deploy",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "deploy",
+    effect: "deny",
+  });
+  assert.equal(await refusal(403), "The exact platform operation was not authorized.");
+  await page
+    .getByText("Deployment denied. Check Agent deploy permission", { exact: false })
+    .waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+  fixture.policy.restrictions.pop();
+
+  // An untyped conflict, or a proxy reply with no error envelope, also names nothing to fix.
+  for (const body of [
+    JSON.stringify({
+      error: {
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
       },
-      "Deployment denied. Check Agent deploy permission",
-    ],
-    [
-      409,
-      {
-        error: {
-          code: "RESOURCE_CONFLICT",
-          message: "The requested platform resource already exists.",
-        },
-      },
-      "Deployment conflicts with the saved Agent state.",
-    ],
-    [409, null, "Deployment conflicts with the saved Agent state."],
+    }),
+    "",
   ]) {
     await page.route(`${fixture.origin}${path}/deploy`, (route) =>
-      route.fulfill({
-        status,
-        contentType: "application/json",
-        body: body === null ? "" : JSON.stringify(body),
-      }),
+      route.fulfill({ status: 409, contentType: "application/json", body }),
     );
     await deploy.click();
-    await page.getByText(expected, { exact: false }).waitFor();
+    await page
+      .getByText("Deployment conflicts with the saved Agent state.", { exact: false })
+      .waitFor();
     assert.equal(await deploy.isEnabled(), true);
     await page.unroute(`${fixture.origin}${path}/deploy`);
   }

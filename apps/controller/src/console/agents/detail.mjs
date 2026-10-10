@@ -22,6 +22,8 @@ import {
   message,
   rejectionMessage,
   assertReadableConfiguration,
+  GENERIC_CONFLICT,
+  GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
 } from "./list.mjs";
 import {
@@ -30,13 +32,6 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
-
-// The API's catch-all answers to a refused deployment: a caller's own denial and an untyped
-// conflict. They name nothing the caller can act on, so the console keeps its own sentences.
-const GENERIC_DEPLOY_REFUSALS = new Set([
-  "The exact platform operation was not authorized.",
-  "The requested platform resource already exists.",
-]);
 
 function deployFailureText(error, submitted) {
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
@@ -52,7 +47,11 @@ function deployFailureText(error, submitted) {
   // 403 other than the caller's own denial names the Agent's service principal and a resource
   // the caller was already authorized to operate. Showing it reveals nothing the API did not
   // already tell this caller (D94).
-  if (error.serverMessage !== undefined && !GENERIC_DEPLOY_REFUSALS.has(error.serverMessage)) {
+  if (
+    error.serverMessage !== undefined &&
+    error.serverMessage !== GENERIC_DENIAL &&
+    error.serverMessage !== GENERIC_CONFLICT
+  ) {
     return error.serverMessage;
   }
   return error.status === 403
