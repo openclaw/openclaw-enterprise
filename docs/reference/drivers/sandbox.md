@@ -33,6 +33,9 @@ required `facets` and `cleanup` members, an optional `harnessHome`, plus seven o
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
 Compute routes the Agent Gateway through it instead of its own Harness Service.
+A Driver can return `undefined` when that revision's Harness has no inbound
+transport. Compute then skips provider transport observation; native outbound
+workers still require their normal Pod and workspace-node readiness.
 `harnessStatus(context)`, offered only with `harnessEndpoint`, observes that
 transport with the Agent transport token. It answers `serving` only after an
 authenticated handshake, or `failed` with the Harness's held startup failure,

@@ -5899,6 +5899,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         });
         // Preparation saw the Harness serving; activate only while it still is.
         if (
+          providerEndpoint !== undefined &&
           sandboxDriver.harnessStatus !== undefined &&
           (
             await sandboxDriver.harnessStatus({
@@ -11901,12 +11902,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.mode === "dedicated" &&
       this.sandboxDriverForRevision(revision)?.harnessEndpoint !== undefined;
     if (providerOwnsHarnessEndpoint) {
-      const provider = this.options.network.providerHarness;
-      if (provider === undefined) {
-        throw new ConfigurationFailure(
-          "SandboxDriver Harness endpoint requires an exact provider network route.",
-        );
-      }
       const openShellWorkspaceNodePolicies =
         this.sandboxDriverForRevision(revision)?.implementation === "openshell" &&
         this.options.executionCluster === undefined
@@ -11943,6 +11938,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               }),
             ]
           : [];
+      if (revision.harness.id === "openclaw") {
+        return [...openShellWorkspaceNodePolicies, ...statusPolicies];
+      }
+      const provider = this.options.network.providerHarness;
+      if (provider === undefined) {
+        throw new ConfigurationFailure(
+          "SandboxDriver Harness endpoint requires an exact provider network route.",
+        );
+      }
       return [
         policy("allow-gateway-agent", {
           podSelector: gateway,

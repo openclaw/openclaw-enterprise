@@ -827,20 +827,26 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
-  function harnessContainer(pod) {
+  function harnessContainer(pod, harnessId = "codex") {
     const container = pod.spec.containers.find(({ name }) => name === "agent");
-    assert.ok(container, "provider-owned Pod must contain the Codex Harness container.");
+    assert.ok(container, "provider-owned Pod must contain its Harness container.");
     const environment = container.env ?? [];
     assert.equal(
       environment.some(({ name }) => name === "APP_SERVER_TOKEN"),
       false,
       "the raw app-server token must stay outside the OpenShell Harness Pod spec.",
     );
-    assert.match(
-      environment.find(({ name }) => name === "APP_TOKEN_SHA")?.value ?? "",
-      /^[a-f0-9]{64}$/,
-      "the OpenShell Harness requires only its app-server token verifier.",
-    );
+    const verifier = environment.find(({ name }) => name === "APP_TOKEN_SHA");
+    if (harnessId === "openclaw") {
+      assert.equal(verifier, undefined, "native OpenClaw must not receive a Codex verifier.");
+    } else {
+      assert.equal(harnessId, "codex", "unsupported Harness privilege check");
+      assert.match(
+        verifier?.value ?? "",
+        /^[a-f0-9]{64}$/,
+        "the OpenShell Codex Harness requires only its app-server token verifier.",
+      );
+    }
     return container;
   }
 
@@ -965,7 +971,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
-  function assertApprovedOpenShellPrivileges(pod, { compatibilityBridge = false } = {}) {
+  function assertApprovedOpenShellPrivileges(pod, harnessId = "codex") {
     assert.equal(
       pod.spec.runtimeClassName,
       openShellRuntimeClass,
@@ -989,9 +995,7 @@ export function createOpenShellKubernetesFixture({
       undefined,
       "OpenShell v0.1.3-pre.2 must keep its network supervisor outside the workload Pod.",
     );
-    const container = compatibilityBridge
-      ? pod.spec.containers.find(({ name }) => name === "agent")
-      : harnessContainer(pod);
+    const container = harnessContainer(pod, harnessId);
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);

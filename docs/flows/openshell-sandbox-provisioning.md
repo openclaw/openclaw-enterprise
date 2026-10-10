@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-09
-last_updated_session: authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67
+updated: 2026-10-10
+last_updated_session: authoring-run/90c959b9-f6b9-4948-bbb2-f73c6f174258
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -53,7 +53,7 @@ graph TD
   K0 --> Y0{"<b>Node setup</b><br/>Material exists?"}
   Y0 -- "no" --> R0["<b>Retry preparation</b><br/>No provider or Sandbox"]
   Y0 -- "yes" --> Q["<b>Attach model source</b><br/>Credential provider"]
-  Q --> G{"<b>Codex inputs valid?</b><br/>Verifier and files"}
+  Q --> G{"<b>Harness inputs valid?</b><br/>Kind and delivery"}
   G -- "no" --> R["<b>Reject provisioning</b><br/>Candidate stays inactive"]
   G -- "yes" --> W["<b>Reconcile runtime provider</b><br/>Files and literal setup"]
   W --> H["<b>Create Sandbox</b><br/>Providers and exposure"]
@@ -70,10 +70,11 @@ graph TD
   S -- "failed, withheld, revoked" --> R
   S -- "ready" --> Z{"<b>Active Harness</b>"}
   Z -- "Codex" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
-  Z -- "OpenClaw" --> U["<b>Run two sessions</b>"]
+  Z -- "OpenClaw" --> U["<b>Run worker turn</b>"]
   L --> N["<b>Delete Sandbox</b><br/>Revision cleanup"]
   U --> N
-  N --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
+  N --> RP["<b>Delete runtime provider</b>"]
+  RP --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
   O --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
@@ -189,50 +190,44 @@ Landlock is a hard requirement; unsupported enum spellings, inherited object
 keys, the old `passthrough` TLS spelling, or policies without executable paths
 fail before launch.
 
-Kubernetes Compute invokes `provisionHarness` only after the workspace-node
-setup Secret exists. The Driver creates or adopts the runtime provider with the
-final node envelope on first mutation, never an empty placeholder.
-If Compute later renews an expired setup, the same call version-fences an
-OpenShell `UpdateProvider` that changes only `node_setup_json`.
-When configured, a bounded post-create delay keeps Compute from consuming the
-exposed route before the canonical process listens. Compute then rolls the
-Gateway to that endpoint and waits for the exact Deployment before observing
-workspace-node enrollment.
+Compute waits for the fail-closed Gateway's setup Secret before any provider or
+Sandbox mutation. Codex requires one lowercase `APP_TOKEN_SHA`, no raw
+`APP_SERVER_TOKEN`, and two bounded plugin-free runtime files. Native OpenClaw
+rejects plugin-runtime files and retains its admitted literal inference config.
+Other Secret-backed environment and projected workload identity fail closed.
 
-Dedicated Codex requires one lowercase `APP_TOKEN_SHA`, no `APP_SERVER_TOKEN`,
-and two bounded plugin-free runtime inputs. Selected plugins, repository broker
-configuration, malformed files, and other Secret-backed environment fail before
-Gateway mutation.
+The Driver creates or adopts a revision-owned provider from
+`oce-codex-runtime` or `oce-openclaw-runtime`. Codex projects its runtime files;
+both project node setup and the public CA read-only. The Driver checks the setup
+Secret's Agent ownership and bounded, live envelope. Its bootstrap token remains
+visible inside the Sandbox, so this development path is not a production
+credential guarantee. Model credentials remain in the Credential Gateway;
+attachments must use unique OCC `oce-cs-` provider names.
 
-The Driver creates or adopts a revision-owned provider from the shared
-`oce-codex-runtime` profile. It supplies `runtime.json`, `config.toml`, and
-`node-setup.json` as read-only files. The Driver validates the Agent-owned setup
-Secret and writes its complete expiring envelope, including `bootstrapToken`,
-to `node-setup.json`. This development diagnostic deliberately avoids WebSocket
-credential rewriting because OpenClaw signs the token value in its device proof.
-Before renewal, the Driver requires the same endpoint and TLS fingerprint, an
-expired stored envelope, a later live expiry, and unchanged runtime and CA
-configuration. The Sandbox network policy limits the connection to the exact
-Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or other drift
-fails before Sandbox creation.
+A renewed setup changes only `node_setup_json` through a version-fenced update.
+The prior envelope must be expired, the new one live with a later expiry, and
+endpoint, TLS fingerprint, static config, and ownership unchanged. Drift fails
+before Sandbox creation. Binary-scoped policy admits enrollment only to the
+Gateway endpoint from `/usr/local/bin/node`; model injection allows the native
+Codex executable or Node for native OpenClaw.
 
-The Driver mounts a revision-scoped Agent PVC subpath at
-`/sandbox/.openclaw-runtime`; persistent subpaths mount below
-`/sandbox/.openclaw-mounts`. It rewrites admitted `/home/node` paths beneath the
-runtime home, declared as `harnessHome` for native hook credentials. Codex hook
-commands trust the provider-file Gateway CA and reach the Gateway route only when
-the node does: an in-cluster routing hostname or two clusters. Exact mount paths
-such as `OPENCLAW_NODE_STATE_DIR` use a process-created `state` child, so atomic
-writes cross neither a symlink nor a root-owned mount. Workspace, node identity, sessions, and generated images
-remain separate. `/tmp` stays on the bounded ephemeral image layer.
+Revision-private runtime storage mounts at `/sandbox/.openclaw-runtime`, with
+persistent subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node`
+paths move beneath the runtime home, declared as `harnessHome` for native hook
+credentials. Codex hooks trust the provider-file Gateway CA and require an
+in-cluster routing hostname or two clusters. Chmod-sensitive paths such as
+`OPENCLAW_NODE_STATE_DIR` address process-created `state` children, avoiding
+symlink ancestors and root-owned mount roots.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
+reads projected setup and CA files and writes its private connect target.
+`sandboxCommand` gives the native process a writable temporary directory while
+retaining the supervisor's `/tmp`. Restarts reread setup and reuse device identity.
 
-Credential attachments must use the OCC `oce-cs-` name shape and cannot repeat
-a static provider. The profile binds them to the exact native Codex executable;
-a changed runtime dependency path fails the startup model probe.
-
-The dedicated native OpenClaw real-runtime case still uses its separate
-verification bridge; this delivery does not make that path a supported local
-first-Agent option.
+Codex's optional post-create delay keeps Compute from consuming the route before
+its listener starts. Compute rolls the Gateway to that endpoint and waits for
+the exact Deployment before observing enrollment. Native OpenClaw requests no inbound service and returns no Harness endpoint;
+Compute skips transport observation and the Codex provider-route requirement for
+that revision, retaining the supervisor-to-Gateway enrollment policies.
 
 ### 4. Call the versioned gateway contract
 
@@ -361,6 +356,12 @@ networking. Native OpenClaw remains a separate verification-only path.
 - 2026-10-10 12:40: Declare the Sandbox HOME for native hook credentials; hooks trust the file-delivered Gateway CA. (fix-1017)
 
 - 2026-10-09 19:45: Cover both runtime architectures in the development credential policy. (authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67 - bd540bcdef63cdc719e73192e4dbe99c365953c3)
+- 2026-10-10 08:28: Keep native worker enrollment policies without requiring an inbound provider route. (authoring-run/90c959b9-f6b9-4948-bbb2-f73c6f174258 - aeb7d91ab)
+
+- 2026-10-09 17:56: Allow outbound-only Harnesses to return no endpoint and skip transport observation. (authoring-run/046d9ca4-c1af-4515-b4d1-62c314d84484 - 4926e2425)
+
+- 2026-10-09 17:10: Deliver native node setup through a revision-owned provider and remove the native test bridge. (authoring-run/046d9ca4-c1af-4515-b4d1-62c314d84484 - d156330a1)
+
 
 - 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 

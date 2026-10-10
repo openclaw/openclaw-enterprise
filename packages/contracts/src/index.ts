@@ -1404,9 +1404,10 @@ export interface SandboxDriver extends Driver {
   /**
    * Returns the provider-owned transport for the exact provisioned Harness. When present,
    * Compute must route the Agent Gateway through this endpoint instead of its native Harness
-   * Service. Implementations must fail closed until the endpoint is observable and exact.
+   * Service. A Driver can return undefined for a Harness kind with no inbound transport.
+   * Implementations must fail closed until an expected endpoint is observable and exact.
    */
-  harnessEndpoint?(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint>;
+  harnessEndpoint?(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint | undefined>;
   /**
    * Observes the provider-owned Harness through the endpoint `harnessEndpoint` returns, with the
    * Agent transport token. Compute treats only `serving` as ready and fails the revision with a

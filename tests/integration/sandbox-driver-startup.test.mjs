@@ -2692,3 +2692,98 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     await loadInstallationFile(t, configuration);
   }
 });
+
+test("OpenShell native Harness receives revision-owned node setup and cleans up its provider", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  let request;
+  gatewayClient.createSandbox = async (value) => {
+    request = structuredClone(value);
+    return { name: value.name, labels: value.labels, serviceUrls: {} };
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const fixture = codexSandboxFixture(driver);
+  const revision = {
+    ...fixture.revision,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+  };
+  const requirements = {
+    ...fixture.requirements,
+    files: [],
+    environment: fixture.requirements.environment.filter(
+      ({ name }) => !["APP_SERVER_PORT", "APP_TOKEN_SHA", "CODEX_HOME"].includes(name),
+    ),
+  };
+  await driver.provisionHarness({ ...fixture.context, revision, requirements });
+  assert.equal(
+    await driver.harnessEndpoint({ ...fixture.context, revision, requirements }),
+    undefined,
+  );
+  await assert.rejects(
+    driver.harnessEndpoint({
+      ...fixture.context,
+      revision: { ...revision, sandboxDriverId: "foreign-driver" },
+      requirements,
+    }),
+    /another Sandbox Driver/,
+  );
+  assert.deepEqual(request.serviceExposures, []);
+  const provider = [...gatewayClient.providers.values()][0];
+  assert.equal(provider.type, "oce-openclaw-runtime");
+  assert.deepEqual(JSON.parse(provider.config.node_setup_json), fixture.nodeSetup);
+  const profile = gatewayClient.profiles.get("oce-openclaw-runtime").profile;
+  assert.deepEqual(
+    profile.files.map(({ path }) => path),
+    ["node-setup.json", "node-ca.pem"],
+  );
+  assert.equal(request.spec.environment.OPENCLAW_NODE_SETUP_CODE, undefined);
+  assert.equal(request.spec.environment.OPENCLAW_NODE_CA_PEM, undefined);
+  assert.equal(JSON.stringify(request).includes(fixture.nodeSetup.bootstrapToken), false);
+  assert.ok(request.spec.providers.includes(provider.name));
+  assert.deepEqual(request.spec.policy.network_policies["workspace-node-enrollment"].binaries, [
+    { path: "/usr/local/bin/node" },
+  ]);
+  // The supervisor probes /tmp, then the native process switches to its own private child.
+  assert.equal(request.spec.environment.TMPDIR, "/tmp");
+  assert.match(
+    request.spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /process.env.TMPDIR = "\/sandbox\/.openclaw-runtime\/home\/tmp"/,
+  );
+  // A live Secret can be renewed after the previously delivered envelope expires.
+  provider.config.node_setup_json = JSON.stringify({
+    ...fixture.nodeSetup,
+    expiresAtMs: Date.now() - 1,
+  });
+  const renewed = {
+    ...fixture.nodeSetup,
+    bootstrapToken: "renewed-native-setup",
+    expiresAtMs: Date.now() + 600_000,
+  };
+  fixture.context.kubernetes.read = async ({ metadata }) => ({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      ...metadata,
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+      },
+    },
+    data: {
+      setupCode: Buffer.from(Buffer.from(JSON.stringify(renewed)).toString("base64url")).toString(
+        "base64",
+      ),
+    },
+  });
+  await driver.provisionHarness({ ...fixture.context, revision, requirements });
+  assert.deepEqual(
+    JSON.parse(gatewayClient.providers.get(provider.name).config.node_setup_json),
+    renewed,
+  );
+  assert.equal(JSON.stringify(request).includes(renewed.bootstrapToken), false);
+  await driver.cleanup({ ...fixture.context, revision });
+  assert.equal(gatewayClient.providers.size, 0);
+});
