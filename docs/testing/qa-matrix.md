@@ -304,6 +304,6 @@ real-runtime scenarios: installation with each control-plane mode, sandbox
 policy and credential enforcement, and first-Agent deployment and reuse with
 each mode. One job runs all four files, rejecting skips and cleaning up its
 owned clusters and databases. It builds runtime images from the tested revision
-and enables secret-projection coverage. The `integration-qa-pr` environment
+and covers credential projection. The `integration-qa-pr` environment
 supplies `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; the existing protected
 manual OpenShell environment remains available for targeted dispatch.
