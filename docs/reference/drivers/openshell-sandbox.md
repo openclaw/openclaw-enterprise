@@ -248,13 +248,11 @@ node retry and retains the latest valid value during projection gaps. The raw
 app-server token stays outside the provider. Plugins and repository broker
 configuration fail before creation.
 
-Revision cleanup deletes the Sandbox before its runtime provider. Namespace
-cleanup then removes the shared profile. Replays adopt only exact
-Namespace-, Agent-, and revision-owned providers with identical nonsecret
-configuration except the narrowly reconciled expired setup envelope. A failed
-or timed-out Sandbox create does not eagerly delete that provider because the
-remote mutation may still have completed; the normal revision cleanup path owns
-both resources.
+Revision cleanup deletes the Sandbox, then its provider; Namespace cleanup removes
+the shared profile. Replays require exact Namespace, Agent, and revision ownership
+and matching nonsecret configuration except the renewed setup envelope. After a
+failed or timed-out create, normal revision cleanup owns both resources because
+the remote mutation may have completed.
 
 ## Create-time app-server exposure
 
@@ -274,9 +272,9 @@ Compute replaces the fail-closed Gateway target, omitting the direct Agent Servi
 and Compute-owned Harness route. Drivers without `harnessEndpoint` retain Kubernetes
 transport.
 
-Compute reports held Harness startup failures before waiting for Gateway and
-workspace-node readiness. A serving Harness requires both checks
-before activation; see the [readiness flow](../../flows/openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up).
+Compute reports Harness startup failures before Gateway and workspace-node
+readiness checks; activation still requires both. See the
+[readiness flow](../../flows/openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up).
 
 Native OpenClaw does not accept inbound Harness traffic. Its enrolled node host
 opens the connection to the Agent Gateway, so the Driver sends an empty service
