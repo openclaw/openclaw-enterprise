@@ -24,8 +24,15 @@ together with GitHub and Google. One issuer is supported per Installation.
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
   443 from one DNS host name, and signs ID tokens with RS256 keys of at least 2,048 bits.
 - API Pod HTTPS egress to that host. Browsers, not the API, visit the authorization URL.
-- A certificate the API trusts. The API uses Node's default CA store; for a private CA,
-  add `NODE_EXTRA_CA_CERTS` to the API Pod.
+- A certificate the API trusts. Public CAs use Node's default CA store. For a private
+  IdP CA, use an explicit, upgrade-safe deployment customization to mount a combined
+  public CA bundle in the API Pod, set `NODE_EXTRA_CA_CERTS` to that bundle, and restart
+  Node after trust changes. Include the IdP CA and any existing Gateway CA roots: the
+  chart may already set this variable for Gateway routing, and replacing its bundle with
+  only the IdP CA breaks Gateway trust. The chart version covered by this guide has
+  no dedicated OIDC CA value or turnkey mount. Verify the customized deployment and
+  trust after each upgrade; see
+  [Gateway trust and rotation](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
 
 ## Register the client
 
@@ -45,7 +52,7 @@ token's `iss`.
 
 | IdP      | Values that fit                                                                                                                                                                  |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Keycloak | Issuer `https://<host>/realms/<realm>`; endpoints `…/protocol/openid-connect/{auth,token,certs}` behind a TLS proxy on 443; a confidential client.                               |
+| Keycloak | Issuer `https://<host>/realms/<realm>`; endpoints `…/protocol/openid-connect/{auth,token,certs}`; a confidential client. Verified in CI; see [Keycloak](oidc-keycloak.md).       |
 | Okta     | Org server `https://<org>.okta.com` with `/oauth2/v1/…`, or a custom server `https://<org>.okta.com/oauth2/<id>` with `/oauth2/<id>/v1/…`.                                       |
 | Auth0    | Issuer `https://<tenant>.auth0.com/` (with the trailing slash) or the custom domain for all four values; the application must sign with RS256.                                   |
 | Entra ID | Tenant **v2** only: `https://login.microsoftonline.com/<tenant>/v2.0`, `/oauth2/v2.0/{authorize,token}`, `/discovery/v2.0/keys`. The v1 issuer `sts.windows.net` does not match. |
@@ -146,7 +153,8 @@ publish.
 
 OCE identifies an IdP account only by the ID token's `sub` claim for this issuer.
 
-- **Keycloak:** the user's ID on the user's **Details** page in the admin console.
+- **Keycloak:** the user's ID on the user's **Details** page in the admin console; see
+  [Keycloak](oidc-keycloak.md#find-a-persons-subject).
 - **Okta:** the user ID (`00u…`) in the user's profile URL or the Users API.
 - **Auth0:** the `user_id` (for example `auth0|…`) on the user's page.
 - **Entra ID:** `sub` is pairwise per application and is not shown in the portal; OCE
@@ -174,8 +182,9 @@ The subject is 1–255 printable ASCII characters without spaces. The call retur
 when OIDC is off, the version is stale, the account is disabled, or another account
 holds the subject ("The external identity is already assigned."). Attachment advances
 the account version and ends the account's sessions. The method's `providerId` starts
-with `oidc:`; detach it with `POST /api/auth/accounts/:userId/methods/:methodId/detach`,
-which ends every session of the account, password sessions included.
+with `oidc:`; detach it with `POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+Detaching removes that provider from the account and ends every session, including password
+sessions, but other enabled sign-in methods remain usable.
 
 Accounts are created with a password, and an OIDC identity can be attached only
 afterwards. To add someone who should sign in only through the IdP, follow
@@ -187,14 +196,17 @@ afterwards. To add someone who should sign in only through the IdP, follow
   new instance: attach every identity again, then detach the old methods. Sessions
   signed in through the old instance, or through OIDC once it is removed, end on their
   next request. Detaching an old method ends every session of that account.
-- Rotating only the client secret keeps attachments and voids pending sign-ins.
+- To rotate the client secret, close ingress and stop writers using the
+  [stopped-maintenance procedure](auth-maintenance.md#stop-every-writer). Coordinate
+  the replacement secret in the IdP and the protected OCE Secret, then restart the
+  single API controller to load its environment. Verify new OIDC sign-in and recovery
+  password sign-in through restricted access before restoring ingress. Once the changed configuration
+  loads, attachments remain and pending sign-ins are invalidated.
 - The API reads the JWKS on every callback, so IdP key rotation needs no restart.
 - OCE does not learn when the IdP disables someone: that person's OCE sessions continue
-  until they expire (at most 8 hours). Offboarding also means disabling the account in
-  OCE or detaching its OIDC method; either ends all of the account's sessions. Neither
-  ends a [service key](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key)
-  the person uses from the CLI: revoke it, or delete its service principal's
-  AccessBindings.
+  until they expire (at most 8 hours). For offboarding, disable the OCE account to end
+  its sessions and prevent further human sign-in. Separately revoke applicable
+  [service keys](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key).
 - Sign-out is local: while the IdP session lives, one click signs in again.
 - An IdP outage, blocked egress or a rejected ID token fails that sign-in closed and
   returns the browser to `/console/?authError=oidc`; the recovery account's password
@@ -208,5 +220,6 @@ afterwards. To add someone who should sign in only through the IdP, follow
 
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
 - [Google sign-in](google-sign-in.md)
+- [Keycloak for OIDC sign-in](oidc-keycloak.md)
 - [Sign-in maintenance](auth-maintenance.md)
 - [Production settings](../../reference/settings/production.md#oidc-sign-in)

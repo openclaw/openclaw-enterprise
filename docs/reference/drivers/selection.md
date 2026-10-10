@@ -57,6 +57,7 @@ Sandbox packages in trusted YAML in either mode.
 | `secret`             | [SecretDriver](secret.md)                                       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                         |
 | `sandbox`            | [SandboxDriver](sandbox.md)                                     | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.   |
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only. |
+| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                        |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                      | Optional bundled ChatGPT Backend member; no installed-package selector.                                |
 | `plugin`             | [PluginDriver](plugin.md)                                       | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                        |
 | `repo`               | [RepoDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; requires bundled Kubernetes Compute without Sandbox.           |
@@ -83,8 +84,9 @@ The generic Driver contract has no Backend identity field. All declared members
 are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
 ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
 Driver; the bundled OpenShell Backend requires both its Sandbox and Credential
-Gateway Drivers. A selected Credential Gateway must belong to a configured
-Backend. There is no per-Agent Driver selection.
+Gateway Drivers, and its Credential Refresh Driver when it declares one. A
+selected Credential Gateway or Credential Refresh Driver must belong to a
+configured Backend. There is no per-Agent Driver selection.
 
 Runtime Backend injection is limited to those bundled Drivers. Installed factory
 arguments remain the contract below; Backend loading or injection into
@@ -110,7 +112,8 @@ packages, and development dependencies are unsupported. Installation and image
 builds disable npm lifecycle scripts, so packages must contain precompiled
 JavaScript.
 
-A standard npm package manifest provides identity and an ESM entry point:
+A standard npm package manifest provides identity and an ESM entry point. One
+leading UTF-8 byte order mark is accepted, as it is by Node:
 
 ```json
 {
@@ -129,6 +132,18 @@ an existing file exactly (no extension, directory, or `main` lookup). A selected
 missing file, directory, or failed import stops startup. The entry must be
 `.mjs`, or `.js` whose nearest `package.json` within the package declares
 `"type": "module"`; Node's import uses that file, not always the package root.
+The refusal names that `package.json`. Node can also load a `.js` file outside a
+module scope when it detects ESM syntax; the controller refuses it on purpose.
+For every entry the controller accepts, Node fixes the format from package
+metadata alone, before any package code runs; neither the file's contents nor
+Node's `--no-experimental-detect-module` flag changes it. Accepting detected
+ESM would tie startup to Node's detection heuristic, which has changed between
+releases, and the only way to read a detected format without running the file
+is Node's process-lifetime module hooks. Node itself treats the shape as a
+mistake: outside `node_modules` it warns about such a file and asks for
+`"type": "module"`. To fix a refusal, add `"type": "module"` to the
+`package.json` it names, or rename the entry to `.mjs`. See the
+[breaking-change notices](../../guides/deploy/breaking-changes.md).
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema

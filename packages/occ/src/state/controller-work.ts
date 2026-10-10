@@ -40,7 +40,11 @@ export interface DeploymentStatusResult {
 export interface ControllerWorkAttempt {
   readonly at: Date;
   readonly code: string;
+  /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
+  readonly refusal?: string;
 }
+
+const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
 /** Public pending explanations never include arbitrary Driver or provider text. */
 export function deploymentProgressForWork(
@@ -74,6 +78,20 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "A dependency was unavailable. The controller will retry.";
       break;
+    case "REFUSED_CANDIDATE_STOP_PENDING":
+      // The refusal is the code this deployment's `error` carries once the stop succeeds,
+      // unless a newer revision supersedes it first.
+      code = attempt.code;
+      // A refusal that lifted after the convergence deadline waits to publish the deadline.
+      message =
+        attempt.refusal === "CONVERGENCE_DEADLINE_EXCEEDED"
+          ? "Deployment missed its convergence deadline; stopping the candidate before recording the failure. The controller will retry."
+          : `Deployment refused${
+              attempt.refusal !== undefined && FAILURE_CODE.test(attempt.refusal)
+                ? ` (${attempt.refusal})`
+                : ""
+            }; stopping the refused version before recording the failure. The controller will retry.`;
+      break;
     case "AGENT_GATEWAY_UNAVAILABLE":
       code = attempt.code;
       message =
@@ -95,7 +113,11 @@ export function deploymentProgressForWork(
       break;
     case "LEASE_EXPIRED":
       code = attempt.code;
-      message = "The previous worker claim expired. Reconciliation will resume.";
+      // A claim lost while stopping a refused candidate keeps that refusal (finding 1021).
+      message =
+        attempt.refusal !== undefined && FAILURE_CODE.test(attempt.refusal)
+          ? `Deployment refused (${attempt.refusal}); the previous worker claim expired before the refused version was stopped. The controller will retry.`
+          : "The previous worker claim expired. Reconciliation will resume.";
       break;
     case "ACTIVE_REVISION_RECOVERY":
       code = attempt.code;
@@ -208,6 +230,13 @@ export interface WorkResult {
 export interface RetryableFailure {
   readonly code: string;
   readonly summary?: string;
+}
+
+export interface DeferredWork extends RetryableFailure {
+  /** A refusal waiting on its candidate's stop; recorded in the deferral's evidence. */
+  readonly refusal?: string;
+  /** That stop yielded to other Work rather than failing; recorded as `stopYielded: true`. */
+  readonly stopYielded?: boolean;
 }
 
 export interface PermanentFailure {
@@ -504,6 +533,44 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment was superseded by a newer revision.";
     case "REVISION_STOPPED":
       return "Deployment ended because the Agent was stopped.";
+    case "REPOSITORY_REVISION_SUPERSEDED":
+      return "Deployment was superseded by a newer revision.";
+    case "REPOSITORY_REVISION_STOPPED":
+      return "Deployment ended because the Agent was stopped or its Namespace is no longer ready.";
+    // Repository credential refusals (finding 1045). Like the refusals below, the status never
+    // names a repository, grant or Driver.
+    case "REPOSITORY_RUNTIME_UNSUPPORTED":
+      return "The Installation's Compute Driver can no longer deliver repository credentials to this revision. Repository access needs an embedded OpenClaw or dedicated Codex runtime with no Sandbox Driver, on a Compute Driver configured for repository credentials. Ask an admin to restore that setup, or remove the Agent's repository access, then deploy again.";
+    case "REPOSITORY_BINDING_UNAVAILABLE":
+      return "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve it again, then deploy again.";
+    case "REPOSITORY_BINDING_CHANGED":
+      return "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.";
+    case "REPOSITORY_DRIVER_MISMATCH":
+      return "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver, choosing approved repository access first if the deploy is refused. If the Installation has none, remove the Agent's repository access or ask an admin to select one.";
+    case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
+      return "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.";
+    // Refusals the worker decides again on every pass (finding 1039). The status never names
+    // the principal or the resource the decision was about.
+    case "AUTHORIZATION_DENIED":
+      return "The account that requested this deployment, or the Agent's own identity, no longer has a permission the revision needs: deploy on the Agent, read on its Configuration, or use of a Secret, credential source or ServiceAccount it binds. Ask an admin to grant the access, then deploy again.";
+    case "ACTOR_REVOKED":
+      return "The account that requested this deployment is no longer an active account in the Installation. Deploy again from an account with deploy access to the Agent.";
+    case "HARNESS_AUTH_REQUIRED":
+      return "This revision has no Harness authentication method. Set one on the Agent, then deploy again.";
+    case "BACKEND_UNAVAILABLE":
+      return "The Backend this revision was admitted with is no longer configured on the Installation. Ask an admin to restore it, or move the Agent to a configured Backend, then deploy again.";
+    case "HARNESS_AUTH_SOURCE_CHANGED":
+      return "The ServiceAccount this revision authenticates with is missing, has no access token, or its credential changed since admission. Bind an available ServiceAccount, or deploy again to admit a revision with its current credential.";
+    case "SECRET_BINDING_UNAVAILABLE":
+      return "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.";
+    case "NAMESPACE_NOT_READY":
+      return "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.";
+    case "WORKSPACE_SETUP_UNSUPPORTED":
+      return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.";
+    case "DEPENDENCY_UNAVAILABLE":
+      return "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.";
+    case "LEASE_EXPIRED":
+      return "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.";
     case "AGENT_GATEWAY_UNAVAILABLE":
       return "The Agent Gateway was still not reachable through its route at the deployment deadline.";
     case "AGENT_GATEWAY_UNAUTHORIZED":

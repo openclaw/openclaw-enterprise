@@ -10,7 +10,7 @@
   ],
   "prepare": {
     "defaultEnv": {
-      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0"
     },
     "requiresPreparedStateForFile": true,
     "requireEnv": ["NODE_BASE_IMAGE"],
@@ -75,11 +75,14 @@
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
+        "database routing refuses invalid ports before emitting NetworkPolicies",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
-        "private Envoy Gateway routing preserves explicit hostnames and external CA trust"
+        "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
+        "production peer matchLabels keep the native Kubernetes map contract",
+        "Collector exporter ports preserve decimal meaning in Kubernetes YAML"
       ]
     },
     {

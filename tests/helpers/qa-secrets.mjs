@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
+import { failureSecrets, redactOutputLine } from "../../scripts/ci/failure-redaction.mjs";
 
 const protectedValues = new Set();
 
@@ -17,6 +18,21 @@ export function redactQaError(error) {
     }
   }
   return error;
+}
+
+// Command arguments and stdout can contain API payloads. Publish only a bounded
+// stderr tail, using the CI redactor plus dynamically generated fixture secrets.
+export function qaCommandFailureDetail(stderr, env) {
+  const secrets = [
+    ...failureSecrets([env]),
+    ...[...protectedValues].map((value) => [value, "qa-secret"]),
+  ].sort(([a], [b]) => b.length - a.length);
+  return String(stderr ?? "")
+    .trimEnd()
+    .split("\n")
+    .slice(-8)
+    .map((line) => redactOutputLine(line, secrets, "", 800))
+    .join("\n");
 }
 
 export async function protectedText(path, label) {

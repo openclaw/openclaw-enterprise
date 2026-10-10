@@ -285,6 +285,8 @@ writes; ordinary Agent and Configuration APIs require complete references.
 
 The template and
 rendered JSON each have a 1 MiB size limit and a maximum depth of 64.
+POST/PATCH bodies allow 6 MiB plus 8 KiB for JSON escapes and the envelope;
+template admission retains the 1 MiB limit.
 
 ## CRUD and permissions
 

@@ -1,6 +1,9 @@
 {{- /* One IPv4 host. Go's ParseCIDR rejects an octet above 255 and a leading zero. */ -}}
 {{- define "openclaw.ipv4Host32" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/32${{- end -}}
 {{- define "openclaw.validate" -}}
+{{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
+{{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
+{{- end -}}
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
@@ -53,6 +56,8 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if not .Values.installation.secretName -}}{{- fail "installation.secretName must name the operator-created installation startup Secret" -}}{{- end -}}
+{{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- $github := .Values.auth.github -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
@@ -91,14 +96,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
 {{- if eq $github.clientIdKey $github.clientSecretKey -}}{{- fail "auth.github client ID and client secret must use different Secret keys" -}}{{- end -}}
-{{- if or (eq $github.secretName .Values.installation.secretName) (eq $github.secretName .Values.database.secretName) (eq $github.secretName .Values.auth.secretName) (and .Values.backend.chatgpt.enabled (eq $github.secretName .Values.backend.chatgpt.secretName)) (and .Values.gatewayRouting.enabled (eq $github.secretName .Values.gatewayRouting.apiKeySecretName)) -}}
-{{- fail "auth.github credentials must use a dedicated Secret" -}}
-{{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
-{{- range $name := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
-{{- if eq $github.secretName (index $.Values.repositoryCredentials $name) -}}{{- fail (printf "auth.github credentials must use a Secret distinct from repositoryCredentials.%s" $name) -}}{{- end -}}
-{{- end -}}
-{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $github.egressCidrs) (kindIs "slice" $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
@@ -113,14 +110,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
-{{- if or (eq $google.secretName .Values.installation.secretName) (eq $google.secretName .Values.database.secretName) (eq $google.secretName .Values.auth.secretName) (and .Values.backend.chatgpt.enabled (eq $google.secretName .Values.backend.chatgpt.secretName)) (and .Values.gatewayRouting.enabled (eq $google.secretName .Values.gatewayRouting.apiKeySecretName)) (and $github $github.enabled (eq $google.secretName $github.secretName)) -}}
-{{- fail "auth.google credentials must use a dedicated Secret" -}}
-{{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
-{{- range $name := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
-{{- if eq $google.secretName (index $.Values.repositoryCredentials $name) -}}{{- fail (printf "auth.google credentials must use a Secret distinct from repositoryCredentials.%s" $name) -}}{{- end -}}
-{{- end -}}
-{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
@@ -135,14 +124,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
 {{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
-{{- if or (eq $oidc.secretName .Values.installation.secretName) (eq $oidc.secretName .Values.database.secretName) (eq $oidc.secretName .Values.auth.secretName) (and .Values.backend.chatgpt.enabled (eq $oidc.secretName .Values.backend.chatgpt.secretName)) (and .Values.gatewayRouting.enabled (eq $oidc.secretName .Values.gatewayRouting.apiKeySecretName)) (and $github $github.enabled (eq $oidc.secretName $github.secretName)) (and $google $google.enabled (eq $oidc.secretName $google.secretName)) -}}
-{{- fail "auth.oidc credentials must use a dedicated Secret" -}}
-{{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
-{{- range $name := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
-{{- if eq $oidc.secretName (index $.Values.repositoryCredentials $name) -}}{{- fail (printf "auth.oidc credentials must use a Secret distinct from repositoryCredentials.%s" $name) -}}{{- end -}}
-{{- end -}}
-{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
 {{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
@@ -219,8 +200,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not (or (eq $authBaseHost $sharedCookieDomain) (hasSuffix (printf ".%s" $sharedCookieDomain) $authBaseHost)) -}}{{- fail "agentNativeAdmin.sharedCookieDomain must contain the auth.baseUrl host" -}}{{- end -}}
 {{- if not .Values.gatewayRouting.enabled -}}{{- fail "agentNativeAdmin.enabled requires gatewayRouting.enabled so the API can reach private Agent gateways" -}}{{- end -}}
 {{- end -}}
-{{- /* The bootstrap Job, in production, refuses plain HTTP unless the host is 127.0.0.1 or localhost. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
-{{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
+{{- /* The bootstrap Job refuses plain HTTP unless the host is 127.0.0.1, localhost, or ::1. Helm reads http://[::1] as hostname ::1. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
+{{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost" "::1"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost or ::1; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
 {{- /* The bootstrap Job trims with JavaScript trim, lowercases, then requires local@domain.tld. The rendered env keeps the value as written. */ -}}
 {{- $adminEmailTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- $adminEmail := lower (regexReplaceAll $adminEmailTrim (toString .Values.bootstrap.adminEmail) "") -}}
@@ -235,15 +216,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
 {{- end -}}
-{{- /* prepare-bootstrap-volume is_dns_subdomain: at most 253 characters, each label a DNS label of at most 63. */ -}}
+{{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
 {{- $claimName := toString .Values.bootstrap.password.claimName -}}
 {{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
 {{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
-{{- end -}}
-{{- range $label := splitList "." $claimName -}}
-{{- if gt (len $label) 63 -}}
-{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
-{{- end -}}
 {{- end -}}
 {{- if or (not .Values.bootstrap.serviceKey) (not .Values.bootstrap.serviceKey.fileName) -}}
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
@@ -259,6 +235,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* The bootstrap Job's bootstrapOutputPath requires an absolute file. A relative mount path joins into a relative OCC_BOOTSTRAP_PASSWORD_FILE. */ -}}
 {{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
 {{- fail "bootstrap.password.mountPath must be an absolute path" -}}
+{{- end -}}
+{{- /* Database routing uses numeric TCP ports in bootstrap and controller NetworkPolicies. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
+{{- fail "database.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
@@ -307,9 +287,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne (len $parts) 2) (gt (len $prefix) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $prefix)) (gt (len $name) 63) (not (regexMatch $labelName $name)) -}}
 {{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
 {{- end -}}
-{{- range $label := splitList "." $prefix -}}
-{{- if gt (len $label) 63 -}}{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}{{- end -}}
-{{- end -}}
 {{- else if or (gt (len $key) 63) (not (regexMatch $labelName $key)) -}}
 {{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
 {{- end -}}
@@ -347,12 +324,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
 {{- end -}}
-{{- if or (eq .Values.installation.secretName .Values.database.secretName) (eq .Values.installation.secretName .Values.auth.secretName) -}}
-{{- fail "installation startup configuration must use a dedicated Secret" -}}
-{{- end -}}
-{{- if eq .Values.database.secretName .Values.auth.secretName -}}
-{{- fail "Better Auth signing material must use a dedicated Secret" -}}
-{{- end -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- $execution := .Values.executionCluster -}}
 {{- if or (not $execution.apiKubeconfigSecretName) (not $execution.workerKubeconfigSecretName) (eq $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName) -}}
@@ -360,11 +331,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
 {{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
-{{- end -}}
-{{- range $name := list $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName -}}
-{{- if has $name (list $.Values.installation.secretName $.Values.database.secretName $.Values.auth.secretName $.Values.gatewayRouting.apiKeySecretName) -}}
-{{- fail "executionCluster kubeconfigs require dedicated Secrets distinct from platform credentials" -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.slackProxy.enabled -}}
@@ -426,25 +392,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if gt $utf16Units 200 -}}
 {{- fail "repositoryCredentials.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound" -}}
 {{- end -}}
-{{- $secrets := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName -}}
-{{- if .Values.backend.chatgpt.enabled -}}{{- $_ := set $secrets "chatgpt" .Values.backend.chatgpt.secretName -}}{{- end -}}
-{{- if .Values.executionCluster.enabled -}}
-{{- $_ := set $secrets "executionApi" .Values.executionCluster.apiKubeconfigSecretName -}}
-{{- $_ := set $secrets "executionWorker" .Values.executionCluster.workerKubeconfigSecretName -}}
-{{- end -}}
-{{- if .Values.gatewayRouting.enabled -}}
-{{- $_ := set $secrets "gatewayApiKey" .Values.gatewayRouting.apiKeySecretName -}}
-{{- $_ := set $secrets "gatewayTls" (include "openclaw.gatewayRouting.tlsSecretName" .) -}}
-{{- $_ := set $secrets "gatewayRoot" (include "openclaw.gatewayRouting.rootSecretName" .) -}}
-{{- if .Values.gatewayRouting.caSecretName -}}{{- $_ := set $secrets "gatewayCa" .Values.gatewayRouting.caSecretName -}}{{- end -}}
-{{- end -}}
-{{- range $name := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
-{{- $secret := index $credentials $name -}}
-{{- range $other, $value := $secrets -}}
-{{- if eq $secret $value -}}{{- fail (printf "repositoryCredentials.%s must use a dedicated Secret distinct from %s" $name $other) -}}{{- end -}}
-{{- end -}}
-{{- $_ := set $secrets $name $secret -}}
-{{- end -}}
 {{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
 {{- range $cidr := $credentials.upstreamCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" $cidr) -}}
@@ -458,8 +405,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and .Values.gatewayRouting.sandbox.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "gatewayRouting.sandbox requires gatewayRouting.enabled" -}}{{- end -}}
 {{- if .Values.gatewayRouting.enabled -}}
 {{- $routing := .Values.gatewayRouting -}}
-{{- $tlsSecretName := include "openclaw.gatewayRouting.tlsSecretName" . -}}
-{{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . -}}
 {{- if and (hasKey $routing "hostname") (not (kindIs "string" $routing.hostname)) -}}{{- fail "gatewayRouting.hostname must be a string when supplied" -}}{{- end -}}
 {{- /* The same custom hostname enters the Gateway listener and Certificate SANs. Compute validates it while loading the Installation; empty keeps automatic Service DNS derivation. */ -}}
 {{- if and $routing.hostname (or (gt (len $routing.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $routing.hostname))) -}}
@@ -485,28 +430,13 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or $routing.caSecretName $routing.caSecretKey -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey require an external issuerRef.name" -}}{{- end -}}
 {{- end -}}
 {{- if not $routing.apiKeySecretName -}}{{- fail "gatewayRouting.apiKeySecretName must reference an operator-created Opaque Secret with key 'occ'" -}}{{- end -}}
-{{- if or (eq $routing.apiKeySecretName .Values.installation.secretName) (eq $routing.apiKeySecretName .Values.database.secretName) (eq $routing.apiKeySecretName .Values.auth.secretName) -}}
-{{- fail "gatewayRouting.apiKeySecretName must use a dedicated Secret" -}}
-{{- end -}}
-{{- if eq $routing.apiKeySecretName $tlsSecretName -}}{{- fail "gatewayRouting.apiKeySecretName must differ from the Gateway TLS Secret" -}}{{- end -}}
-{{- if or (eq $tlsSecretName .Values.installation.secretName) (eq $tlsSecretName .Values.database.secretName) (eq $tlsSecretName .Values.auth.secretName) -}}
-{{- fail "gatewayRouting.tlsSecretName must differ from installation, database, and auth Secrets" -}}
-{{- end -}}
-{{- if and .Values.backend.chatgpt.enabled (eq $tlsSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.tlsSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
-{{- if or (eq $rootSecretName $tlsSecretName) (eq $rootSecretName $routing.apiKeySecretName) (eq $rootSecretName .Values.installation.secretName) (eq $rootSecretName .Values.database.secretName) (eq $rootSecretName .Values.auth.secretName) -}}
-{{- fail "generated gatewayRouting root CA Secret must differ from leaf TLS, API key, installation, database, and auth Secrets" -}}
-{{- end -}}
-{{- if and .Values.backend.chatgpt.enabled (eq $rootSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "generated gatewayRouting root CA Secret must differ from the ChatGPT Backend Secret" -}}{{- end -}}
-{{- if or $routing.caSecretName $routing.caSecretKey -}}
-{{- if or (not $routing.caSecretName) (not $routing.caSecretKey) -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey must be set together" -}}{{- end -}}
-{{- if or (eq $routing.caSecretName $tlsSecretName) (eq $routing.caSecretName $routing.apiKeySecretName) (eq $routing.caSecretName .Values.installation.secretName) (eq $routing.caSecretName .Values.database.secretName) (eq $routing.caSecretName .Values.auth.secretName) -}}
-{{- fail "gatewayRouting.caSecretName must differ from leaf TLS, API key, installation, database, and auth Secrets" -}}
-{{- end -}}
-{{- if and .Values.backend.chatgpt.enabled (eq $routing.caSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.caSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
-{{- end -}}
+{{- if and (or $routing.caSecretName $routing.caSecretKey) (or (not $routing.caSecretName) (not $routing.caSecretKey)) -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey must be set together" -}}{{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.tenantGatewayPort))) (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
 {{- fail "gatewayRouting.tenantGatewayPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
+{{- /* Compute's PLUGIN_RUNTIME_STATUS_PORT: the private status listener on every Gateway Pod. */ -}}
+{{- $runtimeStatusPort := 18791 -}}
+{{- if eq (int $routing.tenantGatewayPort) $runtimeStatusPort -}}{{- fail (printf "gatewayRouting.tenantGatewayPort cannot use the reserved runtime status port %d" $runtimeStatusPort) -}}{{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.envoyHttpsTargetPort))) (lt (int $routing.envoyHttpsTargetPort) 1) (gt (int $routing.envoyHttpsTargetPort) 65535) -}}
 {{- fail "gatewayRouting.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
@@ -518,9 +448,50 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not $routing.sandbox.tlsSecretName -}}{{- fail "gatewayRouting.sandbox.tlsSecretName must reference a wildcard certificate Secret" -}}{{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.sandbox.listenerPort))) (lt (int $routing.sandbox.listenerPort) 1024) (gt (int $routing.sandbox.listenerPort) 65535) (eq (int $routing.sandbox.listenerPort) (int $routing.envoyHttpsTargetPort)) -}}{{- fail "gatewayRouting.sandbox.listenerPort must be an integer unprivileged port distinct from private Envoy HTTPS" -}}{{- end -}}
 {{- if ge (int $routing.tenantGatewayPort) 65535 -}}{{- fail "gatewayRouting.tenantGatewayPort must leave room for the adjacent sandbox port" -}}{{- end -}}
+{{- if eq (add1 (int $routing.tenantGatewayPort)) $runtimeStatusPort -}}{{- fail (printf "gatewayRouting.tenantGatewayPort cannot be %d with the sandbox enabled: the adjacent sandbox port is the reserved runtime status port %d" (sub $runtimeStatusPort 1) $runtimeStatusPort) -}}{{- end -}}
 {{- if not $routing.sandbox.ingressPeers -}}{{- fail "gatewayRouting.sandbox.ingressPeers must explicitly select public ingress sources" -}}{{- end -}}
 {{- $cookieDomain := trimPrefix "." (lower .Values.agentNativeAdmin.sharedCookieDomain) -}}
 {{- if and $cookieDomain (or (eq $routing.sandbox.domain $cookieDomain) (hasSuffix (printf ".%s" $cookieDomain) $routing.sandbox.domain) (hasSuffix (printf ".%s" $routing.sandbox.domain) $cookieDomain)) -}}{{- fail "gatewayRouting.sandbox.domain must be outside the OCE shared session cookie domain" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. The public CA settings (marked "ca") may share one Secret with each other, such as one trust bundle: each mounts only its selected key, which holds public data (finding 1059). They stay apart from database.secretName, whose migration URL key a matching CA key would mount into the API and worker. */ -}}
+{{- $routing := .Values.gatewayRouting -}}
+{{- $roles := list -}}
+{{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
+{{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
+{{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}{{- $roles = append $roles (list "backend.chatgpt.secretName" .Values.backend.chatgpt.secretName) -}}{{- end -}}
+{{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName "ca") -}}
+{{- if $routing.enabled -}}
+{{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
+{{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
+{{- end -}}
+{{- range $provider := list "github" "google" "oidc" -}}
+{{- $signIn := index $.Values.auth $provider -}}
+{{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
+{{- end -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
+{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
+{{- $roles = append $roles (list "repositoryCredentials.publicCaSecretName" .Values.repositoryCredentials.publicCaSecretName "ca") -}}
+{{- end -}}
+{{- if .Values.logging.collector.enabled -}}
+{{- range $key := list "configSecretName" "envSecretName" -}}{{- $roles = append $roles (list (printf "logging.collector.%s" $key) (index $.Values.logging.collector $key)) -}}{{- end -}}
+{{- end -}}
+{{- $holders := dict -}}
+{{- $groups := dict -}}
+{{- range $role := $roles -}}
+{{- if index $role 1 -}}
+{{- $name := toString (index $role 1) -}}
+{{- $group := ternary (last $role) "" (eq (len $role) 3) -}}
+{{- if not (hasKey $holders $name) -}}
+{{- $_ := set $holders $name (index $role 0) -}}
+{{- $_ := set $groups $name $group -}}
+{{- else if not (and $group (eq $group (get $groups $name))) -}}
+{{- fail (printf "%s must name a dedicated Secret; %s is also %s" (index $role 0) $name (get $holders $name)) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

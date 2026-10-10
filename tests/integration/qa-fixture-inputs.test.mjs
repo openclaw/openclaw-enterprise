@@ -98,3 +98,112 @@ test(
     assert.deepEqual(await readdir(directory), ["matrix.json"]);
   },
 );
+
+test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
+  const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
+  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,calendar" });
+  assert.equal(selected.scope, "partial:selected");
+  assert.deepEqual(
+    selected.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
+    [
+      { cell: "compose/OpenClaw", scenarios: ["model-ui"] },
+      { cell: "compose/Codex", scenarios: ["model-ui", "calendar"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui"] },
+      { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
+    ],
+  );
+  assert.deepEqual(selected.cells[1].unselected, ["git-full", "git-read", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-read", "slack"]);
+  assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
+    /invalid QA scenario/,
+  );
+  assert.throws(() => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "" }), /invalid QA scenario/);
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "calendar", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
+  const calendar = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "calendar",
+    OCC_TEST_QA_INSTALLATION: "compose",
+  });
+  assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
+  assert.deepEqual(calendar.cells[0].scenarios, []);
+  const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "git-full"]);
+  assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  const full = selectQaMatrix({});
+  assert.equal(full.scope, "full");
+  assert.ok(full.repository);
+  assert.throws(
+    () =>
+      validateQaInputs(full, Object.fromEntries(full.requiredEnv.map((name) => [name, "fixture"]))),
+    /explicit authorization/,
+  );
+});
+
+test("hosted QA materializes only selected credentials and rejects missing selected inputs", async (t) => {
+  const { spawnSync } = await import("node:child_process");
+  const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
+  const directory = await mkdtemp(join(tmpdir(), "qa-hosted-inputs-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const githubEnv = join(directory, "github-env");
+  const result = spawnSync(process.execPath, [script.pathname], {
+    encoding: "utf8",
+    env: {
+      RUNNER_TEMP: directory,
+      GITHUB_ENV: githubEnv,
+      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+      OPENAI_API_KEY: "synthetic-model-key",
+      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
+      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "test.calendar.read",
+      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
+      // Even if a caller supplies unrelated credentials, do not write them.
+      SLACK_APP_TOKEN: "unselected-secret",
+      REPOSITORY_APP_KEY: "unselected-secret",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout + result.stderr, "");
+  const privateDirectory = join(directory, "qa-matrix-credentials");
+  assert.deepEqual((await readdir(privateDirectory)).sort(), ["codex", "openai"]);
+  assert.equal(
+    await protectedText(join(privateDirectory, "codex"), "Codex credential"),
+    "synthetic-codex-token",
+  );
+  const exported = await readFile(githubEnv, "utf8");
+  assert.match(exported, /OCC_TEST_QA_CODEX_TOKEN_FILE=/);
+  assert.doesNotMatch(exported, /synthetic-|unselected-secret|SLACK|REPOSITORY/);
+  await rm(privateDirectory, { recursive: true });
+  await rm(githubEnv);
+  const missing = spawnSync(process.execPath, [script.pathname], {
+    encoding: "utf8",
+    env: {
+      RUNNER_TEMP: directory,
+      GITHUB_ENV: githubEnv,
+      OCC_TEST_QA_SCENARIOS: "calendar",
+      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
+      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
+    },
+  });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /CALENDAR_TOOL_NAME is required/);
+  await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
+});
+
+test("QA command diagnostics retain the error while hiding generated and environment secrets", async () => {
+  const { qaCommandFailureDetail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("generated-private-value");
+  const output = qaCommandFailureDetail(
+    "earlier detail\n".repeat(12) +
+      "Docker service could not start: generated-private-value and process-private-value\nAuthorization: Bearer example-private-value\n",
+    { PRIVATE_INPUT: "process-private-value" },
+  );
+  assert.match(output, /Docker service could not start/);
+  assert.ok(output.split("\n").length <= 8);
+  assert.doesNotMatch(
+    output,
+    /generated-private-value|process-private-value|example-private-value/,
+  );
+});

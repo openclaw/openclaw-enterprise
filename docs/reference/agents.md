@@ -73,9 +73,10 @@ Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 - `failed`: terminal failure or completion without activation.
 
 Pending `progress.lastAttempt` contains the latest exact-work result's
-allowlisted `code`, fixed `message`, and `at`, when first recorded; repeated
-deferrals record once ([readiness codes](agents/deployment.md#pending-deployment-progress)). Null means no bound evidence, not proof work never ran. Maintenance and
-cleanup results are excluded. `progress.nextAttemptAt` is the earliest queued
+allowlisted `code`, fixed `message`, and `at`; repeated deferrals record once,
+except [refused-candidate stops](agents/deployment.md#pending-deployment-progress).
+Null means no bound evidence. Maintenance and cleanup
+results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; it is null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
@@ -92,20 +93,20 @@ own CLI fails with
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
 with a closed code and admitted `pluginId`.
 
-Polling reads persisted state without runtime, provider, or model probes.
-Terminal results survive runtime deletion and controller restart. Later
-deployments have separate records and cannot rewrite earlier results.
+Polling reads only persisted state. Terminal results survive runtime deletion
+and controller restart; later deployments cannot rewrite them.
 
 ### Current runtime diagnostics
 
 A bodyless `POST` to
 `/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
 requests fresh checks for the exact revision. It requires Agent read and operate
-plus AgentRevision read. The response has a revision ID, observation time, and
-at most 32 bounded checks. Kubernetes currently probes Slack configuration,
-authentication, and connectivity without sending. Missing Pods yield `unknown`;
-unavailable evidence yields `503`. The call changes no stored deployment state
-and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+plus AgentRevision read. It returns a revision ID, observation time, and at
+most 32 checks. Kubernetes reports held startup failures and probes Slack
+configuration, authentication, and connectivity without sending. Missing Pods
+yield `unknown`; unavailable evidence yields `503`. The call changes no stored
+state and proves no model response. On OpenShell the `agent` check is always
+`unknown`; use deployment status and [Harness logs](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs). See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
 
 ## Backend association
 
@@ -252,6 +253,9 @@ Authenticate with a session or scoped service API key. Session-authenticated
 writes must pass the [CSRF checks](authentication.md). The Agent must have an
 active revision and a reachable gateway.
 
+Embedded OpenClaw sole rosters follow the Gateway-announced default ID.
+Other rosters retain the explicit main target; dedicated deployment requires it.
+
 `PUT` accepts one `content` field:
 
 ```json
@@ -368,9 +372,9 @@ The public API has no revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
 The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
-Kubernetes Compute and dedicated Codex; other sandbox execution combinations are
-rejected. Stock OpenShell cannot provide all required workload credentials; check
-its compatibility limits before planning deployment.
+Kubernetes Compute and dedicated Codex; other combinations are rejected.
+Stock OpenShell lacks some required workload credentials; check its
+compatibility limits first.
 
 ## Failure semantics
 

@@ -32,6 +32,7 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "channel",
     "repo",
     "credential_gateway",
+    "credential_refresh",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 

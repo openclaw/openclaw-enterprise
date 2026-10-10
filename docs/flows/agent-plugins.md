@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-07
-last_updated_session: authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02
+updated: 2026-10-10
+last_updated_session: fix-987-988
 ---
 
 # Agent Plugin Deployment Flow
@@ -49,10 +49,10 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot revision"]
-  B --> C["Resolve native metadata"]
+  B --> C["Validate native metadata; grant selected plugins"]
   C --> D["Attempt selected installs"]
   D -->|install rejection or auth required| E["Disable failed selections; collect warnings"]
-  D -->|success| T["Resolve owned tools; translate policy"]
+  D -->|success| T["Resolve owned tools; translate final app policy"]
   E --> T
   T --> F["Verify native identity and effective policy"]
   F -->|invalid or unsafe| X["Keep runtime unready"]
@@ -132,7 +132,22 @@ release metadata, and configuration resolve later.
 `apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeSpecForRevision`
 
 Compute validates admitted state, Driver, and Harness. Kubernetes projects the
-nonsecret request; Docker uses bounded environment delivery.
+nonsecret request; Docker uses bounded environment delivery. For Codex, Compute
+writes the policy the Gateway runs into native `approval_policy` before startup
+validation: the configured `appServer.approvalPolicy`, with `on-failure` as
+`on-request`. Omission preserves native defaults; incompatible explicit policies
+remain subject to reviewer checks. At Agent save, provisioning and deployment, the Codex
+PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
+`on-failure`, because an omitted policy lets the Gateway pick one the startup
+check cannot see. Compute Drivers refuse `untrusted`, which the Gateway refuses
+at load, with their other gateway settings.
+
+The Kubernetes ConfigMap is immutable and per revision. A revision prepared
+by an earlier controller keeps its earlier `config.toml` (without
+`[plugins._default]` (#508), without `approval_policy` (#1995), or with
+`on-failure` as written) until the Agent is deployed again; `KubernetesComputeDriver.reconcilePluginRuntimeConfigMap` refuses any
+other difference. OpenShell dedicated Codex has no such allowance and needs a
+new deployment after that upgrade.
 
 SSH Compute rejects nonempty plugin maps and Agent default plugin approver
 policies before host effects.
@@ -160,18 +175,23 @@ recorded integrity, and the runtime source's containment in the install path.
 Failure prevents gateway readiness. Confirmed install rejection disables the
 optional selection and removes its managed tool allowance before startup.
 
-Selected Codex plugins enable apps/plugins/remote_plugin in isolated `CODEX_HOME`
-and configure the bridge with
-`codexPlugins.enabled:true`, `allow_all_plugins:false`, and an entry per selection.
-`apps._default.enabled:false` applies; disabled selections cannot execute app tools.
+Dedicated Codex bootstraps isolated `CODEX_HOME` with
+`apps._default.enabled:false` and `plugins._default.enabled:false`.
+Nonempty selections enable apps, plugins, and remote plugins. The bridge sets
+`codexPlugins.enabled:true`, `allow_all_plugins:false`, and per-selection entries;
+disabled entries cannot execute.
 
 After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to
 four selections concurrently, preserving selection order; batches drain before retries. Install
 and configuration writes stay sequential; post-install reads use the same
 batching before final policy verification.
 `codexRuntimeArtifact` uses concrete `detail.apps`, excluding `appTemplates`.
-`codexInstallPlan` validates [component support](../reference/drivers/plugin-bundled.md)
-and policy before installation. Account-wide skill restrictions remain unsupported.
+`codexInstallPlan` validates policy and [component support](../reference/drivers/plugin-bundled.md)
+before granting only the selected plugin IDs through `config/batchWrite`, keeping
+the plugin default off. The plugin grants precede `plugin/install` so native
+installation can report required authentication; app/tool grants follow later.
+Codex loads bundled skills; selected-only activation requires the compatible
+runtime described below.
 Install rejections or missing app authentication warn. Explicit tool policies
 require `mcpServerStatus/list`'s `codex_apps` inventory; `codexAppToolSettings`
 binds catalog action IDs through `_meta._codex_apps.resource_uri`. Native IDs
@@ -179,16 +199,21 @@ work. Unknown, unowned, ambiguous, or duplicate IDs fail startup.
 
 `codexRuntimeArtifact` applies the [native policy mappings](../reference/drivers/plugin-bundled.md).
 
-`writeCodexAppConfiguration` reads merged workspace settings, disables unselected apps,
-and writes inherited tool/account approvals; table replacement leaves lower-layer
-descendants. Unspecified tool enablement stays unset; native requirements
-remain enforced. `config/batchWrite` replaces local app subtrees. Readback checks
-identity/version/app mapping; failed apps are disabled and disabled selections skip
-installation/status.
+After installation, startup rechecks catalog identity, version, apps, and reported
+components before granting final app/tool policy; `plugin/read` cannot inspect bundles.
+`writeCodexPluginConfiguration` replaces the owned plugin/app tables, enabling
+successful enabled selections and disabling failed/disabled plugins. It reads
+merged workspace settings, disables unselected apps, and writes inherited
+tool/account approvals; table replacement leaves lower-layer descendants.
+Unspecified tool enablement stays unset; native requirements remain enforced.
+Failed-only apps are disabled and disabled selections skip installation/status.
 
 Workspace-aware readback rejects policy conflicts before readiness. Disabled apps may
 retain inherited fields. Categories resolve app → global → native `true`; equivalent
 values/nulls pass. Tool enablement cannot bypass categories.
+`verifyCodexPluginConfiguration` rejects explicit enablement of unselected plugins;
+approval-only or MCP-policy-only entries inherit the verified plugin default-off
+setting. Source/account-disabled plugins remain disabled.
 
 `runtime-entrypoints.ts:startAuthenticatedCodex` passes the admitted Harness model,
 without its provider prefix, to the app-server after the authentication probe
@@ -201,6 +226,13 @@ automatic-review settings, or conflicting model requirements. Startup checks do 
 cover later workspace/session/model changes or strict review. Codex 0.156 readback
 omits managed app/tool requirements applied during execution; native effective-policy
 introspection remains required. See [remaining proof](../testing/plugins.md#current-proof-notes).
+Codex owns cache integrity and health. Older binaries may ignore echoed plugin
+defaults; see [runtime prerequisites](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
+
+`runtime-entrypoints.ts:disableCodexSelectionsWithoutChatGptLogin` disables enabled
+selections and app/plugin features for API-key logins when best-effort preparation
+allows authentication warnings. API-key logins cannot install remote plugins.
+Startup verifies both default-off tables before handing off readiness.
 
 For Compute-owned Kubernetes workloads, only an admitted `{pluginId, code}`
 warning results from a selected OpenClaw install's normal nonzero exit, a
@@ -236,6 +268,14 @@ revoke access to a still-running old Harness or an established connection. For a
 changed peer, the supervisor publishes non-ready, restarts only OpenClaw and
 rechecks peer startup, Pod, successes and failures after it serves. Changed or
 unavailable peers trigger container restart.
+For writable native-admin configuration, recovery reads the bridge baseline from
+the read-only managed snapshot. A Pod-local record binds the last and pending
+generated bridges to the revision and snapshot hash before configuration writes.
+Process and same-Pod container restarts rebuild only a matching generated bridge.
+Other native edits survive; conflicting bridge edits retain the existing refusal.
+An unreadable or mismatched record holds startup unready, reporting runtime
+failure `peer-bridge-record` (`UNAVAILABLE`), and logs the remedy: replace the
+Pod, which restores the snapshot and clears this private record.
 During an outage, the supervisor reports unready. Kubernetes propagates that
 state asynchronously, so the signal alone is not a per-request traffic fence.
 If OpenClaw exits while the supervisor waits for its peer, the wrapper exits
@@ -305,6 +345,20 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
+
+- 2026-10-10 04:49: Preserve writable native configuration during Harness peer recovery and same-Pod container restarts. (codex/thirty-compute-07-oct10 - 8e5a06ce)
+
+- 2026-10-10 04:10: Check the Codex automatic reviewer policy at Agent create and update too. (fix-994-995)
+
+- 2026-10-10 04:00: Hold an unusable writable-configuration peer bridge record unready with its file and remedy named. (fix-994-995)
+
+- 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
+
+- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
+
+- 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
 
 - 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
 

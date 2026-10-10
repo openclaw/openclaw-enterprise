@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-09
-last_updated_session: authoring-run/8adc169e-fc08-40ad-823f-a80486252608
+updated: 2026-10-10
+last_updated_session: authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f
 ---
 
 # Common Operational Logging Flow
@@ -83,7 +83,9 @@ payloads, request/reply objects, and unsafe strings. This source boundary preced
 the separate Collector filter in step 7. For worker records, the Collector retains
 allowlisted `work.operation` values and bounded `work.id` shapes. Agent stop keys
 and credential withdrawal keys include the operation UUID; deletion keys have no
-operation suffix. Unsupported values and key shapes are excluded.
+operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
+lowercase hexadecimal characters, matching the work ID the API and worker share.
+Unsupported values and key shapes are excluded.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
 status, and bounded message. The worker never serializes the raw exception, and
@@ -153,7 +155,9 @@ pass through. Kubernetes performs complete validation after rendering. See the
 for the supported scope.
 
 The chart validates one exporter destination: an IPv4 `/32` or paired namespace/Pod
-selectors, with a bounded TCP port. It renders exporter egress alongside DNS/API
+selectors, with a decimal TCP port from 1 to 65535. Leading zeros fail rendering:
+Kubernetes YAML would read them as octal and grant a different port. It renders
+exporter egress alongside DNS/API
 access. Empty Collector metrics selectors grant no ingress; paired selectors admit
 port 8888. Policies are additive. The demo can export privately to Loki using
 the bundled Collector or an external Collector with its own filtering policy.
@@ -278,6 +282,10 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 05:47: Retain admitted Agent provisioning work IDs in Collector correlation metadata. (authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f - cd30d20a297fdb0f2b712122b705aa4c168564ff)
+
+- 2026-10-10 00:44: Refuse noncanonical Collector exporter ports before Kubernetes YAML can change their meaning. (authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
 - 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
 

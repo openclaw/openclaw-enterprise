@@ -691,6 +691,26 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     assert.equal(fixture.controller.pendingOperations().length, before);
   }
 
+  // Route-specific Preset defaults must still obey an explicitly smaller application limit.
+  for (const method of ["POST", "PATCH"]) {
+    const suffix = method === "PATCH" ? "/pre_00000000-0000-4000-8000-000000000001" : "";
+    const result = await request(
+      fixture.app,
+      `/namespaces/${tenantANamespaceId}/presets${suffix}`,
+      {
+        method,
+        body: {
+          name: "Bounded",
+          template: {
+            variables: { guidance: { type: "string", default: "Routine guidance. ".repeat(40) } },
+          },
+        },
+      },
+    );
+    assert.equal(result.response.status, 413);
+    assert.equal(fixture.controller.pendingOperations().length, before);
+  }
+
   assert.equal(
     fixture.auditSink.events.filter(
       (event) => event.kind === "mutation" && event.resource.kind === "namespace",

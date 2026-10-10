@@ -487,9 +487,10 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
 // Exact on-disk production dependencies isolate export resolution from registry installation.
 // Node's own ESM import is the independent oracle; the OCC path stays the real startup loader.
-test("compiled Driver export arrays activate through production startup and Configuration HTTP", async (t) => {
-  for (const [description, exports] of [
+test("compiled Driver metadata activates through production startup and Configuration HTTP", async (t) => {
+  for (const [description, exports, bom = false] of [
     ["root array", ["./compiled/index.js"]],
+    ["root manifest with a UTF-8 BOM", "./compiled/index.js", true],
     ["root subpath array", { ".": ["./compiled/index.js"] }],
     ["invalid target before URL decoding", ["./node_modules/%ZZ.js", "./compiled/index.js"]],
     ["import array", { import: ["./compiled/index.js"], require: "./compiled/index.cjs" }],
@@ -515,6 +516,11 @@ test("compiled Driver export arrays activate through production startup and Conf
   ]) {
     await t.test(description, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, exports);
+      if (bom) {
+        // A normal installed manifest from a BOM-writing editor remains valid to Node.
+        const path = join(owner, "node_modules", configurationPackage, "package.json");
+        await writeFile(path, `\uFEFF${await readFile(path, "utf8")}`);
+      }
       const native = importConfigurationPackage(owner);
       assert.equal(native.status, 0, native.stderr);
       assert.equal(native.stdout.trim(), "function");
@@ -566,10 +572,33 @@ test("compiled Driver export arrays activate through production startup and Conf
       }
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
-      await assert.rejects(
-        load(owner, configuration),
-        /package.*(?:available|compiled|JavaScript|encoding)/,
-      );
+      await assert.rejects(load(owner, configuration), (error) => {
+        assert.match(
+          error.message,
+          description === "selected CJS"
+            ? new RegExp(
+                `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/index.cjs`)} is not a \\.mjs or \\.js file\\.$`,
+              )
+            : /package.*(?:available|compiled|JavaScript|encoding)/,
+        );
+        return true;
+      });
+    });
+  }
+});
+
+// Only the first byte-order mark is an encoding prefix; later marks are not JSON whitespace.
+test("Driver manifest BOM handling preserves invalid metadata refusals", async (t) => {
+  for (const prefix of ["\uFEFF\uFEFF", " \uFEFF"]) {
+    await t.test(JSON.stringify(prefix), async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
+      const path = join(owner, "node_modules", configurationPackage, "package.json");
+      await writeFile(path, `${prefix}${await readFile(path, "utf8")}`);
+      const native = importConfigurationPackage(owner);
+      assert.notEqual(native.status, 0, native.stdout);
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configuration), /invalid installed package metadata/);
     });
   }
 });
@@ -615,6 +644,11 @@ test("Driver entry format follows the nearest package.json scope Node's import u
       assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
     });
   }
+  // The refusal names the package.json whose scope decided the entry's format.
+  const refusedFormat = (manifest) =>
+    new RegExp(
+      `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/driver.js`)} takes its format from ${escapeRegExp(`${configurationPackage}/${manifest}`)}, which does not set "type": "module"\\.$`,
+    );
   for (const [description, layout, message] of [
     [
       "nested scope without type under a module root",
@@ -626,7 +660,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
           "compiled/driver.js": commonJSDriver,
         },
       },
-      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+      refusedFormat("compiled/package.json"),
     ],
     [
       "nested CommonJS scope under a module root",
@@ -638,7 +672,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
           "compiled/driver.js": commonJSDriver,
         },
       },
-      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+      refusedFormat("compiled/package.json"),
     ],
     [
       "escaped type key in the root manifest",
@@ -647,7 +681,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
         entry: "./compiled/driver.js",
         files: { "compiled/driver.js": commonJSDriver },
       },
-      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+      refusedFormat("package.json"),
     ],
     [
       "non-string type in the nearest manifest",
@@ -677,6 +711,10 @@ test("Driver entry format follows the nearest package.json scope Node's import u
     });
   }
 });
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 async function onDiskConfigurationPackage(t, exports) {
   const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));

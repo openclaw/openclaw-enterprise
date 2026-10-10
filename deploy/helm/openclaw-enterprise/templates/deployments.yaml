@@ -159,9 +159,6 @@ spec:
         {{- if or (not $chatgpt.secretName) (not $chatgpt.key) }}
         {{- fail "backend.chatgpt requires a dedicated admin Secret name and key" }}
         {{- end }}
-        {{- if or (eq $chatgpt.secretName $.Values.installation.secretName) (eq $chatgpt.secretName $.Values.database.secretName) (eq $chatgpt.secretName $.Values.auth.secretName) }}
-        {{- fail "backend.chatgpt admin credentials must use a dedicated Secret" }}
-        {{- end }}
         - name: chatgpt-admin
           secret:
             secretName: {{ $chatgpt.secretName | quote }}

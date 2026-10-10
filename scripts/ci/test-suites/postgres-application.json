@@ -5,6 +5,7 @@
   },
   "fileConcurrency": 4,
   "parallelFiles": [
+    "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-worker-agent-revision.test.mjs",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
@@ -66,6 +67,12 @@
       "path": "tests/integration/postgres-worker-agent-revision-health.test.mjs",
       "expectedTests": [
         "worker fixture disposal preserves another database's live claim and activation"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
+      "expectedTests": [
+        "a refused candidate whose stop keeps failing shows the refusal in deployment status"
       ]
     },
     {

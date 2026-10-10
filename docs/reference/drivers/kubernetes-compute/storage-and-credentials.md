@@ -54,12 +54,11 @@ gateway replacement uses one replica with `Recreate`; node partitions and
 forced replacements still require operator fencing before permitting another
 writer.
 
-When stopping a revision, the Driver stops its Gateway first while the Harness
-finishes active work, and waits for the Gateway Pod to disappear before stopping
-the Harness. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup budget; idle Gateways should exit promptly. Forced termination can leave an owner lease until it
-expires and delay the successor; a longer grace period does not make forced
-termination a clean shutdown.
+A stop deletes the Gateway and waits for its Pod to disappear before stopping the
+Harness, which finishes active work meanwhile; a refused candidate's stop deletes
+both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
+pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination can leave an owner lease until it
+expires and delay the successor; a longer grace period does not make it a clean shutdown.
 
 Only the gateway Pod receives this claim. Its complete writable directories
 include database files and their WAL/SHM siblings:
@@ -92,6 +91,12 @@ volume root is never their runtime temp root.
 
 OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
+State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
+wrapper runs `openclaw doctor --fix --non-interactive` once, with the
+configuration read-only, when an agent database uses an older schema than the
+pinned OpenClaw; Doctor keeps a `.pre-startup-migration-<id>.bak` copy beside
+it. A database still older afterwards holds the Gateway unready with check
+`state-migration` (`RUNTIME_STARTUP_FAILED`).
 
 ## Harness storage
 
@@ -201,7 +206,11 @@ opt-in shape, including ordinary routed gateways, keep the read-only path.
 
 Native edits change only the copy; Pod replacement or Agent redeployment
 restores the managed snapshot, while the persistent gateway and workspace claims
-retain their data. Edits stay outside OCE Configuration and AgentRevisions; see
+retain their data. Pod-local provenance records revision, snapshot hash and
+generated bridges; only matches with the managed baseline are rebuilt.
+Peer recovery and same-Pod restarts retain unrelated edits; conflicting bridge
+edits remain refused. Pod replacement clears copy/provenance.
+Edits stay outside OCE Configuration and AgentRevisions; see
 the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
 and [deployment procedure](../../../guides/deploy/native-admin.md).
 
@@ -310,7 +319,7 @@ Missing or incorrectly scoped credentials fail deployment.
 Use the optional `runtime.codexSeccompProfile` only for a reviewed Codex
 compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
-states when Codex `0.160.0` needs it and which components own those boundaries.
+states when Codex `0.163.0-alpha.2` needs it and which components own those boundaries.
 
 See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
 for provider-issued credentials and supported execution modes.

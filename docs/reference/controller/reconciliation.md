@@ -92,7 +92,9 @@ Already-active recovery repeats route activation and predecessor retirement
 before that audit and finalization. Kubernetes dedicated replacement stops all
 earlier runtimes before preparing the candidate and reuses the Harness-only RWO
 claim. This interrupts serving, including the gateway; a failed candidate needs
-retry or a new revision, not automatic rollback. See the
+retry or a new revision, not automatic rollback. A candidate the worker refuses,
+for example after revoked authority, is stopped before its failure is recorded,
+so it never serves in place of the stopped active revision. See the
 [exclusive replacement contract](../drivers/compute.md#production-revision-stages).
 Pod termination does not fence independent processes during node partitions or
 manual replacement.

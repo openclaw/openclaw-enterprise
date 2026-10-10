@@ -28,6 +28,13 @@ You need:
 - Your Helm values (`helm get values`), which list the extra egress the chart
   grants the control plane.
 
+Production Helm checks label maps used in peer `matchLabels` before submission.
+Use Kubernetes label keys and values, and quote boolean-looking or numeric
+strings in values files. Empty strings remain valid. Existing null map/value
+semantics are preserved; the chart does not normalize accepted selectors or
+validate inactive maps. Raw sandbox peers keep native `matchExpressions` and
+`ipBlock` handling. These render checks do not prove traffic enforcement.
+
 The probe runs with `node`, which the OCC controller image, the OpenClaw gateway
 and the dedicated Codex Harness provide. Harness Pods that a SandboxDriver
 such as OpenShell provisions are outside this check: their provider fences

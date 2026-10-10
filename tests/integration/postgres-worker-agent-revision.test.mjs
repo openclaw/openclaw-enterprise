@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -803,6 +804,9 @@ test(
     );
 
     // A replay is a new request with its own retries; with the gateway back it revokes the source.
+    // The replay's series is due at once, so the worker stops first: a running worker could claim
+    // it before it is read here.
+    await fixture.stop();
     gateway.down = false;
     const replayed = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
@@ -811,6 +815,7 @@ test(
     assert.equal(replayed.withdrawalInProgress, true);
     const replay = await queuedWithdrawal(fixture, active);
     assert.ok(!replay.idempotencyKey.startsWith(first.idempotencyKey));
+    await startWithGateway(fixture, compute);
     await fixture.work(replay, "succeeded");
     const revoked = await read();
     assert.equal(revoked.state, "revoked");
@@ -4068,6 +4073,97 @@ test(
   },
 );
 
+test(
+  "a graceful shutdown during Compute preparation logs the interrupted pass, not errors",
+  requiresPostgres,
+  async (context) => {
+    // Finding 1040: stopping the worker aborts the pass in flight. Its claim is recovered when
+    // the lease expires, so no compute-prepare-failed or CLAIM_LOST error is logged.
+    const events = [];
+    const lines = [];
+    const logged = createWorkerLogEmitter(
+      createOccLogger({
+        component: "occ-worker",
+        level: "debug",
+        destination: {
+          write(chunk) {
+            for (const line of String(chunk).split("\n")) {
+              if (line.length > 0) {
+                lines.push(JSON.parse(line));
+              }
+            }
+            return true;
+          },
+        },
+      }),
+    );
+    const fixture = await setup(context);
+    const { candidate } = await fixture.admitInitialRevision("compute-preparation-shutdown");
+    let entered;
+    const preparing = new Promise((resolve) => {
+      entered = resolve;
+    });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, revisionContext) {
+          if (revision.id !== candidate.id) {
+            return fixture.compute.prepareRevision(revision, revisionContext);
+          }
+          const signal = currentComputeAbortSignal();
+          entered();
+          await new Promise((resolve) => {
+            signal.addEventListener("abort", resolve, { once: true });
+          });
+          throw new Error("Kubernetes request aborted by the worker");
+        },
+        describePrepareRevisionFailure() {
+          return { code: "KUBERNETES_PREPARATION_FAILED", stage: "prepare_revision" };
+        },
+      },
+      {
+        emit: (event) => {
+          events.push(event);
+          logged(event);
+        },
+      },
+    );
+    await preparing;
+    await fixture.stop();
+
+    assert.deepEqual(
+      events.filter(({ event }) => event !== "worker.health").map(({ event }) => event),
+      ["worker.started", "worker.pass-interrupted", "worker.stopped"],
+    );
+    assert.deepEqual(
+      events.find(({ event }) => event === "worker.pass-interrupted"),
+      {
+        event: "worker.pass-interrupted",
+        workId: candidate.idempotencyKey,
+        attempt: 1,
+        operation: "agent_revision.reconcile",
+        cause: "WorkerStopping",
+      },
+    );
+    assert.deepEqual(
+      lines
+        .filter(({ event }) => event !== "worker.health")
+        .map(({ event, severity }) => ({ event, severity })),
+      [
+        { event: "worker.started", severity: "INFO" },
+        { event: "worker.pass-interrupted", severity: "INFO" },
+        { event: "worker.stopped", severity: "INFO" },
+      ],
+    );
+    // The work keeps its claim until the lease expires; then another worker resumes it.
+    const work = await fixture.observerPool.query(
+      "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(work.rows, [{ state: "claimed", attempt_count: 1 }]);
+  },
+);
+
 revisionTest(
   "an overdue Agent runtime fails closed without activating its incomplete revision",
   async (fixture) => {
@@ -4867,10 +4963,17 @@ for (const pendingPasses of [0, 1]) {
       );
       const events = [];
       let activations = 0;
+      const stopped = [];
 
       await fixture.start(
         {
           ...fixture.compute,
+          // Exclusive Compute stops a refused candidate, but never the published revision.
+          requiresStoppedPredecessors: () => true,
+          async stopRevision(revision) {
+            stopped.push(revision.id);
+            return fixture.compute.stopRevision(revision);
+          },
           async activateRevision() {
             activations += 1;
             if (activations <= pendingPasses) {
@@ -4902,6 +5005,7 @@ for (const pendingPasses of [0, 1]) {
       );
       // No retry after the refusal: the first refused pass ends the deployment.
       assert.equal(activations, pendingPasses + 1);
+      assert.deepEqual(stopped, [], "the published revision keeps its workload");
       await completion(
         events,
         "the refused activation's terminal completion",
@@ -5216,6 +5320,68 @@ test(
       [candidate.id],
     );
     assert.ok(evidence.rows.some(({ code }) => code === "CONVERGENCE_DEADLINE_EXCEEDED"));
+  },
+);
+
+test(
+  "a deploy denial during repository admission leaves a first deployment's runtime untouched",
+  requiresPostgres,
+  async (context) => {
+    // On Compute that does not declare exclusive replacement, a refused candidate without an
+    // active revision is stopped only if Compute may have prepared it. Here the actor loses
+    // deploy while the first pass opens its repository session; the repository lifecycle's
+    // authority recheck, as it records the opened session, refuses it before Compute is asked to
+    // prepare, with no earlier evidence: nothing may stop it.
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("repository-denied", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const open = repository.driver.open;
+    repository.driver.open = async (input, signal) => {
+      const result = await open(input, signal);
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+         VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
+        [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
+      );
+      return result;
+    };
+    const effects = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        effects.push("prepare");
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+      async stopRevision(revision) {
+        // The failed work's repository cleanup retires the runtime afterwards. Only a stop while
+        // the deployment work is unfinished would be the refused-candidate stop.
+        const work = await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+          [candidate.idempotencyKey],
+        );
+        effects.push(`stop:${work.rows[0].state}`);
+        return fixture.compute.stopRevision(revision);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    const failure = await fixture.observerPool.query(
+      `SELECT details->>'reasonCode' AS code FROM occ.audit_events
+       WHERE resource_id = $1 AND action = 'reconcile' AND outcome = 'failure'`,
+      [candidate.id],
+    );
+    assert.deepEqual(failure.rows, [{ code: "AUTHORIZATION_DENIED" }]);
+    assert.equal(repository.calls.filter(({ operation }) => operation === "open").length, 1);
+    await waitFor("the repository cleanup to retire the runtime", async () =>
+      effects.includes("stop:failed_permanent") ? true : undefined,
+    );
+    assert.ok(
+      effects.every((effect) => effect === "stop:failed_permanent"),
+      effects.join(","),
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
   },
 );
 

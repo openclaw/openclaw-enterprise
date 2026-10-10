@@ -8,7 +8,12 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  createKubernetesComputeDriver,
+  PLUGIN_RUNTIME_STATUS_PORT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 import {
   renderProductionChart,
@@ -58,6 +63,15 @@ const agentNativeAdminValues = {
   "agentNativeAdmin.enabled": "true",
   "agentNativeAdmin.domain": "agents.example.invalid",
   "agentNativeAdmin.sharedCookieDomain": "example.invalid",
+};
+// The sandbox listener's wildcard TLS Secret, on top of gateway routing.
+const sandboxValues = {
+  ...agentNativeAdminValues,
+  "gatewayRouting.sandbox.enabled": "true",
+  "gatewayRouting.sandbox.domain": "previews.example.test",
+  "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+  "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+    "public-ingress",
 };
 const githubLoginValues = {
   "auth.github.enabled": "true",
@@ -220,14 +234,6 @@ test(
 );
 
 test("sandbox ingress uses a separate listener outside OCE cookie scope", tooling, async () => {
-  const sandboxValues = {
-    ...agentNativeAdminValues,
-    "gatewayRouting.sandbox.enabled": "true",
-    "gatewayRouting.sandbox.domain": "previews.example.test",
-    "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-    "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-      "public-ingress",
-  };
   const rendered = await resources((await render(sandboxValues)).stdout);
   const gateway = rendered.find((item) => item.kind === "Gateway");
   const listener = gateway.spec.listeners.find((item) => item.name === "sandbox");
@@ -301,6 +307,36 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     /sandbox requires gatewayRouting.enabled/,
   );
 });
+
+test(
+  "database routing refuses invalid ports before emitting NetworkPolicies",
+  tooling,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-database-port-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const valuesFile = join(directory, "ports.yaml");
+    for (const port of [5342.5, 65536, 0, -1, "05342", "postgresql", "9223372036854775808"]) {
+      await writeFile(valuesFile, `database:\n  port: ${JSON.stringify(port)}\n`);
+      await assert.rejects(
+        render({}, { valuesFiles: [valuesFile] }),
+        ({ code, stderr }) => code !== 0 && stderr.includes("database.port must be"),
+        JSON.stringify(port),
+      );
+    }
+    for (const port of [1, 5433, 65535, "5433"]) {
+      await writeFile(valuesFile, `database:\n  port: ${JSON.stringify(port)}\n`);
+      const objects = await resources((await render({}, { valuesFiles: [valuesFile] })).stdout);
+      const databaseRules = objects
+        .filter((object) => object.kind === "NetworkPolicy")
+        .flatMap((object) => object.spec.egress ?? [])
+        .filter((rule) => rule.to?.some((peer) => peer.ipBlock?.cidr === "10.45.0.12/32"));
+      assert.equal(databaseRules.length, 2, "bootstrap and controller database routing");
+      for (const rule of databaseRules) {
+        assert.deepEqual(rule.ports, [{ protocol: "TCP", port: Number(port) }]);
+      }
+    }
+  },
+);
 
 test(
   "gateway routing refuses fractional YAML ports before emitting resources",
@@ -407,6 +443,69 @@ function chartAllowsIngress(objects, destination, source, port, protocol = "TCP"
 }
 
 test(
+  "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
+  tooling,
+  async () => {
+    const sandboxValues = {
+      ...gatewayRoutingValues,
+      "gatewayRouting.sandbox.enabled": "true",
+      "gatewayRouting.sandbox.domain": "previews.example.test",
+      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "public-ingress",
+    };
+    const compute = (gatewayPort, sandbox) => {
+      const options = conformanceKubernetesOptions({
+        gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      });
+      // Routed Compute takes no direct gateway clients.
+      const { gatewayClients, ...network } = options.network;
+      return createKubernetesComputeDriver({
+        ...options,
+        network: { ...network, gatewayPort },
+        gatewayRouting: {
+          gatewayName: "oce-agent-gateways",
+          gatewayNamespace: "openclaw-system",
+          envoyNamespace: "envoy-gateway-system",
+          ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+        },
+      });
+    };
+    // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
+    // what controller startup refuses instead of installing a controller that cannot start.
+    for (const [gatewayPort, sandbox, refused] of [
+      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
+      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
+      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
+      [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
+      [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
+      [8080, true, false],
+    ]) {
+      const row = JSON.stringify({ gatewayPort, sandbox });
+      const chartValues = {
+        ...(sandbox ? sandboxValues : gatewayRoutingValues),
+        "gatewayRouting.tenantGatewayPort": String(gatewayPort),
+      };
+      if (refused) {
+        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
+        await assert.rejects(
+          render(chartValues),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes("gatewayRouting.tenantGatewayPort") &&
+            stderr.includes(`reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`),
+          row,
+        );
+      } else {
+        assert.doesNotThrow(() => compute(gatewayPort, sandbox), row);
+        await render(chartValues);
+      }
+    }
+  },
+);
+
+test(
   "two-cluster packaging separates remote API identities without optional services",
   tooling,
   async () => {
@@ -424,8 +523,34 @@ test(
     );
     await assert.rejects(
       render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
-      /dedicated Secrets/,
+      /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
+    // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
+    // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    for (const [values, secret, role] of [
+      [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
+      [githubLoginValues, "occ-github-login", "auth.github.secretName"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
+      [sandboxValues, "preview-wildcard", "gatewayRouting.sandbox.tlsSecretName"],
+    ]) {
+      for (const key of ["apiKubeconfigSecretName", "workerKubeconfigSecretName"]) {
+        await assert.rejects(
+          render({ ...execution, ...values, [`executionCluster.${key}`]: secret }),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes(
+              `executionCluster.${key} must name a dedicated Secret; ${secret} is also ${role}`,
+            ),
+          `${key} = ${secret}`,
+        );
+      }
+      // Until that feature is enabled, its Secret name is free.
+      await render({ ...execution, "executionCluster.apiKubeconfigSecretName": secret });
+      await render({ ...execution, ...values });
+    }
     const objects = await resources((await render(execution)).stdout);
     for (const component of ["api", "worker"]) {
       const pod = objects.find(
@@ -654,6 +779,19 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       environment: { OCC_CONFIG_PATH: unquotedPath },
     }),
     /drivers\.compute\.configuration does not match its Driver configuration schema at \/resources\/gateway\/limits\/cpu: must be string/,
+  );
+  // Trusted Installation startup must reject a validly spelled request that
+  // Kubernetes refuses against its smaller limit, before any cluster operation.
+  const impossible = loadYaml(example.replace("<actual-proxy-source-cidr>", "192.0.2.10/32"));
+  impossible.drivers.compute.configuration.resources.gateway.requests.cpu = "5";
+  const impossiblePath = join(directory, "request-over-limit.yaml");
+  await writeFile(impossiblePath, JSON.stringify(impossible));
+  await assert.rejects(
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: impossiblePath },
+    }),
+    /Gateway CPU request \(resources\.gateway\.requests\.cpu\) cannot exceed its limit/,
   );
   const values = loadYaml(await readFile(new URL("values.yaml", productionExamples), "utf8"));
   assert.equal(values.gatewayRouting.enabled, true);
@@ -3294,16 +3432,9 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
 test("the chart refuses bootstrap claim names the volume helper refuses", tooling, async () => {
   const message =
     /bootstrap\.password\.claimName must be a DNS subdomain of at most 253 characters/;
-  const longLabel = "a".repeat(64);
-  const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
-  for (const claimName of [
-    "Bootstrap",
-    "claim_name",
-    "claim-",
-    `.claim`,
-    longLabel,
-    `${"a".repeat(254)}`,
-  ]) {
+  // This is Kubernetes' 253-character object-name limit, not a DNS hostname limit.
+  const longest = "a".repeat(253);
+  for (const claimName of ["Bootstrap", "claim_name", "claim-", `.claim`, `${"a".repeat(254)}`]) {
     await assert.rejects(
       render({}, { strings: { "bootstrap.password.claimName": claimName } }),
       ({ code, stderr }) => code !== 0 && message.test(stderr),
@@ -3325,9 +3456,314 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
 });
 
 test(
+  "the chart refuses a gateway API key Secret that holds other credentials",
+  tooling,
+  async () => {
+    // Envoy Gateway's apiKeyAuth accepts every entry of the gateway API key Secret as a
+    // client key, so a shared Secret would make the ChatGPT admin key, a CA certificate or a
+    // TLS key a valid x-api-key.
+    for (const [values, shared, refusal] of [
+      [
+        chatgptValues,
+        { "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin" },
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-chatgpt-admin is also backend\.chatgpt\.secretName/,
+      ],
+      [
+        chatgptValues,
+        { "backend.chatgpt.secretName": "occ-gateway-api-key" },
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-gateway-api-key is also backend\.chatgpt\.secretName/,
+      ],
+      [
+        databaseCaValues,
+        { "database.caSecretName": "occ-gateway-api-key" },
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-gateway-api-key is also database\.caSecretName/,
+      ],
+      [
+        sandboxValues,
+        { "gatewayRouting.sandbox.tlsSecretName": "occ-gateway-api-key" },
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-gateway-api-key is also gatewayRouting\.sandbox\.tlsSecretName/,
+      ],
+    ]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, ...values, ...shared }),
+        ({ code, stderr }) => code !== 0 && refusal.test(stderr),
+        JSON.stringify(shared),
+      );
+      // The same values with distinct names render.
+      await render({ ...gatewayRoutingValues, ...values });
+    }
+    // Without the ChatGPT Backend the chart does not reserve that name.
+    await render({
+      ...gatewayRoutingValues,
+      "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin",
+    });
+  },
+);
+
+test(
+  "the chart refuses sign-in Secrets that share a Gateway certificate Secret",
+  tooling,
+  async () => {
+    // cert-manager writes the generated Gateway TLS and root CA Secrets and would overwrite a
+    // sign-in Secret sharing either name (finding 1046).
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    const externalCa = {
+      ...externalGatewayRoutingValues,
+      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+      "gatewayRouting.issuerRef.group": "cert-manager.io",
+      "gatewayRouting.caSecretName": "occ-private-ca",
+      "gatewayRouting.caSecretKey": "ca.crt",
+    };
+    for (const [routing, secret, role] of [
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
+    ]) {
+      await assert.rejects(
+        render({ ...routing, ...githubLoginValues, "auth.github.secretName": secret }),
+        ({ code, stderr }) =>
+          code !== 0 &&
+          stderr.includes(
+            `auth.github.secretName must name a dedicated Secret; ${secret} is also ${role}`,
+          ),
+        secret,
+      );
+      // Without gateway routing those names are free.
+      await render({ ...githubLoginValues, "auth.github.secretName": secret });
+    }
+    await render({ ...externalCa, ...githubLoginValues });
+  },
+);
+
+test(
+  "the chart refuses log collector Secrets shared with any credential Secret",
+  tooling,
+  async () => {
+    // Finding 1054: the collector's Secrets join the dedicated-Secret table, so cert-manager
+    // cannot overwrite a collector config named like a Gateway certificate Secret.
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    const externalCa = {
+      ...externalGatewayRoutingValues,
+      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+      "gatewayRouting.issuerRef.group": "cert-manager.io",
+      "gatewayRouting.caSecretName": "occ-private-ca",
+      "gatewayRouting.caSecretKey": "ca.crt",
+    };
+    for (const [feature, secret, role] of [
+      [{}, "occ-installation-startup", "installation.secretName"],
+      [{}, "occ-database", "database.secretName"],
+      [{}, "occ-auth", "auth.secretName"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
+      [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
+      [sandboxValues, "preview-wildcard", "gatewayRouting.sandbox.tlsSecretName"],
+      [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
+    ]) {
+      for (const key of ["configSecretName", "envSecretName"]) {
+        await assert.rejects(
+          render({
+            ...productionCollectorValues,
+            ...feature,
+            [`logging.collector.${key}`]: secret,
+          }),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes(
+              `logging.collector.${key} must name a dedicated Secret; ${secret} is also ${role}`,
+            ),
+          `${key} = ${secret}`,
+        );
+      }
+    }
+    await assert.rejects(
+      render({
+        ...productionCollectorValues,
+        "logging.collector.envSecretName": "occ-otel-collector-config",
+      }),
+      /logging\.collector\.envSecretName must name a dedicated Secret; occ-otel-collector-config is also logging\.collector\.configSecretName/,
+    );
+    // A disabled feature's Secret name is free, as preflight treats the ChatGPT admin Secret.
+    await render({
+      ...productionCollectorValues,
+      "logging.collector.configSecretName": "occ-chatgpt-admin",
+    });
+  },
+);
+
+test("the chart requires installation and database Secret names", tooling, async () => {
+  // Finding 1055: an empty name rendered `secretName: ""` instead of failing at template time.
+  for (const [key, message] of [
+    ["installation.secretName", "installation startup"],
+    ["database.secretName", "database URL"],
+  ]) {
+    // `null` removes the key, which must fail the same way as an empty name.
+    for (const value of ["", "null"]) {
+      await assert.rejects(
+        render({ [key]: value }),
+        ({ code, stderr }) =>
+          code !== 0 && stderr.includes(`${key} must name the operator-created ${message} Secret`),
+        `${key}=${value}`,
+      );
+    }
+  }
+});
+
+test(
+  "the chart refuses credential Secrets shared with the database CA or sandbox TLS Secret",
+  tooling,
+  async () => {
+    // Finding 1048: the dedicated-Secret rule covers every Secret an enabled feature reads.
+    const sandbox = {
+      ...gatewayRoutingValues,
+      ...Object.fromEntries(
+        Object.entries(sandboxValues).filter(([key]) => key.startsWith("gatewayRouting.sandbox.")),
+      ),
+    };
+    for (const [base, setting, secret, other] of [
+      [
+        { ...databaseCaValues, ...githubLoginValues },
+        "auth.github.secretName",
+        "occ-rds-ca",
+        "database.caSecretName",
+      ],
+      [
+        { ...databaseCaValues, ...repositoryCredentialValues },
+        "repositoryCredentials.appKeySecretName",
+        "occ-rds-ca",
+        "database.caSecretName",
+      ],
+      [databaseCaValues, "database.caSecretName", "occ-database", "database.secretName"],
+      [
+        { ...sandbox, ...githubLoginValues },
+        "auth.github.secretName",
+        "preview-wildcard",
+        "gatewayRouting.sandbox.tlsSecretName",
+      ],
+      [
+        { ...sandbox, ...repositoryCredentialValues },
+        "repositoryCredentials.tlsSecretName",
+        "preview-wildcard",
+        "gatewayRouting.sandbox.tlsSecretName",
+      ],
+      [
+        sandbox,
+        "gatewayRouting.sandbox.tlsSecretName",
+        "oce-agent-gateways-tls",
+        "gatewayRouting.tlsSecretName",
+      ],
+    ]) {
+      await assert.rejects(
+        render({ ...base, [setting]: secret }),
+        ({ code, stderr }) =>
+          code !== 0 &&
+          stderr.includes(`${setting} must name a dedicated Secret; ${secret} is also ${other}`),
+        `${setting} = ${secret}`,
+      );
+      // The same values with distinct names render.
+      await render(base);
+    }
+  },
+);
+
+test("the chart lets the public CA settings share one trust bundle Secret", tooling, async () => {
+  // Finding 1059: each CA setting mounts only its selected key of public trust data, so one
+  // trust bundle Secret may serve all of them. Private and cert-manager Secrets stay dedicated.
+  const base = {
+    ...externalGatewayRoutingValues,
+    "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+    "gatewayRouting.issuerRef.group": "cert-manager.io",
+    "gatewayRouting.caSecretName": "occ-private-ca",
+    "gatewayRouting.caSecretKey": "ca.crt",
+    ...databaseCaValues,
+    ...repositoryCredentialValues,
+  };
+  const settings = [
+    "database.caSecretName",
+    "gatewayRouting.caSecretName",
+    "repositoryCredentials.publicCaSecretName",
+  ];
+  for (const [index, first] of settings.entries()) {
+    for (const second of settings.slice(index + 1)) {
+      await render({ ...base, [first]: "occ-trust-bundle", [second]: "occ-trust-bundle" });
+    }
+  }
+  const shared = Object.fromEntries(settings.map((setting) => [setting, "occ-trust-bundle"]));
+  const objects = await resources((await render({ ...base, ...shared })).stdout);
+  const api = objects.find(
+    (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+  ).spec.template.spec;
+  assert.deepEqual(
+    api.volumes
+      .filter((volume) => volume.secret?.secretName === "occ-trust-bundle")
+      .map((volume) => [volume.name, volume.secret.items.map(({ key }) => key)])
+      .sort(),
+    [
+      ["database-ca", ["ca.pem"]],
+      ["gateway-ca", ["ca.crt"]],
+      ["repository-public-ca", ["ca.crt"]],
+    ],
+  );
+  // The bundle still may not hold a credential or a Secret cert-manager writes.
+  for (const [setting, secret, message] of [
+    ["database.caSecretName", "occ-database", "database.caSecretName / database.secretName"],
+    [
+      "repositoryCredentials.tlsSecretName",
+      "occ-trust-bundle",
+      "repositoryCredentials.tlsSecretName / database.caSecretName",
+    ],
+    [
+      "gatewayRouting.apiKeySecretName",
+      "occ-trust-bundle",
+      "gatewayRouting.apiKeySecretName / database.caSecretName",
+    ],
+    [
+      "gatewayRouting.tlsSecretName",
+      "occ-trust-bundle",
+      "database.caSecretName / gatewayRouting.tlsSecretName",
+    ],
+  ]) {
+    const [refused, holder] = message.split(" / ");
+    await assert.rejects(
+      render({ ...base, ...shared, [setting]: secret }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(`${refused} must name a dedicated Secret; ${secret} is also ${holder}`),
+      `${setting} = ${secret}`,
+    );
+  }
+  // An external issuer creates no root CA Secret, so its generated name is free.
+  const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+  await render({ ...base, ...githubLoginValues, "auth.github.secretName": gatewayRoot });
+  await assert.rejects(
+    render({
+      ...gatewayRoutingValues,
+      ...githubLoginValues,
+      "auth.github.secretName": gatewayRoot,
+    }),
+    /auth\.github\.secretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
+  );
+});
+
+test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
   async () => {
+    // Helm accepts dotted and overlong --namespace values, but Kubernetes
+    // Namespace admission requires a single DNS-1123 label of at most 63.
+    for (const namespace of ["openclaw.system", "a".repeat(64), "a".repeat(253)]) {
+      await assert.rejects(
+        render({}, { namespace }),
+        /Helm release namespace must be a DNS-1123 label of at most 63 characters/,
+      );
+    }
+    for (const namespace of ["1system", "0", "a".repeat(63)]) {
+      const objects = await resources(
+        (await render(externalGatewayRoutingValues, { namespace })).stdout,
+      );
+      const gateway = objects.find((object) => object.kind === "Gateway");
+      assert.equal(gateway.metadata.namespace, namespace);
+    }
     for (const [description, override] of [
       ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
       ["missing Better Auth secret", { "auth.secretName": "" }],
@@ -4080,6 +4516,154 @@ test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, 
   assert.doesNotMatch(rendered.stdout, /OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1\.8e\+06"/);
 });
 
+test("production peer matchLabels keep the native Kubernetes map contract", tooling, async (t) => {
+  const scrapers = {
+    "metrics.scraperNamespaceLabels.team": "observability",
+    "metrics.scraperPodLabels.app": "prometheus",
+  };
+  const exporter = {
+    ...productionCollectorValues,
+    "logging.collector.exporter.cidr": "",
+    "logging.collector.exporter.namespaceLabels.team": "logs",
+    "logging.collector.exporter.podLabels.app": "loki",
+  };
+  const collectorScrapers = {
+    ...productionCollectorValues,
+    "logging.collector.metrics.scraperNamespaceLabels.team": "observability",
+    "logging.collector.metrics.scraperPodLabels.app": "prometheus",
+  };
+  const sandbox = {
+    ...gatewayRoutingValues,
+    "gatewayRouting.sandbox.enabled": "true",
+    "gatewayRouting.sandbox.domain": "sandbox.example.test",
+    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+    "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.team": "public",
+    "gatewayRouting.sandbox.ingressPeers[0].podSelector.matchLabels.app": "edge",
+  };
+  const callers = [
+    ["api.clients[0].podLabels", {}],
+    ["dns.podLabels", {}],
+    ["gatewayRouting.envoyGatewayPodLabels", gatewayRoutingValues],
+    ["metrics.scraperNamespaceLabels", scrapers],
+    ["metrics.scraperPodLabels", scrapers],
+    ["logging.collector.exporter.namespaceLabels", exporter],
+    ["logging.collector.exporter.podLabels", exporter],
+    ["logging.collector.metrics.scraperNamespaceLabels", collectorScrapers],
+    ["logging.collector.metrics.scraperPodLabels", collectorScrapers],
+    ["gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels", sandbox],
+    ["gatewayRouting.sandbox.ingressPeers[0].podSelector.matchLabels", sandbox],
+  ];
+  for (const [field, configuration] of callers) {
+    await assert.rejects(
+      render({ ...configuration, [`${field}.probe`]: "true" }),
+      ({ stderr }) => stderr.includes(field),
+      `Must refuse the active caller's boolean label: ${field}`,
+    );
+    await render(configuration, { strings: { [`${field}.probe`]: "true" } });
+  }
+  for (const shape of ["true", "31", "{value}", "value"]) {
+    await assert.rejects(
+      render({ "api.clients[0].podLabels": shape }),
+      /api\.clients\[0\]\.podLabels/,
+    );
+  }
+  for (const value of ["false", "31", "{nested}", "kube/dns", "a".repeat(64)]) {
+    await assert.rejects(
+      render({ "api.clients[0].podLabels.probe": value }),
+      /api\.clients\[0\]\.podLabels/,
+    );
+  }
+  for (const key of ["Example.com/Name", "example.com/", "a/b/c", `${"a".repeat(254)}/Name`]) {
+    await assert.rejects(
+      render(
+        {},
+        { strings: { [`api.clients[0].podLabels.${key.replaceAll(".", "\\.")}`]: "value" } },
+      ),
+      /api\.clients\[0\]\.podLabels/,
+    );
+  }
+  for (const [key, value] of [
+    ["looksTrue", "true"],
+    ["looksFalse", "false"],
+    ["looksNumeric", "31"],
+    ["looksExponent", "1e3"],
+    ["looksNull", "null"],
+    ["empty", ""],
+    ["example.com/Name_1", ""],
+    [`${"a".repeat(253)}/Name`, "x"],
+    ["a".repeat(63), "b".repeat(63)],
+  ]) {
+    const objects = await resources(
+      (
+        await render(
+          {},
+          { strings: { [`api.clients[0].podLabels.${key.replaceAll(".", "\\.")}`]: value } },
+        )
+      ).stdout,
+    );
+    const policy = objects.find(
+      ({ metadata }) => metadata.name === "openclaw-enterprise-api-ingress",
+    );
+    assert.equal(policy.spec.ingress[0].from[0].podSelector.matchLabels[key], value);
+  }
+  await render({ "api.clients[0].podLabels.empty": "null" });
+  await render({ "metrics.scraperNamespaceLabels": "false", "metrics.scraperPodLabels": "false" });
+  const directory = await mkdtemp(join(tmpdir(), "occ-peer-labels-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "values.json");
+  const sandboxOptions = Object.fromEntries(
+    Object.entries(sandbox).filter(([key]) => !key.includes("ingressPeers")),
+  );
+  for (const shape of [null, {}]) {
+    await writeFile(
+      path,
+      JSON.stringify({
+        gatewayRouting: {
+          sandbox: {
+            ingressPeers: [
+              {
+                namespaceSelector: { matchLabels: shape },
+                podSelector: { matchLabels: { app: "edge" } },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    await render(sandboxOptions, { valuesFiles: [path] });
+  }
+});
+
+test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", tooling, async () => {
+  const field = "logging.collector.exporter.port";
+  for (const value of ["03100", "0443", "010", "00080", "0", "65536", "18446744073709551617"]) {
+    await assert.rejects(
+      render(productionCollectorValues, { strings: { [field]: value } }),
+      /logging\.collector\.exporter\.port must be an integer TCP port from 1 to 65535/,
+      `Must refuse noncanonical or out-of-range exporter port: ${value}`,
+    );
+  }
+  for (const value of ["1", "3100", "65535"]) {
+    const objects = await resources(
+      (await render(productionCollectorValues, { strings: { [field]: value } })).stdout,
+    );
+    const policy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-collector-egress",
+    );
+    assert.deepEqual(policy.spec.egress.at(-1).ports, [{ protocol: "TCP", port: Number(value) }]);
+  }
+  const numeric = await resources(
+    (await render({ ...productionCollectorValues, [field]: 3100 })).stdout,
+  );
+  assert.deepEqual(
+    numeric
+      .find(({ metadata }) => metadata.name === "openclaw-enterprise-collector-egress")
+      .spec.egress.at(-1).ports,
+    [{ protocol: "TCP", port: 3100 }],
+  );
+});
+
 test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
   const collector = {
     "logging.collector.enabled": "true",
@@ -4349,6 +4933,7 @@ test(
           "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
           "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
           "controlPlane.nodeSelector.edge": "a_b.c-d",
+          [`controlPlane.nodeSelector.${"a".repeat(253)}/pool`]: "control",
         },
       },
     );
@@ -4357,6 +4942,13 @@ test(
     // Kubernetes allows empty label values; charts before #1848 rendered them.
     assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
     assert.match(stdout, /edge: a_b\.c-d/);
+    const objects = await resources(stdout);
+    const api = objects.find(
+      (object) =>
+        object.kind === "Deployment" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "api",
+    );
+    assert.equal(api.spec.template.spec.nodeSelector[`${"a".repeat(253)}/pool`], "control");
   },
 );
 

@@ -4,6 +4,8 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -120,10 +122,61 @@ func runtimeLogLineText(at string, record runtimeLogRecord) string {
 	return visibleText(text.String())
 }
 
+// harnessCode matches the fixed codes OCC reports for a provider-owned Harness Sandbox.
+var harnessCode = regexp.MustCompile(`^[A-Z][A-Z_]{0,63}$`)
+
+// runtimeHarnessLine summarizes the provider-owned Harness Sandbox, or returns "" when
+// the description has none. Only OCC's fixed states and codes are printed.
+func runtimeHarnessLine(resource map[string]any) string {
+	harness, ok := resource["harness"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	state, _ := harness["state"].(string)
+	if !slices.Contains([]string{"running", "starting", "lost", "unknown"}, state) {
+		state = "unknown"
+	}
+	line := "Harness Sandbox: " + state
+	code, _ := harness["code"].(string)
+	if code == "HARNESS_RESTARTING" && state == "starting" {
+		// The provider restarts an exited Harness process; a first start has no code.
+		line += " (" + code
+		if exitCode, ok := harnessInteger(harness["exitCode"], math.MinInt32, math.MaxInt32); ok {
+			line += ", last exit code " + strconv.FormatInt(exitCode, 10)
+		}
+		if restarts, ok := harnessInteger(harness["restarts"], 1, math.MaxUint32); ok {
+			line += ", restart " + strconv.FormatInt(restarts, 10)
+		}
+		return line + "). The Harness process exited and OpenShell is restarting it; " +
+			"if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox)."
+	}
+	if harnessCode.MatchString(code) {
+		line += " (" + code + ")"
+	}
+	if state == "lost" {
+		line += ". OCC will not restart it; deploy the Agent again to replace it."
+	}
+	return line
+}
+
+// harnessInteger reads a JSON number that is a whole value within [minimum, maximum].
+func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < minimum || number > maximum {
+		return 0, false
+	}
+	return int64(number), true
+}
+
 func (app *application) printRuntime(description any) error {
 	resource, ok := description.(map[string]any)
 	if !ok {
 		return fmt.Errorf("OCC returned an invalid runtime description")
+	}
+	if line := runtimeHarnessLine(resource); line != "" {
+		if _, err := fmt.Fprintf(app.out, "%s\n\n", line); err != nil {
+			return err
+		}
 	}
 	pods, _ := resource["pods"].([]any)
 	rows := make([]any, 0, len(pods))

@@ -38,19 +38,19 @@ test("image lanes use separate cache scopes without exposing credentials or comp
       "process.exit(42);\n",
     { mode: 0o700 },
   );
-  for (const [lane, roles, writer] of [
+  for (const [lane, roles] of [
     // Images and Packaging builds its two images at once.
-    ["images-packaging", ["controller", "runtime"], true],
-    ["images-model-probes", ["runtime"], false],
-    ["images-runtime-startup", ["runtime"], false],
-    ["images-runtime-startup-2", ["runtime"], false],
+    ["images-packaging", ["controller", "runtime"]],
+    ["images-model-probes", ["runtime"]],
+    ["images-runtime-startup", ["runtime"]],
+    ["images-runtime-startup-2", ["runtime"]],
   ]) {
     const statePath = join(directory, `${lane}.json`);
     await rm(commandsPath, { force: true });
     const result = run(prepare, ["--lane", lane, "--state", statePath], {
       GITHUB_ACTIONS: "true",
-      // A main push, where Images and Packaging also writes; pull request runs
-      // only restore (ci-prepare.test.mjs covers each event).
+      // A main push: lanes only restore there too; main's warm job alone writes
+      // (ci-prepare.test.mjs covers each event).
       GITHUB_EVENT_NAME: "push",
       GITHUB_RUN_ID: "12345",
       GITHUB_RUN_ATTEMPT: "2",
@@ -71,10 +71,10 @@ test("image lanes use separate cache scopes without exposing credentials or comp
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    // Lanes that only restore first probe for an image the engine already
-    // holds; the failed probe falls back to the loading build.
+    // Each lane first probes for an image the engine already holds; the
+    // failed probe falls back to the loading build.
     const builds = calls.filter((args) => args.includes("--load"));
-    assert.equal(calls.length, writer ? builds.length : 2 * builds.length);
+    assert.equal(calls.length, 2 * builds.length);
     assert.deepEqual(
       builds.map((args) => (args.includes("--target") ? "controller" : "runtime")).sort(),
       roles,
@@ -86,13 +86,7 @@ test("image lanes use separate cache scopes without exposing credentials or comp
         args[args.indexOf("--cache-from") + 1],
         `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
       );
-      assert.equal(args.includes("--cache-to"), writer);
-      if (writer) {
-        assert.match(
-          args[args.indexOf("--cache-to") + 1],
-          /mode=max,ignore-error=true,timeout=60s$/,
-        );
-      }
+      assert.equal(args.includes("--cache-to"), false);
     }
     const state = await readFile(statePath, "utf8");
     assert.equal(JSON.parse(state).resources.length, roles.length);

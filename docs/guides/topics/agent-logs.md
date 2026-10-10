@@ -17,7 +17,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    When the latest deployment failed, **Deployment activity** links straight to
    that version's Logs tab.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists its recent warning Events, prefixed with their container.
+   lists its recent warning Events, prefixed with their container. Last termination
+   shows the current exit for a terminated container, otherwise its prior exit.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
@@ -187,7 +188,7 @@ A page never silently skips output; it labels each gap:
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
-line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
+line, 512 KiB per response, the newest 100 Events per Pod, 10 seconds overall. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
@@ -197,6 +198,7 @@ Kubernetes keeps only each container's current and previous instance, nothing
 from deleted Pods; for
 older output, use your [observability backend](../observability.md). While a
 container crash-loops, the previous instance can briefly read as empty.
+Initial `PodInitializing` or `ContainerCreating` can also read as empty; following resumes when the container starts.
 
 ## Sandbox source
 

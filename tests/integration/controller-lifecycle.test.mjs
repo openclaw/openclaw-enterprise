@@ -326,6 +326,21 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       }),
     DriverSelectionError,
   );
+  // Compute renders Harness-local paths under a declared Harness HOME.
+  controller.registerDriver({
+    ...createSandboxDriver({ id: "declared-home" }),
+    harnessHome: "/sandbox/home",
+  });
+  for (const harnessHome of ["sandbox/home", "/sandbox//home", "/sandbox/../home", "/", 1]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: `invalid-home-${String(harnessHome)}` }),
+          harnessHome,
+        }),
+      DriverSelectionError,
+    );
+  }
   for (const hook of ["ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>

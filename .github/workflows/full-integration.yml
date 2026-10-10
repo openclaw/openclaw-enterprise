@@ -21,6 +21,14 @@ on:
           - logging-collector
           - k3d-otel
           - all
+      qa_repository_fixture:
+        description: Repository credential fixture for the qa-matrix lane.
+        required: true
+        default: default
+        type: choice
+        options:
+          - default
+          - isolated
 
 permissions:
   contents: read
@@ -149,6 +157,10 @@ jobs:
             title: Repository Credentials Platform
             profile: k3d
             timeout: 60
+          - lane: keycloak-oidc
+            title: Keycloak OIDC
+            profile: postgres
+            timeout: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -180,12 +192,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: runtime-image-fixture
           profile: postgres
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   docker-model:
     name: Docker Model Runtime
@@ -486,7 +503,7 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform", "keycloak-oidc"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {
@@ -517,6 +534,13 @@ jobs:
     timeout-minutes: 240
     environment: integration-qa
     env:
+      # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs
+      # in checks-baseline-1 asserts the +v1.35 default.
+      OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
+      OCC_TEST_QA_INSTALLATION: all
+      OCC_TEST_QA_PRESET: all
+      OCC_TEST_QA_SCENARIOS: all
       OCC_TEST_QA_OPENAI_MODEL: ${{ vars.OCC_TEST_QA_OPENAI_MODEL }}
       OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
       OCC_TEST_QA_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
@@ -533,6 +557,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Materialize approved QA credentials
+        if: inputs.qa_repository_fixture == 'default'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
@@ -542,6 +567,21 @@ jobs:
           REPOSITORY_OBSERVER_TOKEN: ${{ secrets.REPOSITORY_OBSERVER_TOKEN }}
           REPOSITORY_REGISTRY_JSON: ${{ secrets.REPOSITORY_REGISTRY_JSON }}
           REPOSITORY_APP_KEY: ${{ secrets.REPOSITORY_APP_KEY }}
+          REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
+        run: node scripts/ci/qa-matrix-credentials.mjs
+      - name: Materialize isolated QA repository credentials
+        if: inputs.qa_repository_fixture == 'isolated'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SENDER_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
+          QA_REPOSITORY_FIXTURE: isolated
+          QA_ISOLATED_REPOSITORY_FULL_NAME: ${{ vars.QA_ISOLATED_REPOSITORY_FULL_NAME }}
+          REPOSITORY_OBSERVER_TOKEN: ${{ secrets.QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN }}
+          REPOSITORY_REGISTRY_JSON: ${{ secrets.QA_ISOLATED_REPOSITORY_REGISTRY_JSON }}
+          REPOSITORY_APP_KEY: ${{ secrets.QA_ISOLATED_REPOSITORY_APP_KEY }}
           REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
         run: node scripts/ci/qa-matrix-credentials.mjs
       - uses: ./.github/actions/run-ci-lane
