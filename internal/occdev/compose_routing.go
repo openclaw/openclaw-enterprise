@@ -62,7 +62,8 @@ func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developm
 	}
 	args := []string{"run", "--rm", "--network", "none", "--read-only", "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--security-opt", "no-new-privileges"}
 	for _, name := range []string{"gateway-api-key", "gateway-ca.crt"} {
-		args = append(args, "--mount", "type=bind,source="+filepath.Join(state.directory, name)+",target=/routing/"+name)
+		// Relabel only these files for sharing with both eventual readers.
+		args = append(args, "--volume", filepath.Join(state.directory, name)+":/routing/"+name+":rw,z")
 	}
 	args = append(args, "--entrypoint", "node", readerImage, "-e",
 		`const fs=require('fs'); for (const name of ['gateway-api-key','gateway-ca.crt']) { const path='/routing/'+name; const stat=fs.lstatSync(path); if (!stat.isFile() || (stat.mode&0o777)!==0o600) throw new Error('Routing files must be private regular files'); fs.chownSync(path, Number(process.argv[1]), Number(process.argv[2])); }`,
