@@ -40,14 +40,11 @@ is_dns_label() {
 is_dns_subdomain() {
   local LC_ALL=C
   local value=$1
-  local label
   [[ ${#value} -le 253 ]] || return 1
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$ ]] ||
     return 1
-  IFS='.' read -r -a labels <<<"$value"
-  for label in "${labels[@]}"; do
-    is_dns_label "$label" || return 1
-  done
+  # Kubernetes DNS-subdomain validation caps the whole name, not each segment.
+  # The separate label rule still limits Namespace names and unqualified labels.
 }
 
 is_label_name() {

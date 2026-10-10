@@ -114,8 +114,8 @@ func (app *application) serviceKeyCommand() *cobra.Command {
 		Short:   "Issue a key for a ServicePrincipal and write it to a new key file",
 		Example: serviceKeyCreateExample,
 		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if expiresInDays != 0 && (expiresInDays < 1 || expiresInDays > 365) {
+		RunE: func(command *cobra.Command, _ []string) error {
+			if command.Flags().Changed("expires-in-days") && (expiresInDays < 1 || expiresInDays > 365) {
 				return fmt.Errorf("--expires-in-days must be between 1 and 365")
 			}
 			// The createServiceKey body schema: 1 to 32 characters, and pattern \S.

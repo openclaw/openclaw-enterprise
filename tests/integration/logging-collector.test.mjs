@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -975,10 +975,12 @@ test(
     const agentId = `agt_${randomUUID()}`;
     const stopWorkId = `agent:${agentId}:reconcile:stopped:${randomUUID()}`;
     const deleteWorkId = `agent:${agentId}:reconcile:deleted`;
+    const provisioningWorkId = `agent-provisioning:${randomBytes(16).toString("hex")}`;
     const withdrawalWorkId = `agent_revision:rev_${randomUUID()}:reconcile:credentials_withdrawn`;
     const cases = [
       { operation: "agent.stop", workId: stopWorkId },
       { operation: "agent.delete", workId: deleteWorkId },
+      { operation: "work.reconcile", workId: provisioningWorkId },
       {
         operation: "agent_revision.credential_withdrawal",
         workId: `${withdrawalWorkId}:${randomUUID()}`,

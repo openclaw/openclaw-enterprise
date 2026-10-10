@@ -14,9 +14,12 @@ network requests still use the configured network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The selected upstream source pins Codex `0.160.0` in its package manifest and
-lockfile. Both Codex entrypoints use that same stock installation; no dependency
-version override or Codex binary patch is applied.
+The selected upstream source pins Codex `0.160.0`. A temporary
+`stock-codex-0.163.0-alpha.2-dependency-pin.patch` updates its managed version,
+package manifest, and frozen lockfile to the stock `0.163.0-alpha.2` npm release,
+which supports plugin default enablement. Both Codex entrypoints use that same
+installation; no Codex binary patch is applied. Remove the dependency patch
+when the selected OpenClaw source pins a compatible Codex release.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
@@ -52,23 +55,27 @@ access, or native model execution.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
+| Build base                                   | `docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0` |
 | OpenClaw source commit                       | `90d30a1178a79dddd92e6190b66b95d89dfb3ca8`                                                                   |
 | Source archive SHA-256                       | `c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b`                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.160.0`                                                                                                    |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.163.0-alpha.2`                                                                                            |
 | Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                    |
 
 The source's package version is `2026.9.8`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, both bridge patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+hash, bridge and dependency patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive. Its pinned
 `node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
-Python, and process utilities. Build compilers stay in the full Bookworm stages.
+Python, and process utilities. Both bases apply available Debian package updates
+during the build, including updates published after the pinned Node images.
+Build compilers stay in the full Bookworm stages.
 The repository credential client stage needs only Node and pnpm, so it builds on the
-slim base too.
+slim base too. It compiles only the client's own sources without a type check, so
+other controller changes keep it cached; the service stage builds the full,
+type-checked workspace.
 The build selects upstream required bundled plugins plus Codex and Slack before
 installing dependencies for the target architecture with lifecycle
 scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
@@ -118,7 +125,7 @@ The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version. Alternate
 `NODE_BASE_IMAGE` values must provide Node.js 24.16 or newer within the 24 series.
 The Dedicated command and bundled plugin both resolve the same
-[Codex 0.160.0](https://github.com/openai/codex/releases/tag/rust-v0.160.0) installation.
+[Codex 0.163.0-alpha.2](https://github.com/openai/codex/releases/tag/rust-v0.163.0-alpha.2) installation.
 For multi-architecture builds, the frozen npm install selects the stock
 `@openai/codex-linux-x64` or `@openai/codex-linux-arm64` package for the target
 architecture. The image rebuilds `/opt/oce/runtime/contents.json` from
@@ -130,8 +137,9 @@ The OpenClaw bridge forwards the repository-bound Agent's stock
 `allow_local_binding = true` and `mode = "full"` settings; the
 [networking contract](../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines their scope and remaining controls.
-Update the upstream source selection and compatibility assertion together when
-changing that version. Run the compatibility
+Update the dependency pin, sandbox review, and compatibility assertions together
+when changing that version. The alpha pin requires successful native AMD64 and
+ARM64 image verification before merge. Run the compatibility
 check below against the resulting image. Provider model availability still
 requires a real model turn with the selected credential.
 
@@ -207,7 +215,7 @@ The smoke starts task-owned containers with the Docker Compute Driver gateway
 entrypoint, the Kubernetes Compute Driver gateway entrypoint, and the native
 Codex command execution path, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed runtime directories. The private broker endpoint smoke requires the
-reviewed Codex 0.160.0 seccomp profile above so the nested bubblewrap sandbox can
+reviewed Codex 0.163.0-alpha.2 seccomp profile above so the nested bubblewrap sandbox can
 start without broadening to an unconfined Docker seccomp profile.
 Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
 the bundled Codex and Slack plugins load without missing package dependencies,

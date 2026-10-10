@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-10-10
+last_updated_session: authoring-run/cda14eba-9150-4d7e-9956-e276bfed4c64
 ---
 
 # Installation Driver Package Loading Flow
@@ -22,8 +22,7 @@ without startup YAML uses the defaults traced in [platform startup](platform-sta
 - Source:
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
   `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`,
-  `apps/controller/src/composition/production.ts:composeProduction`, and
-  `apps/controller/src/worker.ts:ControllerWorker.start`.
+  `apps/controller/src/composition/production.ts:composeProduction`.
 - Assumptions: An operator has installed and selected the reviewed package;
   [Install Driver packages](../reference/drivers/selection.md) owns installation,
   package formats, configuration examples, private registries, and deployment.
@@ -60,7 +59,9 @@ graph TD
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
-implementation identity comes from its installed metadata. Secret selection is
+implementation identity comes from its installed metadata. The installed root
+`package.json` accepts one leading UTF-8 byte order mark, as Node does; remaining
+text must still be a JSON object with the selected name and exact version. Secret selection is
 required in this YAML path and accepts only bundled Kubernetes Secrets.
 Optional `service_account` selection identifies the bundled Backend member;
 it has no package-loading path. The
@@ -68,7 +69,23 @@ it has no package-loading path. The
 pinning, registry, and configuration contract. TypeBox checks each selected
 Driver's closed schema before implementation-owned semantic validation;
 invalid package exports, identity, capability, or lifecycle wiring reject
-startup without fallback.
+startup without fallback. The package root export resolver follows Node's
+`import()` resolution: `"."` selects a subpath only at the top level (nested, it
+is an unmatched condition name), conditions are Node's defaults (`node`,
+`import`, `module-sync`, `node-addons`, `default`) in key order, and mixed
+subpath and condition keys or numeric keys are invalid. Invalid targets and
+unmatched conditions can select a later array entry; a matched null condition
+ends that condition branch. The selected target is resolved as a URL inside the
+package and percent-decoded; it must name an existing file exactly, with no
+extension, directory index or `main` lookup, and an encoded separator or
+directory is refused. Package containment, the compiled ESM check, and import
+must then succeed before Driver construction. The entry must be `.mjs`, or `.js`
+whose nearest `package.json` (searched from the entry's directory up to the
+package root, stopping at a `node_modules` directory, as Node's import does)
+declares `"type": "module"`. The refusal names that `package.json`, or says the
+entry is neither `.mjs` nor `.js`. Unlike Node, the check never detects ESM
+syntax in a `.js` file outside a module scope. Missing files and import failures
+do not select another target.
 
 For packageless Compute, the exact id `compute-ssh` selects `SshComputeDriver`
 with implementation `occ/ssh`. Every other packageless id retains Kubernetes
@@ -157,6 +174,16 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 11:34: Read installed Driver root manifests with Node-compatible leading UTF-8 byte order marks. (authoring-run/cda14eba-9150-4d7e-9956-e276bfed4c64 - f8a837e33b5c03bc0c92065e979485ee06960150)
+
+- 2026-10-09 17:39: Name the deciding `package.json` in the compiled ESM refusal. (fix-962-964)
+
+- 2026-10-09 16:21: Decide a `.js` Driver entry is ESM from its nearest `package.json` scope, as Node's import does, instead of the package root manifest. (fix-956)
+
+- 2026-10-09 15:42: Resolve the Driver package root export as Node's `import()` does (top-level `"."` only, default conditions, exact existing file) and restore the worker entry in Source. (fix-949-950)
+
+- 2026-10-09 22:04: Admit compiled Driver export target arrays through startup and preserve selected-file failure boundaries. (authoring-run/480d2d81-8f6a-43f5-854d-6ce9ee130ea5 - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 
 - 2026-09-01 19:09: Include Secret and Sandbox construction and the API-only Provider/ServiceAccount branch in the current loading trace. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 17:58: Updated moved feature-reference links for the documentation organization. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)

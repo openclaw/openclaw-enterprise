@@ -41,7 +41,9 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
   [binding the Installation](production-upgrade.md#bind-the-installation-once)
   if its Secret lacks the required annotation.
 - Run the [split-layout check](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-  If it reports split-layout tenants, do not upgrade: keep the existing release.
+  If it reports split-layout tenants,
+  [adopt them](split-layout-upgrade.md)
+  first or keep the existing release.
   The script's startup preflight also refuses split-layout tenants and stops
   before it scales the API and worker to zero.
 - Meet the [upgrade permissions and concurrency requirements](production-upgrade.md#prepare-the-release).
@@ -296,7 +298,8 @@ Installation records, and, for runtime upgrades, `deployments.jsonl` and
 Deployment templates and their successful rollouts. For a runtime change,
 confirm both image slots in the live Installation Secret, each running Agent's
 new active revision, and its ready gateway/Agent Pods on the selected digest.
-For controller-only, confirm existing revisions and gateways remain ready.
+For controller-only, confirm existing revisions and gateways are ready again;
+the new worker can restart their Pods once.
 Inspect the live images, rollouts, initialization Job, and OCC access:
 
 ```bash

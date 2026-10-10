@@ -165,7 +165,8 @@ repositoryCredentials:
   appKeySecretName: ""
   appKeyKey: private-key.pem
   tlsSecretName: ""
-  # Public trust only; must be separate from every private credential Secret.
+  # Public trust only. May share a Secret with database.caSecretName and
+  # gatewayRouting.caSecretName, never with a credential Secret.
   publicCaSecretName: ""
   publicCaKey: ca.crt
   upstreamCidrs: []
@@ -211,6 +212,7 @@ database:
   secretName: occ-database
   appUrlKey: application-url
   migrationUrlKey: migration-url
+  # Public CA trust; may share a Secret with the other CA settings, not secretName.
   caSecretName: ""
   caKey: ca.pem
   caMountPath: /etc/openclaw/database-ca

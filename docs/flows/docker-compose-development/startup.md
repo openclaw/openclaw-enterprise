@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-08
-last_updated_session: authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14
+updated: 2026-10-09
+last_updated_session: authoring-run/c12130ba-3173-4831-86e9-5a209d16d630
 ---
 
 # Compose development startup
@@ -43,6 +43,7 @@ graph TD
   F -- "OpenShell" --> H["<b>Own Workspace</b><br/>OpenShell operator mode"]
   E -- "OpenShell" --> H
   G --> I["<b>Record cleanup</b><br/>Exact engine and resources"]
+  G -- "Canceled" --> J["<b>Fail startup</b><br/>Clean owned resources"]
   H --> I
 ```
 
@@ -314,17 +315,17 @@ owns OpenShell Gateway placement and per-Namespace workspace resources.
 ### 14. Prove readiness and clean up the owned Kubernetes profile
 
 `internal/occdev/up.go:waitReady`, `internal/occdev/up.go:copyAndVerifyKey`,
+`internal/occdev/openshell_k3d.go:copyAndVerifyKubernetesKey`,
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`,
 `internal/occdev/state.go:readState`.
 
-After API health and worker readiness, startup copies bootstrap output to a
-private temporary file and reads the Installation with `occclient`. Its ID must
-match the bootstrap response before the final key file is written exclusively. With OpenShell, startup waits for the
-bootstrap Kubernetes Namespace and for OCC to report it ready, proving the
-Sandbox Driver created or adopted its operator-mode Workspace.
-Namespace readiness and repository discovery bind each OCC request to the
-polling deadline and caller cancellation via `occclient.Client.WithContext`.
-The original client remains available for later startup operations.
+After API and worker readiness, both bootstrap readers read private temporary
+key copies and bind the `occclient` Installation request to startup cancellation
+before exporting the key exclusively. Its ID
+must match bootstrap output. Cancellation fails verification and starts owned
+cleanup. OpenShell also waits for its bootstrap Namespace and operator-mode Workspace.
+Namespace readiness and repository discovery apply their polling deadline
+through `occclient.Client.WithContext`, preserving the original client.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
@@ -363,6 +364,8 @@ newly written external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 22:35: Bind bootstrap authorization to startup cancellation (authoring-run/c12130ba-3173-4831-86e9-5a209d16d630 - 7f358117e68076912a6062411d363e920a0e6adb)
 
 - 2026-10-08 15:23: Reconciled current Docker preflight behavior with failed exclusive-output cleanup and clarified tool and image ownership. (authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14 - 3cffa93e76aedec4b2f35d14f9824b4531640449)
 

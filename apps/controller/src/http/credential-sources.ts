@@ -90,18 +90,44 @@ export const credentialSourceHandlers = {
     mutationEvent,
   }) {
     const credentialSourceId = params.credentialSourceId as string;
+    const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+    // The gateway write cannot roll back, so a failed request after it still records a failure.
     const source = await controller.transact(async (unit) => {
-      const updated = await controller.updateCredentialSource(context.actorId, {
-        namespaceId,
-        credentialSourceId,
-        ...(body?.secrets === undefined
-          ? {}
-          : { secrets: body.secrets as Record<string, SecretReference> }),
-      });
-      await unit.audit.append(
-        mutationEvent({ kind: "credential_source", id: credentialSourceId, namespaceId }),
+      const updated = await controller.updateCredentialSource(
+        context.actorId,
+        {
+          namespaceId,
+          credentialSourceId,
+          ...(body?.secrets === undefined
+            ? {}
+            : { secrets: body.secrets as Record<string, SecretReference> }),
+        },
+        (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
       );
+      await unit.audit.append(mutationEvent(resource));
       return clientCredentialSource(updated);
+    });
+    reply.send({ data: source, meta: { requestId: request.id } });
+  },
+  async rotateCredentialSource({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const credentialSourceId = params.credentialSourceId as string;
+    const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+    const source = await controller.transact(async (unit) => {
+      const rotated = await controller.rotateCredentialSource(
+        context.actorId,
+        { namespaceId, credentialSourceId },
+        (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
+      );
+      await unit.audit.append(mutationEvent(resource));
+      return clientCredentialSource(rotated);
     });
     reply.send({ data: source, meta: { requestId: request.id } });
   },

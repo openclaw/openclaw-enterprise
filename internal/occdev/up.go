@@ -194,7 +194,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
 	clusterAttempted = true
-	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", "+v1.35")
+	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", defaultK3sChannel)
 	clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
 	resolverArgs, err := r.prepareDevelopmentResolver(state)
 	if err != nil {
@@ -514,7 +514,7 @@ func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url 
 	if err := json.Unmarshal(data, &key); err != nil || key.Meta.InstallationID == "" || strings.TrimSpace(key.Data.Key) == "" {
 		return "", nil, fmt.Errorf("bootstrap service key is missing its key or Installation ID")
 	}
-	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second})
+	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second, Context: ctx})
 	if err != nil {
 		return "", nil, err
 	}

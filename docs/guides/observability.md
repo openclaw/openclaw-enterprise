@@ -155,7 +155,8 @@ files to the exporter Secret. Update existing Secrets through your normal
 Secret-management workflow, and [refresh them on upgrade](#refresh-the-collector-configuration-on-upgrade).
 
 Set the exact approved exporter or proxy IPv4 address and port in the protected
-values copy; `203.0.113.10/32` below is a placeholder:
+values copy. Use decimal ports from 1 to 65535 without leading zeros;
+`203.0.113.10/32` below is a placeholder:
 
 ```bash
 yq -i '.logging.collector.enabled = true |
@@ -163,6 +164,9 @@ yq -i '.logging.collector.enabled = true |
   .logging.collector.exporter.port = 443' \
   "$OCC_INPUT_DIRECTORY/values.yaml"
 ```
+
+A rendered [installation profile](deploy/installation-profiles.md) sets these
+from `controlPlane.loggingCollector`; rerender instead of editing its output.
 
 Keep a digest-pinned approved Collector image. For custom Secret names, set
 `logging.collector.configSecretName` and `logging.collector.envSecretName`.

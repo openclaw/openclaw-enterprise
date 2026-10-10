@@ -99,7 +99,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		&app.namespace,
 		"namespace",
 		os.Getenv("OCC_NAMESPACE"),
-		"Namespace scope for Configuration, Secret, Preset, credential source, IAM, and Agent operations",
+		"Namespace scope for Configuration, Secret, Preset, credential source, ServiceAccount, IAM, and Agent operations",
 	)
 	flags.StringVarP(&app.output, "output", "o", "table", "Output format: table, json, or yaml")
 
@@ -112,6 +112,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.secretCommand(),
 		app.presetCommand(),
 		app.credentialSourceCommand(),
+		app.serviceAccountCommand(),
 		app.agentCommand(),
 		developmentCommand(),
 	)
@@ -602,10 +603,85 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values",
+		"JSON document with replacement secrets; omit to re-send the current Secret values (refused for oauth2-refresh-token: put a new sign-in's refresh token in a new Secret)",
 	)
 
-	command.AddCommand(create, list, get, update, deleteCommand)
+	rotate := &cobra.Command{
+		Use:   "rotate ID",
+		Short: "Force a refresh-type source to mint a new token",
+		Args:  idArgs(credentialSourceIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			source, err := client.RotateCredentialSource(namespace, args[0])
+			if err != nil {
+				return err
+			}
+			return app.printCredentialSource(source, false)
+		},
+	}
+
+	command.AddCommand(create, list, get, update, rotate, deleteCommand)
+	return command
+}
+
+func (app *application) serviceAccountCommand() *cobra.Command {
+	command := commandGroup("service-account", "Manage ServiceAccounts in the selected Namespace")
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List ServiceAccounts",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			accounts, err := client.ListServiceAccounts(namespace)
+			if err != nil {
+				return err
+			}
+			return app.printItems(accounts, true, []column{
+				{title: "ID", key: "id"},
+				{title: "NAME", key: "name"},
+			})
+		},
+	}
+
+	var force bool
+	deleteCommand := &cobra.Command{
+		Use:   "delete ID",
+		Short: "Delete an unreferenced ServiceAccount",
+		Long: "Delete an unreferenced ServiceAccount, revoking its issued access token.\n" +
+			"--force also deletes an account whose token no ChatGPT Backend can revoke, because\n" +
+			"the Backend is gone; an administrator must then revoke the token at the provider.\n" +
+			"With a ChatGPT Backend configured, --force changes nothing: the token is revoked.",
+		Args: idArgs(serviceAccountIDArg),
+		RunE: func(command *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			unrevoked, err := client.DeleteServiceAccount(namespace, args[0], force)
+			if err != nil {
+				return err
+			}
+			if unrevoked == nil {
+				return app.printDeletion("service account", args[0])
+			}
+			return app.printUnrevokedServiceAccountDeletion(command.ErrOrStderr(), args[0], unrevoked)
+		},
+	}
+	deleteCommand.Flags().BoolVar(
+		&force,
+		"force",
+		false,
+		"Delete even if no ChatGPT Backend can revoke the account's access token",
+	)
+
+	command.AddCommand(list, deleteCommand)
 	return command
 }
 
@@ -716,7 +792,7 @@ func (app *application) agentCommand() *cobra.Command {
 		Use:   "revisions AGENT_ID",
 		Short: "List an Agent's immutable revisions (deployment IDs)",
 		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
@@ -725,7 +801,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, namespace, args[0], result)
+			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], result)
 			if err != nil {
 				return err
 			}
@@ -822,7 +898,7 @@ func (app *application) agentCommand() *cobra.Command {
 // revision: whether it is the Agent's active revision and the status of the
 // deployment that created it. A revision whose deployment status the caller may
 // not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, namespace, agentID string, value any) ([]any, error) {
+func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, value any) ([]any, error) {
 	revisions, ok := value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("OCC returned an invalid resource collection")
@@ -833,6 +909,10 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 	}
 	resource, _ := agent.(map[string]any)
 	activeID, _ := resource["activeRevisionId"].(string)
+	agentReadError, agentUnreadable := resource["configurationReadError"].(map[string]any)
+	if agentUnreadable {
+		noticef(notices, "notice: Agent saved configuration is unreadable (%s); deployment status is unavailable in revision history", displayValue(agentReadError["field"]))
+	}
 	rows := make([]any, 0, len(revisions))
 	for _, item := range revisions {
 		revision, ok := item.(map[string]any)
@@ -843,7 +923,7 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
 		row["deploymentStatus"] = nil
-		if id != "" {
+		if id != "" && !agentUnreadable && row["configurationReadError"] == nil {
 			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
 			var apiErr *occclient.APIError
 			switch {

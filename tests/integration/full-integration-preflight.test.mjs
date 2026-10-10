@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   assertSourceRef,
   requiredEnvironmentsForLane,
@@ -46,6 +47,165 @@ test("full integration workflow carries QA job outcomes into targeted aggregatio
       );
     }
   }
+});
+
+test("qa-matrix repository fixture dispatch keeps default and isolated credentials separate", async () => {
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    workflow,
+    /qa_repository_fixture:[\s\S]*?default: default[\s\S]*?options:[\s\S]*?- default[\s\S]*?- isolated/,
+  );
+
+  const defaultStep = workflow.match(
+    /- name: Materialize approved QA credentials\n([\s\S]*?)\n\s+- name: Materialize isolated QA repository credentials/,
+  )?.[1];
+  assert.ok(defaultStep, "default QA credential materialization step is missing");
+  assert.match(defaultStep, /if: inputs\.qa_repository_fixture == 'default'/);
+  assert.match(
+    defaultStep,
+    /REPOSITORY_OBSERVER_TOKEN: \$\{\{ secrets\.REPOSITORY_OBSERVER_TOKEN \}\}/,
+  );
+  assert.match(
+    defaultStep,
+    /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.REPOSITORY_REGISTRY_JSON \}\}/,
+  );
+  assert.match(defaultStep, /REPOSITORY_APP_KEY: \$\{\{ secrets\.REPOSITORY_APP_KEY \}\}/);
+
+  const isolatedStep = workflow.match(
+    /- name: Materialize isolated QA repository credentials\n([\s\S]*?)\n\s+- uses: \.\/\.github\/actions\/run-ci-lane/,
+  )?.[1];
+  assert.ok(isolatedStep, "isolated QA repository materialization step is missing");
+  assert.match(isolatedStep, /if: inputs\.qa_repository_fixture == 'isolated'/);
+  assert.match(isolatedStep, /QA_REPOSITORY_FIXTURE: isolated/);
+  assert.match(
+    isolatedStep,
+    /QA_ISOLATED_REPOSITORY_FULL_NAME: \$\{\{ vars\.QA_ISOLATED_REPOSITORY_FULL_NAME \}\}/,
+  );
+  assert.match(
+    isolatedStep,
+    /REPOSITORY_OBSERVER_TOKEN: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN \}\}/,
+  );
+  assert.match(
+    isolatedStep,
+    /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_REGISTRY_JSON \}\}/,
+  );
+  assert.match(
+    isolatedStep,
+    /REPOSITORY_APP_KEY: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_APP_KEY \}\}/,
+  );
+  assert.doesNotMatch(isolatedStep, /secrets\.REPOSITORY_(?:OBSERVER_TOKEN|REGISTRY_JSON|APP_KEY)/);
+  assert.equal(
+    (defaultStep.match(/run: node scripts\/ci\/qa-matrix-credentials\.mjs/g) ?? []).length,
+    1,
+  );
+  assert.equal(
+    (isolatedStep.match(/run: node scripts\/ci\/qa-matrix-credentials\.mjs/g) ?? []).length,
+    1,
+  );
+});
+
+const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+
+function qaRegistry(repositories) {
+  return JSON.stringify({
+    version: 1,
+    backendId: "github",
+    providerInstanceId: "github-fixture-instance",
+    appId: "123",
+    githubInstallationId: "456",
+    maximumDurationSeconds: 3600,
+    repositories: repositories.map((repository, index) => ({
+      repositoryRef: `repo-${index}`,
+      repositoryId: String(index + 1),
+      repository,
+      namespaces: [{ namespaceId: "ns_test", profiles: ["git-read", "git-full"] }],
+    })),
+  });
+}
+
+async function runQaCredentialMaterializer(t, overrides = {}) {
+  const directory = await mkdtemp(join(tmpdir(), "qa-credentials-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const githubEnv = join(directory, "github-env");
+  const env = {
+    RUNNER_TEMP: directory,
+    GITHUB_ENV: githubEnv,
+    GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+    OPENAI_API_KEY: "synthetic-openai-key",
+    CODEX_ACCESS_TOKEN: "synthetic-codex-token",
+    SLACK_APP_TOKEN: "synthetic-slack-app-token",
+    SLACK_BOT_TOKEN: "synthetic-slack-bot-token",
+    SLACK_SENDER_TOKEN: "synthetic-slack-sender-token",
+    OCC_TEST_QA_SLACK_CHANNEL_ID: "C0123456789",
+    OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "calendar.list",
+    OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "Synthetic calendar result",
+    OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
+    REPOSITORY_OBSERVER_TOKEN: "synthetic-observer-token",
+    REPOSITORY_REGISTRY_JSON: qaRegistry(["openclaw/openclaw-enterprise"]),
+    REPOSITORY_APP_KEY: "synthetic-private-key",
+    REPOSITORY_UPSTREAM_CIDRS_JSON: "[]",
+    ...overrides,
+  };
+  const result = spawnSync(globalThis.process.execPath, ["scripts/ci/qa-matrix-credentials.mjs"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env,
+  });
+  return { ...result, directory, githubEnv };
+}
+
+test("QA credential materializer preserves the default repository fixture", async (t) => {
+  const result = await runQaCredentialMaterializer(t);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(await readFile(result.githubEnv, "utf8"), /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
+});
+
+test("QA credential materializer validates isolated repository fixture target", async (t) => {
+  const target = "fixture-owner/fixture-repo";
+  const success = await runQaCredentialMaterializer(t, {
+    QA_REPOSITORY_FIXTURE: "isolated",
+    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
+  });
+  assert.equal(success.status, 0, success.stderr);
+  assert.match(
+    await readFile(success.githubEnv, "utf8"),
+    /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/,
+  );
+
+  const missingTarget = await runQaCredentialMaterializer(t, {
+    QA_REPOSITORY_FIXTURE: "isolated",
+    REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
+  });
+  assert.notEqual(missingTarget.status, 0);
+  assert.match(missingTarget.stderr, /QA_ISOLATED_REPOSITORY_FULL_NAME is required/);
+
+  const wrongTarget = await runQaCredentialMaterializer(t, {
+    QA_REPOSITORY_FIXTURE: "isolated",
+    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    REPOSITORY_REGISTRY_JSON: qaRegistry(["fixture-owner/other-repo"]),
+  });
+  assert.notEqual(wrongTarget.status, 0);
+  assert.match(wrongTarget.stderr, /must match QA_ISOLATED_REPOSITORY_FULL_NAME/);
+
+  const multipleRepositories = await runQaCredentialMaterializer(t, {
+    QA_REPOSITORY_FIXTURE: "isolated",
+    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    REPOSITORY_REGISTRY_JSON: qaRegistry([target, "fixture-owner/other-repo"]),
+  });
+  assert.notEqual(multipleRepositories.status, 0);
+  assert.match(multipleRepositories.stderr, /exactly one repository/);
+
+  const workflowRepository = await runQaCredentialMaterializer(t, {
+    QA_REPOSITORY_FIXTURE: "isolated",
+    QA_ISOLATED_REPOSITORY_FULL_NAME: "openclaw/openclaw-enterprise",
+    REPOSITORY_REGISTRY_JSON: qaRegistry(["openclaw/openclaw-enterprise"]),
+  });
+  assert.notEqual(workflowRepository.status, 0);
+  assert.match(workflowRepository.stderr, /must not target this workflow repository/);
 });
 
 function providerEnvironment(patch = {}) {

@@ -60,8 +60,10 @@ must retain the selected provider. Additional catalog models need an
 explicit matching Harness runtime; fallbacks must resolve through the same
 policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
-reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-`agents.list` is unsupported; Kubernetes refuses rosters OpenClaw rejects. Admission
+reference or the ID after its first slash, and IDs may contain slashes.
+Configuration save and Kubernetes deployment refuse a nonempty `agents.list` and
+the other rosters OpenClaw rejects ([Configuration](configuration.md#create-read-update-and-delete));
+dedicated execution's `main` Agent rules apply only at deployment. Admission
 preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 
@@ -172,8 +174,8 @@ and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
 [code](drivers/compute.md#startup-failure-evidence); after a timeout, redeploy.
 
 Gateway and Harness startup wrappers also emit one `runtime.startup_phase` log
-per phase (login, model probe, peer plugin status, plugin install, workspace
-setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
+per phase (login, model probe, peer plugin status, plugin install, state
+migration, workspace setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
 duration, and time since wrapper start. A gateway also logs
 `peer-status-changed` when its Harness is replaced, then `gateway-respawn` once
 the OpenClaw process it restarts in place serves again. These

@@ -131,10 +131,12 @@ it cannot replace the chart's generated CA bundle in automatic mode.
 Root and leaf certificate outputs must use different Secrets, separate from
 Installation, database, auth, provider, and service-key Secrets. An external
 CA trust bundle must also remain separate from those credentials and the leaf
-TLS Secret.
+TLS Secret; it may share a Secret with the database and repository CA settings.
 
 For custom DNS, set the same `gatewayRouting.hostname` in Helm and Compute and
-make it resolve to the Envoy Service. The selected issuer must be able to issue
+make it resolve to the Envoy Service. Use a lowercase DNS hostname without a port
+or path, at most 253 characters with labels at most 63; both inputs refuse other
+spellings before startup. The selected issuer must be able to issue
 for that name. A custom hostname can use either the automatic CA or an existing
 issuer; it does not change CA ownership.
 
@@ -342,7 +344,8 @@ Automatic setup does not coordinate CA rollover: preserve the CA Secret, plan
 backups, and control trust changes. For a CA key replacement, distribute an
 overlapping old/new public trust bundle and restart the API to load it before
 switching Envoy's certificate. Remove the old root only after no serving
-certificate depends on it. Any private root bundle change requires an API
+certificate depends on it, including after a move to an external issuer, which
+leaves the generated root Secret behind. Any private root bundle change requires an API
 restart because Node reads `NODE_EXTRA_CA_CERTS` only at process startup. This
 integration uses API-key authentication over WSS; the pinned native client does
 not expose mTLS client-certificate options.

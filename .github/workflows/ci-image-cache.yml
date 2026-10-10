@@ -1,8 +1,9 @@
 name: CI Image Cache
 
 # Writes main's BuildKit cache for the controller and runtime images that the CI
-# image lanes restore. A merge cancels main's CI run, often before Images and
-# Packaging exports; this run is never cancelled, so main's cache catches up.
+# image lanes restore; it is the only writer. This run starts on every image
+# input change and is never cancelled once started, and runs queue in push
+# order, so the newest commit's export lands last.
 # GitHub scopes cache writes to the run's ref: pull_request runs read main's
 # entries but write only their own merge ref.
 on:

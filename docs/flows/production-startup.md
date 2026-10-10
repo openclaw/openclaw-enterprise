@@ -1,22 +1,19 @@
 ---
 created: 2026-08-25
-updated: "2026-10-09"
-last_updated_session: "authoring-run/b1433176-2fef-435b-bc30-c52bc7fa09e4"
+updated: "2026-10-10"
+last_updated_session: "authoring-run/pr1903-peerlabels-sync"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-The operator prepares a fresh protected bootstrap PVC, installs Helm with
-approved images, PostgreSQL/authentication credentials, trusted Installation
-YAML and network policy inputs, waits for private API and worker readiness, then
-authenticates `/installation` with the retrieved service key. Tenant Agent
-deployment and model-backed TUI proof follow separately.
+Prepare a fresh protected bootstrap PVC; install Helm with approved images,
+PostgreSQL/authentication credentials, trusted Installation YAML and network
+policies. Wait for private API/worker readiness, then authenticate `/installation`
+with the retrieved service key. Tenant deployment/model-backed TUI proof remains separate.
 
-Use the [deployment guide](../guides/deploy.md) for operator commands. The chart
-orders migration/bootstrap and controller readiness. Operators provision
-infrastructure, publish images, create TLS, retrieve keys and prepare Secrets.
+Commands: [deployment guide](../guides/deploy.md).
 
 ## Entry Points
 
@@ -78,19 +75,17 @@ process keeps running and the next query opens a new connection.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-The operator copies and edits the production example values, Installation YAML,
-and bootstrap PVC manifest outside the checkout. Helm values select the
-controller image, API endpoint, Secret names, bootstrap claim, API-client
-selectors, control-plane node selector, and egress destinations. The
-Installation YAML selects IAM, Configuration, Compute, optional Backend,
-gateway/Agent images, projected workload identity, and runtime
-networking/storage.
+Outside the checkout, the operator prepares production values, Installation
+YAML and bootstrap PVC. Helm selects controller images, API endpoint, Secrets,
+claim, client/node selectors and egress. `openclaw.validate` requires a DNS-1123
+release Namespace label of at most 63 characters. Installation YAML selects IAM,
+Configuration, Compute, optional Backends, gateway/Agent images, projected
+workload identity and runtime networking/storage.
 
-The operator creates file-backed Kubernetes Secrets for Installation startup,
-database URLs, optional database CA bundles, Better Auth signing material, and
-optional ChatGPT Backend administrator credentials. These are prepared inputs,
-not recurring synchronization targets. The chart does not infer gateway/Agent
-images from Helm values or rewrite Driver configuration.
+File-backed Kubernetes Secrets supply Installation startup, database URLs/optional
+CA, Better Auth signing, and optional ChatGPT administrator credentials. These
+prepared inputs are not synchronization targets. Helm neither rewrites Driver
+configuration nor infers gateway/Agent images.
 
 ### 2. Prepare the fresh bootstrap volume
 
@@ -104,55 +99,55 @@ before WaitForFirstConsumer binding. The helper requires a fresh
 root except for filesystem-owned `lost+found`, sets UID/GID `1000` with mode
 `0700`, and refuses other entries.
 
-If cluster policy forbids the helper Pod, storage administration owns the same
-state transition through an approved storage workflow. A preprepared claim goes
-directly to Helm. The helper does not create the PVC, repair a used claim,
-retrieve generated credentials, or change controller configuration.
+If policy forbids this Pod, storage administration prepares the claim through an
+approved workflow, then hands it to Helm. The helper neither creates PVCs nor
+repairs used claims, retrieves credentials, or changes controller configuration.
 
 ### 3. Run Helm initialization
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
-installs initialization isolation before the Job starts. Its scoped DNS grant
-and the later dependency, collector, Slack proxy, and Envoy policies allow
-UDP/TCP ports `53` and `5353` to the configured DNS peer; see the
-[Helm DNS contract](../reference/settings/production.md#required-production-controller-environment).
+installs initialization isolation before the Job. It and later workload policies
+grant configured DNS peers UDP/TCP `53` and `5353`
+([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:471` refuses fractional
-routing ports before Kubernetes submission. Sprig `int` truncates YAML numbers
-while the templates emit fractions.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` refuses
+fractional routing ports and custom hostnames Compute rejects. `database.port`
+must be decimal 1–65535 without leading zeros. Empty hostnames retain Service DNS
+for Gateway listeners and Certificate SANs.
+`deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
+refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 
-The Helm initialization hook preserves the full release name and shortens its
-suffix to Kubernetes' 63-character limit. Both containers mount
-`database.caSecretName` read-only when configured. Migration uses the migrator
-credential; bootstrap uses the lower-privilege application credential, Better Auth
-settings, administrator email, Installation name, and protected output paths.
+The initialization hook retains the full release name and limits its suffix to
+63 characters. Both containers mount `database.caSecretName` read-only when
+configured. Migration uses the migrator credential; bootstrap uses the
+lower-privilege application credential, Better Auth settings, administrator
+email, Installation name and protected output paths.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-The migration command verifies the complete SQL source manifest, checks the
+Migration verifies the complete SQL source manifest, checks the
 dedicated role and canonical receipt/catalog state, and holds one advisory lock
-on the connection used by Drizzle's normal transaction. It accepts a fresh
-database, canonical history through migration 0023, or the completed history
+on the connection used by Drizzle's normal transaction. It accepts fresh
+databases, canonical history through migration 0023, or the completed history
 through 0025. Unsupported or mixed development histories fail before migration
-DDL, preventing bootstrap from running. The same preflight serves development
-and production; see [migration history and recovery](../reference/settings/operations.md#migration-history)
+DDL, preventing bootstrap from running. Development and production share this preflight; see [migration history and recovery](../reference/settings/operations.md#migration-history)
 for the read-only check and developer-selected recreation procedure.
 
-`scripts/bootstrap-installation.mjs` creates or verifies the singleton
-Installation, human administrator, service administrator, IAM seed, audit
-evidence, and initial service key. On fresh bootstrap, it creates the initial
-`default` Namespace through `OpenClawController.createNamespace`, authorized
-as the bootstrap Principal. The Namespace and its queued reconciliation commit
-with Installation/IAM state and bootstrap audit; existing Installations receive
-no new Namespace. The worker later provisions normal Driver-owned infrastructure;
-operators still provide the tenant RoleBindings described in the deployment
-guide. The platform name does not select Kubernetes' `default` namespace.
-It writes password and service-key files only
-from the bootstrap container to the protected PVC. Existing output, unsafe
-storage permissions, inconsistent accounts, or mismatched IAM identity fail the
-Job; Helm failure does not imply the database hook was rolled back.
+`scripts/bootstrap-installation.mjs:authBaseURL` checks an HTTP(S) origin before
+database access. Production requires HTTPS except for HTTP loopback verification
+(`127.0.0.1`, `localhost`, `[::1]`).
+
+`scripts/bootstrap-installation.mjs` creates or verifies Installation,
+human/service administrators, IAM seed, audit evidence, and initial service key.
+Fresh bootstrap creates `default` through `OpenClawController.createNamespace`,
+authorized as the bootstrap Principal. Its queued reconciliation commits
+with Installation/IAM state and audit. Existing Installations add no Namespace;
+this name does not select Kubernetes' `default` namespace. The worker provisions
+Driver-owned infrastructure; operators provide the guide's tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
+Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
+the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
 
@@ -160,13 +155,12 @@ Job; Helm failure does not imply the database hook was rolled back.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-After successful initialization, Kubernetes starts separate API and worker
-Deployments. The API validates production listener settings, Better Auth,
-database access, trusted Installation YAML, selected Drivers, Backend
-membership, and Kubernetes Compute preflight before readiness. It serves private
-controller routes, `/healthz`, and database-backed `/readyz` behind the
-operator-managed endpoint. A `/healthz` startup probe (1-second period, 120
-failures) gives the API 2 minutes to listen and lets readiness start within a
+After initialization, separate API/worker Deployments start. Before readiness,
+the API validates production listener settings, Better Auth, database access,
+trusted Installation YAML, selected Drivers, Backend membership and Kubernetes
+Compute preflight. Private controller routes, `/healthz` and database-backed
+`/readyz` use the operator-managed endpoint. The `/healthz` startup probe runs
+every second for 120 failures: 2 minutes to listen, with readiness within a
 second of listening.
 
 `apps/controller/src/index.ts:createFastifyApp`
@@ -181,18 +175,18 @@ no `preStop` hook, since no peer takes its traffic; a request still running afte
 failed close logs `shutdown.failed` and exits `1`. A log ending at
 `shutdown.started` means the grace period cut the drain off.
 
-When `controlPlane.nodeSelector` is non-empty, the chart places the API and
-worker Pods with that selector. The same selector applies to the initialization
-Job (migration and bootstrap), so all four stay on a reviewed control-plane node
-pool.
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
-that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
-so the credential-checking private proxy stays on the trusted pool.
-Empty chart defaults omit the field for clusters that do
-not label a dedicated control-plane pool. When `database.caSecretName` is set,
-API and worker also mount the CA Secret read-only at `database.caMountPath`.
-Tenant gateway and Agent placement remain in the selected Compute Driver
-configuration.
+Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
+on reviewed control-plane nodes; empty defaults omit it.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
+to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
+proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
+
+`database.caSecretName` selects read-only CA mounts at `database.caMountPath`
+for all four database clients.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` rejects equality with
+another active client mount, including bootstrap output. Disabled optional
+features reserve no paths; disabling the CA leaves its path unused. Kubernetes
+requires unique mount paths within each container.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -224,10 +218,10 @@ minimum versions in its message and continues. An invalid version response,
 unreachable API, or failed Namespace access still fails preflight.
 
 The worker independently validates production settings, opens the same
-application-role database, loads the selected Drivers, validates IAM, runs
-Compute preflight (with the same advisory warning), emits `worker.started`, and
-polls durable Namespace and AgentRevision work. Worker readiness depends on fresh queue-health observations. Neither
-process mounts the bootstrap PVC.
+application-role database, loads selected Drivers, validates IAM, runs Compute
+preflight with the same advisory warning, emits `worker.started`, and polls
+durable Namespace/AgentRevision work. Readiness requires fresh queue-health
+observations; neither process mounts the bootstrap PVC.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
 
@@ -264,14 +258,13 @@ approved reader path and stores it in an owner-readable file. A completed Job is
 not an exec endpoint, and the API and worker cannot retrieve this file for the
 operator.
 
-From an approved client environment, `occ installation get` uses the protected
-key file through the OCC client and displays the Installation. The production
-startup proof succeeds only when its `ID` matches the key response's
-`meta.installationId`. The operator records that ID in the
-`openclaw.dev/installation-id` annotation on the Installation startup Secret;
-coordinated upgrades use the marker to bind their OCC endpoint to the selected
-Kubernetes Installation. Agent runtime, gateway WebSocket authentication, and
-model calls remain unproven until the tenant deployment and TUI procedures run.
+From an approved client, `occ installation get` reads the protected key file
+and displays the Installation. Startup proof requires its `ID` to match the key
+response's `meta.installationId`. The operator records that ID in the Installation
+startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
+use this marker to bind their OCC endpoint to the selected Installation.
+Agent runtime, Gateway WebSocket authentication and model calls remain unproven
+until tenant deployment/TUI procedures run.
 
 ## Debugging and Verification
 
@@ -324,11 +317,26 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 
 ## Changelog
 
+- 2026-10-10 08:22: Retain Namespace and bootstrap guidance with peer-map validation. (authoring-run/3cecc2d2-5f5c-4ce3-9901-928542c3d370 - ac237c12f504fd8f49a5e66c05a8d3865b13444e)
+
+- 2026-10-10 07:58: Preserve landed Namespace admission alongside database ports. (authoring-run/cf8f1d6f-c7a3-4864-8ece-9fc5834ac8b5 - c425fbb8a24df83efdfb1615cfb26a609f0749ca)
+
+- 2026-10-10 07:41: Merge hostname/database-CA guidance and bounded database ports. (authoring-run/714d166d-82e8-4e99-a0ae-a49c8ee235c7 - 3bfadece19cdbea1a23574549265953f9d0e54fc)
+- 2026-10-09 22:28: Refuse invalid database ports before rendering NetworkPolicies. (authoring-run/4363ed9a-5724-4d4f-a14d-f1bc0485443e - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
+
+- 2026-10-10 02:11: Validate active production peer matchLabels before submission, preserving accepted values. (authoring-run/e1243091-f075-4ff3-b6e2-0ee47714a472 - dd8bbacc9b974b77f416d48f6783e3e113faa2f9)
+
+- 2026-10-09 23:51: Refuse custom Gateway hostnames Compute rejects during production configuration loading. (authoring-run/0d8da3d8-474a-4801-9887-230406a6b7bd - 5b9dd76c497c1b552a2651ee4b984978cdef0a93)
+
+- 2026-10-09 22:22: Validate release Namespace labels before Helm rendering. (authoring-run/25ae11d6-4539-4513-9b2a-24d10996f971 - 7f358117e68076912a6062411d363e920a0e6adb)
+
+- 2026-10-09 22:25: Refuse database CA paths that duplicate active database-client mounts before Kubernetes admission. (codex/01a12074-7896-7f63-99fe-9f42e9041d02 - 7f358117e)
+
 - 2026-10-09 21:04: Refuse fractional routing ports before Helm emits Kubernetes resources. (authoring-run/b1433176-2fef-435b-bc30-c52bc7fa09e4 - 78677c21f)
 
+- 2026-10-06 16:25: Admit IPv6 HTTP loopback origins through the existing production bootstrap verification exception. (authoring-run/f8a921de-7cd3-48d1-8355-98e3a6d05d02 - 3395f6f8e71757319b566f369fe0ad2853051bc5)
 - 2026-10-05 12:10: Bound initialization hook names for valid long Helm releases. (authoring-run/54e33467-f3d2-4f4e-afad-952157ec12f0 - 4cda6515736280ca39f0fbe92cff78194b2c3638)
 - 2026-10-05 06:59: Preserve bootstrap Pod namespace strings. (01a0f9e4-a0bf-76f1-acdb-e6b55ada490a - 66a4a07028fd0a08c29ea80e8f95cadc48a74932)
-
 - 2026-10-05: Name Preset file failures `PRESET_FILE_INVALID`.
 - 2026-10-04: Poll the startup probe every second.
 - 2026-10-04: Time API startup phases in `listening`.

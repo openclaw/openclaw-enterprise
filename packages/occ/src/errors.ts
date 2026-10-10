@@ -835,13 +835,13 @@ const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
   deploy:
     "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   delete:
-    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
 });
 
 /**
  * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
  * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
- * issued access token cannot be deleted, since nothing can revoke the token. An Installation
+ * issued access token cannot be deleted unless forced, since nothing can revoke the token. An Installation
  * property, raised only after the caller's grant and the account lookup, so it reveals nothing
  * a 403 or 404 hides. The fixed message names the fix.
  */

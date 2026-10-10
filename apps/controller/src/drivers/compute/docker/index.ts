@@ -32,6 +32,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
 import {
   PLUGIN_RUNTIME_READY_MARKER,
   PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
@@ -39,6 +40,11 @@ import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
 } from "../plugin-runtime.ts";
+import {
+  validatePlaintextNativeGateway,
+  validateRoutableNativeListener,
+} from "../native-gateway-transport.ts";
+import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 
 export interface DockerComputeDriverOptions {
@@ -136,6 +142,17 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
   readonly configuration: OpenClawConfigurationDocument;
   readonly requiresManagedPassword: boolean;
 } {
+  for (const validate of [
+    validatePlaintextNativeGateway,
+    validateRoutableNativeListener,
+    validateCodexApprovalPolicySetting,
+  ]) {
+    validate(
+      configuration,
+      (setting, requirement) =>
+        new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
+    );
+  }
   const gatewayRecord = asRecord(configuration.gateway);
   if (configuration.gateway !== undefined && gatewayRecord === undefined) {
     throw new ConfigurationFailure("Docker native gateway configuration must be an object.");
@@ -202,6 +219,8 @@ const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
 ${PLUGIN_RUNTIME_HELPERS}
+${startupPhaseHelper("gateway")}
+${gatewayStateMigrationHelper("deploy the Agent again")}
 
 function forwardTermination(child) {
   let terminating = false;
@@ -215,6 +234,16 @@ function forwardTermination(child) {
   process.on("SIGINT", () => forward("SIGINT"));
 }
 
+function startGateway() {
+  const child = spawn(
+    "node",
+    ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
+    { stdio: "inherit" },
+  );
+  forwardTermination(child);
+  child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+}
+
 mkdirSync("/home/node/.openclaw", { recursive: true, mode: 0o700 });
 mkdirSync("/home/node/workspace", { recursive: true, mode: 0o700 });
 chmodSync("/home/node/.openclaw", 0o700);
@@ -225,13 +254,25 @@ delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 try {
 if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
-const child = spawn(
-  "node",
-  ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-  { stdio: "inherit" },
-);
-forwardTermination(child);
-child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+// State on the Agent's state volume outlives runtime image upgrades. Doctor
+// reads the configuration written above; current state adds no await before
+// the spawn. A failure exits: the Driver reports the container that stopped
+// before readiness and nothing restarts it.
+const outdatedDatabases = outdatedAgentDatabases();
+if (outdatedDatabases.length === 0) {
+  startGateway();
+} else {
+  migrateGatewayState(outdatedDatabases).then(
+    (migrated) => {
+      if (migrated) startGateway();
+      else process.exit(1);
+    },
+    (error) => {
+      console.error("Gateway state migration failed: " + (error?.message ?? error));
+      process.exit(1);
+    },
+  );
+}
 } catch (error) {
   if (!holdPluginApproverConfigurationFailure(error)) throw error;
 }
@@ -429,6 +470,12 @@ export class DockerComputeDriver implements ComputeDriver {
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
+  }
+
+  validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {
+    validatePlaintextNativeGateway(configuration);
+    validateRoutableNativeListener(configuration);
+    validateCodexApprovalPolicySetting(configuration);
   }
 
   validateHarnessAuth(): never {
@@ -1253,7 +1300,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   private async removeNetwork(name: string): Promise<void> {
-    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204]);
+    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204, 404]);
   }
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {

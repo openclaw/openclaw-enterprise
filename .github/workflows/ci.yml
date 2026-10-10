@@ -11,9 +11,12 @@ on:
 permissions:
   contents: read
 
+# A new PR push cancels the PR's older run. Main pushes queue instead: one
+# run in progress and one pending (a newer push replaces the pending run), so
+# every started main run finishes and the newest commit is always tested.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CI: "1"
@@ -359,12 +362,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      # The fixture builds FROM a Docker Hub base image on the Engine's own
+      # builder; pull it through mirror.gcr.io without the runner's Docker Hub
+      # sign-in (finding 977).
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: runtime-image-fixture
           profile: postgres
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
+
+  # Real Keycloak OIDC proof in full-mode PR CI and on pushes to main.
+  # Deliberately not a CI Required dependency until it has soaked on main.
+  keycloak-oidc:
+    name: Keycloak OIDC
+    needs: impact
+    if: ${{ needs.impact.outputs.mode == 'full' }}
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: keycloak-oidc
+          profile: postgres
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: keycloak-results
 
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
@@ -391,11 +421,20 @@ jobs:
           cache: true
       - name: Set up CI tools
         run: bash scripts/ci/setup-tools.sh k3d
+      # Pull Docker Hub images through mirror.gcr.io without the runner's
+      # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
+      # before Buildx starts its builder container.
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           # GitHub-hosted runners are per-job VMs; removing the builder took 8-33 s,
           # which a superseding run also waits for on cancellation.
           cleanup: false
+          # The builder container pulls base images itself, not through the engine.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - name: Enable Kubernetes bridge packet filtering
         run: |
           if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
@@ -424,6 +463,9 @@ jobs:
         run: node scripts/ci/first-agent-smoke.mjs images
       - name: Install, deploy, chat, stop and start
         run: node scripts/ci/first-agent-smoke.mjs run
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   ci-required:
     name: CI Required

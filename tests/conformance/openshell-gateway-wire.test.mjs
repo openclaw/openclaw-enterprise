@@ -273,6 +273,7 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
             },
           },
         },
+        restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS",
       },
     };
     const created = await client.createSandbox(request, AbortSignal.timeout(2_000));
@@ -343,6 +344,8 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
       websocket_credential_rewrite: true,
       credential_binding: { provider: "oce-runtime-example" },
     });
+    // Field 15 of the pinned gateway's SandboxSpec (finding 1029).
+    assert.equal(createRequests[0].spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
     assert.deepEqual(createRequests[0].spec.policy.network_policies.model.binaries, [
       { path: "/app/bin/model-client" },
     ]);
@@ -571,6 +574,68 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
         workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
       },
     ]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client reads the pinned gateway's Harness restart state from GetSandbox", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  // SandboxStatus fields 6, 9 and 14 as the gateway sets them (finding 1043).
+  const statuses = {
+    "sandbox-restarting": { phase: "SANDBOX_PHASE_STARTING", exit_code: 137, restart_count: 4 },
+    "sandbox-exited-zero": { phase: "SANDBOX_PHASE_STARTING", exit_code: 0, restart_count: 1 },
+    "sandbox-first-start": { phase: "SANDBOX_PHASE_STARTING" },
+    "sandbox-recovered": { phase: "SANDBOX_PHASE_READY", restart_count: 3 },
+  };
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      callback(null, {
+        sandbox: {
+          metadata: { id: "sandbox-id", name: call.request.name, workspace: "tenant-workspace" },
+          status: statuses[call.request.name],
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const signal = AbortSignal.timeout(2_000);
+  try {
+    const read = async (name) => {
+      const { phase, exitCode, restartCount } = await client.getSandbox(
+        { name, workspace: "tenant-workspace" },
+        signal,
+      );
+      return { phase, exitCode, restartCount };
+    };
+    assert.deepEqual(await read("sandbox-restarting"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: 137,
+      restartCount: 4,
+    });
+    // `exit_code` is a proto3 optional: a clean exit is present as 0, not absent.
+    assert.deepEqual(await read("sandbox-exited-zero"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: 0,
+      restartCount: 1,
+    });
+    assert.deepEqual(await read("sandbox-first-start"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: undefined,
+      restartCount: undefined,
+    });
+    assert.deepEqual(await read("sandbox-recovered"), {
+      phase: "SANDBOX_PHASE_READY",
+      exitCode: undefined,
+      restartCount: 3,
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
@@ -1584,6 +1649,187 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       ["GetSandbox", "os-bare"],
       ["GetSandbox", "os-missing"],
     ]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client serializes v0.1.3-pre.2 gateway-owned refresh", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const requests = { profiles: [], configures: [], rotations: [], statuses: [], deletes: [] };
+  const minted = {
+    provider: "oce-cs-000000000000000000000000",
+    credential_key: "TOOLS_TOKEN",
+    strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS",
+    status: "refreshed",
+    expiration_time: { seconds: "1790881200", nanos: 0 },
+    next_refresh_time: { seconds: "1790880900", nanos: 0 },
+    last_refresh_time: { seconds: "1790877600", nanos: 5 },
+  };
+  const server = new grpc.Server();
+  // The upstream oracle decodes every request, so a renumbered refresh field fails here rather
+  // than configuring a provider whose token endpoint or material OpenShell never sees.
+  server.addService(OpenShell.service, {
+    ImportProviderProfiles(call, callback) {
+      requests.profiles.push(call.request);
+      callback(null, {
+        imported: true,
+        profiles: call.request.profiles.map((item) => item.profile),
+      });
+    },
+    ConfigureProviderRefresh(call, callback) {
+      requests.configures.push(call.request);
+      callback(null, { status: { ...minted, status: "configured" } });
+    },
+    RotateProviderCredential(call, callback) {
+      requests.rotations.push(call.request);
+      callback(null, { status: minted });
+    },
+    GetProviderRefreshStatus(call, callback) {
+      requests.statuses.push(call.request);
+      if (call.request.provider !== minted.provider) {
+        callback({ code: grpc.status.NOT_FOUND, details: "provider not found" });
+        return;
+      }
+      callback(null, {
+        credentials: [
+          { ...minted, credential_key: "OTHER_TOKEN", status: "error" },
+          {
+            ...minted,
+            status: "reauthorization_required",
+            recovery_action: "PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_REAUTHORIZE",
+            failure_code: "oauth_invalid_grant",
+          },
+        ],
+      });
+    },
+    DeleteProviderRefresh(call, callback) {
+      requests.deletes.push(call.request);
+      callback(null, { outcome: "DELETION_OUTCOME_ALREADY_ABSENT" });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: { mode: "unauthenticated" },
+  });
+  const signal = () => AbortSignal.timeout(2_000);
+  try {
+    await client.importProviderProfile(
+      "tenant-workspace",
+      {
+        id: minted.provider,
+        displayName: "OAuth2 (wire)",
+        category: "PROVIDER_PROFILE_CATEGORY_OTHER",
+        credentials: [
+          {
+            name: "access_token",
+            envVars: ["TOOLS_TOKEN"],
+            required: true,
+            authStyle: "bearer",
+            headerName: "authorization",
+            refresh: {
+              strategy: minted.strategy,
+              tokenUrl: "https://issuer.example.test/token",
+              scopes: [],
+              material: [
+                { name: "client_id", required: true, secret: false },
+                { name: "client_secret", required: true, secret: true },
+              ],
+            },
+          },
+        ],
+        endpoints: [{ host: "tools.example.test", port: 443, protocol: "rest", path: "/**" }],
+        binaries: ["/usr/bin/curl"],
+        inferenceCapable: false,
+        annotations: {},
+      },
+      signal(),
+    );
+    const configured = await client.configureProviderRefresh(
+      {
+        workspace: "tenant-workspace",
+        provider: minted.provider,
+        credentialKey: "TOOLS_TOKEN",
+        strategy: minted.strategy,
+        material: { client_id: "occ-tools", client_secret: "wire-client-secret" },
+        requestId: "6b1f9b8e-2c4f-5a7d-9e3b-0c1d2e3f4a5b",
+      },
+      signal(),
+    );
+    const rotated = await client.rotateProviderCredential(
+      "tenant-workspace",
+      minted.provider,
+      "TOOLS_TOKEN",
+      "7c2a0c9f-3d5a-5b8e-af4c-1d2e3f4a5b6c",
+      signal(),
+    );
+    const status = await client.getProviderRefreshStatus(
+      "tenant-workspace",
+      minted.provider,
+      "TOOLS_TOKEN",
+      signal(),
+    );
+    const missing = await client.getProviderRefreshStatus(
+      "tenant-workspace",
+      "oce-cs-missing",
+      "TOOLS_TOKEN",
+      signal(),
+    );
+    await client.deleteProviderRefresh(
+      "tenant-workspace",
+      minted.provider,
+      "TOOLS_TOKEN",
+      signal(),
+    );
+
+    // The token endpoint and material declarations travel only in the profile.
+    const [credential] = requests.profiles[0].profiles[0].profile.credentials;
+    assert.deepEqual(credential.refresh, {
+      strategy: minted.strategy,
+      token_url: "https://issuer.example.test/token",
+      material: [
+        { name: "client_id", required: true, secret: false },
+        { name: "client_secret", required: true, secret: true },
+      ],
+    });
+    const [configure] = requests.configures;
+    assert.equal(configure.workspace_scope.workspace, "tenant-workspace");
+    assert.equal(configure.provider, minted.provider);
+    assert.equal(configure.credential_key, "TOOLS_TOKEN");
+    assert.equal(configure.strategy, minted.strategy);
+    assert.deepEqual(configure.material, {
+      client_id: "occ-tools",
+      client_secret: "wire-client-secret",
+    });
+    assert.equal(configure.request_id, "6b1f9b8e-2c4f-5a7d-9e3b-0c1d2e3f4a5b");
+    assert.deepEqual(configured, {
+      status: "configured",
+      expirationTime: "2026-10-01T19:00:00.000000000Z",
+      nextRefreshTime: "2026-10-01T18:55:00.000000000Z",
+      lastRefreshTime: "2026-10-01T18:00:00.000000005Z",
+    });
+    assert.equal(requests.rotations[0].credential_key, "TOOLS_TOKEN");
+    assert.equal(requests.rotations[0].request_id, "7c2a0c9f-3d5a-5b8e-af4c-1d2e3f4a5b6c");
+    assert.equal(rotated.status, "refreshed");
+    // Status selects the exact credential key and keeps only the safe recovery fields.
+    assert.deepEqual(status, {
+      status: "reauthorization_required",
+      expirationTime: "2026-10-01T19:00:00.000000000Z",
+      nextRefreshTime: "2026-10-01T18:55:00.000000000Z",
+      lastRefreshTime: "2026-10-01T18:00:00.000000005Z",
+      recoveryAction: "PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_REAUTHORIZE",
+      failureCode: "oauth_invalid_grant",
+    });
+    assert.equal(missing, undefined);
+    assert.equal(requests.deletes[0].allow_missing, true);
+    assert.equal(requests.deletes[0].credential_key, "TOOLS_TOKEN");
+    assert.match(requests.deletes[0].request_id, /^[0-9a-f-]{36}$/);
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

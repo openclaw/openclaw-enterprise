@@ -1,3 +1,4 @@
+import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -16,6 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
@@ -26,14 +28,19 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { codexOpenClawConfiguration } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
+import {
+  codexOpenClawConfiguration,
+  codexRuntimeArtifact,
+} from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import {
   execute,
   image,
@@ -45,6 +52,7 @@ import {
   temporaryGatewayConfiguration,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
+  failureTail,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
 } from "../helpers/runtime-image-startup.mjs";
@@ -132,7 +140,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
   t.after(() => rm(directory, { recursive: true, force: true }));
   const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
   const digest = createHash("sha256").update(contents).digest("hex");
-  const profile = join(directory, `codex-0.160.0-${digest}.json`);
+  const profile = join(directory, `codex-0.163.0-alpha.2-${digest}.json`);
   const statePath = join(directory, "state.json");
   await writeFile(profile, contents);
   await writeFile(
@@ -977,7 +985,7 @@ NODE
       ],
       { timeout: 30_000 * imageSmokeTimeoutMultiplier },
     ).catch((error) => {
-      throw new Error(sanitizeSyntheticCredential(commandOutput(error)));
+      throw new Error(failureTail(sanitizeSyntheticCredential(commandOutput(error))));
     });
 
     const result = JSON.parse(stdout);
@@ -1065,6 +1073,135 @@ test(
     const logs = await waitForDockerLog(containerName, /remote model catalog refresh failed/);
     assert.match(logs, /heartbeat: started/);
     assert.doesNotMatch(logs, /last-known-good|EROFS/);
+  },
+);
+
+// OpenClaw state written by the 2026-09-28 release's runtime image
+// (ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:f17a66a18de9d4231c9579faf90573d80bef1278aaaf63135b6c6ce0b71a23b3,
+// OpenClaw 000d03942c87): its Gateway ran one turn against a stub provider that
+// answers 401 and stopped cleanly. The archive holds the shared state database
+// (its device identity and config revision keys deleted, then vacuumed) and the
+// main agent database (schema 23) as that Gateway left it.
+const releasedGatewayState = fileURLToPath(
+  new URL("../fixtures/runtime-state/released-gateway-state.tar.gz", import.meta.url),
+);
+
+async function agentDatabaseFacts(containerName) {
+  const { stdout } = await runDocker([
+    "exec",
+    containerName,
+    "node",
+    "-e",
+    `
+const { readdirSync } = require("node:fs");
+const { DatabaseSync } = require("node:sqlite");
+const directory = "/home/node/.openclaw/agents/main/agent";
+const database = new DatabaseSync(directory + "/openclaw-agent.sqlite", { readOnly: true });
+const { user_version: version } = database.prepare("PRAGMA user_version").get();
+database.close();
+const backups = readdirSync(directory).filter((name) => name.includes(".pre-startup-migration-")).sort();
+process.stdout.write(JSON.stringify({ version, backups }));
+`,
+  ]);
+  return JSON.parse(stdout);
+}
+
+function stateMigrationPhases(logs) {
+  return jsonLogEntries(logs).filter(
+    (entry) => entry.event === "runtime.startup_phase" && entry.phase === "state-migration",
+  );
+}
+
+// Copies the released state into a new volume, owned as the Gateway user, for
+// mounting at `mountPath` (the Gateway home or its ~/.openclaw).
+async function releasedGatewayStateVolume(t, mountPath) {
+  const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
+  await runDocker(["volume", "create", volume]);
+  t.after(() => runDocker(["volume", "rm", "-f", volume]).catch(() => {}));
+  // As root, like the Docker Driver's workspace setup: a new volume mounted
+  // below the image's home can be root-owned.
+  await runDocker([
+    "run",
+    "--rm",
+    "--user",
+    "0:0",
+    "--network",
+    "none",
+    "--volume",
+    `${volume}:${mountPath}`,
+    "--volume",
+    `${releasedGatewayState}:/released-gateway-state.tar.gz:ro`,
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    `tar -xzf /released-gateway-state.tar.gz -C /home/node && chown -R 1000:1000 ${mountPath}`,
+  ]);
+  return volume;
+}
+
+// startGateway(readinessAttempts) starts a Gateway on the released state volume.
+async function assertReleasedGatewayMigratesOnce(startGateway) {
+  // The current OpenClaw refuses this database until Doctor migrates it. Doctor's
+  // full repair pass takes about 20 s here and over a minute on a busy CI runner.
+  const released = await startGateway(240);
+  assert.deepEqual(
+    stateMigrationPhases(released.logs).map(({ outcome }) => outcome),
+    ["ok"],
+    released.logs,
+  );
+  assert.match(released.logs, /from schema 23 to \d+ with openclaw doctor --fix/);
+  assert.doesNotMatch(released.logs, /uses schema version 23/);
+  const migrated = await agentDatabaseFacts(released.containerName);
+  assert.equal(
+    migrated.version,
+    OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION,
+    "Doctor migrated to another schema: update OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION with the OpenClaw pin.",
+  );
+  assert.equal(migrated.backups.length > 0, true, "Doctor keeps a pre-migration copy");
+  await runDocker(["stop", "--time", "60", released.containerName]);
+  await runDocker(["rm", "-f", released.containerName]);
+
+  // A current database starts without Doctor.
+  const current = await startGateway();
+  assert.deepEqual(stateMigrationPhases(current.logs), [], current.logs);
+  assert.doesNotMatch(current.logs, /openclaw doctor --fix/);
+  assert.deepEqual(await agentDatabaseFacts(current.containerName), migrated);
+}
+
+test(
+  "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
+  imageTestOptions,
+  async (t) => {
+    // The volume replaces the Gateway's /home/node tmpfs, as its PersistentVolume does.
+    const volume = await releasedGatewayStateVolume(t, "/home/node");
+    const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
+    await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+      runGatewaySmoke(t, "openclaw", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        readinessAttempts,
+        tmpfs: [],
+        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`, `${volume}:/home/node`],
+        withAppServer: false,
+      }),
+    );
+  },
+);
+
+test(
+  "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
+  imageTestOptions,
+  async (t) => {
+    // The Docker Driver's Agent state volume, over the Gateway's /home/node tmpfs.
+    const volume = await releasedGatewayStateVolume(t, "/home/node/.openclaw");
+    await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+      runGatewaySmoke(t, "openclaw", {
+        readinessAttempts,
+        volumes: [`${volume}:/home/node/.openclaw`],
+        withAppServer: false,
+      }),
+    );
   },
 );
 
@@ -1163,6 +1300,7 @@ function run(args, env, readinessUrl) {
       } } },
       secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
     }),
+    OPENCLAW_RUNTIME_STATUS_PORT: "18791",
     OPENCLAW_HARNESS_MODEL: model,
     OPENCLAW_HARNESS_PROVIDER: "openai",
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
@@ -1234,6 +1372,99 @@ function run(args, env, readinessUrl) {
     assert.equal(harness.validation.valid, true);
     // Schema acceptance alone does not qualify the default image's complete native flow.
     // Runtime admission retains its separate native-worker support gate.
+  },
+);
+
+test(
+  "runtime image Gateway keeps OpenShell's Codex turns out of Codex's own sandbox",
+  imageTestOptions,
+  async () => {
+    // Finding 1026: bwrap cannot create a user namespace inside an OpenShell Sandbox, so the
+    // pinned Gateway must send danger-full-access per turn for the OpenShell-configured app
+    // server. This runs the bundled Codex policy resolver on the documented Configuration.
+    const documented = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+      transport: "websocket",
+      url: "ws://127.0.0.1:1",
+      authToken: "synthetic",
+    };
+    const cases = [
+      { documented },
+      { documented: { ...documented, approvalPolicy: "never" } },
+      { documented: { ...documented, approvalsReviewer: "auto_review" } },
+    ].flatMap(({ documented: appServer }) =>
+      // The Gateway passes no provider for the documented `codex/<model>` ref; `openai` is a
+      // model it can verify for model-backed review.
+      [undefined, "openai"].map((modelProvider) => ({
+        appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY },
+        modelProvider,
+      })),
+    );
+    // Without the reviewer pin, the documented shape is the reported failure. If this case
+    // resolves to danger-full-access after a pin bump, re-evaluate the pin before dropping it.
+    cases.push({
+      appServer: { ...documented, sandbox: "danger-full-access" },
+      expectedSandbox: "workspace-write",
+    });
+    const script = String.raw`
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const pluginDist = "/app/node_modules/openclaw/dist";
+const configChunk = readdirSync(pluginDist).find((name) => /^config-options-.*\.mjs$/.test(name));
+if (configChunk === undefined) {
+  throw new Error("Bundled Codex config chunk was not found under " + pluginDist);
+}
+const configExports = await import(pathToFileURL(join(pluginDist, configChunk)));
+const createCodexAppServerConfig = Object.values(configExports).find(
+  (value) => typeof value === "function" && value.name === "createCodexAppServerConfig",
+);
+if (createCodexAppServerConfig === undefined) {
+  throw new Error("Bundled Codex config export did not expose createCodexAppServerConfig.");
+}
+const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
+const { resolveCodexAppServerRuntimeOptions } = createCodexAppServerConfig({ resolveProviderIdForAuth });
+const config = {
+  agents: { defaults: { model: "codex/gpt-6-astra" } },
+  models: { providers: { codex: { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [{ id: "gpt-6-astra", name: "gpt-6-astra" }] } } },
+};
+const results = JSON.parse(process.argv[1]).map(({ appServer, modelProvider }) => {
+  const runtime = resolveCodexAppServerRuntimeOptions({
+    pluginConfig: { appServer },
+    modelProvider,
+    model: "gpt-6-astra",
+    config,
+    env: {},
+    requirementsToml: null,
+  });
+  return { sandbox: runtime.sandbox, approvalsReviewer: runtime.approvalsReviewer };
+});
+process.stdout.write(JSON.stringify(results));
+`;
+    const { stdout } = await runDocker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--workdir",
+      "/app",
+      "--entrypoint",
+      "node",
+      image,
+      "--input-type=module",
+      "-e",
+      script,
+      JSON.stringify(cases),
+    ]);
+    assert.deepEqual(
+      JSON.parse(stdout),
+      cases.map(({ expectedSandbox }) => ({
+        sandbox: expectedSandbox ?? "danger-full-access",
+        approvalsReviewer: "user",
+      })),
+    );
   },
 );
 
@@ -1995,9 +2226,10 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image shares Codex 0.160.0 between the plugin and Dedicated command",
+  "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
+    const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
     const script = String.raw`
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
@@ -2007,18 +2239,19 @@ const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
 const installed = plugin.resolve("@openai/codex/package.json");
-assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.160.0");
+assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.163.0-alpha.2");
 const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
 assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
-assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.160.0");
-assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.160.0");
+assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
+assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 assert.equal(provenance.commit, "90d30a1178a79dddd92e6190b66b95d89dfb3ca8");
 assert.equal(provenance.sourceArchiveSha256, "c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b");
 assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca");
 assert.equal(provenance.openclawConnectPatchSha256, "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f");
-assert.equal(provenance.codex.version, "0.160.0");
+assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
+assert.equal(provenance.codex.version, "0.163.0-alpha.2");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 const contents = readFileSync("/opt/oce/runtime/contents.json");
@@ -2081,7 +2314,105 @@ assert.equal(platformInventoryEntry.sha256, platformBinarySha256);
 // --unshare-user --unshare-net at start, which the reviewed seccomp profile
 // denies, and log a false user-namespace error.
 assert.throws(() => execFileSync("sh", ["-c", "command -v bwrap"], {stdio: "pipe"}));
-process.stdout.write("shared-codex-0.160.0-ready\n");
+
+// Install two real local bundles without credentials or model calls. Feature
+// enablement stays on, so only OCE's plugin policy can exclude their skills.
+const { mkdirSync, mkdtempSync, writeFileSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { createInterface } = require("node:readline");
+const { spawn } = require("node:child_process");
+const root = mkdtempSync(resolve(tmpdir(), "oce-plugin-defaults-"));
+const codexHome = resolve(root, "codex-home");
+const workspace = resolve(root, "workspace");
+const marketplacePath = resolve(workspace, ".agents/plugins/marketplace.json");
+mkdirSync(codexHome);
+mkdirSync(dirname(marketplacePath), { recursive: true });
+mkdirSync(resolve(workspace, ".git"));
+writeFileSync(resolve(codexHome, "config.toml"), "[features]\nplugins = true\nremote_plugin = false\n");
+const names = ["example", "unselected"];
+for (const name of names) {
+  const source = resolve(workspace, name);
+  mkdirSync(resolve(source, ".codex-plugin"), { recursive: true });
+  mkdirSync(resolve(source, "skills/inspect"), { recursive: true });
+  writeFileSync(resolve(source, ".codex-plugin/plugin.json"), JSON.stringify({ name, version: "1.0.0", skills: "./skills" }));
+  writeFileSync(resolve(source, "skills/inspect/SKILL.md"), "---\nname: inspect\ndescription: Inspect the example fixture\n---\n\nInspect this fixture.\n");
+}
+writeFileSync(marketplacePath, JSON.stringify({
+  name: "marketplace",
+  plugins: names.map((name) => ({ name, source: { source: "local", path: "./" + name } })),
+}));
+const native = spawn(platformBinary, ["app-server", "--listen", "stdio://"], {
+  cwd: workspace,
+  env: { ...process.env, CODEX_HOME: codexHome },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+const lines = createInterface({ input: native.stdout });
+const pending = new Map();
+let nextId = 1;
+let stderr = "";
+const fail = (error) => {
+  for (const request of pending.values()) request.reject(error);
+  pending.clear();
+};
+native.stderr.on("data", (chunk) => { stderr += chunk; });
+native.once("error", fail);
+const closed = new Promise((resolve) => native.once("close", (code) => {
+  fail(new Error("Native plugin proof exited " + code + ": " + stderr));
+  resolve();
+}));
+lines.on("line", (line) => {
+  const message = JSON.parse(line);
+  const request = pending.get(message.id);
+  if (request === undefined) return;
+  pending.delete(message.id);
+  message.error ? request.reject(new Error(JSON.stringify(message.error))) : request.resolve(message.result);
+});
+const rpc = (method, params) => new Promise((resolve, reject) => {
+  const id = nextId++;
+  pending.set(id, { resolve, reject });
+  native.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+});
+const deadline = setTimeout(() => {
+  fail(new Error("Native plugin proof timed out: " + stderr));
+  native.kill("SIGKILL");
+}, ${30000 * imageSmokeTimeoutMultiplier});
+(async () => {
+  try {
+    await rpc("initialize", { clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" }, capabilities: { experimentalApi: true } });
+    native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    for (const pluginName of names) await rpc("plugin/install", { marketplacePath, pluginName });
+    const defaultPolicy = JSON.parse(process.argv[1]);
+    for (const stage of ["installed", "default-off", "selected"]) {
+      // Local installation is registered in config. Retain those registrations
+      // without activation grants, proving omitted enablement inherits OCE's default.
+      if (stage !== "installed") await rpc("config/batchWrite", {
+        edits: [{ keyPath: "plugins", mergeStrategy: "replace", value: {
+          ...defaultPolicy,
+          "example@marketplace": stage === "selected" ? { enabled: true } : {},
+          "unselected@marketplace": {},
+        } }],
+        reloadUserConfig: true,
+      });
+      const enabledNames = stage === "installed" ? names : stage === "selected" ? ["example"] : [];
+      const catalog = await rpc("plugin/list", { cwds: [workspace], marketplaceKinds: ["local"] });
+      const entries = catalog.marketplaces.find((entry) => entry.path === marketplacePath).plugins;
+      assert.deepEqual(entries.map(({ name, installed, enabled }) => ({ name, installed, enabled })).sort((a, b) => a.name.localeCompare(b.name)),
+        names.map((name) => ({ name, installed: true, enabled: enabledNames.includes(name) })));
+      const skills = await rpc("skills/list", { cwds: [workspace], forceReload: true });
+      const fixtureSkills = skills.data.flatMap((entry) => entry.skills)
+        .filter((skill) => names.some((name) => skill.name.startsWith(name + ":")))
+        .map(({ name, pluginId }) => ({ name, pluginId }));
+      assert.deepEqual(fixtureSkills.sort((a, b) => a.name.localeCompare(b.name)),
+        enabledNames.map((name) => ({ name: name + ":inspect", pluginId: name + "@marketplace" })));
+    }
+    process.stdout.write("shared-codex-0.163.0-alpha.2-ready\n");
+  } finally {
+    clearTimeout(deadline);
+    lines.close();
+    native.kill("SIGTERM");
+    await closed;
+  }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
     const { stdout } = await runDocker([
       "run",
@@ -2093,7 +2424,236 @@ process.stdout.write("shared-codex-0.160.0-ready\n");
       image,
       "-e",
       script,
+      JSON.stringify(defaultPluginPolicy),
     ]);
-    assert.match(stdout, /shared-codex-0.160.0-ready/);
+    assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
+  },
+);
+
+test(
+  "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
+  imageTestOptions,
+  async (t) => {
+    const drivers = plaintextGatewayComputeDrivers();
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-listener-tls-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    // The loopback provider owns all possible requests; no model turn is sent.
+    const provider = String.raw`
+const http = require("node:http");
+let modelCalls = 0;
+http.createServer((req, res) => {
+  if (req.method === "POST") modelCalls++;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
+}).listen(18880, "127.0.0.1");
+`;
+    for (const enabled of [true, false]) {
+      const configuration = drivers[0][1].kubernetesGatewayConfigurationDocument(
+        createAdmittedRuntimeImageConfiguration("openclaw"),
+      );
+      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
+      configuration.models.providers.openai.apiKey = "synthetic-owned-native-tls";
+      configuration.gateway.tls = {
+        enabled,
+        autoGenerate: true,
+        certPath: "/home/node/tls/cert.pem",
+        keyPath: "/home/node/tls/key.pem",
+      };
+      const path = join(directory, `configuration-${enabled}.json`);
+      // The parent is private; this synthetic input must be readable by native
+      // UID1000 even when a Linux runner writes it with a different UID.
+      await writeFile(path, JSON.stringify(configuration), { mode: 0o644 });
+      // Feed the original native input to the actual pinned Gateway to prove
+      // why Compute refuses it; this is not a supported TLS deployment fixture.
+      const { containerName } = await runGatewaySmoke(t, "openclaw", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: provider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
+        waitUntilReady: false,
+        withAppServer: false,
+        extraEnvironment: [
+          "OPENCLAW_RUNTIME_STATUS_PORT=18791",
+          "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
+          "OPENCLAW_AGENT_REVISION_ID=owned-native-tls",
+          "OPENCLAW_POD_UID=owned-native-tls",
+        ],
+      });
+      const nativeProbe = enabled
+        ? `require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1));`
+        : `fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));`;
+      let ready = false;
+      for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
+        try {
+          await runDocker(["exec", containerName, "node", "-e", nativeProbe]);
+          ready = true;
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      assert.equal(ready, true, commandOutput(await runDocker(["logs", containerName])));
+      const readiness = () =>
+        runDocker([
+          "exec",
+          containerName,
+          "node",
+          "-e",
+          'fetch("http://127.0.0.1:18791/readyz").then(async r=>{if(await r.text()!=="")process.exit(2);console.log(r.status);process.exit(r.status===200?0:1)}).catch(()=>process.exit(2));',
+        ]);
+      if (enabled) {
+        await assert.rejects(
+          readiness,
+          (error) => error.code === 1 && error.stdout.trim() === "503",
+        );
+        for (const [kind, driver] of drivers) {
+          assert.throws(
+            () => driver.validateGatewaySettings?.(configuration),
+            /gateway\.tls\.enabled must be omitted or false/,
+            kind,
+          );
+        }
+      } else {
+        await readiness();
+        for (const [, driver] of drivers) {
+          assert.doesNotThrow(() => driver.validateGatewaySettings(configuration));
+        }
+      }
+      const counter = await runDocker([
+        "exec",
+        containerName,
+        "node",
+        "-e",
+        'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+      ]);
+      assert.equal(Number(counter.stdout.trim()), 0);
+      t.diagnostic(
+        `native TLS enabled=${enabled}: native ready, Compute readiness ${enabled ? "refused" : "passed"}, modelCalls=0`,
+      );
+      await runDocker(["rm", "-f", containerName]);
+    }
+  },
+);
+
+test(
+  "runtime image Kubernetes admission refuses healthy native listeners that cannot serve Pod-IP traffic",
+  imageTestOptions,
+  async (t) => {
+    const driver = plaintextGatewayComputeDrivers()[0][1];
+    const network = `oce-native-bind-${randomBytes(6).toString("hex")}`;
+    await runDocker(["network", "create", "--internal", network]);
+    const runtimeCleanups = [];
+    t.after(async () => {
+      for (const cleanup of runtimeCleanups.reverse()) {
+        await cleanup();
+      }
+      await runDocker(["network", "rm", network]);
+    });
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-bind-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const provider = String.raw`
+const http = require("node:http");
+let modelCalls = 0;
+http.createServer((req, res) => {
+  if (req.method === "POST") modelCalls++;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
+}).listen(18880, "127.0.0.1");
+`;
+    for (const [gateway, reachable] of [
+      [{ bind: "loopback" }, false],
+      [{ bind: "custom", customBindHost: "127.0.0.1" }, false],
+      [{ bind: "tailnet" }, false],
+      [{ bind: "lan" }, true],
+      [{ bind: "auto" }, true],
+      [{ bind: "custom", customBindHost: "0.0.0.0" }, true],
+      [{}, true],
+    ]) {
+      const configuration = driver.kubernetesGatewayConfigurationDocument(
+        createAdmittedRuntimeImageConfiguration("openclaw"),
+      );
+      delete configuration.gateway.bind;
+      Object.assign(configuration.gateway, gateway);
+      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
+      configuration.models.providers.openai.apiKey = "synthetic-owned-native-bind";
+      const path = join(directory, "openclaw.json");
+      // Private directory, read-only mount, synthetic input readable by native UID1000.
+      await writeFile(path, JSON.stringify(configuration), { mode: 0o644 });
+      // Feed native-valid inputs independently of admission to establish which
+      // healthy listeners cannot serve the actual Service-facing address.
+      const { containerName } = await runGatewaySmoke(
+        { after: (cleanup) => runtimeCleanups.push(cleanup) },
+        "openclaw",
+        {
+          configurationPath: "/etc/openclaw/openclaw.json",
+          entrypoint: provider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+          network,
+          volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
+          waitUntilReady: false,
+          withAppServer: false,
+          extraEnvironment: [
+            "OPENCLAW_RUNTIME_STATUS_PORT=18791",
+            "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
+            "OPENCLAW_AGENT_REVISION_ID=owned-native-bind",
+            "OPENCLAW_POD_UID=owned-native-bind",
+          ],
+        },
+      );
+      let ready = false;
+      for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
+        try {
+          await runDocker([
+            "exec",
+            containerName,
+            "node",
+            "-e",
+            'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
+          ]);
+          ready = true;
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      assert.equal(ready, true, commandOutput(await runDocker(["logs", containerName])));
+      const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
+      const address = inspected.NetworkSettings.Networks[network].IPAddress;
+      assert.ok(address);
+      const remote = await runDocker([
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network",
+        network,
+        "--entrypoint",
+        "node",
+        image,
+        "-e",
+        `Promise.all([8080,18791].map(async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}})).then(v=>console.log(JSON.stringify(v)));`,
+      ]);
+      const [native, status] = JSON.parse(remote.stdout.trim());
+      assert.equal(status.status, 200);
+      if (reachable) {
+        assert.equal(native.status, 200);
+        assert.doesNotThrow(() => driver.validateGatewaySettings(configuration));
+      } else {
+        assert.equal(native.error, "ECONNREFUSED");
+        assert.throws(
+          () => driver.validateGatewaySettings(configuration),
+          /gateway\.(bind|customBindHost)/,
+        );
+      }
+      const counter = await runDocker([
+        "exec",
+        containerName,
+        "node",
+        "-e",
+        'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+      ]);
+      assert.equal(Number(counter.stdout.trim()), 0);
+      t.diagnostic(
+        `native bind=${gateway.bind ?? "omitted"} host=${gateway.customBindHost ?? "default"}: private ready=200, Pod-IP ${reachable ? "ready=200" : "ECONNREFUSED"}, modelCalls=0`,
+      );
+      await runDocker(["rm", "-f", containerName]);
+    }
   },
 );

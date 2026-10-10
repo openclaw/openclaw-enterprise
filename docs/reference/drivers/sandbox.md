@@ -17,11 +17,12 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` and `cleanup` members, plus seven optional methods.
+required `facets` and `cleanup` members, an optional `harnessHome`, plus eight optional methods.
 
 | Member                                   | Contract                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `facets`                                 | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                                                                                                                                                                    |
+| `harnessHome`                            | Optional normalized absolute HOME of the Harness user inside the Sandbox. Compute renders Harness-local paths, such as the native hook credential directory, under it. Defaults to `/home/node`.                                                                                                                                |
 | `configureAgent(configuration, harness)` | Optional synchronous transform. OCC passes the read-only native configuration and resolved Harness descriptor, then validates and freezes the returned configuration. The transform cannot change the selected Harness runtime. If absent, the original configuration is used.                                                  |
 | `ensureNamespace(context)`               | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                                                                                                                                                                |
 | `provisionHarness(context)`              | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                                                                                                                                                                              |
@@ -37,6 +38,21 @@ transport with the Agent transport token. It answers `serving` only after an
 authenticated handshake, or `failed` with the Harness's held startup failure,
 which Compute validates and fails the revision with; anything else is `starting`.
 Compute activates only a `serving` Harness.
+
+`observeHarness(context)` reads the provider's own lifecycle record of a dedicated
+revision's Harness Sandbox, without contacting the Harness. It answers `running`,
+`starting`, `unknown`, or `lost` with a code: `SANDBOX_MISSING`, `SANDBOX_DELETING`,
+`SANDBOX_STOPPED`, `SANDBOX_FAILED` (for example a deleted Pod) or `HARNESS_EXITED`.
+OCC adds it to the runtime description and diagnostics, and reports a missing or
+deleting Sandbox as lost only for the running Agent's active revision. Nothing
+recovers a lost Sandbox until the Agent is deployed again. The OpenShell Driver
+asks the gateway to restart an exited Harness (`restart_policy: ALWAYS`); while
+the gateway restarts it, the observation is `starting` with code
+`HARNESS_RESTARTING`, the last `exitCode` and the gateway's `restarts` number
+(GetSandbox `exit_code` and `restart_count`, set together only during a policy
+restart). A first start is plain `starting`. Diagnostics report a restarting
+Harness as a failed `sandbox` check. Only Sandboxes created before that policy
+existed report `HARNESS_EXITED`.
 
 ### Containment facets
 

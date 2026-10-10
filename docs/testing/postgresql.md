@@ -33,8 +33,8 @@ From the repository root, run the complete application lane:
 ```
 
 For one revision-worker file, use a fresh run directory. The example runs
-`postgres-worker-agent-revision.test.mjs`; its `-health` and `-teardown` siblings
-run the same way:
+`postgres-worker-agent-revision.test.mjs`; its `-health`, `-refused-stop` and `-teardown`
+siblings run alike:
 
 ```sh
 (

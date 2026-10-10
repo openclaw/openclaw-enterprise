@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-09 21:59
-last_updated_session: authoring-run/d4db043e-4d5b-48b3-96cf-d7e7e94e9bd7
+updated: 2026-10-09 23:11
+last_updated_session: authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -75,6 +75,12 @@ signal; direct Compute calls receive a nonaborted fallback.
 ### 3. Gate Namespace readiness on completed hooks
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.ensureNamespace`
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validatePeer` checks peer
+Pod-label keys and values during Driver construction, before any Namespace API
+request. Invalid selectors stop configuration loading instead of creating a tenant
+that later fails NetworkPolicy admission. Empty values, qualified keys, and valid
+length boundaries remain unchanged.
 
 Both [Kubernetes](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and
 [Docker](../../apps/controller/src/drivers/compute/docker/index.ts) Compute implementations
@@ -166,6 +172,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:11: Reject invalid Kubernetes peer Pod selectors before Namespace effects in the accompanying validation repair. (authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221 - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-10-09 21:59: Trace Docker Namespace teardown after external network removal in the accompanying fix. (authoring-run/d4db043e-4d5b-48b3-96cf-d7e7e94e9bd7 - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 

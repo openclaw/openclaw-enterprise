@@ -492,9 +492,11 @@ function loggedErrorCode(error: object): string | number | undefined {
  * text, so callers learn nothing more; the operator finds the cause by request ID. The record
  * keeps the error's class and message, and, for up to four errors on its `cause` chain, only
  * class and code: a cause can be a client error whose message, body or request echoes private
- * data. DependencyUnavailableError messages are fixed text or name only identifiers, an HTTP
- * method or status (audited in fix-529-938); `loggedErrorText` withholds one that resembles a
- * credential anyway.
+ * data. Most DependencyUnavailableError messages built in this repository are fixed text or name
+ * only identifiers, an HTTP method or status. Some carry bounded upstream text (OpenShell
+ * CreateSandbox detail, a runtime failure code), and a driver package can raise any message.
+ * `loggedErrorText` withholds a message that resembles a credential, and a class or code that
+ * resembles one is dropped; both are pattern checks, not sanitizers.
  */
 export function dependencyUnavailableLogFields(error: Error): {
   readonly errorClass?: string;

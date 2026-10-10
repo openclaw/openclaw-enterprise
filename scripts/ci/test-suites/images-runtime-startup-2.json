@@ -34,6 +34,8 @@
       "path": "tests/integration/runtime-image-gateway-peer.test.mjs",
       "expectedTests": [
         "runtime image Gateway respawns OpenClaw in place when its Harness peer changes",
+        "runtime image Gateway preserves native edits while recovering a peer with writable configuration",
+        "runtime image Gateway preserves writable peer recovery across container restarts",
         "runtime image Gateway exits if OpenClaw crashes during a peer status outage",
         "runtime image Gateway rejects a peer changed during replacement startup"
       ]

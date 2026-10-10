@@ -54,7 +54,7 @@ startup is unsupported.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584'
+export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0'
 if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
   OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
@@ -274,7 +274,9 @@ without quotes or assignment.
 In both database URLs, replace placeholders and preserve required TLS options. For managed PostgreSQL roots supplied through
 `database.caSecretName`, set `sslmode=verify-full` and `sslrootcert` to the
 mounted CA file in both URLs: `/etc/openclaw/database-ca/ca.pem` with the
-example mount settings, otherwise `<database.caMountPath>/<database.caKey>`. Start query parameters with `?` and
+example mount settings, otherwise `<database.caMountPath>/<database.caKey>`.
+With a CA Secret, Helm requires a path distinct from bootstrap and active
+API/worker mounts. Start query parameters with `?` and
 join further ones with `&`. Generate the auth secret for a
 new Installation; this command refuses to overwrite an existing file:
 
@@ -301,7 +303,7 @@ history, and the repository.
 
 ## Prepare workspace access
 
-Create the controller namespace:
+Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 characters):
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
@@ -309,7 +311,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace op
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing
-settings. Rerun validation and rendering above if inputs change. Configure each
+settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
 
 ## Provision system Secrets and install
