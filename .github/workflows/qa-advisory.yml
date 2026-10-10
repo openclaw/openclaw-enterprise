@@ -112,6 +112,7 @@ jobs:
           python3 - <<'PYTHON'
           import json
           import os
+          import re
           import urllib.error
           import urllib.request
 
@@ -119,9 +120,14 @@ jobs:
           request = urllib.request.Request("https://api.openai.com/v1/responses", data=payload, headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "Content-Type": "application/json"})
           try:
               with urllib.request.urlopen(request, timeout=60) as response:
-                  print(f"Direct model request: HTTP {response.status}")
+                  print(f"::notice title=Direct model access::HTTP {response.status}")
           except urllib.error.HTTPError as error:
-              print(f"Direct model request: HTTP {error.code}")
+              try:
+                  code = json.load(error).get("error", {}).get("code")
+              except (ValueError, AttributeError):
+                  code = None
+              code = code if isinstance(code, str) and re.fullmatch("[a-z_]{1,80}", code) else "unavailable"
+              print(f"::notice title=Direct model access::HTTP {error.code}; code {code}")
           PYTHON
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

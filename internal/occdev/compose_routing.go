@@ -31,7 +31,10 @@ func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developm
 		if err != nil {
 			return err
 		}
-		var container struct{ Image, User string }
+		var container struct {
+			Image string `json:"image"`
+			User  string `json:"user"`
+		}
 		if err := json.Unmarshal(data, &container); err != nil || container.Image == "" {
 			return fmt.Errorf("could not resolve %s routing reader image", service)
 		}
