@@ -286,8 +286,9 @@ replaces unsaved edits with the current file. The editor uses LF line endings:
 loading a CRLF file does not enable Save or rewrite it, and saving an edit writes LF.
 
 A failed write preserves the editor contents. An unknown outcome disables that
-file's Save until a successful reload, so it is never replayed automatically; review the loaded contents before
-writing again. Files load and
+file's Save until Reload confirms current contents or file absence; review the
+contents, or enter new content if it is missing, before saving again. Read denials
+and unavailable resources keep Save disabled; no write is replayed automatically. Files load and
 save independently, so one file's result says nothing about another's. For
 unavailable gateways, follow the
 [workspace access setup](../guides/deploy/workspace-routing.md#agent-workspace-files).

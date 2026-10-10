@@ -13,4 +13,8 @@ export const WorkspaceUnknown = { ...story("workspaceUnknown"), name: "Write out
 
 export const WorkspaceNavigation = story("workspaceNavigation");
 
+export const WorkspaceMissingReadback = {
+  ...story("workspaceMissingReadback"),
+  name: "Missing file after uncertain create",
+};
 export const WorkspaceCleanCRLF = story("workspaceCleanCRLF");

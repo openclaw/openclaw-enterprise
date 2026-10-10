@@ -4014,6 +4014,28 @@ export const scenarios = {
     description:
       "An uncertain write blocks retry until Reload lets the reader inspect current content.",
   },
+  workspaceMissingReadback: {
+    group: "Components/Workspace",
+    name: "Missing file after uncertain create",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      { suffix: "/AGENTS.md", method: "PUT", status: 503, once: true },
+    ],
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "# Interrupted first create" },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
+  },
   deletionConfirm: {
     group: "Components/Deletion",
     name: "Confirmation",

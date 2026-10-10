@@ -4456,6 +4456,136 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
 });
 
+test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "console-workspace-missing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let unavailable = false;
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ filename }) {
+        if (unavailable) {
+          return { status: "unavailable" };
+        }
+        try {
+          return {
+            status: "ok",
+            file: { name: filename, content: await readFile(join(root, filename), "utf8") },
+          };
+        } catch (cause) {
+          return { status: cause.code === "ENOENT" ? "missing" : "unavailable" };
+        }
+      },
+      async write({ filename, content }) {
+        await writeFile(join(root, filename), content);
+        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Missing workspace readback", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Missing file Agent",
+    nativeValues("missing"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  let dropped = false;
+  await page.route(fixture.origin + path, async (route) => {
+    if (route.request().method() === "PUT" && !dropped) {
+      dropped = true;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+  );
+  const editor = page.getByLabel("USER.md", { exact: true });
+  await waitForWorkspaceEditors(page, ["USER.md"]);
+  await editor.fill("# Interrupted first create\n");
+  const save = page.getByRole("button", { name: "Save USER.md", exact: true });
+  const reload = page.getByRole("button", { name: "Reload USER.md", exact: true });
+  const form = page.locator("form").filter({ has: editor });
+  await save.click();
+  await form.getByText("Outcome unknown.", { exact: false }).waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal((await fixture.request("GET", path)).status, 404);
+  const writeRequests = () =>
+    requests.filter((request) => request.path === path && request.method === "PUT");
+  assert.equal(writeRequests().length, 1);
+  // A formal resource 404, unlike file absence, cannot settle this unknown write.
+  const missingAgent = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/agt_${randomUUID()}/workspace/files/USER.md`,
+  );
+  assert.equal(missingAgent.status, 404);
+  await page.route(fixture.origin + path, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: missingAgent.error }),
+      });
+    } else {
+      await route.fallback();
+    }
+  });
+  await reload.click();
+  await form.getByText("File unavailable or missing.", { exact: false }).waitFor();
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 1);
+  await page.unroute(fixture.origin + path);
+  // A real IAM refusal also leaves the draft guarded. Restore the fixture's own grant afterwards.
+  const administrator = fixture.policy.roles[0];
+  const permissions = administrator.permissions;
+  administrator.permissions = permissions.filter(
+    (permission) => !(permission.action === "read" && permission.resourceKind === "agent"),
+  );
+  await reload.click();
+  await form.getByText("Access denied.", { exact: false }).waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 1);
+  administrator.permissions = permissions;
+  unavailable = true;
+  await reload.click();
+  await form.getByText("Workspace access is unavailable.", { exact: false }).waitFor();
+  assert.equal(await editor.isDisabled(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(writeRequests().length, 1);
+  unavailable = false;
+  const reply = page.waitForResponse(
+    (response) => response.url() === fixture.origin + path && response.request().method() === "GET",
+  );
+  await reload.click();
+  const missingFile = await reply;
+  assert.equal(missingFile.status(), 404);
+  assert.deepEqual((await missingFile.json()).error, {
+    code: "NOT_FOUND",
+    message: "The requested workspace file was not found.",
+  });
+  await form.getByText("USER.md is missing. Save to create it.", { exact: true }).waitFor();
+  assert.equal(await editor.isEnabled(), true);
+  assert.equal(await editor.inputValue(), "", "explicit Reload discards the uncertain draft");
+  assert.equal(writeRequests().length, 1, "readback never automatically repeats a write");
+  await editor.fill("# Deliberate replacement create\n");
+  const saved = page.waitForResponse(
+    (response) => response.url() === fixture.origin + path && response.request().method() === "PUT",
+  );
+  await save.click();
+  assert.equal((await saved).status(), 200);
+  await form.getByText("USER.md saved.", { exact: true }).waitFor();
+  assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
+  assert.equal(writeRequests().length, 2);
+});
+
 test("authentication drafts retain Secret references and their original save baseline", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

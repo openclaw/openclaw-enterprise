@@ -260,8 +260,11 @@ attempt, including an empty file; other failures leave Save disabled. Save sends
 `{ content }` to the same exact-Agent PUT route. It neither patches
 Configuration nor admits a revision. The existing
 [workspace flow](../workspace-files.md) owns authorization and native file transport.
-Results are per file. Unknown write outcomes require a successful reload before
-another save; the editor never retries a write automatically.
+Results are per file. Unknown write outcomes require explicit Reload before another save.
+Current contents settle the outcome; the API’s formal missing-file `404` also
+settles it and enables an empty editor for deliberate creation. Resource/scope
+`404`, denial, or unavailable reads keep the uncertain write guarded. The editor
+never retries or creates a file automatically.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
@@ -341,7 +344,8 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
-- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000)
+- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
+- 2026-10-10 02:44: Trace explicit missing-file readback after an uncertain workspace create in the accompanying change. (authoring-run/16c725e2-438f-46bf-a31c-305458ac49d8 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 
 - 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)
 
