@@ -277,6 +277,33 @@ func (app *application) printDeletion(kind, id string) error {
 	return app.printStructured(value)
 }
 
+// printUnrevokedServiceAccountDeletion reports a forced deletion that left the account's
+// access token valid at the provider, with a warning naming who must revoke it.
+func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer, id string, value any) error {
+	data, _ := value.(map[string]any)
+	backend := "its former ChatGPT Backend"
+	if backendID, ok := data["backendId"].(string); ok && backendID != "" {
+		backend = "ChatGPT Backend " + strconv.Quote(backendID)
+	}
+	noticef(
+		warnings,
+		"warning: the access token of service account %s was not revoked; an administrator must revoke it at the provider (%s). The audit event names its credential ID.",
+		id,
+		backend,
+	)
+	result := map[string]any{"deleted": true, "kind": "service account", "id": id}
+	for key, entry := range data {
+		if key != "id" {
+			result[key] = entry
+		}
+	}
+	if app.output == "table" {
+		_, err := fmt.Fprintf(app.out, "Deleted service account %s; its access token was not revoked.\n", id)
+		return err
+	}
+	return app.printStructured(result)
+}
+
 func (app *application) printItems(value any, collection bool, columns []column) error {
 	if app.output != "table" {
 		return app.printStructured(value)

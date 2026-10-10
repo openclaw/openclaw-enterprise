@@ -363,7 +363,8 @@ test(
         for (const field of ["configSecretName", "envSecretName"]) {
           await assert.rejects(
             render({ ...loggingValues, ...feature, [`logging.collector.${field}`]: secret }),
-            ({ stderr }) => /logging\.collector Secrets must be dedicated/.test(stderr),
+            ({ stderr }) =>
+              stderr.includes(`logging.collector.${field} must name a dedicated Secret; ${secret}`),
             `${field}=${secret}`,
           );
         }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Moves the tenants of a released single-cluster Installation with split-layout Gateway
 // namespaces across an upgrade: `export` them through OCC, `discard` them on the old release,
-// upgrade, then `import` them. See docs/guides/deploy/breaking-changes.md.
+// upgrade, then `import` them. See docs/guides/deploy/breaking-changes-archive.md.
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, realpathSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -82,6 +82,16 @@ export function createOccApi({ baseUrl, headers = {}, fetchImpl = fetch }) {
       const message = result.error?.message ?? "";
       throw new SplitLayoutError(
         `${method} ${path}: HTTP ${result.status} ${code} ${message}`.trim(),
+      );
+    }
+    if (
+      result.status >= 200 &&
+      result.status < 300 &&
+      result.status !== 204 &&
+      result.data === undefined
+    ) {
+      throw new SplitLayoutError(
+        `${method} ${path}: HTTP ${result.status} returned no data envelope`,
       );
     }
     return result;

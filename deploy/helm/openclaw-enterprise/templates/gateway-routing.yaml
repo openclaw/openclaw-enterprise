@@ -225,6 +225,16 @@ spec:
   ingress:
     {{- if $routing.sandbox.enabled }}
     - from:
+        {{- range $index, $peer := $routing.sandbox.ingressPeers -}}
+        {{- if kindIs "map" $peer -}}
+        {{- range $selectorName := list "namespaceSelector" "podSelector" -}}
+        {{- $selector := index $peer $selectorName -}}
+        {{- if and (kindIs "map" $selector) (hasKey $selector "matchLabels") -}}
+        {{- $_ := include "openclaw.networkPolicy.matchLabels" (dict "name" (printf "gatewayRouting.sandbox.ingressPeers[%d].%s.matchLabels" $index $selectorName) "value" $selector.matchLabels) -}}
+        {{- end -}}
+        {{- end -}}
+        {{- end -}}
+        {{- end -}}
         {{- toYaml $routing.sandbox.ingressPeers | nindent 8 }}
       ports:
         - protocol: TCP
@@ -284,7 +294,7 @@ spec:
               kubernetes.io/metadata.name: {{ $routing.envoyNamespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml $routing.envoyGatewayPodLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "gatewayRouting.envoyGatewayPodLabels" "value" $routing.envoyGatewayPodLabels) | nindent 14 }}
       ports:
         - protocol: TCP
           port: 18000

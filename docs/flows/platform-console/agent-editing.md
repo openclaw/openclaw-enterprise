@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-29
-last_updated_session: 01a0eb0e-dbc1-78d1-91b0-ea91ee87c00f
+updated: 2026-10-10
+last_updated_session: public-pr/2000
 ---
 
 # Console Agent editing and runtime requests
@@ -250,12 +250,15 @@ Pickers switch references; rotating shared Secret values is separate.
 history reads: workspace contents belong to the live Agent. Without an active
 revision, the Agent gets an unavailable explanation without file requests.
 
-The editor GETs each supported filename. A successful response reauthorizes file
-access before restoring retained text,
+The editor GETs each supported filename. Textareas normalize line endings to LF,
+so the baseline is the textarea value: an untouched CRLF file stays clean, and a read
+never rewrites it. After a successful load, only an edit enables Save. A
+successful response reauthorizes file access before restoring retained text,
 including empty edits. Drafts keep their original baseline; Reload replaces them
-with the current file. `404` permits an explicit create attempt, and other
-failures leave it disabled. Save sends `{ content }` to the same exact-Agent PUT
-route. It neither patches Configuration nor admits a revision. The existing
+with the current file. `404` without an unknown write permits an explicit create
+attempt, including an empty file; other failures leave Save disabled. Save sends
+`{ content }` to the same exact-Agent PUT route. It neither patches
+Configuration nor admits a revision. The existing
 [workspace flow](../workspace-files.md) owns authorization and native file transport.
 Results are per file. Unknown write outcomes require explicit Reload before another save.
 Current contents settle the outcome; the API’s formal missing-file `404` also
@@ -341,6 +344,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
 - 2026-10-10 02:44: Trace explicit missing-file readback after an uncertain workspace create in the accompanying change. (authoring-run/16c725e2-438f-46bf-a31c-305458ac49d8 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 
 - 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)

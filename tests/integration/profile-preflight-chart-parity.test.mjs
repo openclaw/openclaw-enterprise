@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -394,7 +395,9 @@ test("node selectors get the same verdict from preflight and the chart", { skip:
     [{ "Example.com/zone": "east" }, false],
     [{ "example.com/": "east" }, false],
     [{ "example.com/a/b": "east" }, false],
-    [{ [`${"a".repeat(64)}.example/zone`]: "east" }, false],
+    [{ [`${"a".repeat(64)}.example/zone`]: "east" }, true],
+    [{ [`${"a".repeat(253)}/zone`]: "east" }, true],
+    [{ [`${"a".repeat(254)}/zone`]: "east" }, false],
   ];
   for (const [nodeSelector, accepted] of selectors) {
     assertParity({
@@ -591,6 +594,8 @@ test(
       tokenUrl: "https://sso.example.com/token",
       jwksUrl: "https://sso.example.com/keys",
     };
+    // The chart's openclaw.gatewayRouting.rootSecretName for release oce in openclaw-system.
+    const gatewayRootSecret = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
     // [label, controlPlane providers, accepted]. The chart compares each enabled provider's
     // Secret, default or explicit, with the platform Secrets and each provider before it.
     const cases = [
@@ -607,6 +612,9 @@ test(
       // GitHub is disabled, so Google may use GitHub's default name.
       ["google alone", { github: undefined, google: { secretName: "occ-github-login" } }, true],
       ["gateway API key", { github: { secretName: "occ-private-gateway-key" } }, false],
+      // cert-manager writes the Gateway Secrets the chart generates (finding 1046).
+      ["generated Gateway TLS", { github: { secretName: "oce-agent-gateways-tls" } }, false],
+      ["generated Gateway root CA", { google: { secretName: gatewayRootSecret } }, false],
       ["installation", { github: { secretName: "occ-installation-startup" } }, false],
       ["database", { google: { secretName: "occ-database" } }, false],
       ["auth", { oidc: { ...endpoints, secretName: "occ-auth" } }, false],
@@ -638,7 +646,7 @@ test(
         controlPlane: providers,
         values: { auth },
         accepted,
-        chartError: /auth\.(github|google|oidc) credentials must use a dedicated Secret/,
+        chartError: /auth\.(github|google|oidc)\.secretName must name a dedicated Secret/,
       });
     }
   },
@@ -654,7 +662,10 @@ test(
       [label63, true],
       [`${label63}.${label63}.${label63}.${"a".repeat(61)}`, true],
       [`${label63}.${label63}.${label63}.${"a".repeat(62)}`, false],
-      ["a".repeat(64), false],
+      // Kubernetes admits a long single-segment DNS-subdomain name.
+      ["a".repeat(64), true],
+      ["a".repeat(253), true],
+      ["a".repeat(254), false],
       ["Occ-password", false],
       ["occ_password", false],
       ["occ-password-", false],
@@ -912,6 +923,111 @@ test(
         },
         accepted: !enabled,
         chartError,
+      });
+    }
+  },
+);
+
+test(
+  "database CA Secret names get the same dedicated-Secret verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    // Envoy Gateway would accept the CA certificate entry as a client API key (finding 1044),
+    // and the database CA Secret is as dedicated as the others (finding 1048).
+    for (const [secretName, refusal] of [
+      ["occ-db-ca", undefined],
+      [
+        "occ-private-gateway-key",
+        "gatewayRouting.apiKeySecretName must name a dedicated Secret; occ-private-gateway-key is also database.caSecretName",
+      ],
+      [
+        "occ-github-login",
+        "auth.github.secretName must name a dedicated Secret; occ-github-login is also database.caSecretName",
+      ],
+      [
+        "occ-database",
+        "database.caSecretName must name a dedicated Secret; occ-database is also database.secretName",
+      ],
+      [
+        "oce-agent-gateways-tls",
+        "database.caSecretName must name a dedicated Secret; oce-agent-gateways-tls is also gatewayRouting.tlsSecretName",
+      ],
+    ]) {
+      assertParity({
+        label: secretName,
+        controlPlane: { databaseCa: { secretName } },
+        values: { database: { caSecretName: secretName } },
+        accepted: refusal === undefined,
+        chartError: new RegExp(refusal?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "^$"),
+      });
+    }
+    // Finding 1059: the database and repository public CA settings may share one trust bundle,
+    // but the bundle stays apart from the repository credentials.
+    const repositoryInput = {
+      enabled: true,
+      image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
+      backendId: "github-primary",
+      registryConfigMapName: "occ-repository-registry",
+      serviceConfigSecretName: "occ-repository-config",
+      appKeySecretName: "occ-repository-app-key",
+      tlsSecretName: "occ-repository-tls",
+      publicCaSecretName: "occ-repository-ca",
+      upstreamCidrs: ["192.0.2.30/32"],
+    };
+    for (const key of ["publicCaSecretName", "tlsSecretName"]) {
+      const repositoryShared = { ...repositoryInput, [key]: "occ-trust-bundle" };
+      assertParity({
+        label: `trust bundle shared with repository ${key}`,
+        extraInput: { repository: repositoryShared },
+        controlPlane: { databaseCa: { secretName: "occ-trust-bundle" } },
+        values: {
+          database: { caSecretName: "occ-trust-bundle" },
+          repositoryCredentials: repositoryShared,
+        },
+        accepted: key === "publicCaSecretName",
+        chartError:
+          /repositoryCredentials\.tlsSecretName must name a dedicated Secret; occ-trust-bundle is also database\.caSecretName/,
+      });
+    }
+    // Finding 1054: the enabled log collector's Secrets are in the same table.
+    for (const enabled of [false, true]) {
+      const collector = enabled ? { enabled, exporter: { cidr: "192.0.2.40/32" } } : { enabled };
+      assertParity({
+        label: `collector ${enabled}`,
+        controlPlane: {
+          databaseCa: { secretName: "occ-otel-collector-config" },
+          loggingCollector: collector,
+        },
+        values: {
+          database: { caSecretName: "occ-otel-collector-config" },
+          logging: { collector },
+        },
+        accepted: !enabled,
+        chartError:
+          /logging\.collector\.configSecretName must name a dedicated Secret; occ-otel-collector-config is also database\.caSecretName/,
+      });
+    }
+  },
+);
+
+test(
+  "log collector exporter CIDRs get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    for (const [cidr, accepted] of [
+      ["192.0.2.40/32", true],
+      ["192.0.2.0/24", false],
+      ["192.0.2.40", false],
+      ["010.0.2.40/32", false],
+      ["192.0.2.256/32", false],
+    ]) {
+      assertParity({
+        label: cidr,
+        controlPlane: { loggingCollector: { enabled: true, exporter: { cidr } } },
+        values: { logging: { collector: { enabled: true, exporter: { cidr } } } },
+        accepted,
+        chartError:
+          /logging\.collector\.exporter\.cidr must identify exactly one approved IPv4 exporter or proxy host with \/32/,
       });
     }
   },

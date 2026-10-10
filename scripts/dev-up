@@ -185,11 +185,37 @@ case "$requested_container_engine" in
   *) fail "configuration" "OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman" ;;
 esac
 
+docker_server_is_podman() {
+  python3 -c '
+import json, sys
+try:
+    server = json.load(sys.stdin)
+except (ValueError, UnicodeError):
+    sys.exit(1)
+if not isinstance(server, dict):
+    sys.exit(1)
+platform = server.get("Platform")
+name = platform.get("Name") if isinstance(platform, dict) else None
+podman = isinstance(name, str) and "podman" in name.lower()
+components = server.get("Components")
+if isinstance(components, list):
+    podman = podman or any(
+        isinstance(component, dict)
+        and isinstance(component.get("Name"), str)
+        and component["Name"].lower() == "podman engine"
+        for component in components
+    )
+sys.exit(0 if podman else 1)
+'
+}
+
 if [ "$requested_container_engine" != podman ] && command -v docker >/dev/null 2>&1; then
-  # Some Docker servers omit the platform name. Only a positive Podman identity
-  # selects its separate socket, Compose and logging configuration.
+  # Preserve older servers without platform metadata, but prefer explicit Podman
+  # identity over Docker CLI formatting and Compose capability checks.
   docker_platform="$(docker version --format '{{.Server.Platform.Name}}' 2>/dev/null || true)"
+  docker_server="$(docker version --format '{{json .Server}}' 2>/dev/null || true)"
   if [ "$docker_platform" != "Podman Engine" ] &&
+    ! printf '%s\n' "$docker_server" | docker_server_is_podman &&
     docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
     [ -n "$docker_root_directory" ] &&
     docker compose version >/dev/null 2>&1 &&

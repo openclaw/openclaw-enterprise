@@ -222,7 +222,10 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
 
 test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it only after verified success", async (t) => {
   const { directory, kubeconfig, statePath, manifestPath } = await fixture(t);
-  const claim = "occ.bootstrap-admin.password";
+  // Kubernetes accepts 253-byte DNS-subdomain names and qualified label prefixes,
+  // even when their single segment exceeds the separate DNS-label name limit.
+  const claim = "a".repeat(253);
+  const prefix = "b".repeat(253);
   const { stdout } = await execute(
     helper,
     [
@@ -240,15 +243,18 @@ test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it
       "pool=control",
       "--node-selector",
       "topology.kubernetes.io/zone=us-west-2a",
+      "--node-selector",
+      `${prefix}/pool=control`,
     ],
     {
       cwd: repository,
       env: { PATH: `${directory}:${process.env.PATH}` },
     },
   );
-  assert.match(
-    stdout,
-    /Prepared bootstrap volume claim openclaw-system\/occ\.bootstrap-admin\.password with UID\/GID 1000 mode 0700/,
+  assert.ok(
+    stdout.includes(
+      `Prepared bootstrap volume claim openclaw-system/${claim} with UID/GID 1000 mode 0700`,
+    ),
   );
 
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
@@ -263,6 +269,7 @@ test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it
   assert.deepEqual(manifest.spec.nodeSelector, {
     pool: "control",
     "topology.kubernetes.io/zone": "us-west-2a",
+    [`${prefix}/pool`]: "control",
   });
   assert.equal(manifest.spec.volumes.length, 1);
   assert.equal(manifest.spec.volumes[0].name, "bootstrap-output");

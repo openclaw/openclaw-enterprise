@@ -7,6 +7,7 @@ import {
   DockerComputeDriver,
 } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { ComputeGatewaySettingError } from "../../packages/occ/src/index.ts";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
   // Redirect only the socket address in an isolated child. The real Driver,
@@ -266,9 +267,15 @@ test("Docker Compute gateway containers use password auth by default and preserv
   assert.equal(defaultLaunch.revision.configuration.gateway, undefined);
 
   const passwordLaunch = await gatewayContainerLaunch({
-    gateway: { auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } } },
+    gateway: {
+      tls: { enabled: false },
+      auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+    },
   });
   assert.match(passwordLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
+  assert.deepEqual(JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.tls, {
+    enabled: false,
+  });
   assert.equal(
     JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
     "password",
@@ -324,7 +331,7 @@ test("Docker Compute gateway containers use password auth by default and preserv
   );
 });
 
-test("Docker Compute rejects unsupported native gateway auth before Docker engine access", async () => {
+test("Docker Compute rejects unsupported native gateway settings before Docker engine access", async () => {
   const driver = new DockerComputeDriver({
     images: { gateway: "gateway:local", agent: "agent:local" },
   });
@@ -333,6 +340,22 @@ test("Docker Compute rejects unsupported native gateway auth before Docker engin
     [{ gateway: { auth: { mode: "oauth" } } }, /password or trusted-proxy/i],
     [{ gateway: { auth: { unsupportedField: true } } }, /unsupported field unsupportedField/i],
     [{ gateway: { auth: null } }, /gateway auth must be an object/i],
+    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
+    // The published port forwards to the container IP while the healthcheck probes
+    // loopback, so a loopback-only listener would pass readiness and serve nothing.
+    [{ gateway: { bind: "loopback" } }, /gateway\.bind must listen on all interfaces/],
+    [{ gateway: { bind: "tailnet" } }, /gateway\.bind must listen on all interfaces/],
+    [
+      { gateway: { bind: "custom", customBindHost: "127.0.0.1" } },
+      /gateway\.customBindHost must be 0\.0\.0\.0/,
+    ],
+    [{ gateway: { tailscale: { mode: "serve" } } }, /gateway\.tailscale\.mode must be off/],
+    [
+      {
+        plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
+      },
+      /appServer\.approvalPolicy must not be "untrusted"/,
+    ],
   ]) {
     const revision = dockerGatewayRevision(driver, configuration);
     let networkAccesses = 0;
@@ -350,6 +373,18 @@ test("Docker Compute rejects unsupported native gateway auth before Docker engin
     assert.equal(networkAccesses, 0);
     assert.equal(dockerRequests, 0);
   }
+  // Admission names the same listener settings with a 409 before a revision exists.
+  for (const [gateway, setting] of [
+    [{ bind: "loopback" }, "gateway.bind"],
+    [{ bind: "custom", customBindHost: "127.0.0.1" }, "gateway.customBindHost"],
+    [{ tailscale: { mode: "funnel" } }, "gateway.tailscale.mode"],
+  ]) {
+    assert.throws(
+      () => driver.validateGatewaySettings({ gateway }),
+      (error) => error instanceof ComputeGatewaySettingError && error.setting === setting,
+    );
+  }
+  assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { bind: "lan" } }));
 });
 
 async function gatewayContainerLaunch(configuration = {}) {

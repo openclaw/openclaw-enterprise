@@ -136,13 +136,17 @@ one `@` and a dotted domain.
 }
 ```
 
+`controlPlane.gatewayClassName` and `controlPlane.gatewayApiKeySecretName`
+must be Kubernetes resource names of at most 253 characters: the existing
+GatewayClass that Envoy Gateway serves, and the Secret that holds the `occ` key.
+
 For the `codex` profile, merge the reviewed Codex seccomp profile and model
 discovery egress into the base input:
 
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.160.0-<profile-sha256>.json"
+    "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
   },
   "codex": {
     "modelDiscoveryCidrs": ["198.51.100.20/32"]
@@ -174,6 +178,11 @@ a nil UUID, is a preflight error. Managed issuance is separate from the default
 prove that live service-account creation works. Optional `credentialTtlSeconds`
 must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
 to use 2592000.
+
+`controlPlane.loggingCollector.enabled` turns on the
+[log Collector](../observability.md#kubernetes-and-helm), which needs an
+`exporter`: a `/32` `cidr` or paired `namespaceLabels` and `podLabels`, and an
+optional `port` (default 443).
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
@@ -215,11 +224,15 @@ as behind a source-preserving NLB, needs none.
 
 Client-ID and client-secret Secret keys must differ. Preflight compares custom
 keys with the chart defaults (`client-id` and `client-secret`) when a key is omitted.
-Each provider needs its own Secret, as the chart requires: its `secretName`
-(default `occ-github-login`, `occ-google-login` or `occ-oidc-login`) must not
-name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
-Secret when `codex.managedServiceAccounts` is set, a repository Secret, or the
-chart's `occ-installation-startup`, `occ-database` and `occ-auth` Secrets.
+As the chart requires, each credential Secret is dedicated: a sign-in
+`secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
+`gatewayApiKeySecretName`, `databaseCa.secretName`, the ChatGPT admin Secret
+(with `codex.managedServiceAccounts`) and each repository Secret must differ from
+one another, from the chart's `occ-installation-startup`, `occ-database` and
+`occ-auth` Secrets, from the Gateway TLS (`<release>-agent-gateways-tls` for
+short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
+generates, and, with `controlPlane.loggingCollector.enabled`, from
+`occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`

@@ -146,7 +146,8 @@ their pinned `x-occ-session-key`, so a replaced cookie yields login.
 `authError=<provider>` shows a generic, one-time error; with `authError=github`, an
 `authReason` of `membership` or `membership-unavailable` explains a GitHub
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
-refusal instead. The
+refusal instead. With any provider, `account-disabled` says the account is disabled and to ask
+an administrator to enable it. The
 [authentication flow](local-password-authentication.md#3-construct-session-authentication)
 owns the server side.
 
@@ -192,6 +193,9 @@ restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editi
 The picker keeps a compact credential/access reminder beside an expandable
 **Access and credential setup** disclosure. Its bounded instructions, list, and
 details scroll within the dialog while search and pagination remain reachable.
+While mounted, Available and Configured retain separate selected plugins, queries,
+tool filters, and expanded rows without fetching pages or changing drafts.
+Removed selections clear their details; discovery resets clear both tabs.
 
 `create.mjs:loadPluginCatalog` and `loadPluginTools` implement
 [PAT discovery](agent-plugins.md#credential-scoped-discovery): the selected or
@@ -371,6 +375,8 @@ refresh and inspection.
 
 - 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
 - 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
+- 2026-10-07 12:30: Explain a disabled account's provider sign-in (`authReason=account-disabled`). (fix-member-1007/d534)
+
 - 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
 - 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.

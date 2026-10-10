@@ -8,7 +8,11 @@ import {
   createOpenShellBackend,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  createKubernetesComputeDriver,
+  KubernetesComputeDriver,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -288,6 +292,7 @@ function codexSandboxFixture(
     runtimeManifest = JSON.stringify({ kind: "codex", selections: {} }),
     codexConfig = "[features]\nplugins = false\n",
     files,
+    nodeSetupUrl = () => "wss://gateway.example.test/node",
   } = {},
 ) {
   const context = namespaceContext();
@@ -299,7 +304,7 @@ function codexSandboxFixture(
     sandboxDriverId: driver.id,
   };
   const nodeSetup = {
-    url: "wss://gateway.example.test/node",
+    url: nodeSetupUrl(revision, context),
     bootstrapToken: "one-shot-node-setup",
     expiresAtMs: Date.now() + 600_000,
     tlsFingerprint: "sha256:test",
@@ -413,6 +418,69 @@ test("startup composes both OpenShell members from one Backend", async (t) => {
   });
 });
 
+test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
+  const refreshing = () => {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].drivers.credential_refresh = "openshell-refresh";
+    configuration.drivers.credential_refresh = { id: "openshell-refresh", configuration: {} };
+    configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+    return configuration;
+  };
+  const createdDriver = await loadInstallationFile(t, refreshing());
+  assert.ok(createdDriver.credentialRefreshDriver instanceof OpenShellCredentialRefreshDriver);
+  assert.deepEqual(createdDriver.installation.backend[0].drivers, {
+    sandbox: "openshell-sandbox",
+    credential_gateway: "openshell-credentials",
+    credential_refresh: "openshell-refresh",
+  });
+  // The gateway offers refresh types only when its Backend can mint their tokens.
+  const signal = AbortSignal.timeout(2_000);
+  const offered = await createdDriver.credentialGatewayDriver.listSourceTypes({ signal });
+  assert.deepEqual(
+    offered.filter(({ rotation }) => rotation === "refresh").map(({ type }) => type),
+    ["oauth2-client-credentials", "oauth2-refresh-token"],
+  );
+  // The issuer replaces a refresh token on use, so an update must not re-send the recorded one.
+  assert.deepEqual(
+    offered.flatMap(({ type, secrets }) =>
+      secrets
+        .filter(({ issuerRotated }) => issuerRotated === true)
+        .map(({ name }) => `${type}.${name}`),
+    ),
+    ["oauth2-refresh-token.refresh_token"],
+  );
+  const withoutRefresh = sandboxInstallation();
+  withoutRefresh.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+  const staticOnly = await loadInstallationFile(t, withoutRefresh);
+  assert.deepEqual(
+    (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
+    ["openai", "bearer-token"],
+  );
+
+  // Refresh state lives on the gateway's provider records, so the roles cannot be split.
+  const unselected = refreshing();
+  delete unselected.drivers.credential_refresh;
+  await assert.rejects(
+    loadInstallationFile(t, unselected),
+    /drivers\.credential_refresh must match the selected drivers\.credential_refresh\.id/,
+  );
+  const undeclared = refreshing();
+  delete undeclared.backend[0].drivers.credential_refresh;
+  await assert.rejects(
+    loadInstallationFile(t, undeclared),
+    /drivers\.credential_refresh must match the selected drivers\.credential_refresh\.id/,
+  );
+  const withoutGateway = refreshing();
+  delete withoutGateway.drivers.credential_gateway;
+  await assert.rejects(
+    loadInstallationFile(t, withoutGateway),
+    /drivers\.credential_refresh requires drivers\.credential_gateway/,
+  );
+  const configured = refreshing();
+  configured.drivers.credential_refresh.configuration = { interval: 60 };
+  await assert.rejects(loadInstallationFile(t, configured), /configuration/);
+});
+
 test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
   const missingGateway = sandboxInstallation();
   delete missingGateway.drivers.credential_gateway;
@@ -492,7 +560,10 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     version: "1.0.0",
     mode: "dedicated",
   });
-  assert.equal(codex.plugins.entries.codex.config.appServer.sandbox, "danger-full-access");
+  assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
+    sandbox: "danger-full-access",
+    approvalsReviewer: "user",
+  });
   assert.throws(
     () =>
       driver.configureAgent(configuration, {
@@ -502,6 +573,47 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
       }),
     /supports only dedicated Harness revisions/,
   );
+});
+
+test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 1026)", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  // The documented OpenShell Configuration's guardian app-server, plus a member's model-backed
+  // reviewer. On a model the Gateway cannot verify for review, both make the pinned Gateway
+  // force a user reviewer, and with it a workspace-write turn sandbox that bwrap cannot start
+  // inside OpenShell. The explicit user reviewer keeps the frozen danger-full-access.
+  for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
+    const appServer = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
+    };
+    const configuration = {
+      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+    };
+    const configured = driver.configureAgent(configuration, harness);
+    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "danger-full-access",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      approvalsReviewer: "user",
+    });
+    assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
+    assert.equal(appServer.sandbox, "read-only");
+    // Status reads rerun the hook on stored work, so the pin must be idempotent.
+    assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  }
 });
 
 test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
@@ -778,6 +890,82 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   sandboxes.set(name, { ...sandboxes.get(name), phase: "SANDBOX_PHASE_READY" });
   services.delete(name);
   await assert.rejects(provision(), /exists without its exact bearer-passthrough Harness service/);
+});
+
+test("OpenShell has the gateway restart an exited Harness and still adopts Sandboxes created without that policy", async () => {
+  // Finding 1029: with no policy OpenShell persists NEVER, and an exited Harness stays down until
+  // the Agent is deployed again. A signalled Harness exits 0, so only ALWAYS restarts it.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const creates = [];
+  gatewayClient.getSandbox = async ({ name }) => sandboxes.get(name);
+  gatewayClient.getService = async (_workspace, sandbox, service) => {
+    const url = sandboxes.get(sandbox)?.serviceUrls[""];
+    return url === undefined
+      ? undefined
+      : { sandbox, name: service, targetPort: 8080, authorizationMode: 2, advertisedUrl: url, url };
+  };
+  gatewayClient.createSandbox = async (request) => {
+    creates.push(request);
+    const sandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: { ...request.annotations },
+      spec: request.spec,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    return sandbox;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000001029",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000001029",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const provision = () =>
+    driver.provisionHarness({ ...context, revision, requirements: codexRequirements(revision) });
+
+  const first = await provision();
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+
+  // The gateway reports the stored policy by enum name, or by number from an older decoder.
+  // A Sandbox stored before the policy existed (NEVER, or unset) is still this revision's own.
+  const stored = sandboxes.get(first.resourceName);
+  for (const policy of [
+    "SANDBOX_RESTART_POLICY_ALWAYS",
+    3,
+    "SANDBOX_RESTART_POLICY_NEVER",
+    1,
+    "SANDBOX_RESTART_POLICY_UNSPECIFIED",
+    0,
+    undefined,
+  ]) {
+    const { restart_policy: _omitted, ...spec } = stored.spec;
+    sandboxes.set(first.resourceName, {
+      ...stored,
+      spec: policy === undefined ? spec : { ...spec, restart_policy: policy },
+    });
+    assert.deepEqual(await provision(), first, `adopts a Sandbox stored with ${String(policy)}`);
+  }
+  // OCC never asks for ON_FAILURE, so a Sandbox stored with it is not this revision's.
+  for (const policy of ["SANDBOX_RESTART_POLICY_ON_FAILURE", 2]) {
+    sandboxes.set(first.resourceName, {
+      ...stored,
+      spec: { ...stored.spec, restart_policy: policy },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  }
+  assert.equal(creates.length, 1);
 });
 
 test("OpenShell moves a revision's create to a fresh request_id after the gateway refuses the old one", async () => {
@@ -1134,8 +1322,37 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
+  // Same-cluster Compute with the in-cluster Envoy route hostname the k3d OpenShell
+  // profile uses; the node's setup URL is the one Compute derives for that route.
+  const routeHost = "occ-gateway-0123456789ab.envoy-gateway-system.svc.cluster.local";
+  const computeOptions = conformanceKubernetesOptions({
+    gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  // Routing derives the Gateway client peer from the Envoy namespace.
+  delete computeOptions.network.gatewayClients;
+  const compute = new KubernetesComputeDriver(
+    {
+      ...computeOptions,
+      gatewayRouting: {
+        hostname: routeHost,
+        gatewayName: "oce-agent-gateways",
+        gatewayNamespace: "openclaw-system",
+        envoyNamespace: "envoy-gateway-system",
+      },
+    },
+    { sandboxDriver: driver },
+  );
   const { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup } =
-    codexSandboxFixture(driver);
+    codexSandboxFixture(driver, {
+      nodeSetupUrl: (target, { namespace }) =>
+        compute.workspaceNodeConnectionUrl(
+          target,
+          { name: namespace.name, plane: "execution" },
+          compute.getGatewayEndpoint(target),
+        ),
+    });
+  assert.match(nodeSetup.url, new RegExp(`^wss://${routeHost.replaceAll(".", "\\.")}/`));
 
   await driver.ensureNamespace(context);
   await driver.provisionHarness({ ...context, revision, requirements });
@@ -1290,13 +1507,26 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     binaries: [{ path: "/usr/local/bin/node" }],
     endpoints: [
       {
-        host: "gateway.example.test",
+        host: routeHost,
         ports: [443],
         tls: "NETWORK_TLS_MODE_SKIP",
         enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
       },
     ],
   });
+
+  // Each turn the Gateway writes a native hook credential through Codex into the directory
+  // Compute renders, which the Harness entrypoint creates under its HOME. Hook commands
+  // then call the Gateway route on the host and port the node rule above admits.
+  const relay = compute.gatewayNativeHookRelayConfiguration(revision, {}).plugins.entries.codex
+    .config.appServer.nativeHookRelay;
+  assert.equal(relay.credentialDirectory, `${requests[0].spec.environment.HOME}/.oce-native-hooks`);
+  const callback = new URL(relay.url);
+  const [nodeEndpoint] =
+    requests[0].spec.policy.network_policies["workspace-node-enrollment"].endpoints;
+  assert.equal(callback.protocol, "https:");
+  assert.equal(callback.hostname, nodeEndpoint.host);
+  assert.deepEqual([Number(callback.port || 443)], nodeEndpoint.ports);
 
   await driver.cleanup({ ...context, revision });
   assert.equal(gatewayClient.providers.has(runtimeProvider), false);
@@ -2459,6 +2689,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["[::1]:65536", false],
     ["gateway.example.test?x:8080", false],
     ["user@gateway.example.test:8080", false],
+    // An empty userinfo hides a colon before the host.
+    [":@gateway.example.test:8080", false],
     ["http://gateway.example.test", true],
     ["http://gateway.example.test:8080", true],
     ["http://[::1]:8080", true],
@@ -2466,6 +2698,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["http://gateway.example.test:65536", false],
     ["http://1.2.3.999:8080", false],
     ["http://gate%way.example.test:8080", false],
+    // An origin carries no path.
+    ["http://gateway.example.test:8080/grpc", false],
     ["https://gateway.example.test", true],
     ["https://gateway.example.test:8443", true],
     ["https://[::1]:8443", true],

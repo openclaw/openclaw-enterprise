@@ -285,6 +285,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the active revision.                                                     |
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                               |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                           |
+| Gateway stays unready after a container restart     | Run diagnostics reports a failed `peer-bridge-record` check; logs name `openclaw.json.oce-peer-bridge.json`. Delete the Pod to restore the managed snapshot; native edits are lost.   |
 
 ## Related
 
@@ -299,6 +300,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Changelog
 
+- 2026-10-10 04:00: Added troubleshooting for an unusable Pod-local peer bridge record. (fix-994-995)
 - 2026-09-21 21:20: Explained why intentionally stopped Agents return no native admin origin after their active revision is cleared. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Updated the deployment procedure for the shared OCE session cookie parent domain, cookie migration, and no-exchange Agent host test path. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)

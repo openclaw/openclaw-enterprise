@@ -17,14 +17,9 @@ const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
-// A Kubernetes object name such as a PVC: a DNS subdomain of at most 253 characters whose
-// labels are at most 63, as the chart and prepare-bootstrap-volume check it.
+// Kubernetes DNS-subdomain object names cap the whole name, not each segment.
 function isDnsSubdomainName(value) {
-  return (
-    value.length <= 253 &&
-    dnsSubdomain.test(value) &&
-    value.split(".").every((label) => label.length <= 63)
-  );
+  return value.length <= 253 && dnsSubdomain.test(value);
 }
 // Kubernetes Service names are DNS-1035 labels. The chart refuses any other
 // repositoryCredentials.serviceName.
@@ -484,8 +479,7 @@ function labelSyntax(labels, path, diagnostics, isPrefix) {
 // Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
 // controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
 // runtime selectors in Installation configuration follow it too. Kubernetes allows empty
-// label values, as in `node-role.kubernetes.io/infra: ""`. The chart also caps each prefix
-// label at 63 characters.
+// label values, as in `node-role.kubernetes.io/infra: ""`.
 function nodeSelector(source, path, diagnostics) {
   const labels = labelMap(source, path, diagnostics);
   return labelSyntax(labels, path, diagnostics, isDnsSubdomainName);
@@ -1033,7 +1027,7 @@ function buildInput(rawInput, diagnostics) {
   const databaseCa = section(controlPlane, "databaseCa", diagnostics, false);
   closed(databaseCa, "controlPlane.databaseCa", ["secretName", "key", "mountPath"], diagnostics);
   const loggingCollector = section(controlPlane, "loggingCollector", diagnostics, false);
-  closed(loggingCollector, "controlPlane.loggingCollector", ["enabled"], diagnostics);
+  closed(loggingCollector, "controlPlane.loggingCollector", ["enabled", "exporter"], diagnostics);
   const github = section(controlPlane, "github", diagnostics, false);
   closed(
     github,
@@ -1100,43 +1094,146 @@ function buildInput(rawInput, diagnostics) {
   };
 }
 
-// The chart's dedicated-Secret rule for sign-in credentials (auth.github, auth.google and
-// auth.oidc): each provider's Secret must differ from the installation, database and auth
-// Secrets (left at the chart defaults here), the ChatGPT Backend and gateway API key Secrets,
-// the repository broker Secrets, and the Secret of each provider checked before it.
-const chartSecretNames = ["occ-installation-startup", "occ-database", "occ-auth"];
+// The installation, database and auth Secrets the profile leaves at the chart defaults, and
+// the default sign-in Secret of each provider.
+const chartSecrets = {
+  installation: "occ-installation-startup",
+  database: "occ-database",
+  auth: "occ-auth",
+};
 const signInSecretDefaults = {
   github: "occ-github-login",
   google: "occ-google-login",
   oidc: "occ-oidc-login",
 };
-function signInSecretsDedicated(values, diagnostics) {
+// The chart's default Gateway name (openclaw.gatewayRouting.gatewayName): the profile
+// never sets gatewayRouting.gatewayName, so Compute's routing must use this exact name.
+function chartGatewayName(releaseName) {
+  return `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, "");
+}
+// The Secrets the chart generates for gateway routing when gatewayRouting.tlsSecretName is
+// unset, as the profile leaves it: the leaf certificate (openclaw.gatewayRouting.tlsSecretName)
+// and the root CA (openclaw.gatewayRouting.rootSecretName, named after the hashed Gateway).
+function chartGatewaySecretNames(releaseName, namespace) {
+  const gatewayName = chartGatewayName(releaseName);
+  const routeLabel = sha256Hex(`${namespace}/${gatewayName}`).slice(0, 12);
+  return {
+    tls: `${gatewayName}-tls`.slice(0, 63).replace(/-$/, ""),
+    root: `occ-gateway-${routeLabel}-root`,
+  };
+}
+// The chart's dedicated-Secret rule (openclaw.validate), in the chart's order: each Secret the
+// profile names must differ from the chart's own and generated Secrets and from every Secret
+// listed before it. cert-manager writes the generated Gateway Secrets, and Envoy Gateway accepts
+// every entry of the gateway API key Secret as a client key (findings 1044, 1046, 1048). The
+// enabled log collector's config and exporter Secrets stay at the chart defaults (finding 1054).
+// The public CA settings may share one Secret with each other, as the chart allows (finding 1059).
+const chartCollectorSecretNames = ["occ-otel-collector-config", "occ-otel-collector-exporter"];
+function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
+  const generated = chartGatewaySecretNames(releaseName, namespace);
+  const holders = new Map([
+    ...Object.entries(chartSecrets).map(([role, name]) => [
+      name,
+      `${name} is also the chart's ${role} Secret`,
+    ]),
+    [generated.tls, `the chart generates ${generated.tls} for the Gateway TLS certificate`],
+    [generated.root, `the chart generates ${generated.root} for the Gateway root CA`],
+    ...(values.logging.collector.enabled ? chartCollectorSecretNames : []).map((name) => [
+      name,
+      `the chart's log collector uses ${name}`,
+    ]),
+  ]);
   const repository = values.repositoryCredentials;
-  const taken = [
-    ...chartSecretNames,
-    ...(values.backend?.chatgpt?.enabled ? [values.backend.chatgpt.secretName] : []),
-    values.gatewayRouting.apiKeySecretName,
+  const fields = [
+    ...(values.backend?.chatgpt?.enabled
+      ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
+      : []),
+    ["controlPlane.databaseCa.secretName", values.database.caSecretName, "ca"],
+    ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
+    ...Object.entries(signInSecretDefaults)
+      .filter(([name]) => values.auth[name] !== undefined)
+      .map(([name, fallback]) => [
+        `controlPlane.${name}.secretName`,
+        values.auth[name].secretName ?? fallback,
+      ]),
     ...(repository.enabled
       ? [
-          repository.serviceConfigSecretName,
-          repository.appKeySecretName,
-          repository.tlsSecretName,
-          repository.publicCaSecretName,
+          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
+            `repository.${key}`,
+            repository[key],
+          ]),
+          ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
         ]
       : []),
   ];
-  for (const [name, fallback] of Object.entries(signInSecretDefaults)) {
-    if (values.auth[name] === undefined) {
+  const groups = new Map();
+  for (const [field, name, group] of fields) {
+    if (!name) {
       continue;
     }
-    const secretName = values.auth[name].secretName ?? fallback;
-    if (taken.includes(secretName)) {
+    const holder = holders.get(name);
+    if (holder === undefined) {
+      holders.set(name, `${name} is also ${field}`);
+      groups.set(name, group);
+    } else if (group === undefined || groups.get(name) !== group) {
+      diagnostics.errors.push(`${field} must name a dedicated Secret; ${holder}.`);
+    }
+  }
+}
+
+// The chart's collector egress (logging.collector.exporter): one approved exporter or proxy
+// IPv4 host as a /32, or paired in-cluster selectors, and an optional TCP port (the chart
+// defaults to 443). The chart refuses an enabled collector without one (finding 1047).
+function collectorExporter(loggingCollector, enabled, diagnostics) {
+  const path = ["controlPlane", "loggingCollector", "exporter"];
+  if (loggingCollector.exporter === undefined) {
+    if (enabled) {
       diagnostics.errors.push(
-        `controlPlane.${name}.secretName must name a dedicated Secret; ${secretName} holds other credentials.`,
+        `${path.join(".")} is required with enabled: true; set cidr to the one approved exporter or proxy IPv4 host as a /32, or namespaceLabels and podLabels for an in-cluster exporter.`,
       );
     }
-    taken.push(secretName);
+    return undefined;
   }
+  const exporter = loggingCollector.exporter;
+  if (typeof exporter !== "object" || exporter === null || Array.isArray(exporter)) {
+    diagnostics.errors.push(`${path.join(".")} must be an object.`);
+    return undefined;
+  }
+  closed(exporter, path.join("."), ["cidr", "port", "namespaceLabels", "podLabels"], diagnostics);
+  if (!enabled) {
+    diagnostics.errors.push(
+      `${path.join(".")} requires controlPlane.loggingCollector.enabled: true.`,
+    );
+  }
+  const rendered = {};
+  const cidr = optionalString(exporter, [...path, "cidr"], diagnostics, {
+    validate: (value) => isIpv4Cidr(value, 32),
+    description: "one approved exporter or proxy IPv4 host with /32, such as 203.0.113.10/32",
+  });
+  const selectors = exporter.namespaceLabels !== undefined || exporter.podLabels !== undefined;
+  if (selectors) {
+    if (exporter.namespaceLabels === undefined || exporter.podLabels === undefined) {
+      diagnostics.errors.push(`${path.join(".")} requires both namespaceLabels and podLabels.`);
+    } else {
+      rendered.namespaceLabels = peerSelector(exporter, [...path, "namespaceLabels"], diagnostics);
+      rendered.podLabels = peerSelector(exporter, [...path, "podLabels"], diagnostics);
+    }
+  }
+  if (cidr !== undefined && selectors) {
+    diagnostics.errors.push(
+      `${path.join(".")} requires either cidr or namespaceLabels and podLabels, not both.`,
+    );
+  } else if (cidr === undefined && !selectors) {
+    diagnostics.errors.push(`${path.join(".")} requires cidr or namespaceLabels and podLabels.`);
+  }
+  if (cidr !== undefined) {
+    rendered.cidr = cidr;
+  }
+  const port = optionalPositiveInteger(exporter, [...path, "port"], diagnostics, { max: 65535 });
+  if (port !== undefined) {
+    rendered.port = port;
+  }
+  return rendered;
 }
 
 function buildRendered(profile, parsed, diagnostics) {
@@ -1292,6 +1389,18 @@ function buildRendered(profile, parsed, diagnostics) {
     },
   );
 
+  const collectorEnabled = asBoolean(
+    loggingCollector,
+    ["controlPlane", "loggingCollector", "enabled"],
+    diagnostics,
+    false,
+  );
+  const collectorExporterValues = collectorExporter(
+    loggingCollector,
+    collectorEnabled,
+    diagnostics,
+  );
+
   const values = {
     images: {
       controller: controllerImage,
@@ -1393,11 +1502,18 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     gatewayRouting: {
       enabled: true,
-      gatewayClassName: asString(controlPlane, ["controlPlane", "gatewayClassName"], diagnostics),
+      gatewayClassName: asString(controlPlane, ["controlPlane", "gatewayClassName"], diagnostics, {
+        validate: isKubernetesResourceName,
+        description: "a Kubernetes resource name of at most 253 characters",
+      }),
       apiKeySecretName: asString(
         controlPlane,
         ["controlPlane", "gatewayApiKeySecretName"],
         diagnostics,
+        {
+          validate: isKubernetesResourceName,
+          description: "a Kubernetes resource name of at most 253 characters",
+        },
       ),
       envoyNamespace,
     },
@@ -1424,12 +1540,8 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     logging: {
       collector: {
-        enabled: asBoolean(
-          loggingCollector,
-          ["controlPlane", "loggingCollector", "enabled"],
-          diagnostics,
-          false,
-        ),
+        enabled: collectorEnabled,
+        ...(collectorExporterValues === undefined ? {} : { exporter: collectorExporterValues }),
       },
     },
     repositoryCredentials: {
@@ -1527,7 +1639,7 @@ function buildRendered(profile, parsed, diagnostics) {
             ),
           },
           gatewayRouting: {
-            gatewayName: `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, ""),
+            gatewayName: chartGatewayName(releaseName),
             gatewayNamespace: namespace,
             envoyNamespace,
           },
@@ -1736,7 +1848,7 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
 
-  signInSecretsDedicated(values, diagnostics);
+  dedicatedSecrets(values, releaseName, namespace, diagnostics);
   validateDatabaseCaMount(values, diagnostics);
 
   diagnostics.prerequisites.push(

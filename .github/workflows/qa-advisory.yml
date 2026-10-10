@@ -1,0 +1,83 @@
+name: QA Matrix Advisory
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-advisory-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eligibility:
+    name: QA eligibility
+    runs-on: ubuntu-24.04
+    outputs:
+      trusted: ${{ steps.check.outputs.trusted }}
+    steps:
+      - id: check
+        env:
+          TRUSTED: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
+        run: |
+          echo "trusted=$TRUSTED" >> "$GITHUB_OUTPUT"
+          if [[ "$TRUSTED" != true ]]; then
+            echo 'QA scenarios did not run: this PR requires an approved trusted run with model credentials.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  qa:
+    name: QA advisory (${{ matrix.installation }})
+    needs: eligibility
+    if: needs.eligibility.outputs.trusted == 'true'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    strategy:
+      fail-fast: false
+      matrix:
+        installation: [compose, kubernetes]
+    env:
+      CI: "1"
+      # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs.
+      OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
+      OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
+      OCC_TEST_QA_PRESET: Codex
+      OCC_TEST_QA_SCENARIOS: model-ui,calendar
+      OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
+      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}
+      OCC_TEST_CODEX_CALENDAR_PROMPT: ${{ vars.OCC_TEST_CODEX_CALENDAR_PROMPT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.16.0"
+      - name: Materialize selected QA credentials
+        env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+        run: node scripts/ci/qa-matrix-credentials.mjs
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: qa-matrix
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory-${{ matrix.installation }}
+      - name: Summarize selected scenarios
+        if: always()
+        run: node scripts/ci/qa-matrix-summary.mjs
+      - name: Retain QA outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qa-advisory-${{ matrix.installation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qa-matrix-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove workflow credential inputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"

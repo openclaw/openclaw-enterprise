@@ -8,7 +8,6 @@ import {
   readFile,
   rename,
   rm,
-  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -182,11 +181,15 @@ if (args[0] === "version") {
   const platform = ${JSON.stringify(options.dockerPlatformName ?? "Docker Engine - Community")};
   const server = engine === "docker"
     ? { Platform: { Name: platform }, Components: [{ Name: "Engine" }] }
-    : { Platform: { Name: "Podman Engine" }, Components: [{ Name: "Podman Engine" }] };
+    : {
+        Platform: { Name: podmanDockerApi ? "linux/amd64/fedora-40" : "Podman Engine" },
+        Components: podmanDockerApi
+          ? [{ Name: "Podman Engine" }, { Name: "Engine" }]
+          : [{ Name: "Podman Engine" }],
+      };
   if (args.includes("{{json .Server}}") && (engine === "docker" || podmanDockerApi)) {
     process.stdout.write(JSON.stringify(server) + "\\n");
-  } else if (engine === "docker") process.stdout.write(platform + "\\n");
-  else if (podmanDockerApi) process.stdout.write("Podman Engine\\n");
+  } else if (engine === "docker" || podmanDockerApi) process.stdout.write(server.Platform.Name + "\\n");
   else exit(1);
   exit(0);
 }
@@ -383,8 +386,13 @@ process.exit(86);
   const dockerLog = engine === "docker" ? engineLog : join(directory, "docker.log");
   const podmanLog = engine === "podman" ? engineLog : join(directory, "podman.log");
   const occLog = join(directory, "occ.log");
+  // Settings exported in the caller's shell would override the defaults the
+  // tests assert (for example OCC_DEVELOPMENT_K3S_IMAGE's +v1.35 channel).
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
+  );
   const env = {
-    ...process.env,
+    ...inherited,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",

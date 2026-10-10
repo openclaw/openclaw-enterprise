@@ -205,7 +205,7 @@ const cases = [
       status: 409,
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
-        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
     },
   ],
   [
