@@ -70,6 +70,25 @@ func TestConfigureDevelopmentRoutingUsesHybridEndpoint(t *testing.T) {
 		compute.GatewayRouting.EndpointPort != endpoint.endpointPort {
 		t.Fatalf("unexpected hybrid routing endpoint: %+v", compute.GatewayRouting)
 	}
+	// Compose mounts the Installation into a different non-root user, while
+	// Kubernetes-only state may be private. Rewriting routes must preserve both.
+	for _, mode := range []os.FileMode{0644, 0600} {
+		t.Run(mode.String(), func(t *testing.T) {
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := configureDevelopmentRouting(state, []string{"10.42.0.18/32"}, endpoint); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != mode {
+				t.Fatalf("routing update changed reader permissions: got %o, want %o", info.Mode().Perm(), mode)
+			}
+		})
+	}
 }
 
 func TestDevelopmentRoutingProxyCIDRsUseOnlyExactEnvoyAddresses(t *testing.T) {

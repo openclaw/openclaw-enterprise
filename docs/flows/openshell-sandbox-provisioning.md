@@ -1,6 +1,6 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-09
+updated: 2026-10-10
 last_updated_session: authoring-run/069ad14e-b91f-4b9c-aa37-4c39947e1e83
 ---
 
@@ -128,10 +128,10 @@ the [local deployment guides](../guides/deploy/local-kubernetes-development.md)
 for startup, RBAC, image, and cleanup details.
 
 Before Compose startup, `internal/occdev/compose_routing.go:prepareComposeRoutingFiles`
-resolves the containers' effective UID and GID, requiring one shared non-root
-owner. An isolated helper with only `CHOWN` assigns the two routing files to
-that owner, preserving `0600`. This supports different host and container users;
-failure rolls back before either reader starts.
+assigns the two `0600` routing files to the containers' shared non-root UID/GID
+with an isolated `CHOWN` helper. Failure rolls back before startup.
+`internal/occdev/repository_k3d.go:replaceDevelopmentFile` preserves the
+Installation's `0644` mode for container readers inside the `0700` state directory.
 
 Cleanup validates the recorded engine and state before deleting the named
 cluster and, in Compose mode, the recorded project and volumes. Partial cleanup
@@ -362,7 +362,7 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 ## Changelog
 
-- 2026-10-09 23:55: Prepare private Compose routing files for the actual container user before startup. (authoring-run/069ad14e-b91f-4b9c-aa37-4c39947e1e83 - 15eaa6946c88f64be4ddc51df0bb0dbb64e9c5de)
+- 2026-10-10 00:48: Preserve container read access during routing preparation and updates. (authoring-run/069ad14e-b91f-4b9c-aa37-4c39947e1e83 - e047eac6a6634be923515f73dbe35c04e70dbb8e)
 
 - 2026-10-09 19:45: Cover both runtime architectures in the development credential policy. (authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67 - bd540bcdef63cdc719e73192e4dbe99c365953c3)
 
