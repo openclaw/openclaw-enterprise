@@ -78,3 +78,26 @@ jobs:
       - name: Remove workflow credential inputs
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
+
+  openshell:
+    name: QA advisory (OpenShell)
+    needs: eligibility
+    if: needs.eligibility.outputs.trusted == 'true'
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_OPENSHELL_SECRET_PROJECTION: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: openshell
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory

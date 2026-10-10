@@ -211,7 +211,7 @@ replacement after external changes. Ordinary fixture CI does not run these tests
 
 ### Integration tests outside automatic CI
 
-The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI and Calendar checks outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
+The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI, Calendar, and OpenShell checks outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
 
 #### Manual Full Integration lanes
 

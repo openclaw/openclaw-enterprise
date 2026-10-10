@@ -13,6 +13,7 @@ GitHub Actions selects coverage for each event and ends at `CI Required` and res
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
+- `.github/workflows/qa-advisory.yml:jobs`: trusted PR Codex matrix cells and the full OpenShell lane, outside `CI Required`.
 - `.github/workflows/full-integration.yml:jobs`: manual integration from main or an explicitly approved Kubernetes model or OpenShell branch, bound to the dispatched commit.
 - `scripts/ci/run-tests.mjs:main`: local or workflow `audit`, `run` and `aggregate` commands; the suite map is the coverage owner.
 
