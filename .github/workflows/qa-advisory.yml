@@ -107,6 +107,22 @@ jobs:
               raise SystemExit(f"OpenShell requires Landlock ABI >=3; got {abi}, errno={ctypes.get_errno()}")
           print(f"Kernel {os.uname().release}: Landlock ABI {abi}")
           PYTHON
+      - name: Diagnose direct model access
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          payload = json.dumps({"model": os.environ["OCC_TEST_OPENAI_MODEL"], "input": "Reply READY.", "max_output_tokens": 32}).encode()
+          request = urllib.request.Request("https://api.openai.com/v1/responses", data=payload, headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  print(f"Direct model request: HTTP {response.status}")
+          except urllib.error.HTTPError as error:
+              print(f"Direct model request: HTTP {error.code}")
+          PYTHON
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
