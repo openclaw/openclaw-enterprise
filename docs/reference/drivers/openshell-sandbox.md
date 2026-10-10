@@ -258,22 +258,25 @@ both resources.
 
 ## Create-time app-server exposure
 
-For dedicated Codex, `CreateSandbox` includes one unnamed exposure for Compute's
-literal `APP_SERVER_PORT`. The revision UUID is the first `request_id`; bounded
+`CreateSandbox` exposes dedicated Codex's `APP_SERVER_PORT` through one unnamed
+exposure. The revision UUID is the first `request_id`; bounded
 [request ID retries](../../flows/openshell-sandbox-provisioning.md#4-call-the-versioned-gateway-contract)
 handle unresolved refusals when no Sandbox exists. Reconciliation adopts only an
-exact Sandbox and exposure. The client retains a normalized control URL and the
-original advertised workload URL, which the optional Harness endpoint capability
-returns as a WebSocket origin.
+exact Sandbox and exposure. The client retains the normalized control URL and
+advertised workload URL; `harnessEndpoint` returns the latter as a WebSocket origin.
 
 Compute supplies only `APP_TOKEN_SHA`; the raw token remains in the Agent
 Gateway. Bearer passthrough lets Codex authenticate the forwarded header. Other
 exposures keep OpenShell's authorization-stripping default. A Sandbox without a
 replayable Create receipt must be removed, not mutated by `ExposeService`.
 
-With that capability, Compute replaces the fail-closed Gateway target and omits
-the direct Agent Service and Compute-owned Harness route. Drivers without it
-retain the Kubernetes transport.
+Compute replaces the fail-closed Gateway target, omitting the direct Agent Service
+and Compute-owned Harness route. Drivers without `harnessEndpoint` retain Kubernetes
+transport.
+
+Compute reports held Harness startup failures before waiting for Gateway and
+workspace-node readiness. A serving Harness requires both checks
+before activation; see the [readiness flow](../../flows/openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up).
 
 Native OpenClaw does not accept inbound Harness traffic. Its enrolled node host
 opens the connection to the Agent Gateway, so the Driver sends an empty service

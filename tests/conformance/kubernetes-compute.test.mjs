@@ -9796,6 +9796,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const setupRequests = [];
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
+  let workspaceNodeConnected = true;
   const fixture = providerReadinessFixture({
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
@@ -9848,7 +9849,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
         };
       },
       async isConnected() {
-        return true;
+        return workspaceNodeConnected;
       },
     },
   });
@@ -10277,6 +10278,35 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     ...expected,
     ready: false,
     runtimeFailure: heldFailure,
+  });
+  // A Gateway or node waiting for its failed Harness cannot become ready.
+  // Report the Harness failure before either dependent readiness check.
+  const waitingGateway = objects.get(key("Deployment", gatewayName, gatewayNamespace));
+  const servingGatewayStatus = structuredClone(waitingGateway.status);
+  for (const [readyReplicas, connected] of [
+    [0, true],
+    [1, false],
+  ]) {
+    waitingGateway.status.readyReplicas = readyReplicas;
+    workspaceNodeConnected = connected;
+    save(waitingGateway);
+    harnessAnswer = { state: "failed", runtimeFailure: heldFailure };
+    assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+      ...expected,
+      ready: false,
+      runtimeFailure: heldFailure,
+    });
+    // A serving Harness must still wait for its unready Gateway or node.
+    harnessAnswer = { state: "serving" };
+    assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+      ...expected,
+      ready: false,
+    });
+  }
+  workspaceNodeConnected = true;
+  save({
+    ...objects.get(key("Deployment", gatewayName, gatewayNamespace)),
+    status: servingGatewayStatus,
   });
   // A cause outside the closed vocabulary is dropped; the failure code stays.
   harnessAnswer = {
