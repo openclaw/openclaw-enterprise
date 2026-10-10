@@ -225,14 +225,13 @@ name the one approved isolated fixture repository as lowercase
 `owner/repository`. The isolated path checks the registry's repository target
 before materializing credential files: the registry must contain exactly one
 repository, that repository must match `QA_ISOLATED_REPOSITORY_FULL_NAME`, and
-it must not be the workflow repository. The runner uses the isolated App key to mint a separate repository-scoped
-observer installation token on demand. This is a separate token from the broker
-tokens, but it comes from the same GitHub App identity that owns the isolated
-repository fixture. The workflow does not require a static
-`QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN` secret, and that secret should not be
-created. The
-isolated path still shares the approved model, Codex, Slack, Calendar, and
-upstream CIDR settings from `integration-qa`. If any isolated repository secret
+it must not be the workflow repository. The runner uses the isolated App key
+to mint a separate repository-scoped observer installation token on demand. This
+is a separate token from the broker tokens, but it comes from the same GitHub App
+identity that owns the isolated repository fixture. The workflow does not require
+a static `QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN` secret, and that secret should
+not be created. The isolated path still shares the approved model, Codex, Slack,
+Calendar, and upstream CIDR settings from `integration-qa`. If any isolated repository secret
 or target is missing or mismatched, credential materialization fails; the
 workflow does not fall back to the default repository secrets.
 
@@ -266,9 +265,10 @@ above. See [fixture and scenario conventions](fixtures-and-scenarios.md).
   own Agent and must clean up only that Agent. Keep dependent steps sequential
   within the worker. Installation-wide changes belong before or after the
   joined worker group, never inside a parallel scenario.
-- Register cleanup with the fixture and record only nonsecret evidence. GitHub
-  App observer tokens are short-lived and expire at GitHub; the runner does not
-  revoke each minted observer token during normal cleanup.
+- Register cleanup with the fixture, preserve uncertain credential-disposal
+  recovery, and record only nonsecret evidence. GitHub App observer tokens are
+  short-lived and expire at GitHub; the runner does not revoke each minted
+  observer token during normal cleanup.
 - For new required inputs, update
   [`qa-matrix.json`](../../scripts/ci/test-suites/qa-matrix.json), the protected
   workflow credential setup when needed, and this page's prerequisites.
