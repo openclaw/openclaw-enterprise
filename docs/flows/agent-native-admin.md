@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: "2026-10-08"
-last_updated_session: "authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c"
+last_updated_session: "authoring-run/0833a32e-8d5b-43b1-b039-a52a7747a56b"
 ---
 
 # Agent Native Admin UI Flow
@@ -79,9 +79,9 @@ The warning text tells operators that native admin access can change gateway sta
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getAdministerableActiveAgentRevision`
 
-The status handler validates the human session, preserves the OCC exact-Agent `administer` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getAdministerableActiveAgentRevision`. That controller method authorizes exact Agent `administer` and loads the Agent before inspecting its state. If the Agent is stopped and has no `activeRevisionId`, it raises `ResourceConflictError`; the resolver returns only `status: "stopped"`. This covers new Agents and completed stops. If active-revision selection instead raises `NoActiveAgentRevisionError`, as for a desired-running Agent awaiting activation, the resolver returns `unavailable` in a successful status envelope. Any other `DependencyUnavailableError` (an IAM or State outage) reaches the error handler as `503`. The console asks the operator to check the Agent's deployment and refresh access; private gateway routing has not been evaluated. The panel always reports the Agent's active revision, independently of the viewed snapshot. Authorization denial remains a protected-route `403` and preserves the human IAM denial audit.
+The status handler validates the human session and delegates to `resolveNativeAdminAvailability`. The resolver authorizes exact-Agent `administer` and checks existence before returning `disabled`. When enabled, it requires the public origin and native admin domain, then calls `controller.getAdministerableActiveAgentRevision` to authorize and load the Agent. A stopped Agent without an `activeRevisionId` raises `ResourceConflictError` and returns only `status: "stopped"`, covering new Agents and completed stops. `NoActiveAgentRevisionError` returns `unavailable`; other dependency failures, including IAM or State outages, return `503`. The panel uses the active revision independently of the viewed snapshot. Authorization denials remain audited `403` responses.
 
-After active revision selection succeeds, OCC derives the native target. If the Agent's desired runtime state is not `running`, the resolver returns `stopped` with the derived host and origin. If `nativeAdminConfigurationSupported` rejects trusted-proxy auth, admin identity scopes, admin device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. If the selected Compute Driver cannot provide a gateway endpoint or the endpoint is not a clean private `wss:` URL, it also returns `unsupported`. Only the `available` result carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits that value from the browser API response.
+OCC then derives the native target. An Agent not desired running returns `stopped` with its host and origin. Unsupported trusted-proxy authentication, admin identity/device scopes, control UI settings, exact allowed origins, host-header fallback, disabled device authentication, or a missing clean private `wss:` endpoint return `unsupported`. Only `available` carries the private `gatewayBase`, which `nativeAdminAvailabilityData` omits from the browser response.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -89,7 +89,7 @@ After active revision selection succeeds, OCC derives the native target. If the 
 
 `deriveNativeAdminHost` hashes Installation ID, Namespace ID, and Agent ID into an opaque label under the configured domain. `nativeAdminTarget` replaces the hostname of `publicOrigin` with that derived Agent host and returns `/` as the browser entrypoint for that Agent.
 
-The host hash is not reversible. Native-host admission resolves the host back to an exact Agent by checking existing Installation, Namespace, and Agent state for the derived host. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed. This flow does not add a persistent host registry.
+The opaque host is resolved against existing Installation, Namespace, and Agent state; no persistent host registry is added. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
 `nativeAdminGatewayHttpBase` accepts only a `wss:` endpoint without username, password, query, or hash, then converts it to `https:` while preserving authority and the Agent base path. This keeps workspace-file WSS behavior unchanged while defining the private HTTP base needed by the native UI bridge.
 
@@ -120,8 +120,11 @@ routes. For Agent hosts, OCC authenticates the shared session cookie, resolves
 the selected IAM identity, resolves the requested host to the exact Agent,
 revalidates exact Agent `administer`, selects the current active revision, and
 validates native configuration support before proxying. Attributable IAM denials
-during proxy admission preserve an IAM denial audit for the human session and
-exact Agent instead of becoming unaudited dependency failures.
+during proxy admission trigger one audit append attempt for the human session and
+exact Agent. The admission owner consumes late denials even after the five-second
+admission wait, client disconnect or shutdown wait. A timely HTTP denial waits for
+its audit append before returning `403`, so a stalled append can delay the HTTP
+response. A failed append or admission timeout returns `503`.
 
 Admission reads Better Auth once and returns the verified session metadata with
 the caller identity. The status and proxy paths reuse that result to check
@@ -136,11 +139,19 @@ The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatchi
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. An exact-Agent authorization denial still records its attributable audit after a reset. An allowed admission checks whether the client socket was destroyed before and after resolving the private transport context, so a disconnected client does not open a gateway connection. A connected client proceeds with the selected active revision.
+The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. A refused socket closes without waiting for its attributable denial audit. An allowed admission checks for client destruction and shutdown before and after resolving the private transport context; late success cannot open a gateway connection. A connected client proceeds with the selected active revision.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each lease bounded to 5 seconds. Failed, denied, timed-out, or revision-changed lease checks close both sockets and preserve the IAM denial audit when authorization is the reason. An authorized reconnect uses the current active revision. Native chat does not renew the OCE session.
+The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each lease bounded to 5 seconds. Failed, denied, timed-out, or revision-changed lease checks close both sockets. Denial closure does not wait for append; a late attributable lease denial still triggers its single audit attempt. An authorized reconnect uses the current active revision. Native chat does not renew the OCE session.
+
+Admission remains tracked through its audit attempt, alongside close audits.
+Shutdown gives that work one five-second drain wait, including an admission that
+becomes an append during the wait. Expiry logs `native_admin.pending_work_unresolved`
+with the pending count. The Collector exports that exact event and bounded count,
+without request or user context. Ownership continues until settlement while the
+process lives. The wait does not cancel producers or guarantee durable delivery. Stalled
+work can accumulate, and process exit can prevent or interrupt an audit attempt.
 
 ### 8. Runtime renders HTML on a separate origin
 
@@ -194,6 +205,10 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 10:11: Shortened the flow and documented bounded pending-work diagnostic export. (authoring-run/0833a32e-8d5b-43b1-b039-a52a7747a56b - ba634da549c9506813c0cafe07dc4aea79187e43)
+
+- 2026-10-08 06:22: Track admission through denial audit, close refused sockets promptly, and document bounded shutdown waiting with unresolved work. (authoring-run/5f9fde5c-b06d-4572-b39d-9cbeff312f38 - 5b82d7898d6880c32c0d45d96dcd1016056f1e13)
 
 - 2026-10-08 03:40: Documented client reset handling during native-admin WebSocket admission and the denial-audit and upstream-connection ordering at inspected revision `002d0f796`. (authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c - 002d0f79639a9c814eb1fa2799530516a6c90cde)
 

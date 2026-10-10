@@ -209,9 +209,12 @@ Compute Driver refused a provisioning plan for a reason the caller cannot fix) k
 `request.id`; the Driver's reason stays local. `http.dependency_unavailable` (the cause
 of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
 `request.id`; its route, error class, message and causes stay in the API's local log.
-`native_admin.websocket_audit_failed`
-keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `authentication.activation-warning`, `authentication.password-sign-in-warning`
+`native_admin.websocket_audit_failed` keeps the Namespace, Agent and revision IDs.
+`native_admin.http_denial_audit_failed` and `native_admin.websocket_denial_audit_failed`
+carry no request, user, error or payload fields. `native_admin.pending_work_unresolved`
+keeps only its nonnegative safe-integer count as `occ.native_admin.pending`; invalid
+counts are omitted. Transport-derived identity remains.
+`authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
 `presets.default-refresh-skipped` (a default Preset copy kept because policy refused
@@ -293,6 +296,8 @@ for panels, correlation, and authorization limits.
 
 - 2026-10-09 14:00: Export `http.dependency_unavailable`, the API warning that names the cause of a `503 DEPENDENCY_UNAVAILABLE` by request ID; the cause stays local. (fix-529-938)
 - 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
+
+- 2026-10-08 12:55: Export both native-admin denial-audit failure events without caller context and document the bounded pending-work count. (authoring-run/59df3b19-e8b1-4175-b654-36cb73c2234b - f51dc0c9)
 
 - 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.
 - 2026-10-06 06:30: Export the API shutdown, idle database connection, device login, cluster credential denial, native admin audit failure and authentication startup warnings that other pages tell operators to look for.
