@@ -296,7 +296,9 @@ are not claimed as runnable acceptance coverage.
 The [QA advisory workflow](../../.github/workflows/qa-advisory.yml) runs the full
 `openshell` lane on trusted same-repository PRs, alongside the Compose and
 Kubernetes Codex checks. Fork and Dependabot PRs require trusted execution.
-The OpenShell job is outside `CI Required`: failures remain visible without
+The OpenShell job uses GitHub Ubuntu with an early Landlock ABI check; the
+Blacksmith kernel cannot enforce its sandbox filesystem policy. It is outside
+`CI Required`: failures remain visible without
 blocking merges. Its result artifact is `qa-advisory-openshell`.
 
 The [lane manifest](../../scripts/ci/test-suites/openshell.json) selects five

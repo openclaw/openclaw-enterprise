@@ -83,7 +83,8 @@ jobs:
     name: QA advisory (OpenShell)
     needs: eligibility
     if: needs.eligibility.outputs.trusted == 'true'
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: integration-qa-pr
     env:
@@ -91,6 +92,21 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
     steps:
+      - name: Verify Landlock support
+        run: |
+          python3 - <<'PYTHON'
+          import ctypes
+          import os
+          import platform
+
+          assert platform.machine() == "x86_64", "This probe requires the x86_64 runner."
+          # x86_64 __NR_landlock_create_ruleset, LANDLOCK_CREATE_RULESET_VERSION.
+          libc = ctypes.CDLL(None, use_errno=True)
+          abi = libc.syscall(444, 0, 0, 1)
+          if abi < 3:
+              raise SystemExit(f"OpenShell requires Landlock ABI >=3; got {abi}, errno={ctypes.get_errno()}")
+          print(f"Kernel {os.uname().release}: Landlock ABI {abi}")
+          PYTHON
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
