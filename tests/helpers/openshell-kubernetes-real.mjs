@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { rootCertificates } from "node:tls";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -16,6 +17,12 @@ const sandboxApiResource = "sandboxes.agents.x-k8s.io";
 const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
+
+// The pinned Kubernetes driver, not policy.process, owns workload identity.
+// This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
+// NVIDIA/OpenShell 021400be8af471f8669369e679de3e18cf0bd672
+// crates/openshell-driver-kubernetes/src/config.rs:309,513-545.
+export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
 // thread rollouts. Skills no longer arrive through the workspace PVC.
@@ -69,9 +76,12 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
   };
 }
 
-// Model egress comes only from the credential source's OpenShell profile, bound to this binary.
-export const OPENSHELL_CODEX_BINARY =
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.160.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+// Model egress comes only from the credential source's profile, bound to native Codex.
+// Match either architecture of the pinned image, independent of the test runner's host.
+const openshellCodexBinaries = Object.freeze([
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+]);
 
 export function createOpenShellInstallationConfiguration({
   authentication,
@@ -122,7 +132,7 @@ export function createOpenShellInstallationConfiguration({
   ];
   configuration.drivers.credential_gateway = {
     id: "credential-gateway-openshell-kubernetes",
-    configuration: { binaries: [OPENSHELL_CODEX_BINARY] },
+    configuration: { binaries: [...openshellCodexBinaries] },
   };
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
@@ -578,7 +588,16 @@ export function createOpenShellKubernetesFixture({
     }
   }
 
-  async function installOpenShellGateway(namespace, { sandboxServiceAccountName } = {}) {
+  /**
+   * Installs the Namespace's gateway. `extraTrustPem` adds a private CA through the chart's
+   * extra volume settings. The gateway image sets SSL_CERT_FILE to its CA bundle, so its TLS
+   * stack reads only that file: the mount replaces it with the public roots plus the CA, and a
+   * gateway-owned refresh can then reach an issuer whose certificate that CA signs.
+   */
+  async function installOpenShellGateway(
+    namespace,
+    { sandboxServiceAccountName, extraTrustPem } = {},
+  ) {
     await kubectl(
       "label",
       "namespace",
@@ -637,6 +656,35 @@ export function createOpenShellKubernetesFixture({
     if (sandboxServiceAccountName !== undefined) {
       values.push("--set=sandboxServiceAccount.create=false");
       values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
+    }
+    if (extraTrustPem !== undefined) {
+      const trust = "oce-gateway-extra-trust";
+      const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
+      const path = join(directory, "configmap.json");
+      try {
+        await writeFile(
+          path,
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "ConfigMap",
+            metadata: { name: trust, namespace },
+            data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
+          }),
+          { mode: 0o600 },
+        );
+        // The bundle exceeds what client-side apply can record in its annotation.
+        await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+      values.push(
+        `--set-string=server.extraVolumes[0].name=${trust}`,
+        `--set-string=server.extraVolumes[0].configMap.name=${trust}`,
+        `--set-string=server.extraVolumeMounts[0].name=${trust}`,
+        "--set-string=server.extraVolumeMounts[0].mountPath=/etc/ssl/certs/ca-certificates.crt",
+        "--set-string=server.extraVolumeMounts[0].subPath=ca.crt",
+        "--set=server.extraVolumeMounts[0].readOnly=true",
+      );
     }
 
     await execute(
@@ -948,6 +996,16 @@ export function createOpenShellKubernetesFixture({
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);
     assert.notEqual(container.securityContext?.runAsUser, 0);
+    assert.equal(
+      container.securityContext?.runAsUser ?? pod.spec.securityContext?.runAsUser,
+      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.uid,
+      "OpenShell workload identity must match the fixture's private-storage owner.",
+    );
+    assert.equal(
+      container.securityContext?.runAsGroup ?? pod.spec.securityContext?.runAsGroup,
+      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.gid,
+      "OpenShell workload group must match the fixture's private-storage owner.",
+    );
   }
 
   async function assertGatewayBootstrapPolicies(namespace) {

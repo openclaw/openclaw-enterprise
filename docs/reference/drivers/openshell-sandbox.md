@@ -1,21 +1,18 @@
 # OpenShell SandboxDriver
 
-The bundled OpenShell SandboxDriver integrates a deployment-paired OpenShell
-Gateway with dedicated Codex and native OpenClaw Harnesses and the bundled
-[Kubernetes Compute Driver](kubernetes-compute.md). OCC retains ownership of
+The OpenShell SandboxDriver pairs its Gateway with dedicated Codex/native
+OpenClaw Harnesses and [Kubernetes Compute](kubernetes-compute.md). OCC owns
 Agents, revisions, Namespaces, routing, credentials, and authorization.
 
-The development profile implements plugin-free dedicated Codex with
+Development supplies plugin-free dedicated Codex with
 [`v0.1.3-pre.2`](https://github.com/NVIDIA/OpenShell/tree/v0.1.3-pre.2). The paired
 [OpenShell Credential Gateway](openshell-credential-gateway.md) delivers the
-model key, while a revision-owned provider supplies Codex runtime files and its
-workspace-node credential. These APIs remain experimental and unqualified for
-production.
+model key; a revision-owned provider supplies Codex files and the workspace-node
+credential. These APIs are experimental and unqualified for production.
 
-Embedded OpenClaw also fails when OpenShell is selected; the integration is
-designed only for dedicated Harnesses. The bundled Driver supplies all three
-containment facets required by dedicated native OpenClaw. See the
-[qualification contract](#qualification-contract) before evaluating it.
+Embedded OpenClaw fails: only dedicated Harnesses are supported. The Driver
+supplies native OpenClaw's three containment facets; see
+[qualification](#qualification-contract).
 
 ## Ownership model
 
@@ -58,7 +55,7 @@ to a running Agent requires upstream support:
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
-| `process`    | OpenShell process policy, including the configured run-as user and group.                     |
+| `process`    | OpenShell process policy; v0.1.3-pre.2 ignores its run-as user and group.                     |
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
@@ -125,6 +122,10 @@ approved mounts, and `/sandbox/.openclaw-runtime` are writable. Set an explicit
 `filesystem` block to replace the baseline when tightening the Sandbox. The
 Driver still adds its required mounts, runtime root, and `/tmp`.
 
+The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
+OpenShell ignores them: its Kubernetes driver runs every Sandbox process as the
+workload identity, default `10001:10001`.
+
 Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
@@ -164,10 +165,8 @@ The disposable profile enables OpenShell's unauthenticated development mode.
 The pinned release serves control-plane RPCs and provider-advertised Harness
 traffic on the same Gateway port. NetworkPolicies limit access to trusted OCE,
 OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
-service-only authority on that shared listener. This limitation is accepted
-only in an owned disposable development cluster. It does not block merging or
-using these development flows, but this topology must not be qualified for
-production.
+service-only authority on that shared listener. Accept this only in an owned
+disposable development cluster; never qualify this topology for production.
 
 `gateway.operatorWorkspaceResources` accepts the namespace-scoped
 ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
@@ -206,15 +205,16 @@ inner Codex app-server sandbox:
 ```
 
 This avoids stacking the Codex sandbox inside OpenShell, which becomes the
-dedicated Harness's outer containment boundary. Native OpenClaw already runs
-with its inner runtime isolation disabled, so the hook leaves its configuration
-unchanged. Native session workers have separate managed workspaces, but they share the Sandbox's
-user, filesystem, process, and network boundary. OpenShell isolates the
-AgentRevision from other workloads; it does not isolate mutually untrusted
-sessions within one Agent. Kubernetes defaults to eight retained native workers
-and accepts an explicit `runtime.nativeOpenClawSessionCapacity` from `1` through
-`1024`. A stopped hosted session releases its slot; idle workers are not
-automatically retired.
+dedicated Harness's outer containment boundary. Native OpenClaw already disables
+inner isolation. Its hook sets `agents.defaults.workspace` and any
+`agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
+which the Gateway, file transfer, and node address; admission refuses a roster
+that makes another Agent the default. Native workers have separate
+workspaces but share the Sandbox's user, filesystem, process, and network
+boundary. OpenShell isolates the AgentRevision from other workloads, not mutually
+untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
+`runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. A stopped
+hosted session releases its slot; idle workers are not automatically retired.
 
 ## Credential attachments
 

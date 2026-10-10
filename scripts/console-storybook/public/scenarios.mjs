@@ -546,6 +546,25 @@ export const scenarios = {
     description:
       "A rejected Google callback shows the generic sign-in error and keeps password recovery available.",
   },
+  googleAccountDisabled: {
+    group: "Pages/Sign in",
+    name: "Google account disabled",
+    path: "/console/?authError=google&authReason=account-disabled",
+    signedOut: true,
+    googleEnabled: true,
+    description:
+      "Google authenticated an identity attached to a disabled account, so the page says the account is disabled and names an administrator, not a retry, password or identity attach.",
+  },
+  recoveryOnlyAccountDisabled: {
+    group: "Pages/Sign in",
+    name: "Recovery-only account disabled",
+    path: "/console/?authError=github&authReason=account-disabled",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",
@@ -635,7 +654,7 @@ export const scenarios = {
       "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access is rechecked before page controls become active. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
     steps: [
       "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
-      "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
+      "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
@@ -976,9 +995,9 @@ export const scenarios = {
     description:
       "The actual form lists the first catalog page, places enableable plugins first, and keeps unavailable rows compact with reasons in popovers. Selecting a plugin loads its tools before Add becomes available.",
     steps: [
-      "Review the Driver's workspace access and service account setup guidance. Connection status is unverified; catalog availability does not confirm linked credentials. External help links open separately from plugin navigation.",
+      "Expand Access and credential setup for the full Driver guidance and external help links, then collapse it. The credential/access reminder stays visible; catalog availability does not verify connections.",
       "Open the information button beside each unavailable plugin to compare its administrator, plan, or unsupported-runtime reason and help link. Escape or a click outside dismisses the popover. Choose the plugin row to see the same guidance in detail; Add stays disabled.",
-      "Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
+      "At 390px width and both 844px and 640px height, scroll the plugin list and use Next page and Previous page. Search and pagination remain reachable while the list and details scroll within the dialog.",
       "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -1368,6 +1387,7 @@ export const scenarios = {
     pluginCapabilities,
     pluginCatalog: {
       status: "error",
+      canLoad: true,
       message: "This credential does not have access to the plugin catalog.",
     },
     description:
@@ -1383,6 +1403,7 @@ export const scenarios = {
     pluginCapabilities,
     pluginCatalog: {
       status: "error",
+      canLoad: true,
       message: "The plugin catalog could not be loaded. Try again after restoring connectivity.",
     },
     description: "A simulated catalog failure is shown as an error, not a successful empty result.",
@@ -1395,7 +1416,7 @@ export const scenarios = {
     actions: [click("Configure plugins")],
     pluginCapabilities,
     description:
-      "The component explains that discovery requires an entered service account token with the Codex harness.",
+      "The component explains that discovery requires an entered service account token with the Codex harness. The empty list points to Plugin selections JSON for adding a plugin by ID instead of the unavailable Load plugins.",
   },
   pluginsCapabilitiesUnavailable: {
     group: "Components/Plugins",
@@ -1899,6 +1920,25 @@ export const scenarios = {
     description:
       "A rejected save retains its Configuration. Reload clears stale choices; retry requires a current repository and access level. Starting a new draft explicitly leaves repository-scoped recovery.",
   },
+  createModelFallbackSelection: {
+    group: "Pages/Create Agent",
+    name: "Choose an existing fallback as primary",
+    path: create,
+    modelFallbackSelection: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+      { selector: "#agent-model", value: "fallback-one" },
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "Changing the primary removes the unused old model and preserves the ordered fallback references, their model metadata and the existing transport. Simulated UI proof; no model request is executed.",
+    steps: [
+      "Inspect Configuration JSON: primary is openai/fallback-one; the directory contains fallback-one and fallback-two.",
+      "Choose fallback-two as primary. Both referenced model entries and their saved aliases/parameters remain.",
+      "Clear the Model ID, then enter another-model. Existing fallback metadata remains while the new primary is added.",
+    ],
+  },
   createPreset: {
     group: "Pages/Create Agent",
     name: "Preset variables",
@@ -2056,6 +2096,39 @@ export const scenarios = {
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
     description:
       "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+  },
+  createPresetInvalidField: {
+    group: "Pages/Create Agent",
+    name: "Preset with an invalid field",
+    path: create,
+    presetAgent: { executionMode: "turbo" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Codex assistant" },
+      click("Use Preset"),
+    ],
+    description:
+      "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
+    gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
+  },
+  createCapabilitiesDenied: {
+    group: "Pages/Create Agent",
+    name: "Agent creation needs an administrator",
+    path: create,
+    actions: form,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
+    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+  },
+  createCapabilitiesError: {
+    group: "Pages/Create Agent",
+    name: "Capability check failure",
+    path: create,
+    actions: form,
+    rules: [{ path: "/installation", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+    description:
+      "A transient capability-read failure keeps Create Agent disabled and offers Retry capability check.",
   },
   createNoPresets: {
     group: "Pages/Create Agent",
@@ -2340,6 +2413,9 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "First version",
     path: draft,
+    steps: [
+      "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+    ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
   },
@@ -2504,6 +2580,8 @@ export const scenarios = {
     steps: [
       "The first catalog page loads in the background when the Plugins tab opens, using the saved Service Accounts token. Open Configure plugins to review Calendar's saved policy.",
       "Open Calendar and inspect the tool IDs beneath their titles. Type create into Filter tools, then clear it; filtering should keep the cursor in the search box.",
+      "In Available, select Calendar, filter tools by create, and expand Create event. Switch to Configured, filter plugins by Calendar, and choose Calendar with a different tool filter. Round-trip the tabs: each keeps its selection, query, tool filter, and expanded rows without another catalog request.",
+      "Remove Calendar from Configured: its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
       "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
       "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
     ],
@@ -2746,11 +2824,37 @@ export const scenarios = {
   deploymentFailed: {
     group: "Pages/Agent detail",
     name: "New version failed",
-    path: candidateVersion,
+    path: currentVersion,
     deployed: true,
     candidateDeploymentStatus: "failed",
     description:
-      "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
+      "While viewing current v6, deployment activity reports failed v7 with bounded startup failure evidence. Open v7 Logs selects that failed version and brings its output into view.",
+    steps: [
+      "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
+      "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
+    ],
+    gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
+  },
+  deploymentFailedLogsFromDraft: {
+    group: "Pages/Agent detail",
+    name: "Failed deployment logs from draft",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The draft has no Logs tab, but failed v7 activity links directly to v7 Logs. Simulated log access is denied and the visible panel explains the required permission.",
+    steps: [
+      "Select Open v7 Logs in Deployment activity. Confirm v7 is viewed, the Logs tab is selected and focused, and its panel scrolls into view.",
+      "Check that the log permission error is visible instead of output; use Back to restore the draft.",
+    ],
+    gap: "The failure and permission denial are simulated UI evidence; they do not establish backend authorization or live log availability.",
   },
   deploymentModelProbeFailed: {
     group: "Pages/Agent detail",
@@ -2845,6 +2949,13 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     description:
       "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
+    steps: [
+      "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
+      "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
+      "Expand the runtime.startup_phase row to inspect its fields. The timestamp, level, origin, and message remain aligned in the collapsed rows.",
+      "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
+    ],
+    gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
   },
   runtimeLogsStartupWarnings: {
     group: "Pages/Agent detail",
@@ -2869,6 +2980,10 @@ export const scenarios = {
     ],
     description:
       "Download saves the redacted text tail as a .log file through its own audited read. Hiding info and filtering for slack narrows the loaded window to the redacted reconnect warning; the status line counts the hidden rows.",
+    steps: [
+      "Check that info is deselected, the Filter field contains slack, and the visible row keeps its level, origin, and redacted message readable.",
+      "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
+    ],
   },
   runtimeLogsDenied: {
     group: "Pages/Agent detail",
@@ -2885,6 +3000,44 @@ export const scenarios = {
     ],
     description:
       "An Agent operator sees Pod status and Events but no log text. The page names the missing grants and does not request the log view again.",
+    steps: [
+      "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
+    ],
+  },
+  runtimeLogsReaderDownload: {
+    group: "Pages/Agent detail",
+    name: "Runtime logs downloaded by a log reader",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Download")],
+    description:
+      "A log reader without Agent operate has no runtime status or Pod picker. Log text still loads from the source's current Pod, and Download names the saved file after that Pod, as the status line does.",
+  },
+  runtimeLogsReaderNoPodDownload: {
+    group: "Pages/Agent detail",
+    name: "Log reader downloads after the Pod disappears",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    runtimeLogDownloadNoPod: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Download")],
+    description:
+      "Simulated UI: the page retains the last Pod's log text, but the Pod disappears before Download. The fresh download has a valid no-Pod response header, so the saved filename ends in no-pod.log rather than naming the previous Pod.",
   },
   runtimeLogsClusterRbac: {
     group: "Pages/Agent detail",
@@ -3055,7 +3208,11 @@ export const scenarios = {
     mobile: true,
     actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
     description:
-      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it.",
+      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
+    steps: [
+      "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
+      "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
+    ],
   },
   slack: {
     group: "Components/Channels",
@@ -3733,7 +3890,11 @@ export const scenarios = {
     auth: "service",
     rules: [{ suffix: "/service-accounts", method: "GET", status: 403 }],
     description:
-      "A failed list request preserves the saved account and explains that accounts are unavailable.",
+      "A failed list request preserves the saved account and explains that accounts are unavailable only while issued-account authentication is selected.",
+    steps: [
+      "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
+      "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
+    ],
   },
   nativeAdmin: {
     group: "Components/Native admin",

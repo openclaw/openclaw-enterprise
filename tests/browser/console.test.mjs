@@ -1071,6 +1071,48 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   await expectNoText(page, /organization/);
 });
 
+test("a disabled account's provider sign-in says the account is disabled", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  let password = true;
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { github: true, google: true, password, sessionBinding: true },
+        meta: { requestId: "browser-account-disabled" },
+      }),
+    }),
+  );
+  // Any provider's callback may carry it; neither a retry, a password nor an attach can help,
+  // so the advice names only an administrator, with or without password sign-in.
+  for (const [provider, label] of [
+    ["github", "GitHub"],
+    ["google", "Google"],
+  ]) {
+    for (const available of [true, false]) {
+      password = available;
+      await page.goto(
+        `${fixture.origin}/console/?authError=${provider}&authReason=account-disabled`,
+      );
+      await page
+        .getByText(
+          `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`,
+          { exact: true },
+        )
+        .waitFor();
+      await expectNoText(page, /attach your|use your password/);
+    }
+  }
+  // Without a provider error the reason means nothing.
+  password = true;
+  await page.goto(`${fixture.origin}/console/?authReason=account-disabled`);
+  await page.getByRole("button", { name: "Login" }).waitFor();
+  await expectNoText(page, /disabled/);
+});
+
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1590,4 +1632,73 @@ test("console clears private content after session expiry, access revocation, an
   await expectNoText(page, /Revoked agent/);
 
   await page.screenshot({ path: join(artifacts, "session-isolation.png"), fullPage: true });
+});
+
+test("widening an open mobile drawer restores usable desktop content", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Drawer resize", { ready: true });
+  await fixture.createAgent(namespace.id, "Resizable Agent");
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Resizable Agent", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+
+  // Desktop hides drawer controls, so content must become usable without Escape.
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.waitForFunction(() => !globalThis.document.querySelector("main").inert);
+  await page.getByRole("searchbox", { name: "Search Agents", exact: true }).fill("Resizable");
+  await page.getByRole("link", { name: "Resizable Agent", exact: true }).waitFor();
+  assert.equal(await page.locator(".drawer-open").count(), 0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+  await toggle.click();
+  await page.keyboard.press("Escape");
+  assert.equal(await toggle.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(await page.locator("main").evaluate((node) => node.inert), false);
+});
+
+test("keyboard page navigation focuses the destination before its controls", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Keyboard navigation", { ready: true });
+  await fixture.createAgent(namespace.id, "Keyboard Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Keyboard Agent", { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.locator('.content [aria-busy="false"]').waitFor();
+  const heading = page.getByRole("heading", { name: "Namespaces", exact: true });
+  assert.equal(await heading.evaluate((node) => node === globalThis.document.activeElement), true);
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Refresh", exact: true })
+      .evaluate((node) => node === globalThis.document.activeElement),
+    true,
+  );
+
+  // Back reuses the admitted collection while giving the destination a focus target.
+  await page.goBack();
+  await page.locator('.content [aria-busy="false"]:not([inert])').waitFor();
+  assert.equal(
+    await page
+      .getByRole("heading", { name: "Agents", exact: true })
+      .evaluate((node) => node === globalThis.document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await page
+      .getByRole("combobox", { name: "Namespace", exact: true })
+      .evaluate((node) => node === globalThis.document.activeElement),
+    true,
+  );
 });

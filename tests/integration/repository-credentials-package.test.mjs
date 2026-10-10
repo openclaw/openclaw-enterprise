@@ -608,3 +608,128 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
     );
   }
 });
+
+async function snapshot(directory) {
+  const entries = await readdir(directory, { recursive: true, withFileTypes: true });
+  return Promise.all(
+    entries
+      .map((entry) => relative(directory, join(entry.parentPath, entry.name)))
+      .sort()
+      .map(async (path) => {
+        const stats = await lstat(join(directory, path));
+        return {
+          path,
+          mode: stats.mode,
+          sha256: stats.isFile()
+            ? createHash("sha256")
+                .update(await readFile(join(directory, path)))
+                .digest("hex")
+            : null,
+        };
+      }),
+  );
+}
+
+test("runtime image client stage emits the full build's client from its own inputs", async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), "credential-client-stage-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  // Reference: the artifact builder on the current full controller output.
+  const full = join(temporary, "full");
+  await mkdir(join(full, "scripts"), { recursive: true });
+  await cp(
+    join(root, "scripts/build-repository-credentials.mjs"),
+    join(full, "scripts/build-repository-credentials.mjs"),
+  );
+  await cp(join(root, "apps/controller/dist"), join(full, "apps/controller/dist"), {
+    recursive: true,
+  });
+  await cp(
+    join(root, "deploy/runtime/repository-credentials"),
+    join(full, "deploy/runtime/repository-credentials"),
+    { recursive: true },
+  );
+  await symlink(join(root, "node_modules"), join(full, "node_modules"));
+  const reference = spawnSync(
+    process.execPath,
+    [join(full, "scripts/build-repository-credentials.mjs")],
+    { encoding: "utf8", timeout: 30000, env: { PATH: process.env.PATH } },
+  );
+  assert.equal(reference.status, 0, reference.stdout + reference.stderr);
+
+  // Stage: only the build-context paths the runtime Dockerfile copies into the
+  // client stage and its dependency stage, so a missing input fails here.
+  const recipe = await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8");
+  const stages = new Map(
+    recipe.split(/^(?=FROM )/mu).map((stage) => [stage.match(/^FROM \S+ AS (\S+)$/mu)?.[1], stage]),
+  );
+  // Destinations below are relative to /build, and the root .dockerignore
+  // drops dist, node_modules and log files from every COPY source.
+  assert.match(
+    stages.get("repository-credentials-deps") ?? "",
+    /^FROM \S+ AS \S+\nWORKDIR \/build$/mu,
+  );
+  assert.doesNotMatch(stages.get("repository-client-build") ?? "", /^WORKDIR /mu);
+  const ignored = (path) =>
+    /(?:^|\/)(?:dist|node_modules)(?:\/|$)|\.log$/u.test(relative(root, path));
+  const stage = join(temporary, "stage");
+  let copied = 0;
+  for (const name of ["repository-credentials-deps", "repository-client-build"]) {
+    assert.ok(stages.has(name), `runtime Dockerfile must define ${name}`);
+    for (const [, flags, operands] of stages.get(name).matchAll(/^COPY((?: --\S+)*) (.+)$/gmu)) {
+      if (flags.includes(" --from=")) {
+        continue;
+      }
+      const paths = operands.trim().split(/\s+/u);
+      const destination = paths.pop();
+      for (const source of paths) {
+        const target =
+          paths.length > 1 || destination.endsWith("/")
+            ? join(stage, destination, source.split("/").pop())
+            : join(stage, destination);
+        await mkdir(join(target, ".."), { recursive: true });
+        await cp(join(root, source), target, {
+          recursive: true,
+          filter: (path) => !ignored(path),
+        });
+        copied += 1;
+      }
+    }
+  }
+  assert.ok(copied > 0);
+  await symlink(join(root, "node_modules"), join(stage, "node_modules"));
+  const emitted = spawnSync(
+    join(stage, "node_modules/.bin/tsc"),
+    ["-p", "deploy/runtime/repository-credentials/tsconfig.client.json", "--pretty", "false"],
+    { cwd: stage, encoding: "utf8", timeout: 60000, env: { PATH: process.env.PATH } },
+  );
+  assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
+  const built = spawnSync(
+    process.execPath,
+    ["scripts/build-repository-credentials.mjs", "--client-only"],
+    {
+      cwd: stage,
+      encoding: "utf8",
+      timeout: 30000,
+      env: { PATH: process.env.PATH },
+    },
+  );
+  assert.equal(built.status, 0, built.stdout + built.stderr);
+  assert.deepEqual(await readdir(join(stage, ".build/repository-credentials")), ["client"]);
+  assert.deepEqual(
+    await snapshot(join(stage, ".build/repository-credentials/client")),
+    await snapshot(join(full, ".build/repository-credentials/client")),
+  );
+
+  const rejected = spawnSync(
+    process.execPath,
+    ["scripts/build-repository-credentials.mjs", "--service-only"],
+    {
+      cwd: stage,
+      encoding: "utf8",
+      timeout: 30000,
+      env: { PATH: process.env.PATH },
+    },
+  );
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /Usage: build-repository-credentials\.mjs \[--client-only\]/);
+});

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { refuseRewrittenIpv4AuthHost } from "../../apps/controller/src/auth/configuration.ts";
 import {
   clientAddressConfiguration,
   createControllerAuth,
@@ -262,6 +263,52 @@ test("the API accepts exactly the GitHub allowlist the chart renders", tooling, 
   assert.ok(
     !deploymentEnv(objects, "worker").some(({ name }) => name.startsWith("OCC_AUTH_GITHUB_")),
   );
+});
+
+test("the API accepts sign-in values padded by U+FEFF, which Go trim keeps", tooling, async (t) => {
+  const directory = await startupDirectory(t);
+  // Go's TrimSpace keeps U+FEFF, so the chart used to refuse these. JavaScript's trim drops
+  // it, and the chart now uses that trim. The rendered env keeps the character.
+  const org = "\uFEFFacme";
+  const team = "\uFEFFacme/platform";
+  const domain = "\uFEFFexample.com";
+  const displayName = "\uFEFFContinue";
+  const objects = await renderChart({
+    ...githubUpgradeValues(recoveryUserId),
+    ...googleUpgradeValues(recoveryUserId),
+    ...oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, { displayName }),
+    "auth.github.allowedOrgs[0]": org,
+    "auth.github.allowedTeams[0]": team,
+    "auth.google.allowedDomains[0]": domain,
+  });
+  const rendered = signInSettings(deploymentEnv(objects, "api"));
+  assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_ORGS, org);
+  assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_TEAMS, team);
+  assert.equal(rendered.OCC_AUTH_GOOGLE_ALLOWED_DOMAINS, domain);
+  assert.equal(rendered.OCC_AUTH_OIDC_DISPLAY_NAME, displayName);
+  const parsed = humanLoginConfiguration(resolveSecrets(rendered));
+  assert.deepEqual(parsed.github.allowedOrgs, ["acme"]);
+  assert.deepEqual(parsed.github.allowedTeams, ["acme/platform"]);
+  assert.deepEqual(parsed.google.allowedDomains, ["example.com"]);
+  assert.equal(parsed.oidc.displayName, "Continue");
+  assert.equal(await startupCode(directory, resolveSecrets(rendered)), "PERSISTENCE_UNAVAILABLE");
+});
+
+// The API trims the OIDC display name and uses its default label when nothing is left, so the
+// chart renders a blank one instead of refusing it.
+test("a blank OIDC display name renders and the API uses its default label", tooling, async (t) => {
+  const directory = await startupDirectory(t);
+  const displayName = "\u3000\u00a0";
+  const objects = await renderChart(
+    oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, { displayName }),
+  );
+  const rendered = signInSettings(deploymentEnv(objects, "api"));
+  assert.equal(rendered.OCC_AUTH_OIDC_DISPLAY_NAME, displayName);
+  assert.equal(
+    humanLoginConfiguration(resolveSecrets(rendered)).oidc.displayName,
+    "single sign-on",
+  );
+  assert.equal(await startupCode(directory, resolveSecrets(rendered)), "PERSISTENCE_UNAVAILABLE");
 });
 
 test(
@@ -750,6 +797,46 @@ const invalid = [
     parser: /OCC_AUTH_PASSWORD_SIGN_IN must be all or recovery-only/,
   },
   {
+    name: "GitHub with an organization login padded by U+0085",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedOrgs[0]": "\u0085acme",
+    },
+    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "\u0085acme" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  // Go's lower maps U+0130 to i; JavaScript's toLowerCase maps it to i and U+0307.
+  {
+    name: "GitHub with an organization login spelled with U+0130",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedOrgs[0]": "\u0130bm",
+    },
+    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "\u0130bm" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
+    name: "GitHub with a team slug spelled with U+0130",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedTeams[0]": "acme/\u0130nfra",
+    },
+    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_TEAMS: "acme/\u0130nfra" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
+  },
+  {
     name: "GitHub with an allowed organization that is not a login",
     values: {
       ...githubOn,
@@ -761,6 +848,19 @@ const invalid = [
     env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme/platform" },
     parser:
       /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
+    name: "GitHub with a team slug padded by U+0085",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedTeams[0]": "\u0085acme/platform",
+    },
+    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_TEAMS: "\u0085acme/platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
   },
   {
     name: "GitHub with an allowed team without its organization",
@@ -855,6 +955,30 @@ const invalid = [
     },
   },
   {
+    name: "Google with a hosted domain padded by U+0085",
+    values: {
+      ...googleOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.google.allowedDomains[0]": "\u0085example.com",
+    },
+    chart: /auth\.google\.allowedDomains requires DNS domain names/,
+    google: true,
+    env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "\u0085example.com" },
+    parser: /OCC_AUTH_GOOGLE_ALLOWED_DOMAINS must be a comma-separated list of DNS domain names/,
+  },
+  {
+    name: "Google with a hosted domain spelled with U+0130",
+    values: {
+      ...googleOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.google.allowedDomains[0]": "\u0130bm.com",
+    },
+    chart: /auth\.google\.allowedDomains requires DNS domain names/,
+    google: true,
+    env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "\u0130bm.com" },
+    parser: /OCC_AUTH_GOOGLE_ALLOWED_DOMAINS must be a comma-separated list of DNS domain names/,
+  },
+  {
     name: "Google with a hosted domain that is not a DNS name",
     values: {
       ...googleOn,
@@ -939,6 +1063,17 @@ const invalid = [
     oidc: true,
     env: { OCC_AUTH_OIDC_TOKEN_AUTH: "private_key_jwt" },
     parser: /OCC_AUTH_OIDC_TOKEN_AUTH must be client_secret_post or client_secret_basic/,
+  },
+  {
+    name: "OIDC with a display name padded by U+0085",
+    values: {
+      ...oidcUpgradeValues(recoveryUserId),
+      "auth.oidc.displayName": "\u0085Continue",
+    },
+    chart: /auth\.oidc\.displayName must be 1 to 40 printable characters/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_DISPLAY_NAME: "\u0085Continue" },
+    parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
   },
   {
     name: "OIDC with an overlong label",
@@ -1281,12 +1416,22 @@ test(
     // server.mjs's normalization, then createControllerAuth. Without an Installation, accepted
     // settings stop right after its base URL checks.
     const apiAccepts = (baseUrl) => {
-      let normalized;
+      let parsed;
       try {
-        normalized = new URL(baseUrl).toString().replace(/\/$/, "");
+        parsed = new URL(baseUrl);
       } catch {
         return false;
       }
+      try {
+        refuseRewrittenIpv4AuthHost(baseUrl, parsed);
+      } catch (error) {
+        assert.match(
+          error.message,
+          /^OCC_AUTH_BASE_URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
+        );
+        return false;
+      }
+      const normalized = parsed.toString().replace(/\/$/, "");
       try {
         createControllerAuth({ mode: "production", secret: "s".repeat(32), baseURL: normalized });
       } catch (error) {
@@ -1325,6 +1470,11 @@ test(
         "//console.oce.example.internal",
         "ftp://console.oce.example.internal",
         "https://console.oce.example.internal:65536",
+        // Go keeps everything before the last colon in the host name and accepts an IPv6 zone
+        // ID; Node refuses both.
+        "https://console.oce.example.internal:80:1",
+        "https://192.0.2.10:80:1",
+        "https://[fe80::1%25eth0]",
         "https://",
         "http://localhost/occ",
       ].map((baseUrl) => ({ baseUrl, chart: notOrigin, api: false, job: false })),
@@ -1338,6 +1488,14 @@ test(
         "https://console.oce.example.internal.",
         " https://console.oce.example.internal ",
         "https://192.0.2.10",
+        // A bare 0x, a full-width digit, or an ideographic dot inside a DNS name is not an
+        // IPv4 host. Node keeps the name (mapping the borrowed characters) and the chart
+        // must render it.
+        "https://0x.example.com",
+        "https://console\u3002example.com",
+        "https://\uFF11\uFF12\uFF17.example.com",
+        "https://192.168.10.1",
+        "https://10.0.0.1",
         "https://[2001:db8::10]:8443",
         "https://localhost",
         "http://127.0.0.1",
@@ -1347,7 +1505,13 @@ test(
         " http://localhost ",
         "https://bücher.oce.example.internal",
         "https://console.例え.テスト",
+        // Only the last label decides whether a host is IPv4, after the parser maps
+        // compatibility characters (⑩ becomes 10, so this label is 10x).
+        "https://192.0.2.10.example.com",
+        "https://example.\u2469x",
       ].map((baseUrl) => ({ baseUrl, chart: undefined, api: true, job: true })),
+      // Helm reads http://[::1] as hostname ::1, which the bootstrap Job admits.
+      { baseUrl: "http://[::1]:8080", chart: undefined, api: true, job: true },
       // URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces
       // and invisible characters there reach the parser, which refuses them in the scheme or a
       // host. The chart refuses them all; it is deliberately stricter for U+FEFF and U+200B at
@@ -1399,6 +1563,19 @@ test(
         api: accepted,
         job: accepted,
       })),
+      // Both parsers percent-decode the host, so the chart checks the decoded name too.
+      ...["%C2%A0", "%E3%80%80"].map((space) => ({
+        baseUrl: `https://console${space}.oce.example.internal`,
+        chart: unicodeInside,
+        api: false,
+        job: false,
+      })),
+      {
+        baseUrl: "https://console%EF%BC%9F.oce.example.internal",
+        chart: compatibility,
+        api: false,
+        job: false,
+      },
       // The host parser maps compatibility characters first and refuses those that map to a
       // forbidden host code point (full-width ? # / @, ?? from U+2047) or that UTS #46 disallows
       // (U+2488 maps to "1.", U+FFFD). Go's URL parser keeps them. A sample here; the next test
@@ -1421,21 +1598,63 @@ test(
         "HTTP://console.oce.example.internal",
         "http://192.0.2.10:8080",
         "http://127.0.0.2",
-        "http://[::1]:8080",
         "http://localhost.",
         "http://localhost.oce.example.internal",
       ].map((baseUrl) => ({ baseUrl, chart: plainHttp, api: true, job: false })),
-      // Deliberately stricter: Node repairs these degenerate spellings into an origin, or
-      // reads another IPv4 spelling (shorthand, octal, hex, trailing dot) as 127.0.0.1.
+      // Node repairs these degenerate spellings into an origin. They are not IPv4 hosts.
       ...[
         ["https:console.oce.example.internal", notOrigin],
         ["https://console.oce.example.internal/.", notOrigin],
         ["https://console.oce.example.internal/%2e", notOrigin],
-        ["http://127.1", plainHttp],
-        ["http://2130706433", plainHttp],
-        ["http://0177.0.0.1", plainHttp],
-        ["http://127.0.0.1.", plainHttp],
       ].map(([baseUrl, chart]) => ({ baseUrl, chart, api: true, job: true })),
+      // A leading zero is octal (192.168.010.001 publishes 192.168.8.1). Hex, including a
+      // bare 0x (which is 0), shorthand, a single integer and a trailing dot also publish
+      // a different host. The parser first maps compatibility digits, letters and dots
+      // (１２７.0.0.1, ①②⑦.0.0.1, 𝟏𝟐𝟕.0.0.1 and 127。0。0。1 publish 127.0.0.1; ０ｘ７ｆ is
+      // 0x7f) and drops variation selectors. A host whose last label is then a number but
+      // that is not IPv4 (example.123, foo.1.) does not parse at all. The chart, the API
+      // and the bootstrap Job all refuse those spellings.
+      ...[
+        "https://192.168.010.001",
+        "https://192.168.001.010",
+        "https://010.0.0.1",
+        "https://127.1",
+        "https://0x7f.0.0.1",
+        "https://0x",
+        "https://0x.0.0.1",
+        "https://2130706433",
+        "http://127.1",
+        "http://2130706433",
+        "http://0177.0.0.1",
+        "http://127.0.0.1.",
+        "https://\uFF11\uFF12\uFF17.0.0.1",
+        "https://127\u30020\u30020\u30021",
+        "https://127\uFF0E0\uFF0E0\uFF0E1",
+        "https://127\uFF610\uFF610\uFF611",
+        "https://\u2460\u2461\u2466.0.0.1",
+        "https://\u{1D7CF}\u{1D7D0}\u{1D7D5}.0.0.1",
+        "https://\u00B9\u00B2\u2077.0.0.1",
+        "https://\u2081\u2082\u2087.0.0.1",
+        "https://\u{1FBF1}\u{1FBF2}\u{1FBF7}.0.0.1",
+        "https://10.0.0.\u2460",
+        "https://\u2469.0.0.1",
+        "https://\u24EA.0.0.0",
+        "https://\uFF10\uFF58\uFF17\uFF46.0.0.1",
+        "https://0x\u33C8.0.0.1",
+        "https://127.0.0.1\uFE0F",
+        "https://example.123",
+        "https://example.0x",
+        "https://foo.1.",
+        "https://1e3.0.0.1",
+        "https://b\u00fccher.1",
+        "https://example.\u2460",
+      ].map((baseUrl) => ({
+        baseUrl,
+        chart:
+          /auth\.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
+        api: false,
+        job: false,
+      })),
     ];
     await eachBounded(cases, async ({ baseUrl, chart, api, job }) => {
       const label = JSON.stringify(baseUrl);
@@ -1475,6 +1694,16 @@ test(
       await startupCode(directory, {
         ...environment,
         OCC_AUTH_BASE_URL: "console.oce.example.internal",
+      }),
+      "AUTH_BASE_URL_INVALID",
+    );
+    // apiAccepts copies refuseRewrittenIpv4AuthHost, and the loop above starts the
+    // entrypoint only for values the chart renders. This is the entrypoint's own refusal:
+    // deleting the call in server.mjs leaves the rest of this test green.
+    assert.equal(
+      await startupCode(directory, {
+        ...environment,
+        OCC_AUTH_BASE_URL: "https://192.168.010.001",
       }),
       "AUTH_BASE_URL_INVALID",
     );
@@ -1525,6 +1754,55 @@ test("the chart lists exactly the compatibility characters the API's URL parser 
   }
   assert.ok(count > 0, "the list matches no letter, mark, number, punctuation or symbol");
   assert.deepEqual({ missing, extra }, { missing: [], extra: [] });
+});
+
+// Before deciding whether a host is IPv4, the API's URL parser maps compatibility characters
+// (UTS #46). The chart lists the ones that become ASCII the IPv4 check reads: dropped
+// characters, dots, a zero, other digit runs, x, and hex letter runs. This re-derives each list
+// from Node by parsing the character between two letters. A Node upgrade can change them;
+// this test then names the code points to add or remove.
+test("the chart maps exactly the characters the API's URL parser maps to IPv4 syntax", async () => {
+  const helpers = await readFile(
+    join(repository, "deploy/helm/openclaw-enterprise/templates/_helpers.tpl"),
+    "utf8",
+  );
+  const classes = {
+    ipv4Ignored: (mapped) => mapped === "",
+    ipv4Dots: (mapped) => mapped === ".",
+    ipv4Zeros: (mapped) => mapped === "0",
+    ipv4Digits: (mapped) => /^[0-9]+$/.test(mapped) && mapped !== "0",
+    ipv4X: (mapped) => mapped === "x",
+    ipv4Hex: (mapped) => /^[0-9a-f]*[a-f][0-9a-f]*$/.test(mapped),
+  };
+  const listed = Object.fromEntries(
+    Object.keys(classes).map((name) => {
+      const [, source] = helpers.match(new RegExp(`\\$${name} := "(\\[[^"]+\\])"`)) ?? [];
+      assert.ok(source, `_helpers.tpl defines $${name}`);
+      return [name, new RegExp(source.replaceAll("\\\\x{", "\\u{"), "u")];
+    }),
+  );
+  const differences = Object.fromEntries(Object.keys(classes).map((name) => [name, []]));
+  for (let codePoint = 0x80; codePoint <= 0x10ffff; codePoint++) {
+    const character = String.fromCodePoint(codePoint);
+    // What the chart's earlier checks let through. Surrogates are category Cs.
+    if (!/[\p{L}\p{M}\p{N}\p{P}\p{S}\u200c\u200d]/u.test(character)) {
+      continue;
+    }
+    let mapped;
+    try {
+      const { hostname } = new URL(`https://q${character}q.example`);
+      mapped = /^q([ -~]*)q\.example$/.exec(hostname)?.[1];
+    } catch {
+      mapped = undefined;
+    }
+    for (const [name, matches] of Object.entries(classes)) {
+      if ((mapped !== undefined && matches(mapped)) !== listed[name].test(character)) {
+        differences[name].push(`U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`);
+      }
+    }
+  }
+  assert.ok(listed.ipv4Digits.test("\u2460"), "the digit list matches U+2460");
+  assert.deepEqual(differences, Object.fromEntries(Object.keys(classes).map((name) => [name, []])));
 });
 
 // The chart's sign-in checks read the scheme as URL parsing does, like the API: an uppercase

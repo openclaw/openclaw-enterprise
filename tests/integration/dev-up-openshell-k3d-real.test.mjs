@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -26,6 +27,28 @@ const devUp = join(repository, "scripts", "dev-up");
 const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
+
+async function startDevelopment(environment) {
+  try {
+    return await execute(devUp, [], {
+      cwd: repository,
+      env: environment,
+      timeout: 1_100_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (error) {
+    // Image-build progress can fill the reporter's budget before the actual startup error.
+    const secrets = failureSecrets([environment]);
+    const tail = String(error.stderr ?? error.message)
+      .split("\n")
+      .slice(-12)
+      .map((line) => redactLogLine(line, secrets, 800))
+      .join("\n");
+    // Node's direct test reporter would print the raw subprocess output from a cause.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(`OpenShell development startup failed:\n${tail}`);
+  }
+}
 
 async function waitForPort(child, port, stderr) {
   const deadline = Date.now() + 30_000;
@@ -183,7 +206,8 @@ test(
   },
   async (t) => {
     await access(occ);
-    const root = await mkdtemp(join(tmpdir(), "oce-dev-up-openshell-real-"));
+    // LocalSetup requires a canonical parent; macOS temporary roots may be symlinks.
+    const root = await mkdtemp(join(await realpath(tmpdir()), "oce-dev-up-openshell-real-"));
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-openshell-${suffix}`;
@@ -229,12 +253,7 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
-    const result = await execute(devUp, [], {
-      cwd: repository,
-      env: environment,
-      timeout: 1_100_000,
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    const result = await startDevelopment(environment);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
     assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
 
@@ -273,7 +292,7 @@ test(
     );
     assert.match(
       releases.find(({ name }) => name === "openshell-gateway")?.chart ?? "",
-      /-0\.1\.3-pre\.1$/,
+      /-0\.1\.3-pre\.2$/,
       "the default development profile must install the documented OpenShell chart",
     );
     const namespaceList = JSON.parse(
@@ -627,7 +646,9 @@ test(
   },
   async (t) => {
     await access(occ);
-    const root = await mkdtemp(join(tmpdir(), "oce-dev-up-openshell-compose-real-"));
+    const root = await mkdtemp(
+      join(await realpath(tmpdir()), "oce-dev-up-openshell-compose-real-"),
+    );
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-os-compose-${suffix}`;
@@ -669,12 +690,7 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
-    const result = await execute(devUp, [], {
-      cwd: repository,
-      env: environment,
-      timeout: 1_100_000,
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    const result = await startDevelopment(environment);
     assert.match(result.stdout, /Control plane: Compose/);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
 

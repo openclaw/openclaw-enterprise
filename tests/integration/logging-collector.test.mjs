@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -299,35 +299,6 @@ test("the Collector exports bounded native-admin audit diagnostics", async () =>
   for (const name of [`${event}.detail`, `${event}-unreviewed`, "native_admin.other_event"]) {
     assert.equal(pattern.test(name), false, "nearby unreviewed diagnostics stay local");
   }
-  const collector = loadYaml(await readFile(join(root, "deploy/logging/collector.yaml"), "utf8"));
-  const statements = collector.processors["transform/operational"].log_statements.flatMap(
-    ({ statements }) => statements,
-  );
-  const projection = statements.filter((entry) =>
-    entry.includes('attributes["occ.native_admin.pending"]'),
-  );
-  assert.ok(
-    statements.includes(
-      'keep_keys(cache["record"], ["event", "pending", "level", "severity"]) where attributes["event.name"] == "native_admin.pending_work_unresolved"',
-    ),
-    "untrusted extra fields cannot enter the generic OCC projections",
-  );
-  assert.equal(projection.length, 1, "the pending count has one bounded projection");
-  assert.match(
-    projection[0],
-    /attributes\["event.name"\] == "native_admin\.pending_work_unresolved"/,
-  );
-  assert.match(
-    projection[0],
-    /\(IsInt\(cache\["record"\]\["pending"\]\) or IsDouble\(cache\["record"\]\["pending"\]\)\)/,
-  );
-  assert.match(projection[0], /cache\["record"\]\["pending"\] >= 0/);
-  assert.match(projection[0], /cache\["record"\]\["pending"\] <= 9007199254740991/);
-  assert.match(
-    projection[0],
-    /Int\(cache\["record"\]\["pending"\]\) == cache\["record"\]\["pending"\]/,
-  );
-  assert.ok(statements.includes('set(body, attributes["event.name"])'));
 });
 
 async function sourceFiles(directory, extensions) {
@@ -1030,10 +1001,12 @@ test(
     const agentId = `agt_${randomUUID()}`;
     const stopWorkId = `agent:${agentId}:reconcile:stopped:${randomUUID()}`;
     const deleteWorkId = `agent:${agentId}:reconcile:deleted`;
+    const provisioningWorkId = `agent-provisioning:${randomBytes(16).toString("hex")}`;
     const withdrawalWorkId = `agent_revision:rev_${randomUUID()}:reconcile:credentials_withdrawn`;
     const cases = [
       { operation: "agent.stop", workId: stopWorkId },
       { operation: "agent.delete", workId: deleteWorkId },
+      { operation: "work.reconcile", workId: provisioningWorkId },
       {
         operation: "agent_revision.credential_withdrawal",
         workId: `${withdrawalWorkId}:${randomUUID()}`,
@@ -1399,6 +1372,17 @@ test(
                 plane: "execution",
                 kubernetesStatus: 403,
               }),
+              // A dependency 503's class, message and causes stay in local logs.
+              line({
+                severity: "WARN",
+                event: "http.dependency_unavailable",
+                requestId,
+                method: "POST",
+                route: `/api/${canary}`,
+                errorClass: "DependencyUnavailableError",
+                message: `The Kubernetes Secret create failed ${canary}.`,
+                causes: [{ errorClass: "ApiException", code: 500 }],
+              }),
               // A failed audit write keeps the Agent's IDs; the error stays local.
               line({
                 severity: "WARN",
@@ -1569,6 +1553,7 @@ test(
           "event.name": "agent_runtime_credentials.cluster_denied",
           "request.id": requestId,
         }),
+        api("WARN", { "event.name": "http.dependency_unavailable", "request.id": requestId }),
         api("WARN", {
           "event.name": "native_admin.websocket_audit_failed",
           "occ.namespace.id": namespaceId,

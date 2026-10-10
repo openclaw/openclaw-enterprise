@@ -25,6 +25,11 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
   An empty reviewer array means explicit selection is unsupported at that scope.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
+- `validateAgentConfiguration(selections, configuration)` (optional): check
+  selections against the Agent's Configuration values at Agent create and
+  update, provisioning, and deployment, which checks again because a
+  Configuration save does not know its Agents. A `ConfigurationHarnessError`
+  naming the setting becomes `400`; other refusals get fixed text.
 - `listCatalog(context)`: read the catalog for a Namespace, Agent, Harness,
   native Configuration, and abort signal.
 

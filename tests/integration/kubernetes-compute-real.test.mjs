@@ -454,7 +454,7 @@ test(
       const baseValues = {
         gateway: {
           mode: "local",
-          bind: "loopback",
+          bind: "lan",
           controlUi: { enabled: false },
           auth: {
             password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },

@@ -92,6 +92,12 @@ volume root is never their runtime temp root.
 
 OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
+State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
+wrapper runs `openclaw doctor --fix --non-interactive` once, with the
+configuration read-only, when an agent database uses an older schema than the
+pinned OpenClaw; Doctor keeps a `.pre-startup-migration-<id>.bak` copy beside
+it. A database still older afterwards holds the Gateway unready with check
+`state-migration` (`RUNTIME_STARTUP_FAILED`).
 
 ## Harness storage
 
@@ -105,6 +111,12 @@ from the default StorageClass, mounted only by its Harness:
 | `generated-images`                             | `/home/node/.codex/generated_images` |
 | `codex-sessions`                               | `/home/node/.codex/sessions`         |
 | `workspace-node-<agent-hash>-<harness-hash>`   | `/home/node/.openclaw-node`          |
+
+The nonroot init container creates each subpath as uid 1000 with mode `0700`
+before the kubelet mounts it. Claims from the first release hold root-owned
+`workspace` and `generated-images` directories the kubelet created; the init
+renames such a directory aside, recreates it and moves its entries back. A name
+the new directory already has stays in `.<subpath>.kubelet-created`.
 
 This directory keeps node identity across Pod and revision replacement.
 The node Secret's setup code expires ten minutes after preparation mints it. A
@@ -195,7 +207,11 @@ opt-in shape, including ordinary routed gateways, keep the read-only path.
 
 Native edits change only the copy; Pod replacement or Agent redeployment
 restores the managed snapshot, while the persistent gateway and workspace claims
-retain their data. Edits stay outside OCE Configuration and AgentRevisions; see
+retain their data. Pod-local provenance records revision, snapshot hash and
+generated bridges; only matches with the managed baseline are rebuilt.
+Peer recovery and same-Pod restarts retain unrelated edits; conflicting bridge
+edits remain refused. Pod replacement clears copy/provenance.
+Edits stay outside OCE Configuration and AgentRevisions; see
 the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
 and [deployment procedure](../../../guides/deploy/native-admin.md).
 
@@ -209,7 +225,10 @@ There is no Gateway Secret mirror.
 
 New credentials use `transport-<agent-hash>` (configured prefix) with only
 `app-server-token`, and `gateway-password-<agent-hash>` with only
-`gateway-password`, in either execution mode. Mode changes preserve these sources.
+`gateway-password`, in either execution mode. The hash is 12 hexadecimal
+characters. Startup refuses a prefix when `<prefix>-<hash>` is not a DNS-safe
+Kubernetes resource name, the same check credential provisioning already applies.
+Mode changes preserve these sources.
 Legacy combined transport Secrets remain readable. Before rendering new workloads,
 Compute copies their password into an owned separate source; the legacy Secret
 survives for older Gateway Pods. Conflicting password sources fail closed.
@@ -301,7 +320,7 @@ Missing or incorrectly scoped credentials fail deployment.
 Use the optional `runtime.codexSeccompProfile` only for a reviewed Codex
 compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
-states when Codex `0.160.0` needs it and which components own those boundaries.
+states when Codex `0.163.0-alpha.2` needs it and which components own those boundaries.
 
 See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
 for provider-issued credentials and supported execution modes.

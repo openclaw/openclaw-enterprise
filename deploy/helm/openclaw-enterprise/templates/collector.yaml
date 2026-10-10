@@ -37,9 +37,18 @@
 {{- fail "logging.collector.exporter.cidr must identify exactly one approved IPv4 exporter or proxy host with /32" -}}
 {{- end -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[0-9]+$" (toString $exporter.port))) (lt (int $exporter.port) 1) (gt (int $exporter.port) 65535) -}}
+{{- /* Kubernetes YAML reads an unquoted leading zero as octal. Bound the decimal spelling before Sprig int conversion. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $exporter.port))) (gt (int $exporter.port) 65535) -}}
 {{- fail "logging.collector.exporter.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
+{{/* Null clears the chart default. quote skips nil and renders YAML null, which leaves emptyDir unlimited. */}}
+{{- if not (kindIs "invalid" $collector.state.sizeLimit) -}}
+{{- include "openclaw.quantity" (dict "name" "logging.collector.state.sizeLimit" "value" $collector.state.sizeLimit) -}}
+{{- end -}}
+{{- if not (kindIs "invalid" $collector.tmp.sizeLimit) -}}
+{{- include "openclaw.quantity" (dict "name" "logging.collector.tmp.sizeLimit" "value" $collector.tmp.sizeLimit) -}}
+{{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "logging.collector.resources" "requirements" $collector.resources) -}}
 {{- if not (kindIs "bool" $collector.metrics.enabled) -}}
 {{- fail "logging.collector.metrics.enabled must be a boolean" -}}
 {{- end -}}
@@ -190,10 +199,10 @@ spec:
         {{- else }}
         - namespaceSelector:
             matchLabels:
-              {{- toYaml $exporter.namespaceLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.exporter.namespaceLabels" "value" $exporter.namespaceLabels) | nindent 14 }}
           podSelector:
             matchLabels:
-              {{- toYaml $exporter.podLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.exporter.podLabels" "value" $exporter.podLabels) | nindent 14 }}
         {{- end }}
       ports:
         - protocol: TCP
@@ -215,10 +224,10 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              {{- toYaml $collector.metrics.scraperNamespaceLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.metrics.scraperNamespaceLabels" "value" $collector.metrics.scraperNamespaceLabels) | nindent 14 }}
           podSelector:
             matchLabels:
-              {{- toYaml $collector.metrics.scraperPodLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.metrics.scraperPodLabels" "value" $collector.metrics.scraperPodLabels) | nindent 14 }}
       ports:
         - protocol: TCP
           port: 8888

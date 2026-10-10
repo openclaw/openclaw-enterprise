@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-27 20:59
-last_updated_session: authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4
+updated: 2026-10-09 23:11
+last_updated_session: authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -76,6 +76,12 @@ signal; direct Compute calls receive a nonaborted fallback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.ensureNamespace`
 
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validatePeer` checks peer
+Pod-label keys and values during Driver construction, before any Namespace API
+request. Invalid selectors stop configuration loading instead of creating a tenant
+that later fails NetworkPolicy admission. Empty values, qualified keys, and valid
+length boundaries remain unchanged.
+
 Both [Kubernetes](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and
 [Docker](../../apps/controller/src/drivers/compute/docker/index.ts) Compute implementations
 prepare tenant infrastructure first, then run `afterNamespacePrepared` before reporting ready.
@@ -128,6 +134,15 @@ revision. Namespace deletion is limited to empty tenants and runs
 failed revocation preserves the owned resource for retry; aborted preparation receives a fresh,
 bounded cleanup signal so cancellation cannot suppress compensation.
 
+`apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.deleteNamespace`
+
+Docker Namespace deletion also runs `beforeNamespaceDelete` before removing owned
+containers and workspace volumes. If the network has already been removed externally,
+the Driver still runs these cleanup steps; network absence alone does not establish
+Namespace deletion. It verifies any existing network before teardown and removes it
+after the remaining resources. The worker settles deletion only from the resulting
+`namespaceDeleted` observation.
+
 ## Debugging and Verification
 
 - Run `node --test tests/conformance/utils.test.mjs tests/conformance/compute-lifecycle-hooks.test.mjs`
@@ -157,6 +172,10 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:11: Reject invalid Kubernetes peer Pod selectors before Namespace effects in the accompanying validation repair. (authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221 - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
+
+- 2026-10-09 21:59: Trace Docker Namespace teardown after external network removal in the accompanying fix. (authoring-run/d4db043e-4d5b-48b3-96cf-d7e7e94e9bd7 - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 
 - 2026-09-27 20:59: Align two-cluster authentication policy with exclusive Harness replacement. (authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4 - bbb02cd9bad2c9ae0497d0340271730bdc647b55)
 

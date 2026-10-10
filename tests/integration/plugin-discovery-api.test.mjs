@@ -968,7 +968,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
       display_name: "Fixture",
       description: "Hosted fixture",
       interface: {},
-      requires_local_executor: false,
+      requires_local_executor: true,
       app_ids: ["fixture-app"],
       app_manifest: null,
       skills: [{ name: "knowledge-workflow" }],
@@ -1100,6 +1100,14 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   assert.deepEqual(artifact.configuration.apps["fixture-app"].tools, {
     "renamed_123.search": { enabled: true, approval_mode: "prompt" },
   });
+  // Skill-only plugins are available with a known empty tool inventory.
+  plugin.release.app_ids = [];
+  const skillsOnly = await fixture.request("POST", `${fixture.path}/details`, {
+    body: { secretRef: secret.ref, pluginId: "remote-fixture" },
+  });
+  assert.equal(skillsOnly.status, 200);
+  assert.equal(skillsOnly.data.available, true);
+  assert.deepEqual(skillsOnly.data.tools, []);
 
   // Rotation is observed by the next request without persisting the old or new value in discovery state.
   const updatePath = `/namespaces/${fixture.namespace.id}/secrets/${secret.id}`;

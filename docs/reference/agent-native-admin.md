@@ -75,6 +75,16 @@ from the managed snapshot when the Pod is recreated or the Agent is redeployed.
 See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
 for the opt-in predicate, mounts, and copy lifecycle.
 
+Do not change `gateway.bind`, `gateway.customBindHost`, or
+`gateway.tailscale.mode` in that copy. OCE checks these listener settings in the
+managed Configuration at deployment, not after a native edit. The edit
+survives same-Pod restarts. With `loopback`, the Gateway stays Ready, because its
+readiness check uses loopback, but refuses traffic to the Pod IP: the native
+admin UI goes dark and cannot undo the edit. With Tailscale `serve` or `funnel`
+and the rendered `lan` bind, native startup fails and the container restarts in
+a loop. To
+recover, delete the Pod or redeploy the Agent.
+
 Redeployment does not imply a factory reset of native files, conversations,
 device state, plugins, or other persistent gateway data.
 
@@ -103,6 +113,7 @@ device state, plugins, or other persistent gateway data.
 
 ## Changelog
 
+- 2026-10-10 09:20: Documented that native listener edits are not re-checked and how to recover. (docs-1014)
 - 2026-09-21 21:20: Documented status-only stopped results before deployment and after stop reconciliation. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Replaced the temporary exchange launch description with the shared OCE session cookie model, cookie-domain trust boundary, host-to-Agent admission, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)

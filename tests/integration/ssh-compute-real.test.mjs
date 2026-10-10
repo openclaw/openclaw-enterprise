@@ -12,6 +12,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/index.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const requiredNames = [
   "OCC_TEST_SSH_ADDRESS",
@@ -209,6 +210,154 @@ function output(command, args) {
   process.stderr.write("SSH host verification failed.\n"); process.exitCode = 1;
 });
 `;
+
+test(
+  "real SSH unit directory supports stop, restart and scoped deletion",
+  { skip, timeout: 600_000 },
+  async () => {
+    for (const name of requiredNames) {
+      assert.ok(process.env[name]?.trim(), `${name} is required when OCC_TEST_SSH_REAL=1.`);
+    }
+    const host = {
+      address: process.env.OCC_TEST_SSH_ADDRESS,
+      port: Number(process.env.OCC_TEST_SSH_PORT),
+      user: process.env.OCC_TEST_SSH_USER,
+    };
+    const ssh = {
+      identityFile: process.env.OCC_TEST_SSH_IDENTITY_FILE,
+      knownHostsFile: process.env.OCC_TEST_SSH_KNOWN_HOSTS_FILE,
+      connectTimeoutSeconds: 10,
+    };
+    const runtime = {
+      nodePath: process.env.OCC_TEST_SSH_NODE_PATH,
+      openclawPath: process.env.OCC_TEST_SSH_OPENCLAW_PATH,
+      user: process.env.OCC_TEST_SSH_RUNTIME_USER,
+      root: process.env.OCC_TEST_SSH_ROOT ?? "/var/lib/openclaw-enterprise",
+      systemdUnitDirectory: process.env.OCC_TEST_SSH_UNIT_DIRECTORY ?? "/etc/systemd/system",
+    };
+    const driver = new SshComputeDriver({
+      ssh,
+      hosts: { "ssh-unit-proof": host },
+      runtime,
+      network: { gatewayPortRange: { start: 18910, end: 18919 } },
+    });
+    const namespace = {
+      id: `ns-${randomUUID()}`,
+      name: "ssh-unit-proof",
+      status: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const configuration = createHarnessConfiguration("openclaw", defaultAgentModel);
+    configuration.gateway.bind = "loopback";
+    configuration.models.providers.openai.baseUrl = "http://127.0.0.1:9/v1";
+    const executor = new SystemSshCommandExecutor();
+    const remote = async (helper) => {
+      const result = await executor.execute({
+        ...host,
+        ...ssh,
+        nodePath: runtime.nodePath,
+        helper,
+        operation: "",
+        timeoutMs: 30_000,
+      });
+      assert.equal(result.code, 0, "Real SSH lifecycle inspection must succeed.");
+      return JSON.parse(result.stdout);
+    };
+    const agents = Array.from({ length: 2 }, () => ({
+      id: `agent-${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "SSH unit proof",
+      configurationId: `cfg-${randomUUID()}`,
+      backendId: null,
+      executionMode: "embedded",
+      servicePrincipalId: `sp-${randomUUID()}`,
+      createdAt: namespace.createdAt,
+    }));
+    const revisions = agents.map((agent) => ({
+      id: `revision-${randomUUID()}`,
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      revision: 1,
+      backendId: null,
+      harnessAuth: { method: "runtime" },
+      configurationId: agent.configurationId,
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: admitLoggingConfiguration(configuration, "info"),
+      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" },
+      compute: { id: driver.id, implementation: driver.implementation },
+      servicePrincipalId: agent.servicePrincipalId,
+      createdAt: namespace.createdAt,
+    }));
+    const namespaceDir = `${runtime.root}/namespaces/${sha256Hex(namespace.id, 12)}`;
+    const inspect = async (agent) =>
+      remote(`
+    const fs = require("node:fs"), cp = require("node:child_process");
+    const dir = ${JSON.stringify(namespaceDir + "/agents/")} + ${JSON.stringify(sha256Hex(agent.id, 12))};
+      const unit = ${JSON.stringify(`openclaw-enterprise-gateway-${sha256Hex(agent.id, 12)}.service`)};
+      const active = cp.spawnSync("systemctl", ["is-active", "--quiet", unit]).status === 0;
+      const account = cp.spawnSync("getent", ["passwd", ${JSON.stringify(`${runtime.user.slice(0, 19)}-${sha256Hex(`${namespace.id}:${agent.id}`, 12)}`)}]).status === 0;
+    (async () => {
+      let readyStatus = null;
+      if (active) { const data = JSON.parse(fs.readFileSync(dir + "/agent.json")); const response = await fetch("http://127.0.0.1:" + data.port + "/readyz", { signal: AbortSignal.timeout(5000) }); readyStatus = response.status; await response.body?.cancel(); }
+      console.log(JSON.stringify({ active, readyStatus, account, directory: fs.existsSync(dir), unit: fs.existsSync(${JSON.stringify(runtime.systemdUnitDirectory + "/")} + unit), namespace: fs.existsSync(${JSON.stringify(namespaceDir)}) }));
+    })().catch(() => process.exitCode = 1);
+  `);
+    await driver.preflight();
+    let failed = false;
+    try {
+      assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+      for (let index = 0; index < agents.length; index++) {
+        driver.bindAgent({ namespace, agent: agents[index] });
+        assert.equal(
+          (await driver.prepareRevision(revisions[index], { secretEnvironment: [] })).ready,
+          true,
+        );
+        await driver.activateRevision(revisions[index], { secretEnvironment: [] });
+        assert.equal((await inspect(agents[index])).readyStatus, 200);
+      }
+      const [first, sibling] = agents;
+      driver.bindAgent({ namespace, agent: first });
+      await driver.stopRevision(revisions[0]);
+      await driver.stopRevision(revisions[0]);
+      assert.equal((await inspect(first)).active, false);
+      assert.equal((await inspect(sibling)).readyStatus, 200);
+      await driver.activateRevision(revisions[0], { secretEnvironment: [] });
+      assert.equal((await inspect(first)).readyStatus, 200);
+      await driver.deactivateRevision(revisions[0]);
+      await driver.retireRevision(revisions[0]);
+      await driver.retireRevision(revisions[0]);
+      await driver.deleteAgentRuntimeCredentials({ namespace, agent: first });
+      await driver.deleteAgentRuntimeCredentials({ namespace, agent: first });
+      assert.deepEqual(await inspect(first), {
+        active: false,
+        readyStatus: null,
+        account: false,
+        directory: false,
+        unit: false,
+        namespace: true,
+      });
+      assert.equal((await inspect(sibling)).readyStatus, 200);
+      assert.equal((await driver.deleteNamespace(namespace)).namespaceDeleted, true);
+      assert.deepEqual(await inspect(sibling), {
+        active: false,
+        readyStatus: null,
+        account: false,
+        directory: false,
+        unit: false,
+        namespace: false,
+      });
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      const deleted = await driver.deleteNamespace(namespace);
+      if (!failed) {
+        assert.equal(deleted.namespaceDeleted, true);
+      }
+    }
+  },
+);
 
 test(
   modelProof

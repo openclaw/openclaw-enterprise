@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
 import {
@@ -1791,6 +1796,21 @@ test(
         createdAt: new Date().toISOString(),
       }),
     );
+    // Preserve a normal queued deployment record for the healthy snapshot, so
+    // CLI status enrichment remains observable without executing a workload.
+    const actor = (await state.loadNativeIAMState()).identities.find(
+      (identity) => identity.kind === "principal",
+    );
+    assert.ok(actor);
+    await state.transact((unit) =>
+      unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId,
+        resourceId: revision.id,
+        actorId: actor.id,
+      }),
+    );
     const healthyRevision = await request(api, "GET", `${revisionPath}/${revision.id}`);
     assert.equal(healthyRevision.status, 200);
 
@@ -1849,6 +1869,76 @@ test(
     const invalidDetail = await request(api, "GET", `${revisionPath}/${malformedRevisionId}`);
     assert.equal(invalidDetail.status, 200);
     assert.deepEqual(invalidDetail.data, degradedRevision);
+
+    // The compiled CLI consumes the same supported metadata/error variants over
+    // the shipped API's real HTTP listener. A retired saved enum is not a runtime.
+    const cliDirectory = await mkdtemp(join(tmpdir(), "oce-cli-browsing-"));
+    context.after(() => rm(cliDirectory, { recursive: true, force: true }));
+    const cli = join(cliDirectory, "occ");
+    const execute = promisify(execFile);
+    await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+    const principal = (await state.loadNativeIAMState()).identities.find(
+      (identity) =>
+        identity.kind === "service_principal" &&
+        identity.namespaceId === undefined &&
+        identity.agentId === undefined,
+    );
+    assert.ok(principal);
+    const key = await request(api, "POST", "/api/auth/service-keys", {
+      servicePrincipalId: principal.id,
+      name: "metadata-browsing-proof",
+      expiresIn: 86400,
+    });
+    assert.equal(key.status, 201);
+    const keyFile = join(cliDirectory, "service-key.json");
+    await writeFile(keyFile, JSON.stringify({ data: key.data }), { mode: 0o600 });
+    const cliArguments = [
+      "--url",
+      api.origin,
+      "--service-key-file",
+      keyFile,
+      "--namespace",
+      namespaceId,
+    ];
+    try {
+      for (const command of [
+        ["agent", "get", agent.id],
+        ["agent", "list"],
+        ["agent", "revisions", agent.id],
+      ]) {
+        const table = await execute(cli, [...cliArguments, ...command]);
+        assert.match(table.stdout, /CONFIGURATION ERROR/u);
+        assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+        const structured = await execute(cli, [...cliArguments, ...command, "--output", "json"]);
+        const decoded = JSON.parse(structured.stdout);
+        const records = Array.isArray(decoded) ? decoded : [decoded];
+        assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
+        if (command[1] === "revisions") {
+          assert.match(structured.stderr, /Agent saved configuration is unreadable/u);
+          assert.ok(records.every((record) => record.deploymentStatus === null));
+        }
+      }
+      // A readable Agent can still have an unreadable historical snapshot. Keep
+      // its healthy sibling and do not enrich the error variant through strict reads.
+      await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
+        agent.id,
+        JSON.stringify(agent.plugins ?? {}),
+      ]);
+      const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
+      assert.match(history.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+      assert.ok(history.stdout.includes(revision.id));
+      assert.match(history.stdout, /queued/u);
+      assert.ok(history.stdout.includes(malformedRevisionId));
+    } finally {
+      await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
+        agent.id,
+        JSON.stringify(malformedPlugins),
+      ]);
+      assert.equal(
+        (await request(api, "DELETE", `/api/auth/service-keys/${key.data.id}`)).status,
+        200,
+      );
+    }
 
     // Browsing must not admit partially decoded records to mutation or runtime
     // paths, and a failed edit must not turn unreadable plugin state into {}.

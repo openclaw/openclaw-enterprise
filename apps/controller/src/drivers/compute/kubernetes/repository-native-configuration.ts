@@ -69,12 +69,8 @@ export function repositoryNativeConfiguration(
   // Native gateway exec prepends the login-shell PATH before applying this setting.
   const exec = projectExec(tools.exec, undefined, "tools.exec");
   const agents = object(configuration.agents, "agents");
-  if (agents.list !== undefined && !Array.isArray(agents.list)) {
-    throw new Error("Repository credentials require agents.list to be an array.");
-  }
-  const list = (agents.list as readonly OpenClawConfigurationValue[] | undefined)?.map((value) =>
-    projectAgent(value, exec.pathPrepend, "agents.list entry"),
-  );
+  // The roster is agents.entries. Any agents.list passes through untouched, and
+  // validateHarnessAuth then refuses every list the Gateway rejects.
   const entries =
     agents.entries === undefined
       ? undefined
@@ -87,14 +83,6 @@ export function repositoryNativeConfiguration(
   return {
     ...configuration,
     tools: { ...tools, exec },
-    ...(list === undefined && entries === undefined
-      ? {}
-      : {
-          agents: {
-            ...agents,
-            ...(list === undefined ? {} : { list }),
-            ...(entries === undefined ? {} : { entries }),
-          },
-        }),
+    ...(entries === undefined ? {} : { agents: { ...agents, entries } }),
   };
 }

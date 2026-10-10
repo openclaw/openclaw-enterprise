@@ -170,7 +170,8 @@ test("reporter rejects unknown categories and strips unbounded or arbitrary fiel
     for await (const chunk of reporter(source)) {
       text += chunk;
     }
-    return JSON.parse(text).data.error.diagnostic;
+    // A failed case is followed by the file's output tail event.
+    return JSON.parse(text.split("\n")[0]).data.error.diagnostic;
   };
   assert.equal(await render({ kind: "runtime-model-probe", reason: "arbitrary" }), undefined);
   const result = await render({

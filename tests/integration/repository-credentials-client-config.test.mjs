@@ -8,6 +8,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -249,6 +250,95 @@ test("generated native configuration selects exact endpoint authority through st
     );
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "");
+  }
+});
+
+test("single-session launcher preserves native Git signal exit statuses", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const session = join(parent, "signal-session");
+  const repository = join(parent, "repository.git");
+  await writeClientConfiguration(opened, session, undefined);
+  const env = cleanEnvironment({ HOME: parent, GIT_CONFIG_GLOBAL: "/dev/null" });
+  await run("/usr/bin/git", ["init", "--bare", "--quiet", repository], { env });
+
+  // Numeric Git errors must remain numeric; only signal termination gets 128 + signal.
+  const invalid = await run(
+    process.execPath,
+    [launcher, session, "git", "-C", repository, "rev-parse", "--verify", "missing-ref"],
+    { env, allowFailure: true },
+  );
+  assert.equal(invalid.code, 128);
+  for (const [signal, expected] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ]) {
+    const child = childProcess.spawn(
+      process.execPath,
+      [launcher, session, "git", "-C", repository, "cat-file", "--batch"],
+      { env, detached: true, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let output = "";
+    let errors = "";
+    let readyResolve;
+    let readyReject;
+    const ready = new Promise((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    const close = new Promise((resolve, reject) => {
+      child.once("error", (error) => {
+        readyReject(error);
+        reject(error);
+      });
+      child.once("close", (code, endedBy) => {
+        readyReject(new Error("Git ended before readiness"));
+        resolve({ code, endedBy });
+      });
+    });
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes(`${"0".repeat(40)} missing\n`)) {
+        readyResolve();
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      errors += chunk;
+    });
+    child.stdin.on("error", () => {});
+    const stop = () => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          throw error;
+        }
+      }
+    };
+    const timer = setTimeout(() => {
+      readyReject(new Error("native Git signal test timed out"));
+      stop();
+    }, 10000);
+    try {
+      // A batch reply proves Git is alive, not that the launcher installed its handlers.
+      // Signal the owned native child to exercise the launcher's child-exit mapping.
+      child.stdin.write(`${"0".repeat(40)}\n`);
+      await ready;
+      const processes = await run("/bin/ps", ["-axo", "pid=,ppid=,comm="], { env });
+      const children = processes.stdout
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => Number(fields[1]) === child.pid);
+      assert.equal(children.length, 1, "launcher must own exactly one native Git child");
+      assert.match(children[0][2], /(?:^|\/)git$/);
+      process.kill(Number(children[0][0]), signal);
+      const result = await close;
+      assert.equal(result.endedBy, null, errors);
+      assert.equal(result.code, expected, `${signal}: ${errors}`);
+    } finally {
+      clearTimeout(timer);
+      stop();
+      await close;
+    }
   }
 });
 

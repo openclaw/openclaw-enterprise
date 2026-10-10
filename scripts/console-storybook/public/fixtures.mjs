@@ -410,6 +410,52 @@ export function installFixture(scenario, evidence) {
       ),
     );
   }
+  if (scenario.modelFallbackSelection) {
+    const ids = ["primary-model", "fallback-one", "fallback-two"];
+    preset.name = "Models with ordered fallbacks";
+    delete preset.template.variables;
+    preset.template.agent.executionMode = "embedded";
+    preset.template.agent.name = "Model selection example";
+    preset.template.configuration.values = {
+      agents: {
+        defaults: {
+          model: {
+            primary: `openai/${ids[0]}`,
+            fallbacks: ids.slice(1).map((id) => `openai/${id}`),
+          },
+          models: Object.fromEntries(
+            ids.map((id) => [
+              `openai/${id}`,
+              {
+                agentRuntime: { id: "openclaw" },
+                alias: `Saved ${id}`,
+                params: { temperature: 0.3 },
+              },
+            ]),
+          ),
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://models.example.test/v1",
+            api: "openai-responses",
+            models: ids.map((id) => ({
+              id,
+              name: id,
+              contextWindow: 128000,
+              maxTokens: 8192,
+              reasoning: true,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            })),
+          },
+        },
+      },
+    };
+  }
+  if (scenario.presetAgent) {
+    Object.assign(preset.template.agent, structuredClone(scenario.presetAgent));
+  }
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
@@ -1087,6 +1133,18 @@ export function installFixture(scenario, evidence) {
           const revisionId = suffix.split("/")[2];
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.
+            if (scenario.runtimeLogDownloadNoPod) {
+              return new Response(
+                `# agent=${id} revision=${revisionId} source=${url.searchParams.get("source")} observedAt=2026-09-27T11:41:10.000Z withheld=0\n`,
+                {
+                  status: 200,
+                  headers: {
+                    "content-type": "text/plain; charset=utf-8",
+                    "content-disposition": `attachment; filename="${id}-${revisionId}-${url.searchParams.get("source")}-no-pod.log"`,
+                  },
+                },
+              );
+            }
             return new Response(
               [
                 "2026-09-27T11:40:01.120Z info wrapper runtime.startup_phase container=gateway phase=config outcome=ok ms=12",

@@ -15,6 +15,13 @@
 # The budget does not cut a running attempt short:
 # each attempt may take up to 300 seconds (curl --max-time), so a download
 # gives up within about seven minutes.
+# An attempt that moves less than 100 KiB/s for 30 seconds is cut off as a
+# stall (curl exit 28) and retried like any other timeout. Healthy runner
+# downloads move tens of MB/s, and the 300 second cap already needs about
+# 195 KB/s for the largest pinned file (kubectl, about 59 MB), so this only
+# ends an attempt that has all but stopped. DOWNLOAD_PINNED_SPEED_LIMIT
+# (bytes/s) and DOWNLOAD_PINNED_SPEED_TIME (seconds) override the threshold
+# for tests.
 # The checksum is checked once, on the final file, and a mismatch is never
 # retried.
 set -euo pipefail
@@ -30,6 +37,8 @@ expected_sha256="$3"
 max_attempts=8
 max_delay_seconds=20
 retry_budget_seconds=120
+speed_limit_bytes="${DOWNLOAD_PINNED_SPEED_LIMIT:-102400}"
+speed_time_seconds="${DOWNLOAD_PINNED_SPEED_TIME:-30}"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "Missing required command: curl" >&2
@@ -53,9 +62,16 @@ delay=2
 started=${SECONDS}
 while :; do
   status=0
-  http_code="$(curl --fail --silent --show-error --location \
+  attempt_started=${SECONDS}
+  transfer="$(curl --fail --silent --show-error --location \
     --connect-timeout 20 --max-time 300 \
-    --write-out '%{http_code}' --output "${destination}" "${url}")" || status=$?
+    --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
+    --write-out '%{http_code} %{speed_download}' --output "${destination}" "${url}")" || status=$?
+  http_code="${transfer%% *}"
+  # curl --silent hides progress, so name slow attempts for the next stall investigation.
+  if [[ $((SECONDS - attempt_started)) -ge 20 ]]; then
+    echo "Slow download attempt ${attempt}: $((SECONDS - attempt_started))s, average ${transfer#* } bytes/s, curl exit ${status}: ${url}" >&2
+  fi
   if [[ ${status} -eq 0 ]]; then
     break
   fi

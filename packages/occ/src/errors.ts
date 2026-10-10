@@ -288,7 +288,8 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 /**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
- * (including credential-source Harness authentication in Agent provisioning), or
+ * (including missing, runtime or credential-source Harness authentication in Agent
+ * provisioning), or
  * any of those, an Agent's Harness authentication, a credential source, or plugin discovery
  * naming a Secret in another Namespace. Messages are static, so HTTP reports them as an
  * invalid request instead of hiding them as a scope miss; Secret existence is still checked
@@ -326,6 +327,34 @@ function configurationFieldMessage(path: string, message: (path: string) => stri
   return message(
     characters.length <= budget ? path : `${characters.slice(0, budget - 1).join("")}…`,
   );
+}
+
+/**
+ * Builds a message that names the Configuration setting `<parent>.<key>`. A submitted key can
+ * hold any character: control, format, line and paragraph separator characters show as ?, a
+ * key that is not a plain ID is quoted, and a long key shortens the path to fit the
+ * 256-character cap.
+ */
+function keyedSettingMessage(
+  parent: string,
+  key: string,
+  message: (path: string) => string,
+): string {
+  const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+  const path = /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
+  return configurationFieldMessage(path, message);
+}
+
+/** Builds a message that names the Configuration setting `agents.entries.<key>`. */
+export function agentEntryMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("agents.entries", key, message);
+}
+
+/** Builds a message that names the Configuration setting `models.providers.<key>`. */
+export function modelProviderMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("models.providers", key, message);
 }
 
 const modelCredentialMessage = (path: string): string =>
@@ -691,6 +720,39 @@ export class CredentialSourceRevisionError extends Error {
 }
 
 /**
+ * A Compute Driver cannot withdraw a credential source from this exact AgentRevision: its
+ * configuration cannot identify the revision's Sandbox, or it found an object it does not
+ * own. Retrying cannot change the outcome until an operator corrects the cause, so the worker
+ * fails the withdrawal at once with `code` instead of retrying it for an hour; a replay tries
+ * again. The message stays in the controller.
+ */
+export class CredentialWithdrawalRefusedError extends Error {
+  readonly code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT";
+
+  constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
+    super(message);
+    this.name = "CredentialWithdrawalRefusedError";
+    this.code = code;
+  }
+}
+
+/**
+ * Source deletion is refused only because a credential withdrawal attempt or retry series is
+ * still queued or running for an inactive revision that holds the source; nothing else
+ * references it. A fixed message: it names no Agent or revision, which the caller, who holds
+ * only `delete` on the source, may not be allowed to read. A replay cannot help, since the
+ * Agent's active revision no longer holds the source.
+ */
+export class CredentialWithdrawalInProgressError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    );
+    this.name = "CredentialWithdrawalInProgressError";
+  }
+}
+
+/**
  * An AccessBinding Role carries Permissions that can never take effect through the
  * binding: `create` is checked against the Namespace, not an existing resource, and a
  * binding to an exact resource applies only Permissions of that resource's kind.
@@ -748,6 +810,71 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/**
+ * The selected Credential Gateway's catalog lacks a source type: registration names one it does
+ * not offer, or a configuration change dropped an existing source's type (OpenShell offers
+ * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
+ * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
+ * message names the fix.
+ */
+export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+    );
+    this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
+  issue:
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  deploy:
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  delete:
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+});
+
+/**
+ * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
+ * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
+ * issued access token cannot be deleted unless forced, since nothing can revoke the token. An Installation
+ * property, raised only after the caller's grant and the account lookup, so it reveals nothing
+ * a 403 or 404 hides. The fixed message names the fix.
+ */
+export class ServiceAccountDriverNotConfiguredError extends ResourceConflictError {
+  constructor(operation: "issue" | "deploy" | "delete") {
+    super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
+    this.name = "ServiceAccountDriverNotConfiguredError";
+  }
+}
+
+const SERVICE_ACCOUNT_REFERENCE_URL =
+  "https://docs-enterprise.openclaw.org/reference/service-accounts/";
+
+/**
+ * An account-owned credential Secret left by an earlier issuance whose outcome OCC could not
+ * settle (a lost create reply whose cleanup failed) blocks every retry until an operator deletes
+ * it (finding 935). Raised only after the caller's update grant, the account lookup and the
+ * "no credential yet" check, so it reaches only callers who may issue for this account. It
+ * names the Kubernetes namespace and Secret (never its contents) and the doc's removal step.
+ */
+export class ServiceAccountCredentialSecretExistsError extends ResourceStateConflictError {
+  readonly secretNamespace: string;
+  readonly secretName: string;
+
+  constructor(secretNamespace: string, secretName: string) {
+    const message = (secret: string) =>
+      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. An operator must delete it, then retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
+    const full = message(`${secretNamespace}/${secretName}`);
+    // The HTTP error contract caps messages at 256 characters; only a long namespace exceeds it.
+    super(full.length <= 256 ? full : message(secretName));
+    this.name = "ServiceAccountCredentialSecretExistsError";
+    this.secretNamespace = secretNamespace;
+    this.secretName = secretName;
   }
 }
 

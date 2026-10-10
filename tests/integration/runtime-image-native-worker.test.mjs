@@ -59,6 +59,7 @@ test(
       "tests/conformance/workspace-node-supervisor.test.mjs",
       "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
       "apps/controller/src/drivers/compute/node-program.ts",
+      "apps/controller/src/drivers/compute/runtime-startup.ts",
       "apps/controller/src/drivers/plugin/runtime-translator.ts",
     ];
     const files = await Promise.all(
@@ -125,9 +126,11 @@ process.exit(child.status ?? 1);
         cause: error,
       });
     });
-    // All supervisor proofs: environment and file-delivered node setup, a
+    // All supervisor proofs: environment and file-delivered node setup, the
+    // file-delivered Gateway CA for Codex hooks, the hook directory rebuilt
+    // without following a planted link and cleared of earlier credentials, a
     // failed saved-identity probe that is retried, and a stop with no child.
-    assert.match(stdout, /\bpass 4\b/);
+    assert.match(stdout, /\bpass 7\b/);
     assert.match(stdout, /\bfail 0\b/);
     assert.match(stdout, /skipped 0/);
   },

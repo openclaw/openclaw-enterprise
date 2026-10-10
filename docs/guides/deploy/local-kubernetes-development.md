@@ -61,7 +61,7 @@ OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
 Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.160.0`. If the node's `RuntimeDefault`
+imported runtime image and Codex `0.163.0-alpha.2`. If the node's `RuntimeDefault`
 blocks it, the launcher derives the
 [reviewed compatibility profile](codex-sandbox.md) from that node's actual
 policy, installs it only on the owned k3d node, and verifies workspace and
@@ -168,7 +168,10 @@ cleanup to use another location. Its parent must not contain symlinks; on macOS,
 use `/private/tmp/...` instead of `/tmp/...`.
 `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds k3d
 readiness and each later startup wait. A cluster timeout triggers owned-resource
-rollback; follow the printed cleanup instruction if state is retained. Startup
+rollback; follow the printed cleanup instruction if state is retained. A failed
+exclusive key-file write removes its partial output so you can retry after
+resolving the filesystem error. Existing destination files are never removed;
+if removal itself fails, the error reports both failures. Startup
 refuses an existing state directory or cluster. To pick up source changes,
 [rebuild the running services](#rebuild-after-a-source-edit); cleanup is for
 discarding the Installation. The state directory remains mode `0700`; generated

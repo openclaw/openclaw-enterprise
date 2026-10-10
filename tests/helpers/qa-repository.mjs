@@ -332,7 +332,6 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   const { data: baseline } = await observe("GET", `git/ref/heads/${encodeURIComponent(base)}`);
   const baseSha = baseline.object.sha;
   assert.match(baseSha, /^[a-f0-9]{40}$/);
-  f.repositoryObserverReady = true;
   const suffix = `${f.suffix}-${agent.preset.toLowerCase()}-${profile}`;
   const branch = `oce-qa-${suffix}`;
   const file = `qa-${suffix}.txt`;
@@ -383,7 +382,7 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   try {
     // Deployment can open provider credentials even if its response is lost.
     // A rejected draft update above creates no session-cleanup obligation.
-    f.retained = true;
+    f.pendingRepositories.add(agent.id);
     await f.deployAndWait(agent);
     const readOnly = profile === "git-read";
     const gateway = await f.pod(agent, "gateway");
@@ -567,10 +566,10 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
       ).items;
       assert.equal(materials.length, 0);
       await f.record(`${suffix}-disposal`, session);
-      f.retained = false;
+      f.pendingRepositories.delete(agent.id);
     }
     // Reconcile unknown task outcomes as well as successful remote writes.
-    if (!f.retained) {
+    if (!f.pendingRepositories.has(agent.id)) {
       await cleanupRepositoryJourney({
         observe,
         repository,
@@ -588,6 +587,9 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
     }
   } catch (error) {
     cleanupFailure = error;
+  }
+  if (f.pendingRepositories.has(agent.id)) {
+    f.retained = true;
   }
   if (workFailure && cleanupFailure) {
     throw new AggregateError(

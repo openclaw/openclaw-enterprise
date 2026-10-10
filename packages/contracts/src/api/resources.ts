@@ -502,6 +502,29 @@ export const SecretDetailSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const CredentialRefreshStatusSchema = Type.Object(
+  {
+    state: Type.Union([Type.Literal("pending"), Type.Literal("ready"), Type.Literal("failed")]),
+    expiresAt: Type.Optional(Type.String({ format: "date-time" })),
+    nextRefreshAt: Type.Optional(Type.String({ format: "date-time" })),
+    lastRefreshAt: Type.Optional(Type.String({ format: "date-time" })),
+    failureCode: Type.Optional(Type.String({ maxLength: 128 })),
+    recoveryAction: Type.Optional(
+      Type.Union([
+        Type.Literal("retry"),
+        Type.Literal("reauthorize"),
+        Type.Literal("fix_configuration"),
+        Type.Literal("investigate"),
+      ]),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+  },
+);
+
 export const CredentialSourceStatusSchema = Type.Object(
   {
     state: Type.Union([
@@ -511,6 +534,7 @@ export const CredentialSourceStatusSchema = Type.Object(
       Type.Literal("absent"),
     ]),
     reason: Type.Optional(Type.String({ maxLength: 512 })),
+    refresh: Type.Optional(CredentialRefreshStatusSchema),
   },
   {
     additionalProperties: false,
@@ -772,7 +796,11 @@ export const CredentialWithdrawalSchema = Type.Object(
   {
     namespaceId: NamespaceId,
     agentId: AgentId,
-    revisionId: RevisionId,
+    revisionId: Type.String({
+      ...RevisionId,
+      description:
+        "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+    }),
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
@@ -820,6 +848,29 @@ export const SecretListResponse = Type.Object(
 export const ServiceAccountResponse = Type.Object(
   { data: ServiceAccountSchema, meta: Meta },
   { additionalProperties: false },
+);
+
+export const ServiceAccountForceDeletionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        id: ServiceAccountId,
+        namespaceId: NamespaceId,
+        revocation: Type.Literal("skipped", {
+          description:
+            "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+        }),
+        backendId: Type.Optional(BackendId),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+  },
 );
 
 export const ServiceAccountListResponse = Type.Object(
@@ -1474,6 +1525,9 @@ export type CredentialWithdrawalWire = Type.Static<typeof CredentialWithdrawalSc
 export type CredentialWithdrawalResponse = Type.Static<typeof CredentialWithdrawalResponse>;
 export type SecretListResponse = Type.Static<typeof SecretListResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
+export type ServiceAccountForceDeletionResponse = Type.Static<
+  typeof ServiceAccountForceDeletionResponse
+>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
 export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;

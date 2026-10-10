@@ -20,12 +20,15 @@
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
     "tests/conformance/kubernetes-preflight.test.mjs",
+    "tests/conformance/kubernetes-client.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
+    "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
@@ -41,6 +44,7 @@
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.mjs",
     "tests/integration/secret-driver-startup.test.mjs",
     "tests/conformance/kubernetes-configuration.test.mjs",
@@ -73,7 +77,9 @@
     "tests/conformance/console-api-client.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
-    "tests/conformance/grafana-overview-dashboard.test.mjs"
+    "tests/conformance/grafana-overview-dashboard.test.mjs",
+    "tests/conformance/split-layout-tenants.test.mjs",
+    "tests/conformance/split-layout-adopt.test.mjs"
   ],
   "files": [
     {
@@ -137,6 +143,9 @@
       "path": "tests/conformance/kubernetes-preflight.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-client.test.mjs"
+    },
+    {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
     },
     {
@@ -171,6 +180,9 @@
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
       "path": "tests/conformance/platform-state-memory.test.mjs"
@@ -214,6 +226,10 @@
     {
       "path": "tests/integration/profile-renderer.test.mjs",
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
+    },
+    {
+      "path": "tests/integration/profile-preflight-chart-parity.test.mjs",
+      "expectedTests": ["trusted proxy CIDRs get the same verdict from the preflight and the chart"]
     },
     {
       "path": "tests/integration/bootstrap-output.test.mjs"
@@ -270,6 +286,9 @@
       "path": "tests/integration/device-authorization-api.test.mjs"
     },
     {
+      "path": "tests/integration/dependency-unavailable-log.test.mjs"
+    },
+    {
       "path": "tests/integration/runtime-credentials-api.test.mjs"
     },
     {
@@ -304,6 +323,12 @@
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/split-layout-tenants.test.mjs"
+    },
+    {
+      "path": "tests/conformance/split-layout-adopt.test.mjs"
     }
   ]
 }
