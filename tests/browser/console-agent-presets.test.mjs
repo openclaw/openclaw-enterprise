@@ -2832,31 +2832,37 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 
-test("The console requires a readable installed default for quick-start and still allows other Presets", async (t) => {
-  const fixture = await createConsoleAppFixture(t, {
-    defaultPresets: [],
-    filesystemConfiguration: true,
-  });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No installed starter", { ready: true });
-  const alternative = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: { name: "Custom starter", template: { agent: { name: "Custom Agent" } } },
-  });
-  assert.equal(alternative.status, 201);
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page
-    .getByText("Choose a Preset. default-codex is not available to you in this Namespace.", {
-      exact: true,
-    })
-    .waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),
-    true,
-  );
-  await page.getByLabel("Preset template", { exact: true }).selectOption(alternative.data.id);
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Custom Agent");
+test("The console quick-start prefers the readable installed default, then the first readable Preset by name", async (t) => {
+  for (const installedDefault of [true, false]) {
+    const fixture = await createConsoleAppFixture(t, {
+      defaultPresets: installedDefault ? [defaultCodexPreset] : [],
+      filesystemConfiguration: true,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Readable starters", { ready: true });
+    // Creation order differs from display order, and an installed default is not first by name.
+    for (const [name, agentName] of [
+      ["Zulu starter", "Zulu Agent"],
+      ["alpha starter", "Alpha Agent"],
+    ]) {
+      const created = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+        body: { name, template: { agent: { name: agentName } } },
+      });
+      assert.equal(created.status, 201);
+    }
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page
+      .getByText("Choose a Preset or start with the default Preset.", { exact: true })
+      .waitFor();
+    const shortcut = page.getByRole("button", { name: "Start with default Preset" });
+    assert.equal(await shortcut.isEnabled(), true);
+    await shortcut.click();
+    assert.equal(
+      await page.getByLabel("Agent name", { exact: true }).inputValue(),
+      installedDefault ? "" : "Alpha Agent",
+    );
+  }
 });
 
 test("Preset with a managed PAT account creates a draft without a Secret grant", async (t) => {

@@ -109,6 +109,10 @@ export const RepositoryRecovery = {
   name: "Reselect repositories after rejection",
 };
 export const CreatePreset = { ...story("createPreset"), name: "Preset variables" };
+export const CreateCustomPresetStarter = {
+  ...story("createCustomPresetStarter"),
+  name: "Custom Preset quick-start",
+};
 export const CreateBoundCredentialPreset = {
   ...story("createBoundCredentialPreset"),
   name: "Preset with saved model credential",

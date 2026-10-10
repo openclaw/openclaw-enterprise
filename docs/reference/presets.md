@@ -84,12 +84,12 @@ Codex `config.toml` or a reasoning-effort override.
 
 ### Plain console default
 
-**Start with default Preset** reads the authorized `default-codex` copy in the
-selected Namespace. Its shipped template has no variables, model, name, or
-credential; the ordinary form collects them. An operator-customized copy with
-variables opens the variable chooser first. Missing or unreadable defaults
-disable quick-start; other readable Presets remain selectable. Install the file
-through `includeDefaults`, `presets.files`, or Preset POST to enable it.
+**Start with default Preset** prefers the readable `default-codex` copy in the
+selected Namespace, otherwise the first readable Preset by name (case-insensitive).
+It reads that exact resource; a denied read does not open a substitute form.
+The shipped default has no variables, model, name, or credential; the ordinary
+form collects them. Templates with variables open the variable chooser first.
+An empty or unavailable Preset list disables quick-start.
 **Start without Preset** is independent of Namespace Presets; it uses the
 console's shared configuration base and ordinary creation permissions.
 

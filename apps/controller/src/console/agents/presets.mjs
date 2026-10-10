@@ -56,9 +56,7 @@ export function createPresetFields(context, apply) {
   let origin;
   let discardOnExit = false;
   const chooseHint = () =>
-    defaultId
-      ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available to you in this Namespace.";
+    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset to start.";
   const startDefault = button(
     "Start with default Preset",
     () => {
@@ -437,15 +435,16 @@ export function createPresetFields(context, apply) {
       if (!context.isCurrent() || !section.isConnected) {
         return;
       }
+      const readablePresets = presets.toSorted((left, right) =>
+        left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+      );
       selector.append(
-        ...presets
-          .toSorted((left, right) =>
-            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
-          )
-          .map((preset) => element("option", { value: preset.id }, preset.name)),
+        ...readablePresets.map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
-      defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
+      defaultId =
+        readablePresets.find((preset) => preset.name === "default-codex")?.id ??
+        readablePresets[0]?.id;
       startDefault.disabled = !defaultId;
       if (retained && presets.some((preset) => preset.id === retained.id)) {
         selector.value = retained.id;
@@ -454,7 +453,7 @@ export function createPresetFields(context, apply) {
       }
       if (presets.length === 0) {
         status.textContent =
-          "No Presets available to you in this Namespace. Ask an administrator to install default-codex or another Preset, or to give you read access to a Preset.";
+          "No Presets available to you in this Namespace. Ask an administrator to install a Preset or give you read access to one.";
       } else {
         status.textContent = chooseHint();
       }

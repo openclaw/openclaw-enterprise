@@ -111,6 +111,10 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 **Deployment retry after dependency failure**; switch versions and check
 **Since**.
 
+In **Custom Preset quick-start**, fill variables, inspect the draft, then leave
+and return to check discard. Compare **No Presets**, **Loading default Preset**,
+and **Default Preset access denied**; manual setup remains available.
+
 **First deployment creates credentials** accepts **Deploy new version** without
 a separate credential action. Its initial state is not a Stop request; OCC
 generation is simulated.
