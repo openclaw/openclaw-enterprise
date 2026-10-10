@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { isIP } from "node:net";
 import type {
   Driver,
   BackendDefinition,
@@ -146,27 +147,53 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   });
 }
 
-/** Matches the gRPC client: a bare host:port, or an origin without credentials or path. */
+/**
+ * Matches both consumers: the gRPC client dials a bare host:port as given or an origin's
+ * host and port, and both it and the service transport parse a bare value as
+ * `new URL("http://" + value)`. A value either consumer would throw on, or a port outside
+ * 1-65535, cannot start.
+ */
 function validGatewayEndpoint(value: unknown): boolean {
   if (!isNonEmptyString(value) || /\s/.test(value)) {
     return false;
   }
-  if (!value.includes("://")) {
-    return /^[^/:]+:[0-9]{1,5}$/.test(value);
+  const bare = !value.includes("://");
+  if (bare) {
+    if (value.startsWith("[") || value.includes("]")) {
+      const ipv6 = /^\[([^\]]+)\]:[0-9]{1,5}$/.exec(value);
+      if (ipv6 === null || isIP(ipv6[1]!) !== 6) {
+        return false;
+      }
+    } else if (!/^[^/:]+:[0-9]{1,5}$/.test(value)) {
+      return false;
+    }
   }
+  let parsed: URL;
   try {
-    const parsed = new URL(value);
-    return (
-      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      parsed.pathname === "/" &&
-      parsed.search === "" &&
-      parsed.hash === "" &&
-      parsed.username === "" &&
-      parsed.password === ""
-    );
+    parsed = new URL(bare ? `http://${value}` : value);
   } catch {
     return false;
   }
+  // WHATWG URL refuses ports above 65535 and elides a scheme's default port.
+  return (
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    parsed.port !== "0" &&
+    parsed.pathname === "/" &&
+    parsed.search === "" &&
+    parsed.hash === "" &&
+    parsed.username === "" &&
+    parsed.password === ""
+  );
+}
+
+/** A `%` inside the first bracketed host, scanned linearly (no backtracking regex). */
+function hasIpv6ZoneId(value: string): boolean {
+  const open = value.indexOf("[");
+  if (open === -1) {
+    return false;
+  }
+  const close = value.indexOf("]", open);
+  return value.slice(open + 1, close === -1 ? undefined : close).includes("%");
 }
 
 /** Upper bound for one OpenShell RPC deadline; it bounds late credential-provider creates. */
@@ -194,9 +221,17 @@ function validateOpenShellBackend(
   }
   const { endpoint, scheme, serviceName, port, requestTimeoutMs, rootCertificatePath } =
     configuration;
+  // WHATWG URL refuses an IPv6 zone ID (fe80::1%eth0) in either form, so the service
+  // transport cannot dial one even where gRPC could; name the reason instead of the shape.
+  if (typeof endpoint === "string" && hasIpv6ZoneId(endpoint)) {
+    throw new ScopeViolationError(
+      path(id, "configuration.endpoint") + " must not include an IPv6 zone ID (%).",
+    );
+  }
   if (endpoint !== undefined && !validGatewayEndpoint(endpoint)) {
     throw new ScopeViolationError(
-      path(id, "configuration.endpoint") + " must be host:port or an http or https origin.",
+      path(id, "configuration.endpoint") +
+        " must be host:port or an http or https origin, with a port from 1 to 65535.",
     );
   }
   if (endpoint === undefined && !isNonEmptyString(serviceName)) {
@@ -281,7 +316,7 @@ function validateOpenShellBackend(
     );
   }
   for (const key of Object.keys(drivers)) {
-    if (key !== "sandbox" && key !== "credential_gateway") {
+    if (key !== "sandbox" && key !== "credential_gateway" && key !== "credential_refresh") {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
@@ -289,6 +324,9 @@ function validateOpenShellBackend(
     throw new ScopeViolationError(
       path(id, "drivers") + " requires sandbox and credential_gateway members.",
     );
+  }
+  if (drivers.credential_refresh !== undefined && !isNonEmptyString(drivers.credential_refresh)) {
+    throw new ScopeViolationError(path(id, "drivers.credential_refresh") + " must be a Driver ID.");
   }
   return deepFreeze({
     id,
@@ -305,7 +343,13 @@ function validateOpenShellBackend(
         : { rootCertificatePath: rootCertificatePath as string }),
       ...(insecureTransport === undefined ? {} : { insecureTransport }),
     },
-    drivers: { sandbox: drivers.sandbox, credential_gateway: drivers.credential_gateway },
+    drivers: {
+      sandbox: drivers.sandbox,
+      credential_gateway: drivers.credential_gateway,
+      ...(drivers.credential_refresh === undefined
+        ? {}
+        : { credential_refresh: drivers.credential_refresh as string }),
+    },
   });
 }
 
@@ -319,6 +363,9 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   return [
     `sandbox:${backend.drivers.sandbox}`,
     `credential_gateway:${backend.drivers.credential_gateway}`,
+    ...(backend.drivers.credential_refresh === undefined
+      ? []
+      : [`credential_refresh:${backend.drivers.credential_refresh}`]),
   ];
 }
 
@@ -395,7 +442,26 @@ export function validateSelectedBackendDrivers(
         backend.drivers.credential_gateway,
         "Credential Gateway Driver",
       );
+      if (backend.drivers.credential_refresh !== undefined) {
+        requires(
+          "credential_refresh",
+          backend.drivers.credential_refresh,
+          "Credential Refresh Driver",
+        );
+      }
     }
+  }
+  // Refresh state lives with the gateway's source record, so the two roles share one Backend.
+  const refresh = selected.credential_refresh;
+  if (
+    refresh !== undefined &&
+    !backends.some((backend) =>
+      backendMembers(backend).includes(`credential_refresh:${refresh.id}`),
+    )
+  ) {
+    throw new DriverSelectionError(
+      "The selected Credential Refresh Driver must belong to the Credential Gateway's Backend.",
+    );
   }
   const gateway = selected.credential_gateway;
   if (

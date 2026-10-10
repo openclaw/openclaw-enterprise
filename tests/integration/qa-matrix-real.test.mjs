@@ -4,6 +4,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
 const selected = process.env.OCC_TEST_QA_MATRIX === "1";
 
@@ -16,6 +17,8 @@ test(
     timeout: 14_400_000,
   },
   async (context) => {
+    const selection = selectQaMatrix();
+    validateQaInputs(selection);
     const { createQaInstallation, prepareQaPreset, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
     const { protectedText } = await import("../helpers/qa-secrets.mjs");
@@ -30,12 +33,6 @@ test(
       ? resolve(process.env.OCC_TEST_QA_ARTIFACTS)
       : await mkdtemp(join(tmpdir(), "oce-qa-matrix-evidence-"));
     await mkdir(artifacts, { recursive: true, mode: 0o700 });
-    const selection = process.env.OCC_TEST_QA_INSTALLATION ?? "all";
-    assert.ok(
-      ["all", "compose", "kubernetes"].includes(selection),
-      "invalid QA installation selection",
-    );
-    const installations = selection === "all" ? ["compose", "kubernetes"] : [selection];
     const executionFilters = process.execArgv.filter((argument) =>
       /^--test-(?:name|skip)-pattern(?:=|$)/.test(argument),
     );
@@ -45,12 +42,8 @@ test(
       "OCC_TEST_QA_CONCURRENCY must be an integer from 1 to 4",
     );
     const { stage, save } = createQaReport(join(artifacts, "matrix.json"), {
-      scope:
-        executionFilters.length > 0
-          ? `partial:filtered:${selection}`
-          : selection === "all"
-            ? "full"
-            : `partial:${selection}`,
+      scope: executionFilters.length > 0 ? "partial:filtered" : selection.scope,
+      selection: selection.cells,
       executionFilters,
       concurrency,
       exclusions: [
@@ -61,7 +54,7 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
-    for (const installation of installations) {
+    for (const installation of selection.installations) {
       await context.test(
         `${installation} OCC + Kubernetes compute / Sandbox none`,
         { timeout: 7_000_000 },
@@ -70,17 +63,22 @@ test(
             installationContext,
             installation,
             "shipped startup, default Namespace and presets",
-            () => createQaInstallation(installationContext, installation, artifacts),
+            () =>
+              createQaInstallation(installationContext, installation, artifacts, {
+                repositoryInputs: selection.repository,
+              }),
           );
           let browser;
           let repositoryReady;
-          if (f) {
+          if (f && selection.browser) {
             browser = await stage(
               installationContext,
               installation,
               "authenticated console login",
               () => createQaBrowser(f),
             );
+          }
+          if (f && selection.repository) {
             repositoryReady = await stage(
               installationContext,
               installation,
@@ -91,8 +89,10 @@ test(
               },
             );
           }
-          for (const preset of ["OpenClaw", "Codex"]) {
-            const cell = `${installation}/${preset}`;
+          for (const selectedCell of selection.cells.filter(
+            (value) => value.installation === installation && value.scenarios.length > 0,
+          )) {
+            const { preset, cell } = selectedCell;
             await installationContext.test(
               `Standard ${preset}`,
               { timeout: 3_000_000 },
@@ -265,21 +265,23 @@ test(
                   { concurrency },
                   async (workers) => {
                     await Promise.all(
-                      scenarios.map(([name, work]) => runScenario(workers, name, work)),
+                      scenarios
+                        .filter(([name]) => selectedCell.scenarios.includes(name))
+                        .map(([name, work]) => runScenario(workers, name, work)),
                     );
                   },
                 );
                 // Slack changes installation-wide proxy configuration and shares
                 // Socket Mode credentials across installations. Join all workers
                 // before setup, and disable its consumer before the next cell.
-                if (preset === "Codex") {
+                if (selectedCell.scenarios.includes("slack")) {
                   await runScenario(cellContext, "slack", async (agent, step) => {
                     await step(
                       "single Slack ingress, one threaded reply and native outbound root",
                       () => verifyQaSlack(f, agent),
                     );
                   });
-                } else {
+                } else if (preset === "OpenClaw") {
                   cellContext.diagnostic(
                     "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ excluded throughout.",
                   );

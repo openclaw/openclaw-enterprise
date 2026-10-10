@@ -12,6 +12,7 @@ import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 
 function clone(value) {
   return structuredClone(value);
@@ -43,6 +44,10 @@ class FakeCoreV1Api {
     replaceNamespacedSecret: [],
     deleteNamespacedSecret: [],
   };
+  // Failures thrown after a create took effect, as when its response is lost.
+  createAppliedFailureCodes = [];
+  // Rewrites a Secret the create stored, before a later failure is thrown.
+  createAppliedMutation = undefined;
   calls = {
     listNamespace: 0,
     createNamespacedSecret: 0,
@@ -131,6 +136,11 @@ class FakeCoreV1Api {
     };
     delete stored.stringData;
     this.secrets.set(key, stored);
+    const appliedFailure = this.createAppliedFailureCodes.shift();
+    if (appliedFailure !== undefined) {
+      this.createAppliedMutation?.(stored);
+      throw injectedFailure(appliedFailure, "createNamespacedSecret");
+    }
     return clone(stored);
   }
 
@@ -201,38 +211,6 @@ class FakeCoreV1Api {
     return {};
   }
 }
-
-// Runs an operation with mocked timers, firing each retry pause as soon as it is
-// scheduled, and appends each pause's length to `pauses` (the mocked clock moves
-// by exactly the pending pause). Request deadlines use AbortSignal.timeout, which
-// stays real, and the loop spins until the operation settles: keep operations that
-// wait for a real deadline out of it. Not reentrant.
-async function withRetryTimers(operation, pauses = []) {
-  mock.timers.enable({ apis: ["setTimeout", "Date"] });
-  try {
-    let settled = false;
-    const result = operation();
-    result.then(
-      () => (settled = true),
-      () => (settled = true),
-    );
-    while (!settled) {
-      await new Promise((resolve) => setImmediate(resolve));
-      const before = Date.now();
-      mock.timers.runAll();
-      if (Date.now() > before) {
-        pauses.push(Date.now() - before);
-      }
-    }
-    return await result;
-  } finally {
-    mock.timers.reset();
-  }
-}
-
-// A copy of the driver's READ_RETRY_DELAYS_MS, as a pin: five pauses, about four
-// seconds in all. A change to the schedule updates both.
-const READ_RETRY_PAUSES_MS = [100, 250, 500, 1_000, 2_000];
 
 function secretId() {
   return `sec_${randomUUID()}`;
@@ -720,6 +698,74 @@ test("kubernetes-secret-driver sends a failed write once, even when a read would
   }
 });
 
+test("kubernetes-secret-driver removes a Secret whose create applied but answered an error", async () => {
+  const create = (driver, nsId) =>
+    driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value");
+  const createFailed = (error) =>
+    error instanceof SecretBackendUnavailableError &&
+    error.message === "The Kubernetes Secret create failed.";
+  const cleanupFailed = (error) =>
+    error instanceof SecretBackendUnavailableError &&
+    error.message ===
+      "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.";
+
+  // The create lands but its response is lost: OCC records no metadata for it, so the driver
+  // removes the exact object it stored under its own name (finding 916).
+  let client = new FakeCoreV1Api();
+  let nsId = namespaceId();
+  client.addNamespace(nsId);
+  let driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.secrets.size, 0);
+  assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+
+  // A create that never applied reads nothing back, deletes nothing, and keeps its own error.
+  client.failureCodes.createNamespacedSecret.push("dropped");
+  const reads = client.reads;
+  const deletes = client.calls.deleteNamespacedSecret;
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.reads - reads, 1);
+  assert.equal(client.calls.deleteNamespacedSecret - deletes, 0);
+
+  // An object under that name without this identity's exact ownership is never deleted, and
+  // since it is not this create's, the create keeps its own error.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedMutation = (stored) => {
+    stored.metadata.annotations["openclaw.dev/secret-id"] = secretId();
+  };
+  client.createAppliedFailureCodes.push("dropped");
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 0);
+
+  // When the stored object cannot be read, the driver cannot tell whether the create applied,
+  // so it says so instead of reporting a plain failure that may have left a Secret behind.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  client.readSecretFailureCodes.push(403);
+  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 0);
+
+  // A failed cleanup delete is reported the same way.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  client.failureCodes.deleteNamespacedSecret.push(503);
+  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 1);
+});
+
 test("kubernetes-secret-driver ends a retry pause at once when the owner cancels", async () => {
   const client = new FakeCoreV1Api();
   const { driver, secret } = await storedSecret(client);
@@ -762,5 +808,33 @@ test("kubernetes-secret-driver ends a retry pause at once when the owner cancels
     // Settles the read even when an assertion above failed first.
     owner.abort();
     mock.timers.reset();
+  }
+});
+
+test("kubernetes-secret-driver reports a read the owner cancels in flight as cancelled", async () => {
+  const client = new FakeCoreV1Api();
+  const { driver, secret } = await storedSecret(client);
+  const owner = new AbortController();
+  const reads = client.reads;
+  // The read waits for its abort signal, then rejects with the abort reason.
+  client.readSecretTimesOut = true;
+  const result = withComputeAbortSignal(owner.signal, () => driver.resolve(secret));
+  try {
+    for (let turn = 0; client.reads === reads; turn += 1) {
+      assert.ok(turn < 100, "the read was never sent");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    owner.abort(new Error("claim lost"));
+    await assert.rejects(
+      result,
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret read was cancelled.",
+    );
+    assert.equal(client.reads - reads, 1, "no read after the cancellation");
+  } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort(new Error("claim lost"));
+    await result.catch(() => {});
   }
 });

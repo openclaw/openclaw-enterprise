@@ -533,6 +533,14 @@ test("worker emitter reports health at debug and failures at error", () => {
     elapsedMs: 2900,
   });
   emit({ event: "worker.error", code: "CLAIM_LOST" });
+  // A graceful shutdown that aborts a pass is no failure (finding 1040).
+  emit({
+    event: "worker.pass-interrupted",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    cause: "WorkerStopping",
+  });
 
   assert.deepEqual(
     output.lines.map(({ event, severity }) => ({ event, severity })),
@@ -541,8 +549,10 @@ test("worker emitter reports health at debug and failures at error", () => {
       { event: "worker.completed", severity: "INFO" },
       { event: "worker.completed", severity: "INFO" },
       { event: "worker.error", severity: "ERROR" },
+      { event: "worker.pass-interrupted", severity: "INFO" },
     ],
   );
+  assert.equal(output.lines.at(-1).cause, "WorkerStopping");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);

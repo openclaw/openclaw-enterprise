@@ -161,6 +161,12 @@ const githubMembershipFailures = {
       : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
 };
 
+// The provider authenticated an identity attached to a disabled account. Retrying, a
+// password or an attach cannot help, so only an administrator is named.
+function accountDisabledFailure(label) {
+  return `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`;
+}
+
 function pinSessionKey(value) {
   pinnedSessionKey = typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -833,10 +839,12 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     ? externalProviders[authError]
     : null;
   const authReason = current.url.searchParams.get("authReason");
-  const membershipFailure =
-    authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
-      ? githubMembershipFailures[authReason]
-      : null;
+  const reasonFailure =
+    providerError !== null && authReason === "account-disabled"
+      ? accountDisabledFailure(providerError.label)
+      : authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
+        ? githubMembershipFailures[authReason]
+        : null;
   const externalAttempt = takeExternalAttempt();
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
@@ -882,7 +890,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             : pageUrl(current.target, current.namespace);
       showLogin(
         providerError !== null
-          ? (membershipFailure ?? providerFailure(providerError.label))
+          ? (reasonFailure ?? providerFailure(providerError.label))
           : current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"

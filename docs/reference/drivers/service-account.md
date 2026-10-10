@@ -55,7 +55,9 @@ if the account is outside the specified Namespace, or if the Driver is missing
 Deletion is blocked while an Agent draft, active revision, pending deployment, or
 queued or running Agent provisioning request still references the account. OCC calls the selected Driver before deleting its
 own account record; without a Driver, an account holding an issued access token
-is not deleted (`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`). See the [credential delivery flow](../../flows/service-account-driver-credential-delivery.md).
+is not deleted (`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`) unless the caller
+[forces it](../service-accounts.md#force-delete-when-the-backend-is-gone), which
+leaves the token unrevoked. See the [credential delivery flow](../../flows/service-account-driver-credential-delivery.md).
 
 ## Limits
 
@@ -87,8 +89,18 @@ It stores the private Namespace binding in PostgreSQL and asks selected Compute
 credential storage to write the token and workspace identity to an account-owned
 Secret. Issuance and deletion recheck Backend, Driver, and workspace ownership.
 A missing binding makes provider deletion a no-op; conflicting ownership fails.
-Backend and Secret creation register compensation with OCC. Deletion revokes
-the credential, removes its Secret, and deletes the upstream account. See
+Backend and Secret creation register compensation with OCC; a create whose
+reply is lost is not compensated, since nothing proves which account it made.
+A credential reply that fails validation revokes the credential it names under
+the requested account in this workspace. A Secret create that fails removes the
+Secret it may have stored, only when that Secret holds this request's token.
+A later failure's compensation runs after the account lock is released, when
+another issuance may already hold the same Secret name, so it also deletes the
+Secret only while it holds this request's token, with uid and resourceVersion
+preconditions.
+Deletion revokes the credential, removes its Secret, and deletes the upstream
+account; each step treats an already-absent resource as done, so a retry
+completes a deletion that applied but failed. See
 [Backend configuration](../backends.md) and [service accounts](../service-accounts.md).
 
 ## Related

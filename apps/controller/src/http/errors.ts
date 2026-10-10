@@ -43,6 +43,7 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
+import { loggedErrorText, resemblesCredential } from "../logging.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -457,6 +458,76 @@ export function isDependencyUnavailable(error: unknown): boolean {
   return (
     error instanceof DependencyUnavailableError || errorName(error) === "DependencyUnavailableError"
   );
+}
+
+const LOGGED_ERROR_CLASS = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+const LOGGED_ERROR_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_LOGGED_CAUSES = 4;
+
+/** The error's class: its constructor's name, else its `name`, when either is an identifier. */
+function loggedErrorClass(error: object): string | undefined {
+  return [error.constructor?.name, (error as { readonly name?: unknown }).name].find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" &&
+      candidate !== "Error" &&
+      candidate !== "Object" &&
+      LOGGED_ERROR_CLASS.test(candidate) &&
+      !resemblesCredential(candidate),
+  );
+}
+
+/** An HTTP status, SQLSTATE or transport code (`ECONNRESET`), never free text. */
+function loggedErrorCode(error: object): string | number | undefined {
+  const code = (error as { readonly code?: unknown }).code;
+  if (typeof code === "number") {
+    return Number.isSafeInteger(code) ? code : undefined;
+  }
+  return typeof code === "string" && LOGGED_ERROR_CODE.test(code) && !resemblesCredential(code)
+    ? code
+    : undefined;
+}
+
+/**
+ * Log fields naming why a request answered `503 DEPENDENCY_UNAVAILABLE`. The response keeps its
+ * text, so callers learn nothing more; the operator finds the cause by request ID. The record
+ * keeps the error's class and message, and, for up to four errors on its `cause` chain, only
+ * class and code: a cause can be a client error whose message, body or request echoes private
+ * data. Most DependencyUnavailableError messages built in this repository are fixed text or name
+ * only identifiers, an HTTP method or status. Some carry bounded upstream text (OpenShell
+ * CreateSandbox detail, a runtime failure code), and a driver package can raise any message.
+ * `loggedErrorText` withholds a message that resembles a credential, and a class or code that
+ * resembles one is dropped; both are pattern checks, not sanitizers.
+ */
+export function dependencyUnavailableLogFields(error: Error): {
+  readonly errorClass?: string;
+  readonly message?: string;
+  readonly causes?: readonly { readonly errorClass?: string; readonly code?: string | number }[];
+} {
+  const causes: { errorClass?: string; code?: string | number }[] = [];
+  const seen = new Set<unknown>([error]);
+  let cause: unknown = error.cause;
+  while (
+    causes.length < MAX_LOGGED_CAUSES &&
+    cause !== null &&
+    typeof cause === "object" &&
+    !seen.has(cause)
+  ) {
+    seen.add(cause);
+    const errorClass = loggedErrorClass(cause);
+    const code = loggedErrorCode(cause);
+    causes.push({
+      ...(errorClass === undefined ? {} : { errorClass }),
+      ...(code === undefined ? {} : { code }),
+    });
+    cause = (cause as { readonly cause?: unknown }).cause;
+  }
+  const errorClass = loggedErrorClass(error);
+  const message = typeof error.message === "string" ? loggedErrorText(error.message) : undefined;
+  return {
+    ...(errorClass === undefined ? {} : { errorClass }),
+    ...(message === undefined ? {} : { message }),
+    ...(causes.length === 0 ? {} : { causes }),
+  };
 }
 
 const RUNTIME_LOG_FAILURES: Readonly<

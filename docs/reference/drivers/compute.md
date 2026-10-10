@@ -2,28 +2,25 @@
 
 ## Overview
 
-`ComputeDriver` manages Namespace infrastructure and Agent revisions, including
-gateways, workload identity, routing, activation and readiness. OCC selects one
-Driver per Installation, authorizes operations and records immutable revisions.
-Backends own resources; a selected [SandboxDriver](sandbox.md) can create a
-dedicated Harness.
+`ComputeDriver` owns Namespace infrastructure, revisions, gateways, workload
+identity, routing, activation and readiness. OCC selects one per Installation,
+authorizes operations and records immutable revisions. Backends own resources;
+[SandboxDriver](sandbox.md) can create a Harness.
 
-See [Driver selection](selection.md) for supported combinations and package trust,
-the [feature matrix](compute-matrix.md), and
-[current versus planned placement](../../design.md#implementation-status).
+See [Driver selection](selection.md), the [feature matrix](compute-matrix.md),
+and [placement status](../../design.md#implementation-status).
 
 ## Interface
 
-Types: [shared contracts](../../../packages/contracts/src/index.ts).
-Every `ComputeDriver` has an `id`, `implementation`, and
-`capability: "compute"`.
+[Shared contracts](../../../packages/contracts/src/index.ts) require `id`,
+`implementation`, and `capability: "compute"`.
 
 Optional `getRuntimeImages(revision)` returns
 `{workload, container, image, imageId, commit, openclawCommit}` entries for
 containers owned by that admitted revision. OCC requires exact Agent read
 authority and calls the Driver pinned by the active revision. The
-`runtime-images` API reports `undeployed` without an active revision and
-`unsupported` when the Driver omits this method.
+`runtime-images` reports `undeployed` without an active revision, `unsupported`
+without this method.
 
 Commits must be full lowercase Git SHAs; missing IDs or provenance remain `null`.
 Results exclude separate Sandbox Driver workloads. Neither Docker nor Kubernetes
@@ -33,10 +30,10 @@ from a moved tag. Kubernetes
 binds its private metadata read to the Pod UID and running container ID; both
 commits apply only to containers with that image ID.
 
-Optional `discoverHarnessModels({provider, apiKey})` returns native model IDs
-and names without persisting credentials. OCC checks Agent creation authority
-before calling it. Bundled Kubernetes and Docker call the official OpenAI and
-Anthropic model-list APIs with bounded requests and no redirects. Discovery requires
+`discoverHarnessModels({provider, apiKey})` optionally returns native model IDs/names
+without storing credentials. OCC requires Agent creation authority. Kubernetes
+and Docker call official OpenAI/Anthropic model-list APIs with bounded requests,
+no redirects. Discovery requires
 [OCC API egress](../console/create-and-deploy.md#create-an-agent) to each
 provider; it neither provisions runtime credentials nor proves model
 compatibility. Unsupported or unavailable discovery permits manual model entry.
@@ -64,15 +61,13 @@ context is optional in TypeScript; the worker supplies it after authorization.
 
 ### Human runtime access
 
-Browser access requires `listAgentRuntimeRoles(configuration)` and
-`getAgentRuntimeAccess(revision, principalId, runtimeRole)`; other Drivers may
-omit both. Saved Configuration supplies assignable roles without a runtime;
-immutable active Configuration supplies deployed summaries.
-
-Admission returns a private endpoint and server-owned person/role headers, or an
-unavailable reason. Unknown roles and unsupported transport fail closed; service
-endpoints cannot substitute. Kubernetes supports browser access;
-Docker and SSH do not. See [Runtime access](../agent-native-admin.md).
+Kubernetes browser access requires `listAgentRuntimeRoles(configuration)` and
+`getAgentRuntimeAccess(revision, principalId, runtimeRole)`; Docker/SSH omit both.
+Saved Configuration supplies assignable roles; active Configuration supplies
+deployed summaries. Admission returns a private endpoint and server-owned person/role headers or an
+unavailable reason.
+Unknown roles, unsupported transport and service endpoints are refused. See
+[Runtime access](../agent-native-admin.md).
 
 ### Optional additions
 
@@ -173,11 +168,17 @@ unavailable; Drivers unable to collect safe evidence should omit the method.
 ### Optional runtime status and logs
 
 `describeAgentRuntime(binding, signal, options)` returns Pod status, restarts,
-Events and log sources of a revision, or one source without Events;
+the newest 100 Events per Pod and log sources of a revision, or one source without Events.
+A terminated container reports its current exit as `lastTermination`; otherwise
+that field reports the prior exit.
 `readAgentRuntimeLogs(binding, request)` returns bounded **raw** lines from a
 listed Pod. Drivers re-check ownership and raise
 `RuntimeLogsForbiddenByClusterError` for a cluster `403`; OCC [redacts and bounds](../../guides/topics/agent-logs.md) output. Without them,
-or with `runtimeLogging: "driver"`, both routes answer `501`.
+or with `runtimeLogging: "driver"`, both routes answer `501`. Kubernetes current
+log reads can return no lines while initial Pod/container preparation finishes;
+see [log availability](../../guides/topics/agent-logs.md). The Kubernetes
+implementation normalizes RFC3339 timestamp offsets to UTC without reducing
+fractional precision.
 
 ### Runtime logging ownership
 

@@ -7,7 +7,7 @@ import type {
   RequestContext,
   ResponseContext,
 } from "@kubernetes/client-node";
-import { Agent, type buildConnector, type Dispatcher } from "undici";
+import { Agent, type buildConnector, type Dispatcher, ProxyAgent } from "undici";
 import { currentComputeAbortSignal } from "../compute/operation-context.ts";
 import type { KubernetesAuthentication } from "./authentication.ts";
 
@@ -107,6 +107,28 @@ export async function createKubernetesClientConfiguration(
   return { sdk, clientConfiguration, kubeConfig: configuration, server: cluster.server };
 }
 
+/** How long a reused API connection may sit idle before the client closes it. */
+export type KeepAliveLimits = {
+  /** Idle limit when the server sends no `Keep-Alive: timeout` hint. */
+  readonly keepAliveTimeout: number;
+  /** Upper bound on a server's `Keep-Alive: timeout` hint. */
+  readonly keepAliveMaxTimeout: number;
+};
+
+/**
+ * The client must close an idle connection before the server or a load
+ * balancer does, or a request reusing it can race the close and fail with a
+ * reset (finding 909). kube-apiserver idles out after 90 s and sends no hint;
+ * load balancers use 60-600 s (AWS ALB 60 s, NLB 350 s, GCP 600 s). undici's
+ * 4 s default stays, but it trusts a `Keep-Alive: timeout` hint up to 600 s, so
+ * one hop could advertise more idle time than another hop allows: cap hints at
+ * 30 s, under every limit above.
+ */
+export const KUBERNETES_KEEP_ALIVE_LIMITS: KeepAliveLimits = Object.freeze({
+  keepAliveTimeout: 4_000,
+  keepAliveMaxTimeout: 30_000,
+});
+
 /** The private KubeConfig method that builds each API request's dispatcher. */
 type KubeConfigDispatcherFactory = {
   createDispatcher(cluster: Cluster | null, agentOptions: AgentOptions): Dispatcher | undefined;
@@ -124,9 +146,14 @@ type KubeConfigDispatcherFactory = {
  * already picked it up have dispatched and finished.
  * Requests use HTTP/1.1, as before 2.0.0: undici would otherwise negotiate
  * HTTP/2 and multiplex every call over one shared connection, and its close
- * does not drain HTTP/2 streams gracefully.
+ * does not drain HTTP/2 streams gracefully. Direct and HTTP proxy connections
+ * also get KUBERNETES_KEEP_ALIVE_LIMITS. A SOCKS proxy keeps client-node's own
+ * dispatcher (its connector is private), so undici's defaults apply there.
  */
-export function reuseRequestDispatcher(configuration: KubeConfig): void {
+export function reuseRequestDispatcher(
+  configuration: KubeConfig,
+  keepAlive: KeepAliveLimits = KUBERNETES_KEEP_ALIVE_LIMITS,
+): void {
   const factory = configuration as unknown as KubeConfigDispatcherFactory;
   if (typeof factory.createDispatcher !== "function") {
     throw new Error("The Kubernetes client no longer exposes its request dispatcher factory.");
@@ -142,15 +169,26 @@ export function reuseRequestDispatcher(configuration: KubeConfig): void {
     if (current?.fingerprint === fingerprint) {
       return current.dispatcher;
     }
+    // client-node passes these same connect and TLS options to these
+    // constructors; its tls.ConnectionOptions type is only looser about
+    // optional fields. undici's ProxyAgent ignores `connect` (no TCP keepalive
+    // on the tunnel); it is passed only to mirror client-node.
     const dispatcher =
       options.type === "agent"
         ? new Agent({
             allowH2: false,
-            // The same options client-node passes to this constructor; its
-            // tls.ConnectionOptions type is only looser about optional fields.
+            ...keepAlive,
             connect: options.connect as Partial<buildConnector.BuildOptions>,
           })
-        : createLibraryDispatcher(cluster, agentOptions);
+        : options.type === "proxy"
+          ? new ProxyAgent({
+              uri: options.uri,
+              requestTls: options.requestTls as buildConnector.BuildOptions,
+              connect: options.connect as Partial<buildConnector.BuildOptions>,
+              allowH2: false,
+              ...keepAlive,
+            })
+          : createLibraryDispatcher(cluster, agentOptions);
     if (dispatcher === undefined) {
       return undefined;
     }

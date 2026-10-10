@@ -163,6 +163,50 @@ func (client *Client) DeleteConfiguration(namespaceID, configurationID string) e
 	)
 }
 
+// ListServiceAccounts lists the ServiceAccounts in a Namespace that the caller can read.
+func (client *Client) ListServiceAccounts(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "service-accounts")
+}
+
+// DeleteServiceAccount deletes an unreferenced ServiceAccount. It returns nil after a
+// complete deletion. With force, an account whose issued access token no ChatGPT Backend can
+// revoke is deleted anyway, and the returned data reports the unrevoked token.
+func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string, force bool) (any, error) {
+	segments := []string{"namespaces", namespaceID, "service-accounts", serviceAccountID}
+	if !force {
+		return nil, client.sendEmpty(http.MethodDelete, segments)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodDelete,
+		segments,
+		url.Values{"force": {"true"}},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusNoContent:
+		if len(responseBody) != 0 {
+			return nil, fmt.Errorf("OCC returned an invalid empty response (HTTP %d)", status)
+		}
+		return nil, nil
+	case http.StatusOK:
+		var envelope responseEnvelope
+		var data any
+		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
+			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
+			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+		}
+		return data, nil
+	default:
+		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
+		}
+		return nil, client.apiError(status, header, responseBody)
+	}
+}
+
 // CreateSecret creates a Secret in a Namespace and returns metadata only.
 func (client *Client) CreateSecret(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "secrets"}, body)
@@ -232,6 +276,15 @@ func (client *Client) UpdateCredentialSource(
 		http.MethodPatch,
 		[]string{"namespaces", namespaceID, "credential-sources", sourceID},
 		body,
+	)
+}
+
+// RotateCredentialSource forces a refresh-type source to mint a new token.
+func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "credential-sources", sourceID, "rotate"},
+		nil,
 	)
 }
 

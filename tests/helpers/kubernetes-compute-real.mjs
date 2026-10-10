@@ -476,6 +476,8 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
           ...snapshot.configuration,
           gateway: {
             ...snapshot.configuration.gateway,
+            // Compute renders the all-interfaces listener for an omitted or auto bind.
+            bind: "lan",
             trustedProxies: ["127.0.0.1/32"],
             allowRealIpFallback: true,
             auth: {

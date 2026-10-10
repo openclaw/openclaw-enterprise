@@ -67,10 +67,14 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /42/, result.stderr);
-    const builds = (await readFile(commandsPath, "utf8"))
+    const calls = (await readFile(commandsPath, "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
+    // Lanes that only restore first probe for an image the engine already
+    // holds; the failed probe falls back to the loading build.
+    const builds = calls.filter((args) => args.includes("--load"));
+    assert.equal(calls.length, writer ? builds.length : 2 * builds.length);
     assert.deepEqual(
       builds.map((args) => (args.includes("--target") ? "controller" : "runtime")).sort(),
       roles,

@@ -47,6 +47,7 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 
@@ -204,7 +205,33 @@ const cases = [
       status: 409,
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
-        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    },
+  ],
+  [
+    "a leftover service-account credential Secret is named with the doc's removal step",
+    new ServiceAccountCredentialSecretExistsError(
+      "oce-0123456789abcde",
+      "service-account-0123456789abcdef0123456789abcdef",
+    ),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Kubernetes Secret oce-0123456789abcde/service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    },
+  ],
+  [
+    "a leftover credential Secret in a long Kubernetes namespace keeps the 256-character cap",
+    new ServiceAccountCredentialSecretExistsError(
+      "n".repeat(63),
+      "service-account-0123456789abcdef0123456789abcdef",
+    ),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Kubernetes Secret service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
     },
   ],
   [

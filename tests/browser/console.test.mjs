@@ -1109,6 +1109,48 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   await expectNoText(page, /organization/);
 });
 
+test("a disabled account's provider sign-in says the account is disabled", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  let password = true;
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { github: true, google: true, password, sessionBinding: true },
+        meta: { requestId: "browser-account-disabled" },
+      }),
+    }),
+  );
+  // Any provider's callback may carry it; neither a retry, a password nor an attach can help,
+  // so the advice names only an administrator, with or without password sign-in.
+  for (const [provider, label] of [
+    ["github", "GitHub"],
+    ["google", "Google"],
+  ]) {
+    for (const available of [true, false]) {
+      password = available;
+      await page.goto(
+        `${fixture.origin}/console/?authError=${provider}&authReason=account-disabled`,
+      );
+      await page
+        .getByText(
+          `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`,
+          { exact: true },
+        )
+        .waitFor();
+      await expectNoText(page, /attach your|use your password/);
+    }
+  }
+  // Without a provider error the reason means nothing.
+  password = true;
+  await page.goto(`${fixture.origin}/console/?authReason=account-disabled`);
+  await page.getByRole("button", { name: "Login" }).waitFor();
+  await expectNoText(page, /disabled/);
+});
+
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

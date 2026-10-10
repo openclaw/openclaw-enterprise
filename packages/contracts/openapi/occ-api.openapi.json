@@ -526,6 +526,33 @@
                 "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
+                  "refresh": {
+                    "additionalProperties": false,
+                    "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                    "properties": {
+                      "expiresAt": { "format": "date-time", "type": "string" },
+                      "failureCode": { "maxLength": 128, "type": "string" },
+                      "lastRefreshAt": { "format": "date-time", "type": "string" },
+                      "nextRefreshAt": { "format": "date-time", "type": "string" },
+                      "recoveryAction": {
+                        "anyOf": [
+                          { "const": "retry", "type": "string" },
+                          { "const": "reauthorize", "type": "string" },
+                          { "const": "fix_configuration", "type": "string" },
+                          { "const": "investigate", "type": "string" }
+                        ]
+                      },
+                      "state": {
+                        "anyOf": [
+                          { "const": "pending", "type": "string" },
+                          { "const": "ready", "type": "string" },
+                          { "const": "failed", "type": "string" }
+                        ]
+                      }
+                    },
+                    "required": ["state"],
+                    "type": "object"
+                  },
                   "state": {
                     "anyOf": [
                       { "const": "ready", "type": "string" },
@@ -870,6 +897,45 @@
           "data": {
             "additionalProperties": false,
             "properties": {
+              "harness": {
+                "additionalProperties": false,
+                "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+                "properties": {
+                  "code": {
+                    "anyOf": [
+                      { "const": "SANDBOX_MISSING", "type": "string" },
+                      { "const": "SANDBOX_DELETING", "type": "string" },
+                      { "const": "SANDBOX_STOPPED", "type": "string" },
+                      { "const": "SANDBOX_FAILED", "type": "string" },
+                      { "const": "HARNESS_EXITED", "type": "string" },
+                      { "const": "HARNESS_RESTARTING", "type": "string" },
+                      { "const": "UNAVAILABLE", "type": "string" }
+                    ]
+                  },
+                  "exitCode": {
+                    "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+                    "maximum": 2147483647,
+                    "minimum": -2147483648,
+                    "type": "integer"
+                  },
+                  "restarts": {
+                    "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                    "maximum": 4294967295,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "state": {
+                    "anyOf": [
+                      { "const": "running", "type": "string" },
+                      { "const": "starting", "type": "string" },
+                      { "const": "lost", "type": "string" },
+                      { "const": "unknown", "type": "string" }
+                    ]
+                  }
+                },
+                "required": ["state"],
+                "type": "object"
+              },
               "observedAt": {
                 "format": "date-time",
                 "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
@@ -17938,6 +18004,45 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "harness": {
+                          "additionalProperties": false,
+                          "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+                          "properties": {
+                            "code": {
+                              "anyOf": [
+                                { "const": "SANDBOX_MISSING", "type": "string" },
+                                { "const": "SANDBOX_DELETING", "type": "string" },
+                                { "const": "SANDBOX_STOPPED", "type": "string" },
+                                { "const": "SANDBOX_FAILED", "type": "string" },
+                                { "const": "HARNESS_EXITED", "type": "string" },
+                                { "const": "HARNESS_RESTARTING", "type": "string" },
+                                { "const": "UNAVAILABLE", "type": "string" }
+                              ]
+                            },
+                            "exitCode": {
+                              "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+                              "maximum": 2147483647,
+                              "minimum": -2147483648,
+                              "type": "integer"
+                            },
+                            "restarts": {
+                              "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                              "maximum": 4294967295,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "running", "type": "string" },
+                                { "const": "starting", "type": "string" },
+                                { "const": "lost", "type": "string" },
+                                { "const": "unknown", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": ["state"],
+                          "type": "object"
+                        },
                         "observedAt": {
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
@@ -23525,6 +23630,33 @@
                             "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
+                              "refresh": {
+                                "additionalProperties": false,
+                                "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                                "properties": {
+                                  "expiresAt": { "format": "date-time", "type": "string" },
+                                  "failureCode": { "maxLength": 128, "type": "string" },
+                                  "lastRefreshAt": { "format": "date-time", "type": "string" },
+                                  "nextRefreshAt": { "format": "date-time", "type": "string" },
+                                  "recoveryAction": {
+                                    "anyOf": [
+                                      { "const": "retry", "type": "string" },
+                                      { "const": "reauthorize", "type": "string" },
+                                      { "const": "fix_configuration", "type": "string" },
+                                      { "const": "investigate", "type": "string" }
+                                    ]
+                                  },
+                                  "state": {
+                                    "anyOf": [
+                                      { "const": "pending", "type": "string" },
+                                      { "const": "ready", "type": "string" },
+                                      { "const": "failed", "type": "string" }
+                                    ]
+                                  }
+                                },
+                                "required": ["state"],
+                                "type": "object"
+                              },
                               "state": {
                                 "anyOf": [
                                   { "const": "ready", "type": "string" },
@@ -23942,7 +24074,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+                "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
                 "properties": {
                   "secrets": {
                     "additionalProperties": {
@@ -23971,7 +24103,7 @@
               }
             }
           },
-          "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+          "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {
@@ -24046,6 +24178,87 @@
             "resourceKind": "secret",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate": {
+      "post": {
+        "description": "Requires update permission on the requested CredentialSource.",
+        "operationId": "rotateCredentialSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credentialSourceId",
+            "required": true,
+            "schema": {
+              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-13" } }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Force the Credential Refresh Driver to mint a new token for a refresh-type source",
+        "tags": ["Credential sources"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -27905,6 +28118,18 @@
         "operationId": "deleteServiceAccount",
         "parameters": [
           {
+            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "const": "true", "type": "string" },
+                { "const": "false", "type": "string" }
+              ]
+            }
+          },
+          {
             "in": "path",
             "name": "namespaceId",
             "required": true,
@@ -27924,6 +28149,58 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "backendId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "revocation": {
+                          "const": "skipped",
+                          "description": "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["id", "namespaceId", "revocation"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "A forced deletion removed the account and its credential Secret but could not revoke its issued access token."
+          },
           "204": { "description": "Default Response" },
           "400": {
             "content": {

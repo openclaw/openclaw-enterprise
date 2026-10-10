@@ -486,8 +486,31 @@ test(
         ],
         "the Agent Service",
       );
-      assert.equal(services.items.length, 1);
-      assert.match(services.items[0].spec.selector["app.kubernetes.io/name"], /-inactive$/);
+      // Both Services share the canonical tenant namespace. The Gateway serves
+      // traffic, while OpenShell's advertised endpoint keeps the direct Harness
+      // Service parked so it cannot bypass the provider's authenticated route.
+      assert.equal(services.items.length, 2);
+      const gatewayService = services.items.find(
+        (service) => service.spec.selector["openclaw.dev/workload-role"] === "gateway",
+      );
+      const harnessService = services.items.find(
+        (service) => service.spec.selector["openclaw.dev/workload-role"] === "agent",
+      );
+      assert.ok(gatewayService, "the Agent must retain its serving Gateway Service");
+      assert.ok(harnessService, "the direct Harness Service must remain parked");
+      assert.deepEqual(gatewayService.spec.selector, {
+        "openclaw.dev/namespace": first.namespaceId,
+        "openclaw.dev/agent": first.identity.agentId,
+        "openclaw.dev/workload-role": "gateway",
+        "app.kubernetes.io/name": gateway.spec.template.metadata.labels["app.kubernetes.io/name"],
+      });
+      assert.equal(harnessService.spec.selector["openclaw.dev/namespace"], first.namespaceId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], first.identity.agentId);
+      assert.equal(
+        harnessService.spec.selector["openclaw.dev/revision"],
+        first.identity.revisionId,
+      );
+      assert.match(harnessService.spec.selector["app.kubernetes.io/name"], /-inactive$/);
     }
     const reuseEnv = { ...env };
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;

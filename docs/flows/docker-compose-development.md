@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-10-09
-last_updated_session: authoring-run/ec403753-6547-4dcb-8624-26628a124b7d
+last_updated_session: authoring-run/3980117d-b11c-47c0-9f7a-765c1481ee7b
 ---
 
 # Compose development flow
@@ -148,6 +148,13 @@ image imports, Installation setup, or credential delivery. OpenShell retains its
 preparation, routing-controller installation, then runtime-import order. Both
 paths retain the later network-isolation and authenticated readiness gates.
 
+`internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
+image to a temporary archive, selecting its Linux platform explicitly on Docker.
+`internal/occdev/k3d_import.go:importArchiveDirect` streams that archive into
+k3d; only its known closed-stream race receives bounded retries. The launcher
+then resolves the imported digest from containerd, rejects missing or ambiguous
+results, and removes the archive. Tagged local builds use this same path.
+
 ### 5. Prepare the optional OpenShell development profile
 
 `internal/occdev/openshell_k3d.go:upK3d`,
@@ -231,6 +238,8 @@ OCC Namespace becomes ready. See the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 19:04: Import tagged development images through the platform-selected archive path and retain digest verification. (authoring-run/3980117d-b11c-47c0-9f7a-765c1481ee7b - 6d0bb202d97f487cbd5e41d64e0f1f5ab196d083)
 
 - 2026-10-09 03:27: Run the unchanged Codex sandbox preflight before routing for the Kubernetes-only none profile; preserve OpenShell ordering and later readiness checks. (authoring-run/ec403753-6547-4dcb-8624-26628a124b7d - 259702d92a9ebb094c5f9bea0465bd6b09681d08)
 

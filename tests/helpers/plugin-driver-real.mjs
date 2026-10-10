@@ -366,6 +366,7 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
             namespaceId: account.namespaceId,
             serviceAccountId: account.id,
             secretRef,
+            accessToken: imported.accessToken,
           }),
         );
         const result = await controller.transact((unit) =>
@@ -816,7 +817,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
 (async () => {
   await useLocalPluginRuntimeAppServerToken();
-  const config = await readCodexAppConfiguration();
+  const config = await readCodexPluginConfiguration();
   process.stdout.write(JSON.stringify({
     apps: config?.apps ?? {},
     features: config?.features ?? {},

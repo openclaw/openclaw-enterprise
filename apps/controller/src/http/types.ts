@@ -33,6 +33,8 @@ export type ResourceHandler = (input: {
     resource: ResourceRef,
     details?: Readonly<Record<string, unknown>>,
     authorization?: Readonly<DeployAgentAuthorization>,
+    // A failure event, for a mutation whose external effect outlived its rolled-back transaction.
+    failure?: { readonly reasonCode: string },
   ) => AuditEvent;
 }) => Promise<void>;
 

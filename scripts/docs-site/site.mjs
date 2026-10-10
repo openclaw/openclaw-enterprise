@@ -78,7 +78,11 @@ let theme = document.documentElement.dataset.theme;
 themeButton.addEventListener("click", () => {
   theme = theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem("enterprise-docs-theme", theme);
+  try {
+    localStorage.setItem("enterprise-docs-theme", theme);
+  } catch {
+    // Theme persistence is optional when browser storage is unavailable.
+  }
   renderDiagrams();
 });
 const dialog = document.querySelector("#search-dialog");

@@ -25,6 +25,7 @@
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
+    "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.mjs",
@@ -77,7 +78,8 @@
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
-    "tests/conformance/split-layout-tenants.test.mjs"
+    "tests/conformance/split-layout-tenants.test.mjs",
+    "tests/conformance/split-layout-adopt.test.mjs"
   ],
   "files": [
     {
@@ -284,6 +286,9 @@
       "path": "tests/integration/device-authorization-api.test.mjs"
     },
     {
+      "path": "tests/integration/dependency-unavailable-log.test.mjs"
+    },
+    {
       "path": "tests/integration/runtime-credentials-api.test.mjs"
     },
     {
@@ -321,6 +326,9 @@
     },
     {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
+    },
+    {
+      "path": "tests/conformance/split-layout-adopt.test.mjs"
     }
   ]
 }

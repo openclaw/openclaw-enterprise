@@ -19,7 +19,7 @@ existing cluster or change the default kubeconfig.
 ## Parallel scenarios on shared setup
 
 Each installation creates one k3d cluster and reuses its control plane and
-repository broker. Within a preset, two scenario workers run concurrently by
+repository broker when Git is selected. Within a preset, two scenario workers run concurrently by
 default. Each owns a fresh Agent, configuration, credentials, and workspace:
 
 - `model-ui`: model and native browser assertions, in that order.
@@ -46,6 +46,28 @@ request to create more clusters or reuse an existing external installation.
 Teardown waits for all workers. Every repository worker tracks its own pending
 credential disposal; one successful cleanup cannot release another worker's
 unresolved session or allow its broker to be removed.
+
+## Select scenarios
+
+`OCC_TEST_QA_SCENARIOS` accepts `all` (the default) or a comma-separated list of
+`model-ui`, `calendar`, `git-full`, `git-read`, and `slack`.
+`OCC_TEST_QA_INSTALLATION` accepts `all`, `compose`, or `kubernetes`;
+`OCC_TEST_QA_PRESET` accepts `all`, `OpenClaw`, or `Codex`.
+For example, run model/UI and Calendar checks in both installations:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=model-ui,calendar \
+  node --env-file="$TEST_ENV_FILE" --test tests/integration/qa-matrix-real.test.mjs
+```
+
+Selection includes installation startup, preset preparation, Agent deployment,
+and cleanup. Browser login runs for `model-ui`; repository setup runs only for
+Git scenarios. Presets without an applicable selected scenario do not deploy an
+Agent. Invalid names and wholly inapplicable selections fail before provisioning.
+Only selected model credentials and scenario inputs from the table below are
+required: Calendar needs the Codex token and its tool/result settings; Git needs
+repository authorization, inputs, and observer; Slack needs its tokens/channel.
+A selected check with missing credentials fails rather than becoming a skip.
 
 ## Coverage and applicability
 
@@ -78,7 +100,9 @@ Compose native UI access uses the documented gateway password through a
 loopback TLS relay. Kubernetes native access uses the console's authenticated
 native-admin endpoint with the documented [per-Agent native-admin opt-in](../guides/deploy/native-admin.md). The suite installs only its uniquely named CA trust entry,
 keeps browser certificate verification enabled, and removes that trust entry at
-cleanup. Compose does not claim integrated shared-session native tabs.
+cleanup. Compose does not claim integrated shared-session native tabs. Its private routing
+files retain mode `0600` and use the controller image’s UID/GID so hosted runner
+identity differences do not prevent controller startup.
 
 Slack applies only to Codex. The sender and gateway bot must be distinct members
 of the authorized channel. The sender credential must permit posting plus
@@ -149,7 +173,7 @@ Optional settings:
 - `OCC_TEST_CODEX_CALENDAR_PLUGIN_ID`, `OCC_TEST_CODEX_CALENDAR_PROMPT`, and
   `OCC_TEST_CODEX_CALENDAR_EXPECT`: existing Calendar fixture overrides.
 - `OCC_TEST_QA_INSTALLATION`: `compose` or `kubernetes` for a partial local replay.
-  The default `all` covers both; CI forces `all`. A partial run is labeled in
+  The default `all` covers both; Full Integration forces `all`. A partial run is labeled in
   `matrix.json` and cannot establish a full matrix pass.
 - `OCC_TEST_QA_ARTIFACTS`: output directory; otherwise a private temporary directory
   is allocated and printed.
@@ -159,15 +183,53 @@ without `OCC_TEST_QA_MATRIX=1` is not a matrix pass.
 
 ## CI, evidence, and recovery
 
-The `qa-matrix` lane runs only when **Full Integration** is dispatched with
-`lane: qa-matrix`; `all` and the `full` group exclude it until the protected
-`integration-qa` environment and its QA secrets exist. That environment needs
-independent reviewers and the approved main branch before dispatch.
-The workflow materializes file-backed credentials in runner temporary storage and
-uploads only the outcome/evidence JSON files. It does not upload private state or
-raw command logs. The job is ordered after the focused Slack job so they
-cannot compete for Socket Mode delivery once `all` includes it.
+[QA Matrix Advisory](../../.github/workflows/qa-advisory.yml) runs `model-ui`
+and `calendar` in both Codex cells on every trusted
+same-repository PR. Compose and Kubernetes run in separate jobs. Failures remain
+visible, but these jobs are outside `CI Required` and must not be configured as
+required branch checks. New pushes cancel superseded runs. Fork and Dependabot
+PRs report that a trusted run is needed; they do not receive model credentials.
+
+The advisory workflow uses `integration-qa-pr`: no required reviewers, deployment
+branch policies allowing `refs/pull/*/merge` and `main`, and only the
+`CODEX_ACCESS_TOKEN` secret. Set the Codex model and Calendar
+variables from the table above; the Codex account must have Calendar connected.
+These credentials are available to trusted PR code. Manual dispatch on `main`
+can replay the same selection. Runner resources are disposable; always-run steps
+attempt owned cleanup and remove temporary credential files.
+
+OpenClaw, Git and Slack scenarios remain manual. Adding OpenClaw to the PR
+selection requires an OpenAI API key accepted from hosted runners; a successful
+devbox request alone does not prove that access.
+
+**Full Integration**, dispatched with `lane: qa-matrix`, retains the complete
+selection and protected `integration-qa` approval. The `all` dispatch and `full`
+group exclude this lane. Its job runs after the focused Slack job to avoid
+competing Socket Mode consumers. Both workflows materialize only selected
+credentials and upload outcome JSON, not private state or raw command logs. Failed commands include bounded, redacted stderr for diagnosis.
+OpenClaw authentication failures also report credential-delivery equality and a
+bounded provider result from the Agent Pod, without exposing the credential.
 `scripts/ci/test-suites/qa-matrix.json` owns lane registration.
+
+The dispatch input `qa_repository_fixture` selects the repository credential
+fixture. Keep the default `default` value to use the existing
+`REPOSITORY_OBSERVER_TOKEN`, `REPOSITORY_REGISTRY_JSON`, and
+`REPOSITORY_APP_KEY` secrets. Select `isolated` to use a separate repository
+fixture. Configure `QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN`,
+`QA_ISOLATED_REPOSITORY_REGISTRY_JSON`, and
+`QA_ISOLATED_REPOSITORY_APP_KEY` as environment secrets in the protected
+`integration-qa` environment, never as repository-level secrets. Configure
+`QA_ISOLATED_REPOSITORY_FULL_NAME` as an `integration-qa` environment variable
+so it is protected by the same independent reviewer gate. That variable must
+name the one approved isolated fixture repository as lowercase
+`owner/repository`. The isolated path checks the registry's repository target
+before materializing credential files: the registry must contain exactly one
+repository, that repository must match `QA_ISOLATED_REPOSITORY_FULL_NAME`, and
+it must not be the workflow repository. The isolated path still shares the
+approved model, Codex, Slack, Calendar, and upstream CIDR settings from
+`integration-qa`. If any isolated repository secret or target is missing or
+mismatched, credential materialization fails; the workflow does not fall back to
+the default repository secrets.
 
 Replay through the credentialed runner with the same environment:
 
@@ -178,61 +240,12 @@ node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run qa-matrix \
   --state /tmp/qa-matrix-state.json --results /tmp/qa-matrix-results.json
 ```
 
-### Read scenario outcomes
+### Read scenario outcomes and recover failures
 
-The test runner prints named subtests. `matrix.json` records completed stage
-callbacks with `cell`, `stage`, `outcome`, `startedAt`, and `durationMs`.
-Worker stages also include `scenario`; failures include a redacted `reason`:
-
-- `passed`: the stage completed its assertions.
-- `failed`: execution or an assertion failed.
-- `blocked`: the stage reported a prerequisite failure, such as unavailable
-  installation setup or Agent deployment.
-
-Installation setup uses `compose` or `kubernetes` as its cell; preset stages use
-names such as `compose/Codex`. Completed stages enter the report in completion
-order. Writes are serialized and published atomically, so simultaneous workers
-do not overwrite outcomes or expose partial JSON. Earlier outcomes remain
-available when a later stage fails. The workflow retains these files in
-its `qa-matrix-<run-id>-<attempt>` artifact for seven days.
-
-A grouped stage has one outcome: clone, commit, push, and PR creation are not
-separate result rows. Cell evidence adds Agent/revision/Pod identities, nonce
-results, remote SHAs, credential disposal, and Slack timestamps. The summary
-has per-stage wall-clock durations, excluding queue time and report writes, but
-no explicit `not run`/`not applicable` rows. Parallel durations overlap; adding
-them does not give the overall run duration.
-Filtered, unentered, or interrupted stages can be absent; absence is not a pass.
-Inspect runner failures and cleanup results alongside the JSON.
-
-`scope: full` identifies the selected installations, not a successful run.
-`partial:*` identifies installation selection or test-name filtering. Exclusions
-remain explicit. A successful static check or parent setup does not establish
-that every live scenario passed.
-
-Ordinary cleanup stops agents and calls `scripts/dev-down` with each owned state
-directory. If repository disposal is uncertain, the fixture retains its
-installation and reports the recovery path. Keep that broker alive until its
-sessions are `DISPOSED`, with zero active uses, active/pending/uncertain cleanup,
-and no auxiliary cleanup pending. Do not delete another run's resources.
-
-### Intermittent Git connection failures
-
-If native Git reports `GnuTLS recv error` or an unexpectedly closed TLS
-connection, check the broker's upstream connectivity before changing certificate
-trust or command deadlines. An upstream connection failure can cause the broker
-to close the Agent connection without returning an HTTP error.
-
-Verify the addresses resolved for both `github.com` and `api.github.com` from
-the broker Pod against the private `upstream-cidrs.json` fixture and installed
-NetworkPolicy. DNS answers can rotate: an allowed address may succeed while a
-different address is refused on the next clone or fetch. A successful API call
-does not prove Git egress, and a single successful DNS lookup is insufficient.
-Use the [local repository input procedure](../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs)
-to refresh the approved endpoints. After confirming session disposal, recreate
-only the run-owned installation and rerun the affected scenarios. Keep the Git,
-sandbox, and disposal assertions intact; retries do not correct a missing
-egress destination.
+Use the [QA matrix results and recovery guide](qa-matrix-results.md) to read
+`matrix.json`, interpret partial or absent stages, preserve repository cleanup
+evidence, and debug intermittent Git connection failures without weakening Git,
+sandbox, or disposal assertions.
 
 ## Extend the scenarios
 

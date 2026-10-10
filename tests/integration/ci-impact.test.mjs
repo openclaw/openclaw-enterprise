@@ -1206,7 +1206,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
   );
   assert.deepEqual(
     ["runtime-image-fixture", ...matrixLanes(fullWorkflow)].sort(),
-    [...lanes, "k3d-observability-demo"].sort(),
+    [...lanes, "k3d-observability-demo", "keycloak-oidc"].sort(),
   );
   for (const expected of ["docs", "full"]) {
     const f = fixture(
