@@ -170,8 +170,9 @@ the native case with `--harness openclaw`:
 ./scripts/k3d demo --harness openclaw
 ```
 
-`test` and `demo` use the same verification-only compatibility bridge; it does
-not promote that bridge into a supported production path.
+`test` and `demo` use the same provider delivery through the regular Compute and
+Sandbox Drivers. Projected workload identity remains disabled; model credentials
+stay in the Credential Gateway.
 
 This selection prepares the pinned OpenShell lane, builds the sibling
 `../openclaw` checkout, and records its commit with the prepared environment.
@@ -187,7 +188,7 @@ Without `--harness`, `copy` selects the one active demo and `down` removes both
 helper-owned Harness environments; pass `--harness codex` or
 `--harness openclaw` to select one.
 
-### Gateway prerequisite and native test bridge
+### Gateway prerequisite and provider delivery
 
 The integration uses an operator-owned Helm wrapper to install the OpenShell
 gateway before delegating to the Driver. The bundled Driver does not install
@@ -239,21 +240,26 @@ For the exact Compose-plus-k3d startup, repeatable first-Agent command, current
 checkpoint, and symptom-based recovery notes, see
 [Resume the OpenShell first-Agent proof](openshell-first-agent.md).
 
-The native OpenClaw selector retains its verification-only bootstrap Job and
-PVC bridge. It is a separate containment experiment, not a supported
-first-Agent path. The pinned Kubernetes driver chooses workload identity independently
-of `policy.process`: this k3d fixture uses its default UID/GID `10001:10001`.
-The bridge prepares private storage for that identity and verifies the resulting
-workload Pod identity. Preparing it for the image or policy UID `1000` leaves
-foreign-owned ancestors that fs-safe rejects, even when Kubernetes grants group
-write access. The supervisor launches with `TMPDIR=/tmp`; the bridge switches the
-native worker to its private temporary mount before running its entrypoint.
-It places bootstrap code inside the compressed program, preserving the Driver's
-fixed-loader contract. Readiness retries reuse the completed bootstrap Job because
-deleting its Pod invalidates the copied ServiceAccount token. The Job remains until
-the token's admitted lifetime ends or the test cleans it up. See the
+The native OpenClaw selector also uses the regular Compute and Sandbox Driver
+path. It disables projected workload identity and passes the original Harness
+requirements directly to the Driver, without a bootstrap Job or PVC credential
+copies. The Driver supplies node setup and public CA through the native runtime
+profile. The test verifies that no `openshell-cred-*` Job was created and no
+Agent identity token was projected. A temporary production-owned preparation
+Deployment fixes native PVC ownership before Sandbox creation; it carries no
+credentials, uses existing Deployment permissions, and terminates before the
+Sandbox starts. Remove that workaround if OpenShell adds private subpath preparation and OCE
+adopts it. Workspace access and successive native
+model turns still run through the real Agent Gateway and worker. The model key
+must remain a provider placeholder in every Harness process.
+
+The pinned Kubernetes driver chooses workload identity independently of
+`policy.process`; the k3d fixture verifies its default `10001:10001`. The
+supervisor probes with `TMPDIR=/tmp`, then the native process uses a private
+child under its revision runtime home. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
-and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
+for the current boundary. This source change alone does not establish live
+OpenShift admission, Landlock, enrollment, or model execution.
 
 Local `sandbox-driver-startup`, `controller-lifecycle`, and
 `postgres-platform-state` integration tests cover driver selection and Backend

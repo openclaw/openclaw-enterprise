@@ -243,6 +243,38 @@ function namespaceContext(name = "oce-123456789012345") {
   };
 }
 
+// Controlled Kubernetes transport: verifies the production preparation manifest and
+// ordering only. The real k3d case must prove filesystem effects and Pod termination.
+function nativePreparationClient(context) {
+  const client = Object.create(KubernetesObjectApi.prototype);
+  const prepared = [];
+  const read = context.kubernetes.read?.bind(context.kubernetes);
+  client.read = async (resource) => {
+    if (resource.kind === "Namespace") {
+      return { ...resource };
+    }
+    if (resource.kind === "Deployment") {
+      throw { code: 404 };
+    }
+    return read(resource);
+  };
+  client.create = async (resource) => {
+    prepared.push(structuredClone(resource));
+    return {
+      ...resource,
+      metadata: { ...resource.metadata, uid: "preparation-uid", generation: 1 },
+      status: { availableReplicas: 1, observedGeneration: 1 },
+    };
+  };
+  client.delete = async (resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
+    assert.equal(resource.kind, "Deployment");
+    assert.equal(propagation, "Foreground");
+    assert.equal(body.preconditions.uid, "preparation-uid");
+  };
+  context.kubernetes = client;
+  return prepared;
+}
+
 function codexRequirements(revision, environment = []) {
   return {
     loginMode: "api_key",
@@ -645,6 +677,7 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     };
   };
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.kubernetes.userNamespaces = false;
   configuration.policy.filesystem = {
     includeWorkdir: false,
     readOnly: ["/app"],
@@ -656,6 +689,7 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     backend: backendFor(gatewayClient),
   });
   const context = namespaceContext();
+  const prepared = nativePreparationClient(context);
   const revisionId = "rev_00000000-0000-4000-8000-000000000001";
   const revision = {
     id: revisionId,
@@ -671,7 +705,7 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     "openclaw.dev/workload-role": "agent",
   };
   const command = harnessRuntimeCommand('console.error("native runtime");');
-  const sandbox = await driver.provisionHarness({
+  const inputs = {
     ...context,
     revision,
     requirements: {
@@ -696,7 +730,22 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
       environment: [{ name: "TMPDIR", value: "/tmp/openclaw-native-worker" }],
       labels,
     },
-  });
+  };
+  // Preparation denial must fail closed before any native Sandbox starts.
+  const create = context.kubernetes.create;
+  context.kubernetes.create = async () => {
+    throw new Error("preparation forbidden");
+  };
+  await assert.rejects(driver.provisionHarness(inputs), /preparation forbidden/);
+  assert.equal(requests.length, 0);
+  context.kubernetes.create = create;
+  const sandbox = await driver.provisionHarness(inputs);
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].kind, "Deployment");
+  const spec = prepared[0].spec.template.spec;
+  assert.equal(spec.automountServiceAccountToken, false);
+  assert.equal(spec.securityContext.runAsUser, 10001);
+  assert.deepEqual(spec.containers[0].securityContext.capabilities, { drop: ["ALL"] });
 
   assert.equal(sandbox.revisionId, revisionId);
   assert.equal(requests.length, 1);
@@ -2691,4 +2740,109 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
     await loadInstallationFile(t, configuration);
   }
+});
+
+test("OpenShell native Harness receives revision-owned node setup and cleans up its provider", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  let request;
+  gatewayClient.createSandbox = async (value) => {
+    request = structuredClone(value);
+    return { name: value.name, labels: value.labels, serviceUrls: {} };
+  };
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.kubernetes.userNamespaces = false;
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const fixture = codexSandboxFixture(driver);
+  nativePreparationClient(fixture.context);
+  const revision = {
+    ...fixture.revision,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+  };
+  const requirements = {
+    ...fixture.requirements,
+    files: [],
+    environment: fixture.requirements.environment.filter(
+      ({ name }) => !["APP_SERVER_PORT", "APP_TOKEN_SHA", "CODEX_HOME"].includes(name),
+    ),
+  };
+  await driver.provisionHarness({ ...fixture.context, revision, requirements });
+  assert.equal(
+    await driver.harnessEndpoint({ ...fixture.context, revision, requirements }),
+    undefined,
+  );
+  await assert.rejects(
+    driver.harnessEndpoint({
+      ...fixture.context,
+      revision: { ...revision, sandboxDriverId: "foreign-driver" },
+      requirements,
+    }),
+    /another Sandbox Driver/,
+  );
+  assert.deepEqual(request.serviceExposures, []);
+  const provider = [...gatewayClient.providers.values()][0];
+  assert.equal(provider.type, "oce-openclaw-runtime");
+  assert.deepEqual(JSON.parse(provider.config.node_setup_json), fixture.nodeSetup);
+  const profile = gatewayClient.profiles.get("oce-openclaw-runtime").profile;
+  assert.deepEqual(
+    profile.files.map(({ path }) => path),
+    ["node-setup.json", "node-ca.pem"],
+  );
+  assert.equal(request.spec.environment.OPENCLAW_NODE_SETUP_CODE, undefined);
+  assert.equal(request.spec.environment.OPENCLAW_NODE_CA_PEM, undefined);
+  assert.equal(JSON.stringify(request).includes(fixture.nodeSetup.bootstrapToken), false);
+  assert.ok(request.spec.providers.includes(provider.name));
+  assert.deepEqual(request.spec.policy.network_policies["workspace-node-enrollment"].binaries, [
+    { path: "/usr/local/bin/node" },
+  ]);
+  // The supervisor probes /tmp, then the native process switches to its own private child.
+  assert.equal(request.spec.environment.TMPDIR, "/tmp");
+  assert.match(
+    request.spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /process.env.TMPDIR = "\/sandbox\/.openclaw-runtime\/home\/tmp"/,
+  );
+  // A live Secret can be renewed after the previously delivered envelope expires.
+  provider.config.node_setup_json = JSON.stringify({
+    ...fixture.nodeSetup,
+    expiresAtMs: Date.now() - 1,
+  });
+  const renewed = {
+    ...fixture.nodeSetup,
+    bootstrapToken: "renewed-native-setup",
+    expiresAtMs: Date.now() + 600_000,
+  };
+  const preparationRead = fixture.context.kubernetes.read;
+  fixture.context.kubernetes.read = async (resource) => {
+    if (resource.kind !== "Secret") {
+      return preparationRead(resource);
+    }
+    const { metadata } = resource;
+    return {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        ...metadata,
+        labels: {
+          "openclaw.dev/namespace": revision.namespaceId,
+          "openclaw.dev/agent": revision.agentId,
+        },
+      },
+      data: {
+        setupCode: Buffer.from(Buffer.from(JSON.stringify(renewed)).toString("base64url")).toString(
+          "base64",
+        ),
+      },
+    };
+  };
+  await driver.provisionHarness({ ...fixture.context, revision, requirements });
+  assert.deepEqual(
+    JSON.parse(gatewayClient.providers.get(provider.name).config.node_setup_json),
+    renewed,
+  );
+  assert.equal(JSON.stringify(request).includes(renewed.bootstrapToken), false);
+  await driver.cleanup({ ...fixture.context, revision });
+  assert.equal(gatewayClient.providers.size, 0);
 });

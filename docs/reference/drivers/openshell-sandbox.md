@@ -227,32 +227,33 @@ static `providers` entries that use the OCC shape, so operator-configured
 providers cannot impersonate a credential source. After the Harness is ready,
 Compute requires every attachment to report `ready` before activation.
 
-## Dedicated Codex runtime provider
+## Harness runtime providers
 
-Compute emits bounded, nonsecret `runtime.json` and `config.toml`; a
-revision-owned provider exposes them read-only and supplies their paths through
+Codex uses the revision-owned `oce-codex-runtime` provider to project bounded,
+nonsecret `runtime.json` and `config.toml` through
 `OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and `OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`.
-Provisioning waits for the first fail-closed Gateway to issue its workspace-node
-setup Secret, so the provider starts with final setup.
+The raw app-server token stays in the Gateway. Selected plugins and repository
+broker configuration fail before creation.
 
-Development also places the expiring setup envelope in that provider. The token
-is visible inside the Sandbox, so this is not a production credential guarantee.
-Policy limits node egress to the Gateway destination and executable. Compute
-waits for the provider route before enrollment. If Compute renews an expired
-setup, `provisionHarness` uses a version-fenced OpenShell update limited to
-`node_setup_json`; the endpoint, TLS fingerprint, runtime files, CA, labels, and
-ownership must remain exact. The Harness rereads the provider file before each
-node retry and retains the latest valid value during projection gaps. The raw
-app-server token stays outside the provider. Plugins and repository broker
-configuration fail before creation.
+Native OpenClaw uses `oce-openclaw-runtime` for node setup and the public CA;
+plugin-runtime files are rejected. Compute's admitted inference configuration
+stays literal. Model credentials come only from the attached Credential Gateway
+provider; allow `/usr/local/bin/node` for native inference. The native process
+uses a private temporary child under its revision runtime home, while the
+OpenShell supervisor probes `/tmp`.
 
-Revision cleanup deletes the Sandbox before its runtime provider. Namespace
-cleanup then removes the shared profile. Replays adopt only exact
-Namespace-, Agent-, and revision-owned providers with identical nonsecret
-configuration except the narrowly reconciled expired setup envelope. A failed
-or timed-out Sandbox create does not eagerly delete that provider because the
-remote mutation may still have completed; the normal revision cleanup path owns
-both resources.
+Both wait for the first fail-closed Gateway's setup Secret. The expiring envelope
+is visible inside the Sandbox: this is development delivery, not a production
+credential guarantee. Policy limits enrollment to the Gateway and executable.
+Renewal uses a version-fenced update limited to `node_setup_json`: endpoint,
+TLS fingerprint, runtime files, CA, labels, and ownership must remain exact.
+Codex rereads setup before each node retry and retains the latest valid snapshot
+during projection gaps. Native OpenClaw rereads on restart and reconnects with
+persisted device identity.
+
+Cleanup deletes the Sandbox before its provider, then removes unused managed
+profiles during Namespace cleanup. Replays adopt only exact revision-owned
+content. An ambiguous Sandbox create retains the provider for normal cleanup.
 
 ## Create-time app-server exposure
 
@@ -273,9 +274,15 @@ With that capability, Compute replaces the fail-closed Gateway target and omits
 the direct Agent Service and Compute-owned Harness route. Drivers without it
 retain the Kubernetes transport.
 
-Native OpenClaw does not accept inbound Harness traffic. Its enrolled node host
-opens the connection to the Agent Gateway, so the Driver sends an empty service
-exposure list and rejects any unexpected service URL returned by OpenShell.
+Native OpenClaw connects outbound without service exposure or
+`network.providerHarness`; unexpected service URLs fail closed.
+
+**Temporary:** With `userNamespaces: false`, a revision-owned Deployment prepares
+PVC subpaths automatically, preserving contents. It uses existing
+Deployment permissions, without root, added capabilities, or an API token, and
+terminates before Sandbox creation. Leave gateway `sandbox_uid`/`sandbox_gid`
+overrides unset: preparation matches the namespace UID/GID or `10001:10001`.
+Remove if OCE adopts OpenShell support for preparing private subpaths.
 
 ## Kubernetes and admission requirements
 
