@@ -115,9 +115,9 @@ trailing whitespace and no control characters or line or paragraph separators.
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), repository Service names, and paired metrics
-scraper selectors. Invalid values therefore fail before `values.yaml` or
-`installation.yaml` is written.
+last label starting with a letter), the GatewayClass resource name, repository
+Service names, and paired metrics scraper selectors. Invalid values therefore
+fail before `values.yaml` or `installation.yaml` is written.
 
 `scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
 and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
@@ -127,6 +127,10 @@ collisions also fail before deployment files are written.
 provider's Secret, default or explicit, must differ from the installation,
 database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
 repository broker Secrets when enabled, and every provider checked before it.
+`validateGatewayApiKeySecret` applies the rule in the other direction: the
+gateway API key Secret must differ from `occ-installation-startup`,
+`occ-database`, and `occ-auth`. A collision writes a failed preflight report
+without `values.yaml` or `installation.yaml`.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and

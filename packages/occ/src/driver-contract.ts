@@ -76,6 +76,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "sandbox") {
     return (
       sandboxFacets(candidate.facets) &&
+      (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
       (candidate.ensureNamespace === undefined ||
         typeof candidate.ensureNamespace === "function") &&
@@ -127,6 +128,17 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       typeof candidate.readAgentRuntimeLogs === "function") &&
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
+  );
+}
+
+function absolutePosixPath(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    value
+      .slice(1)
+      .split("/")
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..")
   );
 }
 

@@ -54,12 +54,11 @@ gateway replacement uses one replica with `Recreate`; node partitions and
 forced replacements still require operator fencing before permitting another
 writer.
 
-When stopping a revision, the Driver stops its Gateway first while the Harness
-finishes active work, and waits for the Gateway Pod to disappear before stopping
-the Harness. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup budget; idle Gateways should exit promptly. Forced termination can leave an owner lease until it
-expires and delay the successor; a longer grace period does not make forced
-termination a clean shutdown.
+A stop deletes the Gateway and waits for its Pod to disappear before stopping the
+Harness, which finishes active work meanwhile; a refused candidate's stop deletes
+both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
+pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination can leave an owner lease until it
+expires and delay the successor; a longer grace period does not make it a clean shutdown.
 
 Only the gateway Pod receives this claim. Its complete writable directories
 include database files and their WAL/SHM siblings:

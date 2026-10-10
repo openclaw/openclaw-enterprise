@@ -1,17 +1,16 @@
 ---
 created: 2026-09-21
 updated: 2026-10-10
-last_updated_session: authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320
+last_updated_session: authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The console reads a Namespace-owned Preset, renders its variables, and saves an
-independent Configuration and Agent through the existing APIs. This flow starts
-with Preset CRUD or selection and stops at a saved Agent draft. Deployment
-continues through [revision admission](configuration-driver/persistence-and-revisions.md).
+The Console renders a Namespace Preset and saves an independent Configuration
+and Agent through existing APIs. This flow stops at the draft; deployment follows
+[revision admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -161,12 +160,11 @@ Presets remain selectable. The separate **Start without Preset** action opens
 the ordinary form without reading a Namespace Preset; it does not automatically
 replace a denied selection. Normal creation authorization still applies.
 
-The shipped `deploy/presets/default-codex.json` also supplies the public
-`/console/default-codex-preset.mjs` module through
-`apps/controller/src/console-assets.ts:readConsoleAsset`. The form's
-`configurationTemplate` reads that base for empty templates, explicit reset, and
-Harness transitions, then adds model routing. The module contains only the public
-bundled definition; it does not expose installed Namespace templates.
+`console-assets.ts:readConsoleAsset` serves the public
+[`default-codex`](../../deploy/presets/default-codex.json) as
+`/console/default-codex-preset.mjs`. `configurationTemplate` uses this base for
+empty templates, reset and Harness transitions, adding model routing. Installed
+Namespace templates are never exposed by that module.
 
 The user
 reviews prefilled scalar defaults and fills typed inputs. Inputs for referenced
@@ -193,21 +191,23 @@ disabled so the user follows ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-Before resetting the view, Console captures the unsaved form's raw editor text,
-model controls, workspace files, repository selections, and staged Secret
-references. The in-memory map is scoped to the signed-in user and Namespace.
-Returning to an explicitly selected Preset form through navigation or browser history reconstructs it
-from that copy; capability and repository discovery run again against current
-access. A form started through the default Preset shortcut or without a Preset
-registers for discard on exit. After
-flushing captures, `loadPage` removes its creation and channel snapshots and its
-retained view when navigation leaves creation or changes Namespace. Re-entry
-opens the initial choices; resources already saved through the API remain.
-Invalid JSON survives as text. Password controls and plugin discovery results
-are excluded. Start over removes the copy; session loss, logout, a different
-signed-in user, and page exit clear the map. Starting a save removes its capture
-before any mutation, so a later route return cannot replay a pre-save copy as a
-new Agent. Existing partial-save recovery remains local to its form.
+Before resetting views, `loadPage` captures unsaved JSON, model controls,
+workspace files, repositories and staged Secret references in a user/Namespace
+map. Explicit Preset forms return through navigation/history from this copy;
+capability and repository discovery run again. Default-shortcut and bare forms
+instead discard on exit. Flushing captures removes their creation/channel
+snapshots and retained view when leaving creation or changing Namespace;
+re-entry opens the chooser, preserving saved resources. Invalid JSON stays text;
+passwords and discovery results are excluded. Start over, session loss, logout,
+user change and page exit clear captures. Starting save clears its capture
+before mutation, preventing replay as a new Agent. Partial-save recovery stays
+local to the form.
+
+`agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
+model metadata referenced by defaults or entries. Only an unreferenced replaced
+primary is retired. Temporary clearing retains fallback entries and transport.
+The saved Configuration goes through the existing configured-Harness resolver;
+model execution remains a later boundary.
 
 ### 4. Save an independent draft
 
@@ -291,6 +291,10 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
+
+- 2026-10-10 06:42: Preserve referenced fallback model metadata and retire obsolete primary catalog entries during Console selection. (authoring-run/d6d98411-224c-4a17-8bb9-5bd060b1dd59 - f27f55ce2bfb3d54b8e95c8c3f0f670425717a52)
 
 - 2026-10-09 19:46: Authorize Preset writes before reading the body. (authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320 - deeb84b5e)
 

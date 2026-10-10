@@ -623,6 +623,40 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   // Without status the console names no Pod; OCC reads the source's current Pod.
   const [first] = logRequests(requests, revisionId);
   assert.equal(new URL(first.path, fixture.origin).searchParams.has("pod"), false);
+  // The download is named after the Pod the page read, as with a Pod picker.
+  const downloadEvent = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download" }).click();
+  const saved = await downloadEvent;
+  assert.equal(saved.suggestedFilename(), `${agent.id}-${revisionId}-gateway-${pod}.log`);
+
+  // A Pod can disappear after the page read but before this separate audited read.
+  // The real Compute fixture reports no current Harness Pod; OCC emits stream:null.
+  computeDriver.state.harnessPod = { ready: true };
+  computeDriver.state.harnessLines = [line(1, "last Harness Pod output")];
+  await page.locator("#runtime-log-source").selectOption("agent");
+  await pane.getByText("last Harness Pod output").waitFor();
+  computeDriver.state.harnessPod = { created: false };
+  const noPodResponse = page.waitForResponse((response) =>
+    response.url().includes("download=true"),
+  );
+  const noPodDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download" }).click();
+  const emptyResponse = await noPodResponse;
+  const emptyDownload = await noPodDownload;
+  assert.equal(emptyResponse.status(), 200);
+  const downloadQuery = new URL(emptyResponse.url()).searchParams;
+  assert.equal(downloadQuery.has("pod"), false);
+  assert.equal(downloadQuery.has("cursor"), false);
+  const emptyBytes = await emptyResponse.body();
+  const header = emptyBytes.toString("utf8").split("\n")[0];
+  assert.ok(header.startsWith(`# agent=${agent.id} revision=${revisionId} source=agent `));
+  assert.equal(header.includes(" pod="), false);
+  assert.equal(emptyBytes.includes("last Harness Pod output"), false);
+  assert.equal(emptyDownload.suggestedFilename(), `${agent.id}-${revisionId}-agent-no-pod.log`);
+  assert.deepEqual(await readFile(await emptyDownload.path()), emptyBytes);
+  computeDriver.state.harnessPod = undefined;
+  await page.locator("#runtime-log-source").selectOption("gateway");
+  await pane.getByText("log reader can see this").waitFor();
 
   // The page's stream reports the restart, so the previous instance is readable.
   await page.getByLabel("Previous instance").check();

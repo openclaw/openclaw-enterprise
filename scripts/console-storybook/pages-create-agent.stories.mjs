@@ -219,3 +219,8 @@ export const RepositoryNavigationOutage = story("createRepositoryNavigationOutag
 
 export const DefaultPresetLoading = story("createDefaultPresetLoading");
 export const DefaultPresetDenied = story("createDefaultPresetDenied");
+
+export const ExistingFallbackPrimary = {
+  ...story("createModelFallbackSelection"),
+  name: "Choose an existing fallback as primary",
+};

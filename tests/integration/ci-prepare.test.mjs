@@ -12,6 +12,7 @@ import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-ima
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
 import {
   assertStderrMatch,
   fixture,
@@ -1319,10 +1320,14 @@ test("the installed repository journey refuses direct execution before fixture s
   );
   assert.equal(result.status, 1);
   const output = `${result.stdout}\n${result.stderr}`;
-  assert.match(output, /tests 3/);
+  // Every selected installed case refuses; read the run's own totals rather
+  // than hard-coding how many installed cases that file has (finding 1032).
+  const summary = nodeTestSummary(output);
+  assert.ok(summary.tests >= 1, JSON.stringify(summary));
+  assert.equal(summary.fail, summary.tests, JSON.stringify(summary));
   assert.equal(
     (output.match(/Installed repository qualification is temporarily unavailable/g) ?? []).length,
-    3,
+    summary.tests,
   );
 });
 

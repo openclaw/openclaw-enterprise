@@ -368,6 +368,26 @@ if (command === "docker" || command === "podman") {
       args[2] === "k3d-" + state.cluster + "-" + suffix)) {
     const node = args[2];
     assert.deepEqual(args.slice(3), ["ctr", "-n", "k8s.io", "images", "import", "--all-platforms", "-"]);
+    // The worker's containerd stops answering during its first import (finding 1006). The
+    // other cases pin which failures get the one retry.
+    const imports = (state["imports:" + node] ?? 0) + 1;
+    state["imports:" + node] = imports;
+    const socket = "/run/k3s/containerd/containerd.sock: connect: ";
+    let refusal;
+    if (node.endsWith("-agent-0")) {
+      if (scenario === "containerd-refuses-imports") refusal = socket + "connection refused";
+      if (imports === 1) {
+        if (scenario === "containerd-restart") refusal = socket + "connection refused";
+        if (scenario === "containerd-socket-missing") refusal = socket + "no such file or directory";
+        if (scenario === "other-socket-refused") refusal = "/run/other.sock: connect: connection refused";
+      }
+    }
+    if (refusal) {
+      commitState();
+      process.stderr.write('ctr: connection error: desc = "transport: Error while dialing: dial unix ' +
+        refusal + '"\n');
+      process.exit(1);
+    }
     // The worker fails before reading, which stops the export early.
     if (scenario === "nonzero-worker-import" && node.endsWith("-agent-0")) {
       process.stderr.write("synthetic import command failure\n");
@@ -403,6 +423,21 @@ if (command === "docker" || command === "podman") {
       finish(scenario === "missing-proxy-source"
         ? "10.42.7.0 dev flannel.1\n"
         : "10.42.7.0 via 10.42.7.0 dev flannel.1 src 10.42.3.0\n");
+    }
+    if (equals(args.slice(2), ["ctr", "-n", "k8s.io", "version"])) {
+      // A Ready worker whose containerd refuses connections for a while (finding 1006).
+      const probes = (state["containerdProbes:" + node] ?? 0) + 1;
+      state["containerdProbes:" + node] = probes;
+      if (scenario === "hung-containerd-probe" && node.endsWith("-agent-0")) await hang();
+      // In the hung case the server refuses until the worker's hang ends the wait.
+      if ((node.endsWith("-agent-0") && (scenario === "containerd-down" ||
+          (scenario === "late-worker" && probes <= 2))) || scenario === "hung-containerd-probe") {
+        commitState();
+        process.stderr.write('ctr: connection error: desc = "transport: Error while dialing: dial unix ' +
+          '/run/k3s/containerd/containerd.sock: connect: connection refused"\n');
+        process.exit(1);
+      }
+      finish("Client:\n  Version:  v2.1.5-k3s1\n\nServer:\n  Version:  v2.1.5-k3s1\n");
     }
     const ctr = ["ctr", "-n", "k8s.io", "images"];
     if (equals(args.slice(2), [...ctr, "list"])) {
@@ -495,6 +530,7 @@ if (command === "k3d") {
     ]);
     }
     state.cluster = args[2];
+    state.agents = Number(args[args.indexOf("--agents") + 1]);
     state.clusterDeleted = false;
     const hangOnce = ["cluster-create-hangs-once", "cluster-create-hangs-escaped"].includes(scenario);
     if (scenario === "cluster-create-hangs" || (hangOnce && !state.createHung)) {
@@ -542,7 +578,21 @@ if (command === "kubectl") {
     if (equals(args.slice(4), ["config", "view", "--minify", "--flatten", "-o", "json"])) {
       finish(JSON.stringify({ clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }] }));
     }
+    if (equals(args.slice(4), ["get", "nodes", "-o", "name"])) {
+      // The worker can register after the server (finding 1006), and the API server can
+      // refuse the first listing.
+      state.nodeListings = (state.nodeListings ?? 0) + 1;
+      const worker = state.agents > 0 && !(scenario === "late-worker" && state.nodeListings <= 2);
+      commitState();
+      if (scenario === "late-worker" && state.nodeListings === 1) {
+        process.stderr.write("The connection to the server 127.0.0.1:6443 was refused\n");
+        process.exit(1);
+      }
+      finish("node/k3d-" + state.cluster + "-server-0\n" +
+        (worker ? "node/k3d-" + state.cluster + "-agent-0\n" : ""));
+    }
     if (equals(args.slice(4), ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout=120s"])) {
+      assert.equal(state.nodeListings > 0, true, "the Ready wait follows node registration");
       if (scenario.startsWith("nodes-unready")) {
         process.stderr.write("synthetic node readiness timeout\n");
         process.exit(1);

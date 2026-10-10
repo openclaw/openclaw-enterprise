@@ -22,10 +22,9 @@ Gateway receives, while network policy limits its use to the node executable
 and Agent Gateway endpoint. This exposes the token to the Sandbox and is not a
 production credential-delivery contract.
 
-The local Kubernetes development profile installs the pinned Gateway and
-renders the workspace chart into the Installation configuration, in either a
-Kubernetes-only or Compose control plane. Neither uses the verification-only
-compatibility projection.
+Both development control planes install the pinned Gateway and render the
+workspace chart into Installation configuration, without verification-only
+compatibility projections.
 
 ## Entry Points
 
@@ -127,11 +126,10 @@ supervisor callbacks, and dedicated Agent Gateways. See
 the [local deployment guides](../guides/deploy/local-kubernetes-development.md)
 for startup, RBAC, image, and cleanup details.
 
-Before Compose startup, `internal/occdev/compose_routing.go:prepareComposeRoutingFiles`
-assigns the two `0600` routing files to the containers' shared non-root UID/GID
-with an isolated `CHOWN` helper. Failure rolls back before startup.
-`internal/occdev/repository_k3d.go:replaceDevelopmentFile` preserves the
-Installation's `0644` mode for container readers inside the `0700` state directory.
+`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` assigns `0600`
+routing files to the shared non-root container UID/GID before startup, rolling
+back on failure. `internal/occdev/repository_k3d.go:replaceDevelopmentFile`
+preserves `0644` Installation permissions within `0700` state.
 
 Cleanup validates the recorded engine and state before deleting the named
 cluster and, in Compose mode, the recorded project and volumes. Partial cleanup
@@ -225,9 +223,11 @@ fails before Sandbox creation.
 The Driver mounts a revision-scoped Agent PVC subpath at
 `/sandbox/.openclaw-runtime`; persistent subpaths mount below
 `/sandbox/.openclaw-mounts`. It rewrites admitted `/home/node` paths beneath the
-runtime home. Exact mount paths such as `OPENCLAW_NODE_STATE_DIR` use a
-process-created `state` child, so atomic writes cross neither a symlink nor a
-root-owned mount. Workspace, node identity, sessions, and generated images
+runtime home, declared as `harnessHome` for native hook credentials. Codex hook
+commands trust the provider-file Gateway CA and reach the Gateway route only when
+the node does: an in-cluster routing hostname or two clusters. Exact mount paths
+such as `OPENCLAW_NODE_STATE_DIR` use a process-created `state` child, so atomic
+writes cross neither a symlink nor a root-owned mount. Workspace, node identity, sessions, and generated images
 remain separate. `/tmp` stays on the bounded ephemeral image layer.
 
 Credential attachments must use the OCC `oce-cs-` name shape and cannot repeat
@@ -362,7 +362,9 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 ## Changelog
 
-- 2026-10-10 00:48: Preserve container read access during routing preparation and updates. (authoring-run/069ad14e-b91f-4b9c-aa37-4c39947e1e83 - e047eac6a6634be923515f73dbe35c04e70dbb8e)
+- 2026-10-10 09:15: Preserve Compose routing and Installation permissions. (authoring-run/069ad14e-b91f-4b9c-aa37-4c39947e1e83 - e2dccebf4df04215e915e624be1ddc95c87c66e9)
+
+- 2026-10-10 12:40: Declare the Sandbox HOME for native hook credentials; hooks trust the file-delivered Gateway CA. (fix-1017)
 
 - 2026-10-09 19:45: Cover both runtime architectures in the development credential policy. (authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67 - bd540bcdef63cdc719e73192e4dbe99c365953c3)
 

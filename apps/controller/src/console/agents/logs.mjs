@@ -414,6 +414,29 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
   }
 
+  // A fresh download can name a different Pod, or report that no Pod remains.
+  // Only downloads without production metadata fall back to the loaded page.
+  function downloadPodName(text, source, pod) {
+    if (pod) {
+      return pod.name;
+    }
+    const header = text.slice(0, Math.max(0, text.indexOf("\n")));
+    const served = header.startsWith("# ") ? / pod=(\S+)/.exec(header)?.[1] : undefined;
+    const prefix = `# agent=${agent.id} revision=${revisionId} source=${source.id} `;
+    if (
+      source.kind === "container" &&
+      header.startsWith(prefix) &&
+      / observedAt=\S+ withheld=\d+$/.test(header)
+    ) {
+      return served ?? "no-pod";
+    }
+    return (
+      served ??
+      (statusDenied && lastStream?.source === source.id ? lastStream.pod : null) ??
+      source.id
+    );
+  }
+
   // A download is its own audited read of the last 1000 lines through the session.
   async function download() {
     const source = selectedSource();
@@ -437,7 +460,12 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
       const link = element("a", {
         href: url,
-        download: downloadFileName(agent.id, revisionId, source.id, pod?.name ?? source.id),
+        download: downloadFileName(
+          agent.id,
+          revisionId,
+          source.id,
+          downloadPodName(text, source, pod),
+        ),
         hidden: true,
       });
       section.append(link);
@@ -520,7 +548,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       showLogError(null);
       cursor = page.cursor;
       appendRecords(page.records);
-      if (statusDenied && page.stream) {
+      if (statusDenied) {
+        // A page with no running Pod clears the last Pod, so nothing names it.
         lastStream = page.stream;
         renderPickers();
       }

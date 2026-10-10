@@ -34,6 +34,8 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+// Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
+export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 export const RUNTIME_READINESS_PATH = "/readyz";
@@ -3743,16 +3745,38 @@ if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
 const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
-const hookDirectory = join(process.env.HOME, ".oce-native-hooks");
-mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
-chmodSync(hookDirectory, 0o700);
-if (process.env.OPENCLAW_NODE_CA_PEM) {
+const hookDirectory = join(process.env.HOME, ${JSON.stringify(NATIVE_HOOK_CREDENTIAL_DIRECTORY)});
+// Hook commands call the Gateway route; they trust the CA the node uses. A SandboxDriver
+// delivers that CA as a file (OPENCLAW_NODE_CA_PATH) instead of the PEM variable.
+let gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || "";
+if (!gatewayCa && process.env.OPENCLAW_NODE_CA_PATH) {
+  try {
+    gatewayCa = readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8").trim();
+  } catch (error) {
+    console.error("Codex hook commands start without the Gateway CA: " + (error.code || "unreadable"));
+  }
+}
+let hookCa = "";
+if (gatewayCa) {
   const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
-  const caPath = join(hookDirectory, "gateway-ca.pem");
-  writeFileSync(caPath, [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"), { mode: 0o600 });
-  codexEnv.NODE_EXTRA_CA_CERTS = caPath;
+  hookCa = [inheritedCa, gatewayCa].filter(Boolean).join("\n");
+  codexEnv.NODE_EXTRA_CA_CERTS = join(hookDirectory, "gateway-ca.pem");
+}
+// Harness code runs as this user and can replace the directory, for example with a
+// symlink into the workspace, and on OpenShell HOME survives restarts. Each Codex start
+// removes whatever is there (a link itself, never its target) and creates a fresh 0700
+// directory; the CA copy is created exclusively, so it never follows a link. Credentials
+// left there belong to the previous Codex process's relays; the Gateway writes a new one
+// for each new or resumed run.
+function prepareHookDirectory() {
+  rmSync(hookDirectory, { recursive: true, force: true });
+  mkdirSync(hookDirectory, { mode: 0o700 });
+  chmodSync(hookDirectory, 0o700);
+  if (hookCa) {
+    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+  }
 }
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
@@ -3848,7 +3872,12 @@ function nodeArguments() {
 }
 const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
-  { name: "Codex", args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])}, env: codexEnv },
+  {
+    name: "Codex",
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])},
+    env: codexEnv,
+    prepare: prepareHookDirectory,
+  },
 ];
 let stopping = false;
 // An OpenShell Sandbox reports EPERM for a group left with only zombies, as Darwin
@@ -3871,6 +3900,15 @@ function start(slot) {
   if (typeof slot.args === "function" && nodeSetupWait !== undefined) {
     logStartupPhase("node-setup", nodeSetupWait);
     nodeSetupWait = undefined;
+  }
+  try {
+    slot.prepare?.();
+    slot.prepareDelay = undefined;
+  } catch (error) {
+    slot.prepareDelay = Math.min((slot.prepareDelay ?? 500) * 2, 30_000);
+    console.error(slot.name + " start preparation failed: " + (error.code || "error"));
+    slot.timer = setTimeout(() => start(slot), slot.prepareDelay);
+    return;
   }
   const child = spawn(process.execPath, args, {
     env: slot.env, stdio: "inherit", detached: true,

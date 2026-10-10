@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { assertAllPassed } from "../helpers/node-test-summary.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -126,11 +127,11 @@ process.exit(child.status ?? 1);
         cause: error,
       });
     });
-    // All supervisor proofs: environment and file-delivered node setup, a
-    // failed saved-identity probe that is retried, and a stop with no child.
-    assert.match(stdout, /\bpass 4\b/);
-    assert.match(stdout, /\bfail 0\b/);
-    assert.match(stdout, /skipped 0/);
+    // Every supervisor proof in the file must pass in the image. The check reads
+    // the run's own totals, so adding a proof needs no change here. The floor is
+    // the 7 proofs the file had when the count stopped being hard-coded
+    // (finding 1032); lower it only when a proof is removed on purpose.
+    assertAllPassed(stdout, { minimum: 7 });
   },
 );
 

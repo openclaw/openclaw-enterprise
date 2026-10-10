@@ -643,6 +643,21 @@ test("preflight refuses lone surrogates, which Helm cannot parse in values.yaml"
   }
 });
 
+test("preflight refuses GatewayClass names that Kubernetes refuses", () => {
+  for (const gatewayClassName of ["Bad Class", "-eg", "e".repeat(254)]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({
+        controlPlane: {
+          ...baseInput().controlPlane,
+          gatewayClassName,
+        },
+      }),
+      /controlPlane\.gatewayClassName must be a Kubernetes resource name/,
+    );
+  }
+});
+
 test("label values that YAML 1.1 would retype stay strings", () => {
   const labels = {
     spot: "no",
@@ -796,7 +811,20 @@ test("preflight rejects invalid CIDRs before rendering", () => {
   );
 });
 
-test("preflight rejects metrics and native admin inputs that Helm would reject", () => {
+test("preflight rejects inputs that Helm would reject", () => {
+  for (const gatewayApiKeySecretName of ["occ-installation-startup", "occ-database", "occ-auth"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({
+        controlPlane: {
+          ...baseInput().controlPlane,
+          gatewayApiKeySecretName,
+        },
+      }),
+      /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret/,
+    );
+  }
+
   assertPreflightFailure(
     "codex",
     codexInput({

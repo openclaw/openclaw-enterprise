@@ -120,6 +120,9 @@ variable offers **Create new Secret** or **Use existing Secret** in the same
 Namespace. Enter a token only in new mode; it is stored when you create the Agent.
 Existing mode reuses the selected reference without reading credential bytes.
 
+Choosing another primary model keeps the ordered fallback list and saved options for
+still-referenced models. Review the resulting Configuration JSON before saving.
+
 Variables are used once to fill the form. Edit the resulting fields directly.
 You can navigate away and return to your [unsaved Console draft](../../reference/console/create-and-deploy.md#create-an-agent); reenter any new credentials.
 Before saving, to choose another Preset or supply different variables, select **Start over**

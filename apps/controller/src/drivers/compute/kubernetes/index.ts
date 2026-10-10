@@ -8,7 +8,7 @@ import {
 } from "@openclaw-enterprise/utils";
 import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix } from "node:path";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -119,7 +119,10 @@ import {
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { validatePlaintextNativeGateway } from "../native-gateway-transport.ts";
+import {
+  validatePlaintextNativeGateway,
+  validateRoutableNativeListener,
+} from "../native-gateway-transport.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
@@ -130,8 +133,11 @@ import {
   OAUTH_VOLUME_ANNOTATION,
 } from "../../kubernetes/oauth-seal.ts";
 import {
+  ComputeStopYieldedError,
+  computeStopShouldYield,
   computeWorkWaiting,
   currentComputeAbortSignal,
+  isYieldingComputeStop,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -160,6 +166,7 @@ import {
   GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_CONFIGURATION_DIRECTORY,
+  NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
@@ -1031,6 +1038,8 @@ function settledSchedulingConflict(
 
 const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
+// A yielding stop asks the queue whether other Work waits at most once a second.
+const WORKLOAD_TERMINATION_YIELD_CHECK_MS = 1_000;
 const AGENT_TRANSPORT_PORT = 18_790;
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
@@ -1047,6 +1056,8 @@ const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
 const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
+const RUNTIME_DIAGNOSTIC_TIMESTAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
 const RUNTIME_STATE_VOLUME_SIZE = "1Gi";
 const GATEWAY_PRIVATE_STATE_VOLUME = "openclaw-gateway-state";
 const GATEWAY_PRIVATE_STATE_SIZE = "10Gi";
@@ -1054,6 +1065,8 @@ const NODE_STATE_VOLUME = "openclaw-node-state";
 // Harness kinds that can own a workspace node. Naming refuses any other kind,
 // so Agent deletion removes every node Secret preparation can create.
 const WORKSPACE_NODE_HARNESS_IDS: readonly string[] = ["codex", "openclaw"];
+// HOME of the Compute-owned Harness container; a SandboxDriver declares its own.
+const HARNESS_HOME = "/home/node";
 const NODE_STATE_PATH = "/home/node/.openclaw-node";
 // A Deployment-backed Codex Harness reads its one-shot node setup code from an
 // optional Secret volume, so the Harness can start before the Secret exists.
@@ -2298,6 +2311,28 @@ function gatewayConfigurationDocument(
   return document;
 }
 
+// Until finding 996, Compute rendered an omitted or auto gateway.bind as submitted. A revision
+// prepared then keeps that immutable document, and its Pods, until the Agent is deployed again;
+// any other difference from the current rendering is still refused.
+function gatewayDocumentBeforeLanBind(
+  submitted: OpenClawConfigurationDocument,
+  rendered: OpenClawConfigurationDocument,
+): string | undefined {
+  const bind = asRecord(submitted.gateway)?.bind;
+  const earlier = structuredClone(rendered);
+  const gateway = asRecord(earlier.gateway) as
+    Record<string, OpenClawConfigurationValue> | undefined;
+  if ((bind !== undefined && bind !== "auto") || gateway === undefined) {
+    return undefined;
+  }
+  if (bind === undefined) {
+    delete gateway.bind;
+  } else {
+    gateway.bind = bind;
+  }
+  return JSON.stringify(earlier);
+}
+
 export class KubernetesComputeDriver implements ComputeDriver {
   readonly discoverHarnessModels = discoverHarnessModels;
   readonly startHarnessDeviceAuthorization = startHarnessDeviceAuthorization;
@@ -3418,9 +3453,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         const reports = await Promise.all(
           this.runtimeStatusContainers(revision).map(async (container) => {
-            const checks = await this.runtimeDiagnosticChecks(revision, namespace, container);
-            if (checks === undefined) {
-              return [
+            const [checks, heldFailure] = await Promise.all([
+              this.runtimeDiagnosticChecks(revision, namespace, container),
+              this.heldRuntimeFailureCheck(revision, namespace, container),
+            ]);
+            return {
+              heldFailure,
+              checks: checks ?? [
                 {
                   component: container,
                   check: "runtime-status",
@@ -3428,15 +3467,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   checkedAt: null,
                   code: "UNAVAILABLE",
                 } satisfies RuntimeDiagnosticCheck,
-              ];
-            }
-            return checks;
+              ],
+            };
           }),
         );
+        // Held startup failures lead, so the check cap never drops them.
         return {
           revisionId: revision.id,
           observedAt: new Date().toISOString(),
-          checks: reports.flat().slice(0, 32),
+          checks: [
+            ...reports.flatMap(({ heldFailure }) =>
+              heldFailure === undefined ? [] : [heldFailure],
+            ),
+            ...reports.flatMap(({ checks }) => checks),
+          ].slice(0, 32),
         };
       });
     } catch (error) {
@@ -4731,7 +4775,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.prepareRevisionStage("workspace_setup", () =>
       this.deliverWorkspaceSetup(revision, workspaceSetup, namespace),
     );
-    const document = JSON.stringify(gatewayConfigurationDocument(admittedRevision, nativeRuntime));
+    const nativeDocument = gatewayConfigurationDocument(admittedRevision, nativeRuntime);
+    const document = JSON.stringify(nativeDocument);
+    const earlierDocument = gatewayDocumentBeforeLanBind(nativeConfiguration, nativeDocument);
     const configuration = await this.prepareRevisionStage("gateway_configuration", async () =>
       this.gatewayConfiguration(
         admittedRevision,
@@ -4847,6 +4893,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
       gatewayNamespace,
     );
+    const executionCaData: Record<string, string> =
+      this.options.executionCluster?.caBundle === undefined
+        ? {}
+        : { "execution-ca.pem": this.options.executionCluster.caBundle };
     await this.prepareRevisionStage("gateway_config_map", () =>
       this.reconcile(
         {
@@ -4858,13 +4908,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
           immutable: true,
           data: {
             [CONFIGURATION_DOCUMENT]: document,
-            ...(this.options.executionCluster?.caBundle === undefined
-              ? {}
-              : { "execution-ca.pem": this.options.executionCluster.caBundle }),
+            ...executionCaData,
           },
         },
         gatewayOwnership,
         gatewayNamespace,
+        undefined,
+        earlierDocument === undefined
+          ? []
+          : [{ [CONFIGURATION_DOCUMENT]: earlierDocument, ...executionCaData }],
       ),
     );
     if (pluginRuntime !== undefined) {
@@ -6188,8 +6240,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.lifecycle.beforeWorkloadStop(revision);
     // Stop removes the serving path first so no new traffic reaches a runtime while
     // its exact Harness is being shut down.
-    await this.removeStoppedGateway(revision, namespace);
-    await this.shutdownRevisionRuntime(revision, namespace);
+    if (isYieldingComputeStop()) {
+      // OCC refused this candidate, so it must stop serving now: requests it may already serve
+      // are cut rather than drained into the Harness. The Harness is deleted before the Gateway's
+      // Pods are awaited, so a stop that yields during that wait no longer leaves it running,
+      // holding its credentials, until the retry (finding 1025).
+      await this.removeStoppedGateway(revision, namespace, { waitForPods: false });
+      await this.shutdownRevisionRuntime(revision, namespace);
+      await this.waitForRevisionPodsToTerminate(revision, gatewayNamespace, "gateway");
+    } else {
+      await this.removeStoppedGateway(revision, namespace);
+      await this.shutdownRevisionRuntime(revision, namespace);
+    }
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
@@ -6255,11 +6317,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harness.mode === "embedded") {
       return;
     }
+    const sandboxDriver = this.sandboxDriverForRevision(revision);
+    const computeOwnsWorkload = sandboxDriver?.provisionHarness === undefined;
+    if (computeOwnsWorkload && isYieldingComputeStop()) {
+      // A refused candidate's Harness goes before the OAuth bootstrap's wait, which may yield.
+      await this.deleteRevisionAgentDeployment(revision, namespace);
+    }
     if (revision.harnessAuth.method === "oauth") {
       await this.removeOAuthBootstrap(revision, namespace);
     }
-    const sandboxDriver = this.sandboxDriverForRevision(revision);
-    const computeOwnsWorkload = sandboxDriver?.provisionHarness === undefined;
     if (computeOwnsWorkload) {
       await this.deleteRevisionAgentDeployment(revision, namespace);
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
@@ -6278,9 +6344,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  /** Deletes the revision's Gateway and, unless `waitForPods` is false, waits for its Pods. */
   private async removeStoppedGateway(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
+    { waitForPods = true }: { readonly waitForPods?: boolean } = {},
   ): Promise<void> {
     namespace = this.gatewayNamespace(revision, namespace);
     const name = `gateway-${sha256Hex(revision.agentId, 12)}`;
@@ -6288,7 +6356,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.deleteGatewayUnauthenticatedRoutes(name, ownership, namespace, revision.id);
     await this.deleteGatewayRoute(name, ownership, namespace, revision.id);
     await this.deleteNamedRuntimeResources(name, ownership, namespace, revision.id);
-    await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway");
+    if (waitForPods) {
+      await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway");
+    }
   }
 
   private async waitForRevisionPodsToTerminate(
@@ -6311,6 +6381,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? GATEWAY_STOP_TIMEOUT_MS + REQUEST_TIMEOUT_MS
         : WORKLOAD_TERMINATION_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
+    let yieldCheckedAt: number | undefined;
     for (;;) {
       signal.throwIfAborted();
       const observed = asRecord(
@@ -6361,6 +6432,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new DependencyUnavailableError(
           "The AgentRevision workload Pods did not terminate before the deadline.",
         );
+      }
+      // A refused candidate's stop does not hold the serial worker while its Pods terminate:
+      // other Work runs, and the next pass repeats the whole stop (finding 1022).
+      if (
+        yieldCheckedAt === undefined ||
+        Date.now() - yieldCheckedAt >= WORKLOAD_TERMINATION_YIELD_CHECK_MS
+      ) {
+        yieldCheckedAt = Date.now();
+        if (await computeStopShouldYield()) {
+          throw new ComputeStopYieldedError(
+            "The AgentRevision workload Pods are still terminating; other work is waiting.",
+          );
+        }
       }
       await new Promise<void>((resolve) => setTimeout(resolve, WORKLOAD_TERMINATION_POLL_MS));
     }
@@ -8115,6 +8199,57 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     return this.validRuntimeDiagnosticChecks(readback.status, revision, container, readback.podUid);
+  }
+
+  // A runtime holding a startup failure (for example an unusable Gateway peer
+  // configuration record) still answers diagnostics, but only with channel
+  // checks it could not run. The held failure is on the status path, so it is
+  // reported first as a failed check named after the startup step. A status
+  // read that fails or returns invalid data adds nothing; the diagnostics read
+  // alone decides the rest of the observation.
+  private async heldRuntimeFailureCheck(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    container: "agent" | "gateway",
+  ): Promise<RuntimeDiagnosticCheck | undefined> {
+    const ownerSignal = currentComputeAbortSignal();
+    try {
+      const readback = await this.privateStatusReadback(
+        revision,
+        namespace,
+        container,
+        RUNTIME_STATUS_PATH,
+      );
+      if (readback === undefined) {
+        return undefined;
+      }
+      const failure = this.cachedRuntimeFailureEvidence(
+        readback.status,
+        revision,
+        container,
+        readback.podUid,
+      );
+      if (failure === undefined) {
+        return undefined;
+      }
+      // OCC accepts only millisecond UTC timestamps; anything else adds nothing.
+      const checkedAt = new Date(failure.checkedAt).toISOString();
+      if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(checkedAt)) {
+        return undefined;
+      }
+      return {
+        component: failure.component,
+        check: failure.check,
+        state: "failed",
+        checkedAt,
+        code: failure.code,
+      };
+    } catch {
+      if (ownerSignal?.aborted) {
+        throw ownerSignal.reason;
+      }
+      return undefined;
+    }
   }
 
   private async privateStatusReadback(
@@ -10171,9 +10306,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "Dedicated Codex native hook relay is owned by the Compute Driver.",
       );
     }
+    // The Gateway writes each credential into the Harness filesystem through Codex, and
+    // the Harness entrypoint creates this directory under its own HOME.
+    const harnessHome = this.sandboxDriverForRevision(revision)?.harnessHome ?? HARNESS_HOME;
+    // Driver registration (packages/occ driver-contract) refuses a non-normalized HOME.
+    if (!posix.isAbsolute(harnessHome)) {
+      throw new ConfigurationFailure("SandboxDriver Harness HOME must be an absolute path.");
+    }
     appServer.nativeHookRelay = {
       url: `${endpoint.replace(/^wss:/, "https:")}/node/__openclaw__/native-hook`,
-      credentialDirectory: "/home/node/.oce-native-hooks",
+      credentialDirectory: posix.join(harnessHome, NATIVE_HOOK_CREDENTIAL_DIRECTORY),
     };
     return document;
   }
@@ -10232,27 +10374,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new GatewaySettingFailure("gateway", "must be an object");
     }
     const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
-    // Services and private routes target the Pod IP. A loopback-only native
-    // listener can pass the wrapper's local readiness gate without serving them.
-    if (gateway.bind === "loopback" || gateway.bind === "tailnet") {
-      throw new GatewaySettingFailure(
-        "gateway.bind",
-        "must listen on the Pod-facing interface: use auto, lan, or omit the setting",
-      );
-    }
-    const customBindHost =
-      typeof gateway.customBindHost === "string" ? gateway.customBindHost.trim() : undefined;
-    if (
-      gateway.bind === "custom" &&
-      customBindHost !== undefined &&
-      isIP(customBindHost) === 4 &&
-      customBindHost.startsWith("127.")
-    ) {
-      throw new GatewaySettingFailure(
-        "gateway.customBindHost",
-        "must not be a loopback address: Kubernetes gateway traffic targets the Pod IP",
-      );
-    }
+    validateRoutableNativeListener(
+      configuration,
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
     const authRecord = asRecord(gateway.auth);
     if (gateway.auth !== undefined && authRecord === undefined) {
       throw new GatewaySettingFailure("gateway.auth", "must be an object");
@@ -10362,6 +10487,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ...configuration,
       gateway: {
         ...gateway,
+        // Omitted and auto resolve to loopback unless OpenClaw detects a container,
+        // and containerd on cgroup v2 leaves no marker it recognizes (finding 996).
+        bind: gateway.bind === "custom" ? "custom" : "lan",
         trustedProxies: [...this.options.network.gatewayTrustedProxyCidrs],
         allowRealIpFallback: true,
         auth: {
@@ -13179,7 +13307,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         }
       } else {
         variables.push(
-          { name: "HOME", value: "/home/node" },
+          { name: "HOME", value: HARNESS_HOME },
           { name: "OPENCLAW_WORKSPACE_DIR", value: "/home/node/workspace" },
           {
             name: "PATH",

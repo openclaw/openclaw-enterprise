@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-01
-last_updated_session: authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c
+updated: 2026-10-10
+last_updated_session: fix-1022-1019
 ---
 
 # Agent deployment diagnostics flow
@@ -33,7 +33,7 @@ graph TD
   D -->|unsupported| E["Return 503"]
   D -->|supported| F["Kubernetes resolves owned Namespace and revision Pods"]
   F -->|Pod absent| G["Return unknown check for that container"]
-  F -->|one Pod| H["Read private runtime diagnostics through Pod proxy"]
+  F -->|one Pod| H["Read private runtime diagnostics and status through Pod proxy"]
   H --> I["Recheck Pod UID and container identity"]
   I -->|changed| G
   I -->|same| J["Validate bounded revision-bound checks"]
@@ -78,6 +78,21 @@ redeployed. Transport failures return `UNAVAILABLE`; other RPC failures return
 substituted for the live response. The Agent container
 currently returns no channel checks.
 
+`KubernetesComputeDriver.heldRuntimeFailureCheck` also reads each Pod's private
+runtime status. A runtime that held startup, such as a Gateway with an unusable
+peer configuration record or an Agent whose model check failed, reports its
+failure there. The Driver lists it first as a `failed` check named after the
+startup step, with the failure code; diagnostics do not rerun that step. A
+failed or invalid status read adds nothing.
+
+An [OpenShell](../reference/drivers/openshell-sandbox.md) Harness listens inside
+its Sandbox's own network namespace, not the Pod's, so the Kubernetes API
+answers Pod-proxy reads of its private port with `503`, which the Driver treats
+as not serving. Its `agent` `runtime-status` check is always `unknown` with code
+`UNAVAILABLE`, whether the Harness is healthy or holding a startup failure, and
+no held-failure check appears for it. Gateway checks, including a held Gateway
+failure, are unaffected.
+
 ### 3. Return validated evidence
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
@@ -95,6 +110,14 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   not answer, usually because the Gateway is stopped, starting, or failed to
   start. The console says so and names a failed deployment's recorded error
   code, because these checks do not test model credentials.
+- A `failed` check named after a startup step, such as `peer-bridge-record`,
+  means the runtime is holding that failure. Its Logs tab shows the remedy.
+- On an OpenShell Harness, the `agent` check says nothing about its health.
+  A failed deployment's status names the held failure's code and cause, such as
+  `RUNTIME_MODEL_PROBE_FAILED`. The
+  [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
+  decisions; an operator can read the
+  [Harness output](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).
 - The focused API test covers exact permissions and sanitized Driver failures.
   The Kubernetes conformance test covers Pod proxy placement, revision and Pod
   identity, and missing-Pod behavior. These tests do not prove a live Slack
@@ -111,6 +134,10 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 14:30: Document that an OpenShell Harness's runtime status is unreachable to diagnostics. (fix-1022-1019)
+
+- 2026-10-10 10:00: Report a held runtime startup failure as the first diagnostic check. (fix-1013)
 
 - 2026-10-07 12:00: Say that a revision deployed by an older controller keeps its diagnostics mapping until the Agent is redeployed. (dogfood-r43)
 

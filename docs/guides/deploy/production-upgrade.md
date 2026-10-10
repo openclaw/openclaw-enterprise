@@ -282,7 +282,10 @@ digest) and `--broker-image` (selected digest). The worker and broker still rest
 
 Before mutation, the command requires a complete authorized inventory with no
 deployment in progress. Every running Agent must have a readable active revision
-in a ready Namespace.
+in a ready Namespace. A running Agent without one, usually a failed initial
+deployment, stops the command before any change; the refusal lists up to ten
+such Agents by ID, name, and Namespace. Stop or delete each such Agent, or
+deploy it until it succeeds, then start again with a new evidence directory.
 
 The command writes the runtime digest to both Kubernetes Compute image fields,
 updates the Installation Secret after quiescing OCC, and runs Helm with the

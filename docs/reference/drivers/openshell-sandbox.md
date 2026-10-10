@@ -195,7 +195,8 @@ inner Codex app-server sandbox:
         "enabled": true,
         "config": {
           "appServer": {
-            "sandbox": "danger-full-access"
+            "sandbox": "danger-full-access",
+            "approvalsReviewer": "user"
           }
         }
       }
@@ -204,9 +205,10 @@ inner Codex app-server sandbox:
 }
 ```
 
-This avoids stacking the Codex sandbox inside OpenShell, which becomes the
-dedicated Harness's outer containment boundary. Native OpenClaw already disables
-inner isolation. Its hook sets `agents.defaults.workspace` and any
+Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's
+outer boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
+Native OpenClaw already disables inner isolation. Its hook sets
+`agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
 which the Gateway, file transfer, and node address; admission refuses a roster
 that makes another Agent the default. Native workers have separate

@@ -297,14 +297,18 @@ attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
-Before publishing a permanent refusal of an inactive exclusive candidate (not a
-held runtime failure or the deadline),
-`ControllerWorker.stopRefusedExclusiveCandidate` calls `stopRevision` under the
-claim heartbeat, so a rejected deployment never serves while the pointer names
-its stopped predecessor. A stop failure publishes nothing: the work stays pending
-past the attempt budget and the deadline until the stop succeeds (a newer
-deployment's exclusive sweep may perform it), and `worker.completed` names the
-refusal in `refusal`.
+Before publishing a permanent refusal of an inactive candidate that is exclusive,
+or prepared while its Agent has no active revision (not a held runtime failure,
+the deadline or exhausted retries), `ControllerWorker.stopRefusedCandidate`
+stops it under the claim heartbeat, so a rejected deployment never serves. Kubernetes deletes
+its Harness before the Gateway drains; Pod waits yield to due work (`withYieldingComputeStop`).
+An unfinished stop publishes nothing: the work defers as
+`REFUSED_CANDIDATE_STOP_PENDING` past the attempt budget, deadline, in-lease shutdowns and,
+once recorded, lost claims until the stop succeeds, after the readiness cadence, doubled per
+failed (not `stopYielded`) stop in evidence, up to 5 minutes
+but at least four times the stop's duration. Each deferral records evidence with the refusal
+(`repeatEvidence`) for deployment status and `worker.completed`'s `refusal`. A superseded
+pass first retries a stop its work waited on.
 
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
@@ -333,8 +337,7 @@ supply it. `getDeploymentStatus` reads
 public explanations. Memory State has no attempt.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
-reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`. Their
-`result_data` remains `NULL`; pending rows have no terminal outcome.
+reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
 
 If Compute declares maintenance, activation schedules exact-revision observations.
 Incomplete observations, Compute bindings, and dependency retries or expired claims
@@ -407,11 +410,6 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-10 03:10: Stop an exclusive candidate the worker refuses before publishing its failure. (fix-990-991)
-
-- 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
-
-- 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
-- 2026-10-04 04:20: Abort Compute when the last confirmed claim lease runs out, even if a renewal never answers. (bughunt-10-claimloss)
+- 2026-10-10 15:30: Delete a refused Harness first; only failed stops back off. (fix-1025)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

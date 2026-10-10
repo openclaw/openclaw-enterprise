@@ -644,11 +644,31 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(selectedModel ? next.agents.defaults.models[selectedModel] : {}),
     };
     pendingModelSettings = selectedModel ? undefined : selectedSettings;
-    delete modelSettings[previousModel];
     const nextModel =
       typeof previous === "object" && previous !== null
         ? { ...previous, primary: selectedModel }
         : selectedModel;
+    const selections = [
+      nextModel,
+      ...(values.agents?.entries &&
+      typeof values.agents.entries === "object" &&
+      !Array.isArray(values.agents.entries)
+        ? Object.values(values.agents.entries).map((entry) => entry?.model)
+        : []),
+    ];
+    const referencedModels = new Set(
+      selections.flatMap((selection) =>
+        typeof selection === "string"
+          ? [selection]
+          : [
+              selection?.primary,
+              ...(Array.isArray(selection?.fallbacks) ? selection.fallbacks : []),
+            ],
+      ),
+    );
+    if (!referencedModels.has(previousModel)) {
+      delete modelSettings[previousModel];
+    }
     values.agents = {
       ...values.agents,
       defaults: {
@@ -678,8 +698,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       const existingProvider = providers[providerId] ?? templateProvider;
       const existingModels = existingProvider.models ?? [];
       const selectedId = model.value.trim();
-      if (!existingModels.some((entry) => entry.id === selectedId)) {
-        const previousEntry = existingModels.find((entry) => entry.id === previousId);
+      const retainPrevious = referencedModels.has(`${providerId}/${previousId}`);
+      const namesModel = (entry, id) => entry.id === id || entry.id === `${providerId}/${id}`;
+      if (!existingModels.some((entry) => namesModel(entry, selectedId))) {
+        const previousEntry = existingModels.find((entry) => namesModel(entry, previousId));
         const selectedEntry = {
           ...(previousEntry ?? templateProvider.models[0]),
           id: selectedId,
@@ -690,12 +712,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         };
         providers[providerId] = {
           ...existingProvider,
-          models: previousEntry
-            ? existingModels.map((entry) => (entry === previousEntry ? selectedEntry : entry))
-            : [...existingModels, selectedEntry],
+          models:
+            previousEntry && !retainPrevious
+              ? existingModels.map((entry) => (entry === previousEntry ? selectedEntry : entry))
+              : [...existingModels, selectedEntry],
         };
       } else {
-        providers[providerId] = existingProvider;
+        providers[providerId] = {
+          ...existingProvider,
+          models: existingModels.filter(
+            (entry) =>
+              !namesModel(entry, previousId) || namesModel(entry, selectedId) || retainPrevious,
+          ),
+        };
       }
     }
     values.models = { ...values.models, providers };

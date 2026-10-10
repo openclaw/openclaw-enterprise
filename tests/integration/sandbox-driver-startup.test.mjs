@@ -8,7 +8,10 @@ import {
   createOpenShellBackend,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  createKubernetesComputeDriver,
+  KubernetesComputeDriver,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -289,6 +292,7 @@ function codexSandboxFixture(
     runtimeManifest = JSON.stringify({ kind: "codex", selections: {} }),
     codexConfig = "[features]\nplugins = false\n",
     files,
+    nodeSetupUrl = () => "wss://gateway.example.test/node",
   } = {},
 ) {
   const context = namespaceContext();
@@ -300,7 +304,7 @@ function codexSandboxFixture(
     sandboxDriverId: driver.id,
   };
   const nodeSetup = {
-    url: "wss://gateway.example.test/node",
+    url: nodeSetupUrl(revision, context),
     bootstrapToken: "one-shot-node-setup",
     expiresAtMs: Date.now() + 600_000,
     tlsFingerprint: "sha256:test",
@@ -556,7 +560,10 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     version: "1.0.0",
     mode: "dedicated",
   });
-  assert.equal(codex.plugins.entries.codex.config.appServer.sandbox, "danger-full-access");
+  assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
+    sandbox: "danger-full-access",
+    approvalsReviewer: "user",
+  });
   assert.throws(
     () =>
       driver.configureAgent(configuration, {
@@ -566,6 +573,47 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
       }),
     /supports only dedicated Harness revisions/,
   );
+});
+
+test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 1026)", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  // The documented OpenShell Configuration's guardian app-server, plus a member's model-backed
+  // reviewer. On a model the Gateway cannot verify for review, both make the pinned Gateway
+  // force a user reviewer, and with it a workspace-write turn sandbox that bwrap cannot start
+  // inside OpenShell. The explicit user reviewer keeps the frozen danger-full-access.
+  for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
+    const appServer = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
+    };
+    const configuration = {
+      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+    };
+    const configured = driver.configureAgent(configuration, harness);
+    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "danger-full-access",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      approvalsReviewer: "user",
+    });
+    assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
+    assert.equal(appServer.sandbox, "read-only");
+    // Status reads rerun the hook on stored work, so the pin must be idempotent.
+    assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  }
 });
 
 test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
@@ -1198,8 +1246,37 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
+  // Same-cluster Compute with the in-cluster Envoy route hostname the k3d OpenShell
+  // profile uses; the node's setup URL is the one Compute derives for that route.
+  const routeHost = "occ-gateway-0123456789ab.envoy-gateway-system.svc.cluster.local";
+  const computeOptions = conformanceKubernetesOptions({
+    gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  // Routing derives the Gateway client peer from the Envoy namespace.
+  delete computeOptions.network.gatewayClients;
+  const compute = new KubernetesComputeDriver(
+    {
+      ...computeOptions,
+      gatewayRouting: {
+        hostname: routeHost,
+        gatewayName: "oce-agent-gateways",
+        gatewayNamespace: "openclaw-system",
+        envoyNamespace: "envoy-gateway-system",
+      },
+    },
+    { sandboxDriver: driver },
+  );
   const { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup } =
-    codexSandboxFixture(driver);
+    codexSandboxFixture(driver, {
+      nodeSetupUrl: (target, { namespace }) =>
+        compute.workspaceNodeConnectionUrl(
+          target,
+          { name: namespace.name, plane: "execution" },
+          compute.getGatewayEndpoint(target),
+        ),
+    });
+  assert.match(nodeSetup.url, new RegExp(`^wss://${routeHost.replaceAll(".", "\\.")}/`));
 
   await driver.ensureNamespace(context);
   await driver.provisionHarness({ ...context, revision, requirements });
@@ -1354,13 +1431,26 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     binaries: [{ path: "/usr/local/bin/node" }],
     endpoints: [
       {
-        host: "gateway.example.test",
+        host: routeHost,
         ports: [443],
         tls: "NETWORK_TLS_MODE_SKIP",
         enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
       },
     ],
   });
+
+  // Each turn the Gateway writes a native hook credential through Codex into the directory
+  // Compute renders, which the Harness entrypoint creates under its HOME. Hook commands
+  // then call the Gateway route on the host and port the node rule above admits.
+  const relay = compute.gatewayNativeHookRelayConfiguration(revision, {}).plugins.entries.codex
+    .config.appServer.nativeHookRelay;
+  assert.equal(relay.credentialDirectory, `${requests[0].spec.environment.HOME}/.oce-native-hooks`);
+  const callback = new URL(relay.url);
+  const [nodeEndpoint] =
+    requests[0].spec.policy.network_policies["workspace-node-enrollment"].endpoints;
+  assert.equal(callback.protocol, "https:");
+  assert.equal(callback.hostname, nodeEndpoint.host);
+  assert.deepEqual([Number(callback.port || 443)], nodeEndpoint.ports);
 
   await driver.cleanup({ ...context, revision });
   assert.equal(gatewayClient.providers.has(runtimeProvider), false);

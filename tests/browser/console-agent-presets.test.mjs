@@ -32,6 +32,7 @@ import {
   waitForInputValue,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   createModelCredentialSecret,
@@ -50,6 +51,105 @@ const defaultCodexPreset = JSON.parse(
 // Default Presets also select the filesystem Configuration Driver (native value validation).
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+test("Selecting an existing fallback keeps the referenced model catalog deployable", async (t) => {
+  for (const fullReferenceIds of [false, true]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap("Model selection");
+    const namespace = await fixture.createNamespace("Fallback choices", { ready: true });
+    const ids = ["primary-model", "fallback-one", "fallback-two"];
+    const reference = (id) => `openai/${id}`;
+    const values = {
+      agents: {
+        defaults: {
+          model: { primary: reference(ids[0]), fallbacks: ids.slice(1).map(reference) },
+          models: Object.fromEntries(
+            ids.map((id) => [
+              reference(id),
+              {
+                agentRuntime: { id: "openclaw" },
+                alias: `Saved ${id}`,
+                params: { temperature: 0.3 },
+              },
+            ]),
+          ),
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://models.example.test/v1",
+            api: "openai-responses",
+            models: ids.map((id) => ({
+              id: fullReferenceIds ? reference(id) : id,
+              name: id,
+              contextWindow: 128000,
+              maxTokens: 8192,
+              reasoning: true,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            })),
+          },
+        },
+      },
+    };
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: {
+        name: "Fallback models",
+        template: { configuration: { values }, agent: { executionMode: "embedded" } },
+      },
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const editor = page.locator("#configuration-json");
+    const model = page.getByLabel("Model ID", { exact: true });
+    const checkSelection = async (id, retained) => {
+      await model.fill(id);
+      await model.press("Tab");
+      const selected = JSON.parse(await editor.inputValue());
+      assert.equal(selected.agents.defaults.model.primary, reference(id));
+      assert.deepEqual(selected.agents.defaults.model.fallbacks, ids.slice(1).map(reference));
+      assert.deepEqual(
+        selected.models.providers.openai.models.map((entry) =>
+          entry.id.includes("/") ? entry.id.split("/").slice(1).join("/") : entry.id,
+        ),
+        retained,
+      );
+      for (const fallback of ids.slice(1)) {
+        assert.deepEqual(
+          selected.agents.defaults.models[reference(fallback)],
+          values.agents.defaults.models[reference(fallback)],
+        );
+        assert.deepEqual(
+          selected.models.providers.openai.models.find(
+            (entry) => entry.id === fallback || entry.id === reference(fallback),
+          ),
+          values.models.providers.openai.models.find(
+            (entry) => entry.id === fallback || entry.id === reference(fallback),
+          ),
+        );
+      }
+      const configuration = await fixture.createConfiguration(namespace.id, selected);
+      const reread = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.equal(reread.status, 200);
+      assert.deepEqual(reread.data.values, selected);
+      assert.equal(resolveConfiguredHarnessId(reread.data.values), "openclaw");
+      return selected;
+    };
+    const selected = await checkSelection(ids[1], ids.slice(1));
+    assert.equal(selected.agents.defaults.models[reference(ids[0])], undefined);
+    await checkSelection(ids[2], ids.slice(1));
+    // Clearing a text input is a temporary editor state, not permission to drop a fallback.
+    await model.fill("");
+    await model.press("Tab");
+    await checkSelection("another-model", [...ids.slice(1), "another-model"]);
+  }
+});
 
 test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenAI", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset providers", {

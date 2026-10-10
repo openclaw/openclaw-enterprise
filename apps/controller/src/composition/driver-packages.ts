@@ -13,6 +13,7 @@ import type {
 import type { NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import { currentComputeAbortSignal } from "../drivers/compute/operation-context.ts";
 import type { SelectedDriverConfiguration } from "./installation-config.ts";
+import { withoutByteOrderMark } from "./startup-file.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -197,8 +198,7 @@ async function entryPackageScope(
       }
     }
     if (read !== undefined) {
-      // Node's reader skips a byte order mark.
-      const text = read.replace(/^\uFEFF/, "");
+      const text = withoutByteOrderMark(read);
       let type: string | undefined;
       try {
         type = asRecord(JSON.parse(text)) === undefined ? undefined : nodePackageType(text);
@@ -272,8 +272,7 @@ export async function loadDriverPackage(
 
   let installedManifest: ConfigurationRecord | undefined;
   try {
-    // Node accepts one leading UTF-8 byte order mark in package metadata.
-    const text = (await readFile(installedManifestPath, "utf8")).replace(/^\uFEFF/, "");
+    const text = withoutByteOrderMark(await readFile(installedManifestPath, "utf8"));
     installedManifest = asRecord(JSON.parse(text));
     if (installedManifest === undefined) {
       throw new Error(`${path}.package manifest must be one object.`);

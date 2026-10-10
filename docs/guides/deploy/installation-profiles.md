@@ -136,6 +136,10 @@ one `@` and a dotted domain.
 }
 ```
 
+`controlPlane.gatewayClassName` must be a Kubernetes resource name of at most
+253 characters. Use the name of the existing GatewayClass that Envoy Gateway
+serves.
+
 For the `codex` profile, merge the reviewed Codex seccomp profile and model
 discovery egress into the base input:
 
@@ -220,6 +224,7 @@ Each provider needs its own Secret, as the chart requires: its `secretName`
 name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
 Secret when `codex.managedServiceAccounts` is set, a repository Secret, or the
 chart's `occ-installation-startup`, `occ-database` and `occ-auth` Secrets.
+`gatewayApiKeySecretName` must also differ from those three chart Secrets.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`

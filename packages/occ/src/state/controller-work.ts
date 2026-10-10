@@ -40,7 +40,11 @@ export interface DeploymentStatusResult {
 export interface ControllerWorkAttempt {
   readonly at: Date;
   readonly code: string;
+  /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
+  readonly refusal?: string;
 }
+
+const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
 /** Public pending explanations never include arbitrary Driver or provider text. */
 export function deploymentProgressForWork(
@@ -74,6 +78,16 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "A dependency was unavailable. The controller will retry.";
       break;
+    case "REFUSED_CANDIDATE_STOP_PENDING":
+      // The refusal is the code this deployment's `error` carries once the stop succeeds,
+      // unless a newer revision supersedes it first.
+      code = attempt.code;
+      message = `Deployment refused${
+        attempt.refusal !== undefined && FAILURE_CODE.test(attempt.refusal)
+          ? ` (${attempt.refusal})`
+          : ""
+      }; stopping the refused version before recording the failure. The controller will retry.`;
+      break;
     case "AGENT_GATEWAY_UNAVAILABLE":
       code = attempt.code;
       message =
@@ -95,7 +109,11 @@ export function deploymentProgressForWork(
       break;
     case "LEASE_EXPIRED":
       code = attempt.code;
-      message = "The previous worker claim expired. Reconciliation will resume.";
+      // A claim lost while stopping a refused candidate keeps that refusal (finding 1021).
+      message =
+        attempt.refusal !== undefined && FAILURE_CODE.test(attempt.refusal)
+          ? `Deployment refused (${attempt.refusal}); the previous worker claim expired before the refused version was stopped. The controller will retry.`
+          : "The previous worker claim expired. Reconciliation will resume.";
       break;
     case "ACTIVE_REVISION_RECOVERY":
       code = attempt.code;
@@ -208,6 +226,13 @@ export interface WorkResult {
 export interface RetryableFailure {
   readonly code: string;
   readonly summary?: string;
+}
+
+export interface DeferredWork extends RetryableFailure {
+  /** A refusal waiting on its candidate's stop; recorded in the deferral's evidence. */
+  readonly refusal?: string;
+  /** That stop yielded to other Work rather than failing; recorded as `stopYielded: true`. */
+  readonly stopYielded?: boolean;
 }
 
 export interface PermanentFailure {

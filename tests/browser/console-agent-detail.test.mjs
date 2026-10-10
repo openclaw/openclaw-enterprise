@@ -987,6 +987,10 @@ test("Agent detail saves plugin changes for the next revision without changing a
     if (upstream.hostname !== "chatgpt.com") {
       return originalFetch(input, options);
     }
+    if (upstream.pathname.endsWith("/plugins/search")) {
+      assert.equal(upstream.searchParams.get("q"), "calendar");
+      return Response.json({ plugins: [hostedCalendar], pagination: { next_page_token: null } });
+    }
     if (upstream.pathname.endsWith("/plugins/list")) {
       return Response.json({ plugins: [hostedCalendar], pagination: { next_page_token: null } });
     }
@@ -1090,9 +1094,87 @@ test("Agent detail saves plugin changes for the next revision without changing a
     .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"] summary')
     .click();
   await dialog.getByLabel("Enable List events", { exact: true }).selectOption("false");
+  const searched = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${pluginListPath}` &&
+      response.request().method() === "POST" &&
+      response.request().postDataJSON()?.q === "calendar",
+  );
+  await dialog.getByRole("searchbox", { name: "Search plugins" }).fill("calendar");
+  assert.equal((await searched).status(), 200);
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).click();
+  // The saved override can render before the new detail response. Wait for a
+  // catalog-only tool before switching tabs, which cancels pending discovery.
+  await dialog
+    .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Fcreate"]')
+    .waitFor();
+  await dialog
+    .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"] summary')
+    .click();
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: pluginId, exact: true }).click();
   await dialog.getByLabel(`Enable ${pluginId}`, { exact: true }).uncheck();
+
+  // Each picker tab retains its own selection, query and tool details. Switching
+  // tabs must not fetch another catalog page or change the surrounding draft.
+  const configuredFilter = dialog.getByRole("searchbox", { name: "Filter configured plugins" });
+  await configuredFilter.fill("linear");
+  const selectedJson = await json.inputValue();
+  const discoveryBeforeSwitch = requests.filter(
+    ({ method, path }) => method === "POST" && path.startsWith(pluginListPath),
+  );
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  await dialog.getByRole("heading", { name: "Calendar", exact: true }).waitFor();
+  assert.equal(
+    await dialog.getByRole("searchbox", { name: "Search plugins" }).inputValue(),
+    "calendar",
+  );
+  const listRow = dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]');
+  const createRow = dialog.locator(
+    'details.plugin-tool-row[data-tool="app_calendar/events%2Fcreate"]',
+  );
+  assert.equal(await listRow.getAttribute("open"), "");
+  await toolFilter.fill("list");
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("heading", { name: pluginId, exact: true }).waitFor();
+  assert.equal(await configuredFilter.inputValue(), "linear");
+  await configuredFilter.fill("calendar");
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).click();
+  assert.equal(await toolFilter.inputValue(), "");
+  assert.equal(await listRow.getAttribute("open"), null);
+  await toolFilter.fill("create");
+  await createRow.locator("summary").click();
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  assert.equal(await toolFilter.inputValue(), "list");
+  assert.equal(await listRow.getAttribute("open"), "");
+  assert.equal(await createRow.isVisible(), false);
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  assert.equal(await configuredFilter.inputValue(), "calendar");
+  assert.equal(await toolFilter.inputValue(), "create");
+  assert.equal(await createRow.getAttribute("open"), "");
+  assert.equal(await listRow.isVisible(), false);
+  assert.equal(await json.inputValue(), selectedJson);
+  assert.deepEqual(
+    requests.filter(({ method, path }) => method === "POST" && path.startsWith(pluginListPath)),
+    discoveryBeforeSwitch,
+  );
+
+  // A catalog entry is not a Configured selection after removal. Restoring the
+  // original draft through its supported JSON editor must not revive stale UI.
+  await dialog.getByRole("button", { name: "Remove Calendar", exact: true }).click();
+  assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  await dialog.getByRole("heading", { name: "Calendar", exact: true }).waitFor();
+  assert.equal(await toolFilter.inputValue(), "list");
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByText("Plugin selections JSON", { exact: true }).click();
+  await json.fill(selectedJson);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).click();
+  assert.equal(await toolFilter.inputValue(), "");
+  assert.equal(await createRow.getAttribute("open"), null);
   // Like Done, a backdrop dismissal preserves plugin choices in the surrounding draft.
   const pluginBounds = await dialog.boundingBox();
   assert.ok(pluginBounds);
@@ -1219,6 +1301,82 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
+});
+
+test("Plugin picker clears tab memory when its catalog or credential scope is reset", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, "/console/agents");
+  // Exercise the same component API used by discovery.reset(), without real
+  // credentials or a second implementation of catalog/request handling.
+  await page.evaluate(async () => {
+    const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+    const input = globalThis.document.createElement("textarea");
+    input.id = "scope-plugin-selections";
+    input.value = JSON.stringify({ calendar: { enabled: true }, documents: { enabled: true } });
+    const entries = [
+      { id: "calendar", name: "Calendar", tools: [{ id: "read", name: "Read events" }] },
+      { id: "documents", name: "Documents", tools: [{ id: "read", name: "Read documents" }] },
+    ];
+    const catalog = { status: "ready", canLoad: true, entries, knownEntries: entries };
+    const loads = [];
+    let cancellations = 0;
+    const fields = createPluginFields({
+      input,
+      catalog,
+      onLoadPlugins: (...args) => loads.push(args),
+      onCancelDiscovery: () => {
+        cancellations += 1;
+      },
+    });
+    fields.section.id = "scope-plugin-picker";
+    globalThis.document.body.append(fields.section);
+    globalThis.pluginScopeFixture = { fields, catalog, loads, cancellations: () => cancellations };
+  });
+  const picker = page.locator("#scope-plugin-picker");
+  await picker.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = picker.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).click();
+  await dialog.locator('details[data-tool="read"] summary').click();
+  await dialog.getByRole("searchbox", { name: "Filter tools" }).fill("events");
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Documents", exact: true }).click();
+  // Tool IDs are shared across plugins; expansion must not cross that identity.
+  assert.equal(await dialog.locator('details[data-tool="read"]').getAttribute("open"), null);
+  await dialog.getByRole("searchbox", { name: "Filter tools" }).fill("documents");
+  await dialog.getByRole("searchbox", { name: "Filter configured plugins" }).fill("documents");
+  await page.evaluate(() => {
+    const { fields, catalog } = globalThis.pluginScopeFixture;
+    fields.setCatalog({ ...catalog, entries: [catalog.entries[1]] });
+  });
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
+  assert.equal(await dialog.getByRole("searchbox", { name: "Filter tools" }).count(), 0);
+  await dialog.getByRole("searchbox", { name: "Search plugins" }).fill("new query");
+  assert.deepEqual(await page.evaluate(() => globalThis.pluginScopeFixture.loads), [
+    ["search", "new query"],
+  ]);
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  assert.equal(
+    await dialog.getByRole("searchbox", { name: "Filter tools" }).inputValue(),
+    "documents",
+  );
+  assert.equal(
+    await dialog.getByRole("searchbox", { name: "Filter configured plugins" }).inputValue(),
+    "documents",
+  );
+  assert.equal(await page.evaluate(() => globalThis.pluginScopeFixture.cancellations()), 2);
+  await page.evaluate(() => globalThis.pluginScopeFixture.fields.resetSearch());
+  assert.equal(
+    await dialog.getByRole("searchbox", { name: "Filter configured plugins" }).inputValue(),
+    "",
+  );
+  assert.equal(await dialog.getByRole("searchbox", { name: "Filter tools" }).count(), 0);
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  assert.equal(await dialog.getByRole("searchbox", { name: "Search plugins" }).inputValue(), "");
+  assert.equal(await dialog.getByRole("searchbox", { name: "Filter tools" }).count(), 0);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
 });
 
 test("Agent draft plugin browsing explains a missing hosted credential", async (t) => {

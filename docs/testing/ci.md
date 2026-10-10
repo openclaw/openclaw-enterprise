@@ -21,6 +21,8 @@ present values, including empty strings. Lane `env` and prepared values override
 
 The non-required [First Agent smoke](first-agent-smoke.md) installs Local Setup and deploys two Agents against a stand-in model provider on every run.
 
+Stop observation defaults to 17 minutes; explicit deadlines and 40-minute job limits apply.
+
 The non-required [`keycloak-oidc` lane](keycloak.md) runs in full-mode PR CI and on main. It belongs to the `full` suite group.
 
 Full CI has twenty required lanes. `checks-baseline-1` and `checks-baseline-2` split the baseline conformance and local integration files by measured file durations. Only part 1 runs the type and Go CLI checks and installs the docs site its docs tests need; part 2 builds the workspace output its tests read. Register new baseline files in either part, keeping job times close. Lanes with `fileConcurrency` run `parallelFiles` up to that many at once, longest first; other files, including `serialFiles`, run alone first. `checks-browser` and `checks-browser-2` split browser tests likewise, plus some baseline files (only part 1 installs the docs site); `postgres-auth` owns sign-in, session and account authentication tests and its own PostgreSQL server; `images-model-probes` builds only the runtime image and runs the CPU-contention model probe without a cluster; `images-runtime-startup` and `images-runtime-startup-2` each build the runtime image and run startup smoke files apart from packaging (part 2 also the other model probes); `runtime-image-startup.test.mjs`, `runtime-image-startup-probe.test.mjs`, `runtime-image-gateway-peer.test.mjs` and `runtime-image-native-worker.test.mjs` are split by measured case durations and share `tests/helpers/runtime-image-startup.mjs`.
@@ -211,7 +213,7 @@ replacement after external changes. Ordinary fixture CI does not run these tests
 
 ### Integration tests outside automatic CI
 
-The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI, Calendar, and OpenShell checks outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
+The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI, Calendar, and OpenShell outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
 
 #### Manual Full Integration lanes
 
