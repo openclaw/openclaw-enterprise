@@ -1022,6 +1022,16 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
   {
+    name: "preflight refuses database CA Secret names that Kubernetes refuses",
+    cases: [
+      [
+        "controlPlane.databaseCa.secretName",
+        ["Bad_Name", "-db-ca", "d".repeat(254)],
+        "must be a Kubernetes resource name",
+      ],
+    ],
+  },
+  {
     name: "preflight rejects a repository serviceName the chart refuses",
     profile: "codex",
     input: () => codexInput({ repository: repositoryConfiguration() }),

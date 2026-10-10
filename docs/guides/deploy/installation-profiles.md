@@ -136,9 +136,10 @@ one `@` and a dotted domain.
 }
 ```
 
-`controlPlane.gatewayClassName` and `controlPlane.gatewayApiKeySecretName`
-must be Kubernetes resource names of at most 253 characters: the existing
-GatewayClass that Envoy Gateway serves, and the Secret that holds the `occ` key.
+`controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
+`controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
+most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
+Secret that holds the `occ` key, and the database CA Secret.
 
 For the `codex` profile, merge the reviewed Codex seccomp profile and model
 discovery egress into the base input:

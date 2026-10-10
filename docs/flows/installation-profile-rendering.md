@@ -1,6 +1,6 @@
 ---
 created: 2026-09-28
-updated: 2026-10-10
+updated: 2026-10-11
 last_updated_session: authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c
 ---
 
@@ -115,8 +115,9 @@ trailing whitespace and no control characters or line or paragraph separators.
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), the GatewayClass and gateway API key Secret
-resource names, repository Service names, and paired metrics scraper selectors.
+last label starting with a letter), the GatewayClass, gateway API key Secret and
+database CA Secret names, repository Service names, and paired metrics scraper
+selectors.
 Invalid values therefore fail before `values.yaml` or `installation.yaml` is
 written.
 
@@ -283,6 +284,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11: Refuse invalid database CA Secret names.
 
 - 2026-10-10: Public CA Secrets may share one Secret, as in the chart.
 
