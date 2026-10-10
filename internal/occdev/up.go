@@ -195,14 +195,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 	fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
 	clusterAttempted = true
 	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", "+v1.35")
+	if sandboxDriver == "openshell" {
+		clusterImage = openShellK3sImage
+	}
 	clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
-	resolverArgs, err := r.prepareDevelopmentResolver(state)
+	resolverArgs, err := r.prepareDevelopmentResolver(ctx, state, clusterImage)
 	if err != nil {
 		return err
 	}
 	clusterArgs = append(clusterArgs, resolverArgs...)
 	if sandboxDriver == "openshell" {
-		clusterImage = openShellK3sImage
 		admissionPath, err := prepareOpenShellAdmission(directory)
 		if err != nil {
 			return err

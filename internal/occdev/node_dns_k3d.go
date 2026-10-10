@@ -84,7 +84,7 @@ func (r *runner) checkDevelopmentNodeDNS(ctx context.Context, state *development
 		return nil
 	case nodeDNSRefused:
 		if r.automaticNodeResolver != "" {
-			return automaticNodeDNSError(server, r.automaticNodeResolver)
+			return automaticNodeDNSError(server, r.automaticNodeResolverOrigin, r.automaticNodeResolver)
 		}
 		configured := r.env["OCC_DEVELOPMENT_K3D_DNS_RESOLVER"]
 		if configured == developmentResolverK3dDefault {
@@ -94,7 +94,7 @@ func (r *runner) checkDevelopmentNodeDNS(ctx context.Context, state *development
 	default:
 		automatic := ""
 		if r.automaticNodeResolver != "" {
-			automatic = fmt.Sprintf(" The node uses this host's upstream resolver %s; OCC_DEVELOPMENT_K3D_DNS_RESOLVER=%s keeps k3d's default.", r.automaticNodeResolver, developmentResolverK3dDefault)
+			automatic = fmt.Sprintf(" The node uses %s resolver %s; OCC_DEVELOPMENT_K3D_DNS_RESOLVER=%s keeps k3d's default.", r.automaticNodeResolverOrigin, r.automaticNodeResolver, developmentResolverK3dDefault)
 		}
 		fmt.Fprintf(r.opts.Err, "Warning: could not confirm that the k3d node %s resolves %s; continuing.%s If image pulls stall, see OCC_DEVELOPMENT_K3D_DNS_RESOLVER in the local Kubernetes development guide.\n", server, developmentNodeDNSName, automatic)
 		return nil
@@ -114,8 +114,8 @@ func developmentNodeDNSError(server, configured, upstream string) error {
 		"Set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to an IPv4 DNS server the node can reach" + hint + " and run occ dev up again")
 }
 
-func automaticNodeDNSError(server, upstream string) error {
-	return fmt.Errorf("the k3d node %s cannot resolve %s: this host's upstream resolver %s, which startup gave the node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER is unset, refused the query; set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to an IPv4 DNS server the node can reach, or to %s to keep k3d's default node resolver, and run occ dev up again", server, developmentNodeDNSName, upstream, developmentResolverK3dDefault)
+func automaticNodeDNSError(server, origin, resolver string) error {
+	return fmt.Errorf("the k3d node %s cannot resolve %s: %s resolver %s, which startup gave the node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER is unset, refused the query; set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to an IPv4 DNS server the node can reach, or to %s to keep k3d's default node resolver, and run occ dev up again", server, developmentNodeDNSName, origin, resolver, developmentResolverK3dDefault)
 }
 
 // hostUpstreamResolver returns the host's first non-loopback IPv4 nameserver,
@@ -126,15 +126,69 @@ func hostUpstreamResolver(read func(string) ([]byte, error)) string {
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 2 || fields[0] != "nameserver" {
-				continue
-			}
-			address, err := netip.ParseAddr(fields[1])
-			if err == nil && address.Is4() && address.IsGlobalUnicast() {
-				return address.String()
-			}
+		if address := firstUpstreamNameserver(data); address != "" {
+			return address
+		}
+	}
+	return ""
+}
+
+// dockerDesktopProbeTimeout bounds the Docker Desktop check and the resolver
+// probe container, including a first pull of its image, so a wedged engine
+// cannot stall startup before cluster creation.
+var dockerDesktopProbeTimeout = 45 * time.Second
+
+// dockerDesktopBridgeResolver returns the first non-loopback IPv4 nameserver
+// that Docker Desktop writes into a container on its default bridge network, or
+// "" to keep k3d's default. Other engines, such as OrbStack, Colima and Rancher
+// Desktop, keep k3d's default. A check or probe that fails or times out keeps it
+// too, with a warning.
+func (r *runner) dockerDesktopBridgeResolver(ctx context.Context, nodeImage string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, dockerDesktopProbeTimeout)
+	defer cancel()
+	address, err := r.probeDockerDesktopBridgeResolver(probeCtx, nodeImage)
+	if err != nil && ctx.Err() == nil {
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("timed out after %s", dockerDesktopProbeTimeout)
+		}
+		fmt.Fprintf(r.opts.Err, "Warning: could not read Docker's default-bridge DNS resolver for the k3d node (%v); keeping k3d's default. If image pulls stall, set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to an IPv4 DNS server the node can reach.\n", err)
+	}
+	return address
+}
+
+// probeDockerDesktopBridgeResolver runs the probe container from the profile's
+// node image, so a fresh host pulls no extra image. A k3d channel such as
+// +v1.35 is not an image Docker can run, so it uses the pinned K3s image.
+func (r *runner) probeDockerDesktopBridgeResolver(ctx context.Context, nodeImage string) (string, error) {
+	system, err := r.output(ctx, r.engine, "info", "--format", "{{.OperatingSystem}}")
+	if err != nil || string(system) != "Docker Desktop" {
+		return "", err
+	}
+	image := nodeImage
+	if strings.HasPrefix(image, "+") {
+		image = openShellK3sImage
+	}
+	fmt.Fprintf(r.opts.Out, "Reading Docker Desktop's default-bridge DNS resolver from a throwaway %s container...\n", image)
+	data, err := r.output(ctx, r.engine, "run", "--rm", "--network", "bridge", "--entrypoint", "cat", image, "/etc/resolv.conf")
+	if err != nil {
+		return "", err
+	}
+	address := firstUpstreamNameserver(data)
+	if address == "" {
+		return "", errors.New("probe resolv.conf has no usable IPv4 nameserver")
+	}
+	return address, nil
+}
+
+func firstUpstreamNameserver(resolvConf []byte) string {
+	for _, line := range strings.Split(string(resolvConf), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		address, err := netip.ParseAddr(fields[1])
+		if err == nil && address.Is4() && address.IsGlobalUnicast() {
+			return address.String()
 		}
 	}
 	return ""

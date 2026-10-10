@@ -1021,6 +1021,90 @@ test("Kubernetes dev-up forwards an explicit K3s image and startup timeout to k3
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });
 
+// The Docker Desktop bridge resolver is chosen only on macOS, so these link the
+// CLI for darwin.
+const macOS = { developmentHostOS: "darwin" };
+
+test("Kubernetes dev-up on macOS Docker Desktop mounts the bridge resolver and checks DNS before image import", async (t) => {
+  const fixture = await kubernetesFixture(t, "success", macOS);
+  delete fixture.env.OCC_DEVELOPMENT_K3D_DNS_RESOLVER;
+  fixture.env.DEV_UP_DOCKER_OPERATING_SYSTEM = "Docker Desktop";
+  fixture.env.DEV_UP_BRIDGE_RESOLV_CONF = "192.168.65.7";
+  const result = fixture.start();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Docker Desktop's default-bridge DNS resolver 192\.168\.65\.7/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const probeAt = commands.findIndex(
+    (entry) =>
+      entry.command === "docker" &&
+      entry.args[0] === "run" &&
+      entry.args.at(-1) === "/etc/resolv.conf",
+  );
+  const createAt = commands.findIndex(
+    (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
+  );
+  const dnsAt = commands.findIndex(
+    (entry) =>
+      entry.command === "docker" && entry.args[0] === "exec" && entry.args.includes("nslookup"),
+  );
+  const importAt = commands.findIndex(
+    (entry) => entry.command === "k3d" && entry.args[0] === "image",
+  );
+  assert.ok(probeAt >= 0 && createAt > probeAt && dnsAt > createAt && importAt > dnsAt);
+  const clusterCreate = commands[createAt];
+  assert.ok(
+    clusterCreate.args.some((argument) => argument.endsWith(":/etc/resolv.conf:ro@server:0")),
+  );
+  assert.equal(
+    await readFile(join(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY, "node-resolv.conf"), "utf8"),
+    "nameserver 192.168.65.7\n",
+  );
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+});
+
+test("Kubernetes dev-up on macOS Docker Desktop warns when the bridge probe has no usable IPv4 nameserver", async (t) => {
+  const fixture = await kubernetesFixture(t, "success", macOS);
+  delete fixture.env.OCC_DEVELOPMENT_K3D_DNS_RESOLVER;
+  fixture.env.DEV_UP_DOCKER_OPERATING_SYSTEM = "Docker Desktop";
+  fixture.env.DEV_UP_BRIDGE_RESOLV_CONF = "ipv6";
+  const result = fixture.start();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /no usable IPv4 nameserver/);
+  assert.match(result.stderr, /keeping k3d's default/);
+  assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
+  assert.match(result.stdout, /Reading Docker Desktop's default-bridge DNS resolver/);
+  assert.doesNotMatch(result.stdout, /Using Docker Desktop's default-bridge DNS resolver/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const clusterCreate = commands.find(
+    (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
+  );
+  assert.ok(clusterCreate);
+  assert.equal(
+    clusterCreate.args.some((argument) => argument.includes(":/etc/resolv.conf:ro@server:0")),
+    false,
+  );
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+});
+
+test("Kubernetes dev-up on macOS Docker Desktop stops before image import when the bridge resolver refuses DNS", async (t) => {
+  const fixture = await kubernetesFixture(t, "node-dns-refused", macOS);
+  delete fixture.env.OCC_DEVELOPMENT_K3D_DNS_RESOLVER;
+  fixture.env.DEV_UP_DOCKER_OPERATING_SYSTEM = "Docker Desktop";
+  fixture.env.DEV_UP_BRIDGE_RESOLV_CONF = "192.168.65.7";
+  const result = fixture.start();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Docker Desktop's default-bridge resolver 192\.168\.65\.7/);
+  assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER is unset/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d" && entry.args[0] === "image"),
+    false,
+  );
+  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+});
+
 test("Kubernetes dev-up rejects an unsupported control-plane selection", async (t) => {
   const fixture = await kubernetesFixture(t);
   fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
@@ -1131,6 +1215,44 @@ test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /cannot resolve registry-1\.docker\.io/);
   assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
+  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")).clusters, [
+    "occ-dev-unrelated",
+  ]);
+});
+
+test("Kubernetes-only dev-up on macOS Docker Desktop mounts the bridge resolver and rolls back when it refuses DNS", async (t) => {
+  const fixture = await kubernetesFixture(t, "node-dns-refused", macOS);
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "none";
+  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
+  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
+  delete fixture.env.OCC_DEVELOPMENT_K3D_DNS_RESOLVER;
+  fixture.env.DEV_UP_DOCKER_OPERATING_SYSTEM = "Docker Desktop";
+  fixture.env.DEV_UP_BRIDGE_RESOLV_CONF = "192.168.65.7";
+  const result = runDevUp([], fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Docker Desktop's default-bridge DNS resolver 192\.168\.65\.7/);
+  assert.match(result.stderr, /Docker Desktop's default-bridge resolver 192\.168\.65\.7/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const probeAt = commands.findIndex(
+    (entry) =>
+      entry.command === "docker" &&
+      entry.args[0] === "run" &&
+      entry.args.at(-1) === "/etc/resolv.conf",
+  );
+  const createAt = commands.findIndex(
+    (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
+  );
+  assert.ok(probeAt >= 0 && createAt > probeAt);
+  assert.match(commands[probeAt].args.at(-2), /^docker\.io\/rancher\/k3s:/);
+  assert.ok(
+    commands[createAt].args.some((argument) => argument.endsWith(":/etc/resolv.conf:ro@server:0")),
+  );
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d" && entry.args[0] === "image"),
+    false,
+  );
   await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
   assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")).clusters, [
     "occ-dev-unrelated",

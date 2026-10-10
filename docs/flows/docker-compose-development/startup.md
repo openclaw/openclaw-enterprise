@@ -183,12 +183,14 @@ cluster through its recorded engine endpoint; other state and ownership checks
 still apply.
 
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
-without changing host DNS.
-Linux Docker's automatic host resolver selection ignores trailing nameserver
-fields, matching glibc parsing.
+without changing host DNS. Otherwise
+`internal/occdev/network_k3d.go:automaticDevelopmentResolver` selects the Linux
+host's upstream nameserver for Docker, ignoring trailing fields as glibc does, or
+Docker Desktop's macOS default-bridge nameserver via
+`internal/occdev/node_dns_k3d.go:dockerDesktopBridgeResolver`. Failure or a
+45-second timeout keeps k3d's default.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
-refused node DNS. Kubernetes-only startup imports matching OCE images into the
-cluster.
+refused node DNS. Kubernetes-only startup imports matching OCE images into k3d.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
 manifests, waits for the k3s-owned Gateway API CRDs, then installs Envoy,
@@ -231,15 +233,16 @@ beside the URL and public CA path. Stack readiness does not establish browser tr
 Without a Sandbox Driver, Kubernetes startup selects Docker or Podman and
 resolves its host socket from Docker's active context or `podman machine inspect`.
 Private state records the socket, Compose project, and `occ-dev-*` cluster.
-Cleanup validates and reuses those records, regardless of later context changes.
+Cleanup validates and reuses those records despite later context changes.
 
-Startup refuses existing cluster or project resources, validates resolved Compose
+Startup refuses existing cluster or project resources, validates Compose
 publications with `internal/occdev/compose.go:AnalyzeCompose`, and rejects
 external or unscoped networks and volumes with
-`internal/occdev/up.go:validateResourceOwnership`. It claims the state directory
-by exclusive `0700` creation and privately writes the rendered Compose snapshot
-before creating resources. Before saving, `setKubernetesBridgeGateway` preserves an explicit development-network gateway or uses the rendered subnet's first usable address, supplying k3d's required bridge gateway for subnet overrides. Startup and cleanup both use that snapshot, so later `.env` edits
-cannot change it.
+`internal/occdev/up.go:validateResourceOwnership`. It exclusively creates the
+`0700` state directory and privately writes the Compose snapshot before creating
+resources. `setKubernetesBridgeGateway` preserves an explicit development-network
+gateway or derives the first usable subnet address required by k3d, even for an
+overridden subnet. Startup and cleanup use the snapshot, ignoring later `.env` edits.
 
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
 into `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering, uses the
@@ -329,10 +332,10 @@ through `occclient.Client.WithContext`, preserving the original client.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
-`internal/occdev/state.go:exclusiveWrite` removes a newly created output when
-permission setting, writing, or closing fails, including a partial external key
-before startup records a successful copy. Existing targets stay untouched; a
-removal failure is returned with the original file-operation error.
+`internal/occdev/state.go:exclusiveWrite` removes newly created outputs after
+permission, write, or close failures, including partial external keys before
+startup records a successful copy. Existing targets stay untouched; removal
+failures are returned with the original error.
 
 On failure, startup attempts cleanup. Explicit Kubernetes shutdown validates the
 marker, state, and Compose snapshot, then uses the recorded engine endpoint.
@@ -351,7 +354,7 @@ newly written external key if a later OpenShell readiness step fails.
 - `OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`
   selects the Compose-backed real-cluster proof.
 - A successful startup does not prove Agent creation, model credentials, or a
-  model turn. Follow the owning runtime integration procedure for those claims.
+  model turn.
 
 ## Related docs
 
@@ -369,6 +372,7 @@ newly written external key if a later OpenShell readiness step fails.
 
 - 2026-10-08 15:23: Reconciled current Docker preflight behavior with failed exclusive-output cleanup and clarified tool and image ownership. (authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14 - 3cffa93e76aedec4b2f35d14f9824b4531640449)
 
+- 2026-10-07 09:06: Added the macOS Docker Desktop node resolver. (authoring-run/5c63c099-5677-4391-b9eb-6a2d9e4ac947 - a9dd6b07f91454745bf7c40898b5fd75262707a5)
 - 2026-10-06 17:46: Remove newly created exclusive outputs after file-write failures. (authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744 - 6508695f267e1441bf5a797b9710965f9b10990a)
 - 2026-10-05 16:01: Rejected interrupted Docker response streams in the request owner. (authoring-run/91705365-6496-4de8-943f-15c1ba105410 - 9b5a60467022d815d1259ff30d3ed64657657247)
 

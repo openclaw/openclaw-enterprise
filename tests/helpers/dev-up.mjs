@@ -26,28 +26,41 @@ const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 const nodeExecutable = process.execPath;
 const bashExecutable = "/bin/bash";
 
-let cliBuild;
-let cliDirectory;
+const cliBuilds = new Map();
+const cliDirectories = [];
 after(async () => {
-  if (cliDirectory) {
-    await rm(cliDirectory, { recursive: true, force: true });
+  for (const directory of cliDirectories) {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
-function developmentCli() {
-  cliBuild ??= (async () => {
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-cli-"));
-    cliDirectory = directory;
-    const executable = join(directory, "occ");
-    const build = spawnSync("go", ["build", "-o", executable, "./cmd/occ"], {
-      cwd: repository,
-      encoding: "utf8",
-      env: process.env,
-    });
-    assert.equal(build.status, 0, build.stderr || build.error?.message);
-    return executable;
-  })();
-  return cliBuild;
+// hostOS links the CLI as if it ran on that operating system, so a Linux runner
+// can exercise the host-specific node resolver selection.
+function developmentCli(hostOS = "") {
+  if (!cliBuilds.has(hostOS)) {
+    cliBuilds.set(
+      hostOS,
+      (async () => {
+        const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-cli-"));
+        cliDirectories.push(directory);
+        const executable = join(directory, "occ");
+        const ldflags = hostOS
+          ? [
+              "-ldflags",
+              `-X github.com/openclaw/openclaw-enterprise/internal/occdev.developmentHostOS=${hostOS}`,
+            ]
+          : [];
+        const build = spawnSync("go", ["build", ...ldflags, "-o", executable, "./cmd/occ"], {
+          cwd: repository,
+          encoding: "utf8",
+          env: process.env,
+        });
+        assert.equal(build.status, 0, build.stderr || build.error?.message);
+        return executable;
+      })(),
+    );
+  }
+  return cliBuilds.get(hostOS);
 }
 
 async function writeExecutable(path, body) {
@@ -77,7 +90,7 @@ async function createFixture(t, options = {}) {
   const engine = options.engine ?? "docker";
   const engineLog = join(directory, `${engine}.log`);
   const provider = composeConfigurationProvider();
-  const cli = await developmentCli();
+  const cli = await developmentCli(options.developmentHostOS);
 
   if (engine === "podman") {
     for (const command of [
@@ -506,6 +519,16 @@ if (command === engine) {
   // Kubernetes endpoint discovery reads the whole inventory; a local service
   // reports the host socket directly.
   else if (engine === "podman" && args[0] === "info" && args.includes("json")) output(JSON.stringify({ host: { serviceIsRemote: false, remoteSocket: { path: "unix:///fixture/owned-podman.sock", exists: true } } }));
+  else if (args[0] === "info" && args.includes("{{.OperatingSystem}}")) output(process.env.DEV_UP_DOCKER_OPERATING_SYSTEM || "Docker Engine");
+  else if (args[0] === "run" && args.at(-1) === "/etc/resolv.conf" && args.includes("bridge")) {
+    const choice = process.env.DEV_UP_BRIDGE_RESOLV_CONF || "";
+    const bodies = {
+      "192.168.65.7": "nameserver 192.168.65.7\\n",
+      ipv6: "nameserver 2001:db8::53\\n",
+    };
+    if (bodies[choice] == null) fail("unexpected bridge resolv.conf probe");
+    process.stdout.write(bodies[choice]);
+  }
   else if (args[0] === "info") output("/var/lib/docker");
   else if (args[0] === "network" && args[1] === "inspect" && args[2] === "k3d-occ-dev-owned") {
     output(JSON.stringify([{ Name: "k3d-occ-dev-owned", IPAM: { Config: [{ Subnet: "fd00:42::/64" }, { Subnet: "172.30.42.0/24", Gateway: "172.30.42.1" }] } }]));

@@ -208,7 +208,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		}
 	}
 	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold, admissionPath)
-	resolverArgs, err := r.prepareDevelopmentResolver(state)
+	resolverArgs, err := r.prepareDevelopmentResolver(ctx, state, openShellK3sImage)
 	if err != nil {
 		return err
 	}

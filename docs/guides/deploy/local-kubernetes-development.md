@@ -1,8 +1,8 @@
 # Local Kubernetes development
 
-Run OpenClaw Enterprise (OCE) against a disposable, loopback-only k3d cluster.
-Start with the Kubernetes-only profile below, which runs PostgreSQL, the
-OpenClaw Control Plane (OCC), and Agent workloads in the owned cluster.
+Run OpenClaw Enterprise (OCE) in a disposable, loopback-only k3d cluster.
+Start with the Kubernetes-only profile. It runs PostgreSQL, the OpenClaw
+Control Plane (OCC), and Agent workloads there.
 
 ## Start the profile
 
@@ -113,7 +113,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The checkout-local CLI creates one k3d cluster, then:
+The CLI creates one k3d cluster and:
 
 1. installs the pinned Agent Sandbox controller and OpenShell
    `v0.1.3-pre.2` assets, then the pinned cert-manager and Envoy Gateway
@@ -127,10 +127,9 @@ The checkout-local CLI creates one k3d cluster, then:
    ready; and
 6. writes kubeconfig and the administrator service key to private state.
 
-OpenShell's Agent Sandbox controller remains in its upstream
-`agent-sandbox-system` Namespace. OCC runs in the cluster and creates tenant
-Workspaces, Sandbox resources, and Agent Pods in separate OCC-owned `oce-*`
-Namespaces.
+The Agent Sandbox controller stays in `agent-sandbox-system`. OCC creates
+tenant Workspaces, Sandbox resources, and Agent Pods in separate OCC-owned
+`oce-*` Namespaces.
 
 To keep PostgreSQL, the OCC API, and the Kubernetes worker in Compose, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` with the same OpenShell selection. This
@@ -140,8 +139,7 @@ route's service key and public CA only into the Compose controller and
 the Installation. Do not run the separate manual hybrid-routing procedure for
 this OpenShell profile.
 
-The first start requires network access. To use reviewed local assets instead,
-set
+The first start requires network access. To use reviewed local assets, set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
@@ -153,15 +151,15 @@ export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman
 ./scripts/dev-up
 ```
 
-Use `docker` instead for Docker Engine. The Kubernetes-only profile does not
-require Docker Compose or `podman-compose` and rejects Compose arguments. Keep
-the profile exports for startup and cleanup. Without profile selections,
-startup uses the Compose control-plane preview with Docker Compute.
+Use `docker` for Docker Engine. Kubernetes-only mode needs no Docker Compose or
+`podman-compose` and rejects Compose arguments. Keep the exports for startup and
+cleanup. Without selections, startup uses the Compose control-plane preview with
+Docker Compute.
 
-State, the kubeconfig, and credentials, including the initial administrator
-service key, are written to a private
+Startup prints the private
 [state directory](../../reference/settings/development.md#required-development-controller-environment)
-that startup prints. By default it is `openclaw-development` in the temporary
+containing the kubeconfig and credentials, including the initial administrator
+service key. By default it is `openclaw-development` in the temporary
 directory, which on macOS is a per-user `/private/var/folders/<id>/T` path.
 Set the absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` before both startup and
 cleanup to use another location. Its parent must not contain symlinks; on macOS,
@@ -306,10 +304,10 @@ only inside this disposable, loopback-owned cluster. Tenant egress selects only
 OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or
 carry that setting, into a shared cluster or container network.
 
-Because this cluster is disposable and single-profile, the helper binds the chart's tenant worker, configuration, and Secret ClusterRoles
-to the OCE service accounts cluster-wide. This is not a production RBAC pattern:
-production and shared clusters must use the tenant-local RoleBindings in the
-production deployment guide.
+In this disposable, single-profile cluster, the helper binds the chart's tenant
+worker, configuration, and Secret ClusterRoles to OCE service accounts
+cluster-wide. Production and shared clusters must use tenant-local RoleBindings
+as described in the production deployment guide.
 
 To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).
@@ -383,10 +381,12 @@ the cluster. For a persistent Helm-installed k3d environment, complete the
 
 ## Resolve node DNS failures
 
-On Linux Docker, the launcher gives its k3d node the host's first non-loopback
-IPv4 upstream resolver, because k3d's default refuses queries on iptables-nft
-hosts. If the node still cannot resolve image registries, set a DNS server
-reachable from the node network for a fresh startup:
+On Linux Docker, the node uses the host's first non-loopback IPv4 resolver
+because k3d's default can refuse queries on iptables-nft hosts. On macOS Docker
+Desktop, k3d's default can drop queries, so a short-lived container reads Docker's
+default-bridge resolver. Failure or a 45-second timeout keeps k3d's default and
+warns. If registry DNS still fails, set a DNS server reachable from the node
+network for a fresh startup:
 
 ```bash
 OCC_DEVELOPMENT_K3D_DNS_RESOLVER='<reachable-dns-ip>' ./scripts/dev-up
