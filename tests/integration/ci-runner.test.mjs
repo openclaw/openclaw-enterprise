@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
@@ -35,8 +35,10 @@ async function writeJson(path, value) {
 }
 
 function runnerEnv(env = {}) {
+  const baseEnv = { ...process.env };
+  delete baseEnv.NODE_ENV;
   return {
-    ...process.env,
+    ...baseEnv,
     GITHUB_SHA: currentSha(),
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
@@ -527,11 +529,12 @@ test("QA lane forwards selected models and observer input and retains outcomes a
   const lane = JSON.parse(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/qa-matrix.json"), "utf8"),
   );
-  const observer = join(root, "observer.txt");
   const artifacts = join(root, "evidence");
-  await writeFile(observer, "synthetic-observer", { mode: 0o600 });
   await mkdir(artifacts);
   const file = "tests/integration/qa-inputs.test.mjs";
+  const qaSelectionHelper = pathToFileURL(
+    join(repositoryRoot, "tests/helpers/qa-selection.mjs"),
+  ).href;
   // Exercise the shipped lane definition with a small child that consumes its
   // inputs. This proves transport and artifact placement, not a live model turn.
   await writeFile(
@@ -540,14 +543,20 @@ test("QA lane forwards selected models and observer input and retains outcomes a
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
   assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
   assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
   assert.equal(process.env.OCC_TEST_CODEX_CALENDAR_PROMPT, "selected calendar read");
-  assert.equal(await readFile(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, "utf8"), "synthetic-observer");
+  assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, undefined);
+  assert.equal(process.env.QA_REPOSITORY_FIXTURE, "isolated");
+  assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY, "selected-app-input");
+  const selection = selectQaMatrix(process.env);
+  assert.ok(selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY"));
+  assert.ok(!selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
   assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
   assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
-  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-full");
   await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
 });
 `,
@@ -576,11 +585,12 @@ test("QA inputs", async () => {
       OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
       OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
       OCC_TEST_CODEX_CALENDAR_PROMPT: "selected calendar read",
-      OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: observer,
+      OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
+      QA_REPOSITORY_FIXTURE: "isolated",
       OCC_TEST_QA_ARTIFACTS: artifacts,
       OCC_TEST_QA_INSTALLATION: "compose",
       OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-full",
     },
   );
   assert.equal(result.status, 0, result.stderr);

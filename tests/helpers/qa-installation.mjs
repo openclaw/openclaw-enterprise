@@ -153,25 +153,30 @@ export async function createQaInstallation(
       );
     },
     async run(command, args, options = {}) {
+      const { privateFailureOutput = false, ...executeOptions } = options;
       try {
         const result = await execute(command, args, {
           cwd: repository,
           env,
           timeout: 300_000,
           maxBuffer: 32 * 1024 * 1024,
-          ...options,
+          ...executeOptions,
         });
         return result.stdout;
       } catch (error) {
         await writeFile(
           join(directory, `command-failure-${Date.now()}.log`),
-          `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
+          privateFailureOutput
+            ? "protected subprocess output withheld\n"
+            : `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
           { mode: 0o600 },
         );
         if (f.credentials?.password) {
           registerQaSecret(f.credentials.password);
         }
-        const detail = qaCommandFailureDetail(error.stderr, options.env ?? env);
+        const detail = privateFailureOutput
+          ? ""
+          : qaCommandFailureDetail(error.stderr, executeOptions.env ?? env);
         // execFile errors embed argv and output, potentially containing tokens.
         // Keep arguments/stdout private; include only redacted stderr for diagnosis.
         error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}${detail ? `; stderr: ${detail}` : ""}`;
