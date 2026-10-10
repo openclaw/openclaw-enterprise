@@ -7178,8 +7178,8 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("runtime auth admits SSH revisions without source permissions but retains deployment authorization and exact grammar", async () => {
-  const computeDriver = new SshComputeDriver({
+function createSshComputeDriver() {
+  return new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
     hosts: { runtime: { address: "127.0.0.1", user: "root" } },
     runtime: {
@@ -7190,6 +7190,10 @@ test("runtime auth admits SSH revisions without source permissions but retains d
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
+}
+
+test("runtime auth admits SSH revisions without source permissions but retains deployment authorization and exact grammar", async () => {
+  const computeDriver = createSshComputeDriver();
   const controller = await configuredController({ computeDriver, recordOperations: true });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "runtime");
@@ -7267,6 +7271,71 @@ test("runtime auth admits SSH revisions without source permissions but retains d
     effect: "deny",
   });
   assert.equal((await controller.request("POST", `${path}/deploy`)).status, 403);
+});
+
+test("Slack environment credentials need OCC bindings unless the Compute Driver cannot deliver Secrets", async () => {
+  let slackCalls = 0;
+  const channel = new SlackChannelDriver(async () => {
+    slackCalls++;
+    throw new Error("OCC cannot read operator-provisioned credentials to send to Slack");
+  });
+  const slackValues = (botTokenId) => ({
+    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: { source: "env", provider: "default", id: botTokenId },
+      },
+    },
+  });
+  // Deploy an Agent whose Slack tokens are environment SecretRefs with no OCC Secret binding.
+  const deployUnbound = async (computeDriver, botTokenId = "SLACK_BOT_TOKEN") => {
+    const controller = await configuredController({ computeDriver });
+    await bootstrap(controller);
+    const namespace = await createNamespace(controller, "slack-environment");
+    await controller.fixture.platformState.transact((unit) =>
+      unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+    );
+    controller.fixture.controller.registerDriver(channel);
+    controller.fixture.controller.selectDriver("channel", channel.id);
+    const configuration = await createConfiguration(
+      controller,
+      namespace.id,
+      slackValues(botTokenId),
+    );
+    const agent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: "slack-agent",
+        configurationId: configuration.id,
+        harnessAuth: { method: "runtime" },
+      },
+    });
+    assert.equal(agent.status, 201, JSON.stringify(agent.body));
+    return controller.request("POST", `/namespaces/${namespace.id}/agents/${agent.data.id}/deploy`);
+  };
+
+  // SSH Compute reads credentials the operator put in the host environment file. OCC never
+  // holds them, so deployment proceeds without a binding or a Slack call.
+  const ssh = await deployUnbound(createSshComputeDriver());
+  assert.equal(ssh.status, 202, JSON.stringify(ssh.body));
+  assert.equal(slackCalls, 0);
+
+  // Any other Compute Driver still needs a Secret binding: the exemption is not a blanket bypass.
+  const other = await deployUnbound(undefined);
+  assert.equal(other.status, 400, JSON.stringify(other.body));
+  assert.equal(other.body.error.code, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
+  assert.equal(other.body.error.details[0].path, "/channels/slack/appToken");
+  assert.equal(slackCalls, 0);
+
+  // The exemption does not reach reserved names. Bound Secrets cannot target them either, and the
+  // gateway password would otherwise be sent to Slack as a bot token.
+  const reserved = await deployUnbound(createSshComputeDriver(), "OPENCLAW_GATEWAY_PASSWORD");
+  assert.equal(reserved.status, 400, JSON.stringify(reserved.body));
+  assert.equal(reserved.body.error.code, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
+  assert.equal(reserved.body.error.details[0].path, "/channels/slack/botToken");
+  assert.equal(slackCalls, 0);
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {

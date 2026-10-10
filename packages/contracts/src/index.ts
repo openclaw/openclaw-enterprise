@@ -1846,6 +1846,11 @@ export interface ComputeDriver extends Driver {
   readonly capability: "compute";
   /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
   readonly requiresAgentRuntimeCredentials?: true;
+  /**
+   * The Driver cannot deliver OCC Secrets. Environment SecretRefs without an OCC binding name
+   * credentials the operator provisions on the target, which OCC does not read or validate.
+   */
+  readonly operatorProvisionedSecrets?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
@@ -1978,7 +1983,7 @@ export interface ConfigurationDriver extends Driver {
   validate(configuration: Configuration): Promise<void>;
 }
 
-export { normalizeSecretBindings } from "./secret-bindings.ts";
+export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
 export * from "./api/resources.ts";

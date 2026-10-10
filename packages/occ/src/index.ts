@@ -117,6 +117,7 @@ import {
   normalizePresetTemplate,
   presetTemplateDefaults,
   PresetValidationError,
+  isAllowedSecretBindingDestination,
   normalizeSecretBindings,
   normalizeHarnessAuthBinding,
   isSecretHarnessAuth,
@@ -6165,9 +6166,18 @@ export class OpenClawController {
       );
     }
     const bindings = this.bindings(configuration.secretBindings);
+    const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
     await driver.validateCredentials(configuration.values, async (binding, path, validate) => {
       const source = bindings[binding]?.source;
       if (source === undefined) {
+        // The Compute Driver cannot deliver OCC Secrets, so the operator owns this value.
+        // Reserved names stay refused, as they are for bound Secrets.
+        if (
+          compute?.operatorProvisionedSecrets === true &&
+          isAllowedSecretBindingDestination(binding)
+        ) {
+          return;
+        }
         throw new ChannelCredentialError("binding_required", path);
       }
       if (source.namespaceId !== namespaceId) {

@@ -349,6 +349,7 @@ export class SshComputeDriver implements ComputeDriver {
   }
 
   readonly supportsWorkspaceSetup = true;
+  readonly operatorProvisionedSecrets = true;
   readonly id: string;
   readonly capability = "compute" as const;
   readonly implementation: string;
