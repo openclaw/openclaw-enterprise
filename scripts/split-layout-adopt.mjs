@@ -3,7 +3,7 @@
 // `oce-gateways-<hash>` storage namespace becomes its tenant's namespace. Canonical Secrets,
 // Configurations, service-account credentials and dedicated Gateway state stay where they are;
 // the old Harness namespace's claims move by PersistentVolume rebind and its Agent Secrets are
-// copied byte for byte. OCC's database is not written. See docs/guides/deploy/breaking-changes.md.
+// copied byte for byte. OCC's database is not written. See docs/guides/deploy/breaking-changes-archive.md.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {

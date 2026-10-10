@@ -237,8 +237,8 @@ func TestCheckLegacyNATTable(t *testing.T) {
 					t.Fatalf("warning %q does not contain %q", warnings.String(), want)
 				}
 			}
-			if hint := r.legacyNATFailureHint(); (hint != "") != test.wantHint {
-				t.Fatalf("failure hint %q, want hint: %v", hint, test.wantHint)
+			if r.legacyNATUnconfirmed != test.wantHint {
+				t.Fatalf("preflight unconfirmed: %v, want: %v", r.legacyNATUnconfirmed, test.wantHint)
 			}
 		})
 	}
@@ -302,7 +302,7 @@ func TestK3dCreateFailureNamesAnUnconfirmedLegacyNATTable(t *testing.T) {
 	r.legacyNATUnconfirmed = true
 	err = r.createK3dCluster(context.Background(), "cluster", "create", "occ-dev-test")
 	var exitErr *exec.ExitError
-	if err == nil || !strings.HasPrefix(err.Error(), "k3d failed: exit status 1. ") || !strings.Contains(err.Error(), "sudo modprobe --all iptable_nat") || !errors.As(err, &exitErr) {
+	if err == nil || !strings.HasPrefix(err.Error(), "k3d failed: exit status 1\n") || !strings.Contains(err.Error(), "could not confirm that the host loaded iptable_nat") || !strings.Contains(err.Error(), "sudo modprobe --all iptable_nat") || !errors.As(err, &exitErr) {
 		t.Fatalf("expected the nat hint on the k3d failure, got %v", err)
 	}
 }

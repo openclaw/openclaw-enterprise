@@ -119,7 +119,8 @@ export function renderWorkspaceFiles(context, agent, path) {
           return;
         }
         editor.value = file.content;
-        baseline = file.content;
+        // Compare edits in the textarea's LF representation; reading never rewrites the file.
+        baseline = editor.value;
         editor.setCustomValidity("");
         loaded = true;
         outcomeUnknown = false;

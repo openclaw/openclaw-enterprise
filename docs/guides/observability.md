@@ -165,6 +165,9 @@ yq -i '.logging.collector.enabled = true |
   "$OCC_INPUT_DIRECTORY/values.yaml"
 ```
 
+A rendered [installation profile](deploy/installation-profiles.md) sets these
+from `controlPlane.loggingCollector`; rerender instead of editing its output.
+
 Keep a digest-pinned approved Collector image. For custom Secret names, set
 `logging.collector.configSecretName` and `logging.collector.envSecretName`.
 Do not reuse application Secrets. See [Helm settings](../reference/settings/production.md#production-operational-logging-collection)

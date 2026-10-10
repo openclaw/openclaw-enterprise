@@ -30,6 +30,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
 import { createModelProbeCertificates } from "../../tests/helpers/runtime-model-probe-certificates.mjs";
@@ -56,6 +57,11 @@ const nodeModelAddress = "11.111.0.3";
 const modelContainer = "oce-first-agent-smoke-model";
 const noncePattern = "OCE_SMOKE_[A-Za-z0-9-]+|FIRST_AGENT_[A-Za-z0-9-]+";
 const minute = 60_000;
+// Both stop requests share one serial worker. Per Agent, allow the selected
+// gateway grace, two minutes for a dedicated workload to terminate and one
+// minute for API observation/finalization. This is a finite smoke allowance,
+// not a change to runtime grace, worker retries or the 40-minute CI job bound.
+export const STOP_PHASE_TIMEOUT_MS = 2 * (GATEWAY_STOP_TIMEOUT_MS + 3 * minute);
 const timings = [];
 
 function log(message) {
@@ -123,17 +129,104 @@ async function step(name, operation) {
   }
 }
 
-async function waitFor(description, operation, timeout) {
-  const deadline = Date.now() + timeout;
+function validTimeout(timeout) {
+  assert.ok(
+    Number.isSafeInteger(timeout) && timeout > 0,
+    "Timeout must be a positive finite integer.",
+  );
+}
+
+export async function waitFor(
+  description,
+  operation,
+  timeout,
+  { now = Date.now, sleep = delay } = {},
+) {
+  validTimeout(timeout);
+  const deadline = now() + timeout;
   let last;
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     last = await operation();
+    if (now() > deadline) {
+      break;
+    }
     if (last?.done) {
       return last.value;
     }
-    await delay(2_000);
+    const remaining = deadline - now();
+    if (remaining > 0) {
+      await sleep(Math.min(2_000, remaining));
+    }
   }
   throw new Error(`Timed out waiting for ${description}: ${JSON.stringify(last?.state ?? null)}`);
+}
+
+function agentStopState(agent) {
+  const revision = agent?.activeRevisionId;
+  return {
+    desiredRuntimeState: ["running", "stopped"].includes(agent?.desiredRuntimeState)
+      ? agent.desiredRuntimeState
+      : "unknown",
+    activeRevisionId:
+      revision == null
+        ? null
+        : typeof revision === "string" &&
+            /^rev_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(revision)
+          ? revision
+          : "invalid",
+    status: ["active", "deleting"].includes(agent?.status) ? agent.status : "unknown",
+  };
+}
+
+export async function agentStopDiagnostic(readAgent) {
+  try {
+    return { phase: "agent-state", ...agentStopState(await readAgent()) };
+  } catch {
+    // A failed diagnostic read must not replace the smoke's original failure.
+    return { phase: "agent-state", unavailable: true };
+  }
+}
+
+export async function observeAgentStop(
+  label,
+  readAgent,
+  readPods,
+  { timeout = STOP_PHASE_TIMEOUT_MS, now = Date.now, sleep = delay } = {},
+) {
+  validTimeout(timeout);
+  const started = now();
+  const deadline = started + timeout;
+  const clock = { now, sleep };
+  await waitFor(
+    `${label} to stop`,
+    async () => {
+      const current = await readAgent();
+      assert.ok(
+        current.desiredRuntimeState === "stopped",
+        `${label}: desired state changed while stopping`,
+      );
+      return {
+        done: !current.activeRevisionId,
+        state: { phase: "active-revision", elapsedMs: now() - started, ...agentStopState(current) },
+      };
+    },
+    timeout,
+    clock,
+  );
+  const remaining = deadline - now();
+  assert.ok(remaining > 0, `${label}: stop observation deadline expired before Pods were checked`);
+  await waitFor(
+    `${label} Pods to terminate after a reported stop`,
+    async () => {
+      const pods = await readPods();
+      return {
+        done: pods.length === 0,
+        state: { phase: "pods", elapsedMs: now() - started, remainingPods: pods.length },
+      };
+    },
+    Math.min(2 * minute, remaining),
+    clock,
+  );
 }
 
 // `run` reads the selections from its environment (GitHub Actions) or from the
@@ -154,7 +247,7 @@ async function exportEnvironment(values) {
 // images
 
 function cacheArguments(role) {
-  // Restore only: main's cache is written by the warm workflow and main pushes.
+  // Restore only: main's cache is written by the warm workflow alone.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
     !process.env.ACTIONS_RUNTIME_TOKEN ||
@@ -215,7 +308,7 @@ async function buildImages() {
   const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
   const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
-  // Both builds read the hosted caches the Images and Packaging lane writes.
+  // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
       run(
@@ -760,24 +853,12 @@ async function readLogs(stack, agent, source) {
 async function stopAgent(stack, agent) {
   const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
   assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
-  // The active revision clears only after Compute reports shutdown; at that
-  // point no Agent workload may still be serving.
-  await waitFor(
-    `${agent.label} to stop`,
-    async () => {
-      const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
-      assert.equal(current.desiredRuntimeState, "stopped");
-      return { done: !current.activeRevisionId, state: current.activeRevisionId };
-    },
-    5 * minute,
-  );
-  await waitFor(
-    `${agent.label} Pods to terminate after a reported stop`,
-    async () => {
-      const pods = await agentPods(stack, agent.id, { includeTerminating: true });
-      return { done: pods.length === 0, state: pods.map((pod) => pod.metadata.name) };
-    },
-    2 * minute,
+  // The active revision clears only after Compute reports shutdown; still
+  // verify that no Agent workload remains after the controller reports it.
+  await observeAgentStop(
+    agent.label,
+    () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+    () => agentPods(stack, agent.id, { includeTerminating: true }),
   );
 }
 
@@ -881,6 +962,10 @@ async function diagnostics(stack) {
     kubectl(stack, ["get", "events", "-A", "--sort-by=.lastTimestamp"]),
   );
   for (const agent of stack.agents ?? []) {
+    const stopState = await agentStopDiagnostic(() =>
+      stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+    );
+    process.stdout.write(`----- ${agent.label} Agent stop state\n${JSON.stringify(stopState)}\n`);
     await attempt(`${agent.label} deployment status`, () =>
       cli(stack, ["agent", "deployment-status", agent.id, "-o", "json"]),
     );
@@ -1001,18 +1086,20 @@ async function summarize() {
   }
 }
 
-const command = process.argv[2];
-try {
-  if (command === "images") {
-    await buildImages();
-  } else if (command === "run") {
-    await smoke();
-  } else {
-    throw new Error("Usage: node scripts/ci/first-agent-smoke.mjs images|run");
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const command = process.argv[2];
+  try {
+    if (command === "images") {
+      await buildImages();
+    } else if (command === "run") {
+      await smoke();
+    } else {
+      throw new Error("Usage: node scripts/ci/first-agent-smoke.mjs images|run");
+    }
+  } catch (error) {
+    process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
+    process.exitCode = 1;
+  } finally {
+    await summarize();
   }
-} catch (error) {
-  process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
-  process.exitCode = 1;
-} finally {
-  await summarize();
 }

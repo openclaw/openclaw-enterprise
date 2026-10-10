@@ -22,7 +22,7 @@
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [
-        "runtime image shares Codex 0.163.0-alpha.1 between the plugin and Dedicated command",
+        "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
         "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
         "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
@@ -30,8 +30,11 @@
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
         "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed",
         "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
+        "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image validates the configuration dedicated native OpenClaw renders"
+        "runtime image validates the configuration dedicated native OpenClaw renders",
+        "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
+        "runtime image Kubernetes admission refuses healthy native listeners that cannot serve Pod-IP traffic"
       ]
     },
     {

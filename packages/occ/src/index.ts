@@ -21,6 +21,7 @@ import type {
   AgentDeploymentDiagnostics,
   AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
+  AgentRuntimeHarnessStatus,
   ComputeAgentRevisionBinding,
   AgentRevision,
   AgentRuntimeCredentialsInput,
@@ -85,9 +86,11 @@ import type {
   RevisionHarnessDescriptor,
   ResourceKind,
   ResourceRef,
+  RuntimeDiagnosticCheck,
   Role,
   SandboxDriver,
   SandboxFacet,
+  SandboxHarnessLostCode,
   Secret,
   SecretBindings,
   SecretReference,
@@ -685,7 +688,10 @@ export interface AgentCredentialSourceInput {
 export interface UpdateCredentialSourceInput {
   readonly namespaceId: string;
   readonly credentialSourceId: string;
-  /** Replacement references for the same fields; omit to re-send the current Secret values. */
+  /**
+   * Replacement references for the same fields; omit to re-send the current Secret values. A
+   * field the catalog marks `issuerRotated` must name a different Secret than the recorded one.
+   */
   readonly secrets?: Readonly<Record<string, SecretReference>>;
 }
 
@@ -794,6 +800,37 @@ const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
 const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
+// Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
+const HARNESS_OBSERVATION_TIMEOUT_MS = 10_000;
+const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>([
+  "SANDBOX_MISSING",
+  "SANDBOX_DELETING",
+  "SANDBOX_STOPPED",
+  "SANDBOX_FAILED",
+  "HARNESS_EXITED",
+]);
+/** The Harness Sandbox record as the leading `agent` `sandbox` diagnostic check. */
+function harnessDiagnosticCheck(
+  observed: AgentRuntimeHarnessStatus,
+  checkedAt: string,
+): RuntimeDiagnosticCheck {
+  // A Harness process that exited has failed even while its provider restarts it.
+  const state =
+    observed.state === "running"
+      ? "succeeded"
+      : observed.state === "lost" || observed.code === "HARNESS_RESTARTING"
+        ? "failed"
+        : "unknown";
+  const code = observed.code ?? (observed.state === "starting" ? "STARTING" : undefined);
+  return Object.freeze({
+    component: "agent",
+    check: "sandbox",
+    state,
+    checkedAt,
+    ...(code === undefined ? {} : { code }),
+  });
+}
+
 /**
  * A Credential Gateway must finish any effect of an aborted registration within
  * CREDENTIAL_GATEWAY_TIMEOUT_MS after the abort. Until this long after `createdAt`, an absent
@@ -908,6 +945,34 @@ function assertRefreshMinted(status: CredentialRefreshStatus): void {
   throw new DependencyUnavailableError(
     `The Credential Refresh Driver did not mint a token${code}.`,
   );
+}
+
+function assertCredentialGatewayHoldsSource(status: CredentialSourceStatus): void {
+  if (status.state === "failed" || status.state === "absent") {
+    throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
+  }
+}
+
+/**
+ * Refuses an update that would re-send an issuer-rotated value from the Secret it came from:
+ * the gateway may hold a newer one, and the issuer can reject the old one or revoke the grant.
+ */
+function refuseIssuerRotatedResend(
+  type: Readonly<CredentialSourceType>,
+  recorded: Readonly<Record<string, SecretReference>>,
+  next: Readonly<Record<string, SecretReference>>,
+): void {
+  for (const { name, issuerRotated } of type.secrets) {
+    if (
+      issuerRotated === true &&
+      recorded[name] !== undefined &&
+      next[name]?.id === recorded[name].id
+    ) {
+      throw new ResourceStateConflictError(
+        `The gateway may already hold a newer ${name} than the source's Secret, so the update must reference a new Secret, even if you replaced this Secret's value. Complete a new sign-in, store its ${name} in a new Secret, and update the source to reference that Secret.`,
+      );
+    }
+  }
 }
 
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
@@ -2270,6 +2335,7 @@ export class OpenClawController {
         namespaceId: namespace.id,
       });
       this.validatePluginPolicies(plugins, pluginApprovers);
+      this.validatePluginConfiguration(plugins, configurationInput.values);
       await this.authorizeProvisioningSecretSources(
         state,
         principalId,
@@ -2664,14 +2730,42 @@ export class OpenClawController {
     ) {
       throw new DependencyUnavailableError("The deployment's Compute Driver is unavailable.");
     }
-    let diagnostics: AgentDeploymentDiagnostics;
+    // Runs beside Compute's collection; it never throws and stops when Compute fails.
+    const observation = new AbortController();
+    const harness = this.observedHarness(
+      driver,
+      binding,
+      AbortSignal.any([observation.signal, AbortSignal.timeout(HARNESS_OBSERVATION_TIMEOUT_MS)]),
+    );
+    let collected: AgentDeploymentDiagnostics;
     try {
-      diagnostics = await driver.diagnoseAgentDeployment!(binding);
+      collected = await driver.diagnoseAgentDeployment!(binding);
     } catch {
+      observation.abort();
       // Native Driver failures can contain private runtime or credential details.
       throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
     }
-    return deploymentDiagnostics(diagnostics, revision.id);
+    let diagnostics: Readonly<AgentDeploymentDiagnostics>;
+    try {
+      diagnostics = deploymentDiagnostics(collected, revision.id);
+    } catch (error) {
+      observation.abort();
+      throw error;
+    }
+    const observed = await harness;
+    if (observed === undefined) {
+      return diagnostics;
+    }
+    // A lost Sandbox explains every other agent check, so it leads and the cap never drops it.
+    return Object.freeze({
+      ...diagnostics,
+      checks: Object.freeze(
+        [harnessDiagnosticCheck(observed, this.clock().toISOString()), ...diagnostics.checks].slice(
+          0,
+          32,
+        ),
+      ),
+    });
   }
 
   /**
@@ -2695,13 +2789,14 @@ export class OpenClawController {
       "operate",
     );
     return admitRead(() =>
-      this.runtimeLogOperation(signal, async (deadline) =>
-        this.withSandboxLogSource(
-          await this.describedAgentRuntime(driver, binding, deadline),
-          driver,
-          binding.revision,
-        ),
-      ),
+      this.runtimeLogOperation(signal, async (deadline) => {
+        const [described, harness] = await Promise.all([
+          this.describedAgentRuntime(driver, binding, deadline),
+          this.observedHarness(driver, binding, deadline),
+        ]);
+        const description = this.withSandboxLogSource(described, driver, binding.revision);
+        return harness === undefined ? description : Object.freeze({ ...description, harness });
+      }),
     );
   }
 
@@ -2892,6 +2987,15 @@ export class OpenClawController {
     compute: ComputeDriver,
     revision: Readonly<AgentRevision>,
   ): SandboxDriver | undefined {
+    const sandbox = this.revisionSandboxDriver(compute, revision);
+    return typeof sandbox?.readSandboxLogs === "function" ? sandbox : undefined;
+  }
+
+  /** The selected Sandbox Driver that provisioned this revision, in a placement Compute names. */
+  private revisionSandboxDriver(
+    compute: ComputeDriver,
+    revision: Readonly<AgentRevision>,
+  ): SandboxDriver | undefined {
     if (
       revision.sandboxDriverId === undefined ||
       typeof compute.resolveSandboxNamespace !== "function" ||
@@ -2905,9 +3009,71 @@ export class OpenClawController {
     } catch {
       return undefined;
     }
-    return sandbox.id === revision.sandboxDriverId && typeof sandbox.readSandboxLogs === "function"
-      ? sandbox
-      : undefined;
+    return sandbox.id === revision.sandboxDriverId ? sandbox : undefined;
+  }
+
+  /**
+   * The dedicated Harness Sandbox as its Sandbox Driver records it, or undefined when the
+   * Driver keeps no such record. Never throws: an unreadable record is `unknown`, and Driver
+   * error text is not returned.
+   */
+  private async observedHarness(
+    compute: ComputeDriver,
+    binding: ComputeAgentRevisionBinding,
+    signal: AbortSignal,
+  ): Promise<AgentRuntimeHarnessStatus | undefined> {
+    const sandbox = this.revisionSandboxDriver(compute, binding.revision);
+    if (
+      binding.revision.harness.mode !== "dedicated" ||
+      typeof sandbox?.observeHarness !== "function"
+    ) {
+      return undefined;
+    }
+    const unavailable = Object.freeze({ state: "unknown" as const, code: "UNAVAILABLE" as const });
+    let observed: unknown;
+    try {
+      const namespace = await compute.resolveSandboxNamespace!.call(compute, binding.namespace);
+      observed = await sandbox.observeHarness(
+        Object.freeze({ namespace, revision: binding.revision, signal }),
+      );
+    } catch {
+      return unavailable;
+    }
+    const state = asRecord(observed)?.state;
+    const code = asRecord(observed)?.code;
+    if (state === "starting" && code === "HARNESS_RESTARTING") {
+      const exitCode = asRecord(observed)?.exitCode;
+      const restarts = asRecord(observed)?.restarts;
+      // Only bounded integers are reported; a malformed restart reads as a plain start.
+      if (
+        typeof exitCode === "number" &&
+        Number.isSafeInteger(exitCode) &&
+        exitCode >= -2_147_483_648 &&
+        exitCode <= 2_147_483_647 &&
+        typeof restarts === "number" &&
+        Number.isSafeInteger(restarts) &&
+        restarts >= 1 &&
+        restarts <= 4_294_967_295
+      ) {
+        return Object.freeze({ state, code, exitCode, restarts });
+      }
+    }
+    if (state === "running" || state === "starting" || state === "unknown") {
+      return Object.freeze({ state });
+    }
+    if (state === "lost" && typeof code === "string" && HARNESS_LOST_CODES.has(code)) {
+      // A stopped Agent, a retired revision, or a candidate before its Sandbox exists has
+      // no Sandbox by design (or one being removed), so only the running Agent's active
+      // revision reports its absence as lost. A stopped, failed or exited Sandbox record
+      // is OpenShell's own terminal state and is reported for any revision.
+      const expected =
+        binding.agent.desiredRuntimeState === "running" &&
+        binding.agent.activeRevisionId === binding.revision.id;
+      return expected || (code !== "SANDBOX_MISSING" && code !== "SANDBOX_DELETING")
+        ? Object.freeze({ state, code: code as SandboxHarnessLostCode })
+        : Object.freeze({ state: "unknown" as const });
+    }
+    return unavailable;
   }
 
   /** Appends the `sandbox` source when the revision's Sandbox Driver exposes its log. */
@@ -4121,9 +4287,15 @@ export class OpenClawController {
     if (Object.values(references).some((reference) => reference.namespaceId !== namespace.id)) {
       throw new SecretBindingValidationError("Credential source Secrets cannot cross Namespaces.");
     }
-    const values: Record<string, string> = {};
-    for (const [field, reference] of Object.entries(references)) {
+    for (const reference of Object.values(references)) {
       await this.authorize(principalId, "operate", reference);
+    }
+    // Locked in Secret ID order, so two updates whose sources share Secrets cannot deadlock.
+    const ordered = Object.entries(references).sort(([, left], [, right]) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+    );
+    const values: Record<string, string> = {};
+    for (const [field, reference] of ordered) {
       const secret = await state.secrets.lockSecret(namespace.id, reference.id);
       if (secret === undefined) {
         throw new ScopeViolationError("The credential source Secret is unavailable.");
@@ -4141,13 +4313,17 @@ export class OpenClawController {
   }
 
   /**
-   * Pushes current, or replacement, Secret values to the gateway copy. The gateway call runs
-   * under the source lock, like a Secret update; a failed commit leaves the gateway newer, and
-   * repeating the same request converges. Running Harness processes keep the previous value.
+   * Pushes current, or replacement, Secret values to the gateway copy. The gateway calls run
+   * under the source lock, which orders them against rotation, deletion, and Agent admission of
+   * this source; they do not hold the Namespace lock, because a refresh type's calls wait on the
+   * token issuer. A failed commit leaves the gateway newer, and repeating the same request
+   * converges. Running Harness processes keep the previous value. `failureAudit` builds the event
+   * committed on its own when the request fails after a gateway write began.
    */
   async updateCredentialSource(
     principalId: string,
     input: UpdateCredentialSourceInput,
+    failureAudit?: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
@@ -4156,12 +4332,15 @@ export class OpenClawController {
         id: input.credentialSourceId,
         namespaceId: input.namespaceId,
       });
-      const namespace = await this.lockNamespace(state, input.namespaceId);
+      const namespace = await this.exactNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace or source state.
       this.assertCredentialGatewaySelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
+      // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
+      // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
+      // this source, PostgreSQL ends the cycle by failing one request.
       const source = await state.credentialSources.lockCredentialSource(
         namespace.id,
         input.credentialSourceId,
@@ -4178,6 +4357,9 @@ export class OpenClawController {
       const type = await this.credentialSourceType(gateway, source.type);
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      if (type.rotation === "refresh") {
+        refuseIssuerRotatedResend(type, source.secrets, secretRefs);
+      }
       const values = await this.readCredentialSourceSecrets(
         state,
         principalId,
@@ -4197,21 +4379,22 @@ export class OpenClawController {
         // refresh configuration, and the next mint proves it before OCC commits the references.
         const refresh = this.credentialRefreshDriver();
         status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
-        if (status.state === "ready") {
-          await this.credentialGatewayOperation(() =>
-            refresh.configureRefresh(context(), {
-              config: source.config,
-              secrets: values,
-              requestId: crypto.randomUUID(),
-            }),
-          );
-          const minted = await this.credentialGatewayOperation(() =>
-            refresh.rotate(context(), crypto.randomUUID()),
-          );
-          assertRefreshMinted(minted);
-          status = { ...status, refresh: minted };
-        }
+        assertCredentialGatewayHoldsSource(status);
+        this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_UPDATE_FAILED");
+        await this.credentialGatewayOperation(() =>
+          refresh.configureRefresh(context(), {
+            config: source.config,
+            secrets: values,
+            requestId: crypto.randomUUID(),
+          }),
+        );
+        const minted = await this.credentialGatewayOperation(() =>
+          refresh.rotate(context(), crypto.randomUUID()),
+        );
+        assertRefreshMinted(minted);
+        status = { ...status, refresh: minted };
       } else {
+        this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_GATEWAY_UPDATE_FAILED");
         status = await this.credentialGatewayOperation(() =>
           gateway.updateSource(context(), {
             type: source.type,
@@ -4219,9 +4402,7 @@ export class OpenClawController {
             secrets: values,
           }),
         );
-      }
-      if (status.state === "failed" || status.state === "absent") {
-        throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
+        assertCredentialGatewayHoldsSource(status);
       }
       const updated =
         input.secrets === undefined
@@ -4241,11 +4422,13 @@ export class OpenClawController {
   /**
    * Forces one refresh of a refresh-type source, for incidents such as a suspected token leak.
    * It does not revoke the previous token at the issuer, and running Agents keep their stable
-   * placeholder, so no redeploy follows.
+   * placeholder, so no redeploy follows. Like an update, it holds only the source lock while the
+   * issuer answers. `failureAudit` builds the event committed on its own when the mint fails.
    */
   async rotateCredentialSource(
     principalId: string,
     input: RotateCredentialSourceInput,
+    failureAudit?: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
@@ -4254,7 +4437,7 @@ export class OpenClawController {
         id: input.credentialSourceId,
         namespaceId: input.namespaceId,
       });
-      const namespace = await this.lockNamespace(state, input.namespaceId);
+      const namespace = await this.exactNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace or source state.
       this.assertCredentialGatewaySelected();
       if (namespace.status !== "ready") {
@@ -4286,12 +4469,36 @@ export class OpenClawController {
         source,
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       });
+      this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_ROTATION_FAILED");
       const minted = await this.credentialGatewayOperation(() =>
         refresh.rotate(context(), crypto.randomUUID()),
       );
       assertRefreshMinted(minted);
       const status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
       return this.credentialSourceMetadata(source, { ...status, refresh: minted });
+    });
+  }
+
+  /**
+   * A gateway write cannot roll back with OCC's transaction, so a request that fails after one
+   * began still records a failure event, in its own transaction once the request's has ended.
+   * A commit whose outcome is unknown runs no rollback, so it records neither event.
+   */
+  private auditUncommittedCredentialEffect(
+    failureAudit: ((reasonCode: string) => AuditEvent) | undefined,
+    reasonCode: string,
+  ): void {
+    if (failureAudit === undefined) {
+      return;
+    }
+    this.registerRollback(async () => {
+      try {
+        await this.transact(async (state) => {
+          await state.audit.append(failureAudit(reasonCode));
+        });
+      } catch {
+        // The request already failed; a lost failure event must not replace its error.
+      }
     });
   }
 
@@ -5916,6 +6123,7 @@ export class OpenClawController {
         namespace.id,
         this.bindings(configuration.secretBindings),
       );
+      await this.validateSavedPluginConfiguration(plugins, configuration);
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
 
       const agent = await state.agents.createAgent({
@@ -6046,6 +6254,7 @@ export class OpenClawController {
         pluginApprovers === null ? undefined : (pluginApprovers ?? agent.pluginApprovers),
         plugins === undefined ? "stored" : "request",
       );
+      await this.validateSavedPluginConfiguration(plugins ?? agent.plugins, configuration);
       const updated = await state.agents.updateConfiguration(
         namespace.id,
         agent.id,
@@ -6385,6 +6594,9 @@ export class OpenClawController {
                 plugins: lockedAgent.plugins,
               } satisfies PluginRevisionState);
             })();
+      // Agent saves check the plugins against the Configuration they name, but a later
+      // Configuration save does not know which Agents use it: check the admitted pair again.
+      this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
       const repositoryCredentials = this.admitRepositoryCredentials(
@@ -9680,6 +9892,56 @@ export class OpenClawController {
         throw error;
       }
     }
+  }
+
+  // The selected Plugin Driver checks its selections against the Agent's Configuration. A
+  // refusal that names Configuration content the caller owns keeps its message (a 400);
+  // any other refusal gets fixed text.
+  private validatePluginConfiguration(
+    plugins: PluginDesiredState | undefined,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    if (plugins === undefined || Object.keys(plugins).length === 0) {
+      return;
+    }
+    const driver = this.pluginDriver();
+    try {
+      driver.validateAgentConfiguration?.(plugins, configuration);
+    } catch (error) {
+      if (error instanceof ConfigurationHarnessError) {
+        throw error;
+      }
+      throw new ResourceStateConflictError(
+        "The selected Plugin Driver cannot run these plugin selections with this Configuration.",
+      );
+    }
+  }
+
+  // An Agent save names both its plugins and its Configuration, so it refuses a pair the
+  // Plugin Driver cannot run instead of leaving the refusal to deployment. The values live in
+  // the Configuration Driver: read them only when there is something to check.
+  private async validateSavedPluginConfiguration(
+    plugins: PluginDesiredState | undefined,
+    metadata: Pick<
+      Configuration,
+      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
+    >,
+  ): Promise<void> {
+    if (
+      plugins === undefined ||
+      Object.keys(plugins).length === 0 ||
+      this.pluginDriver().validateAgentConfiguration === undefined
+    ) {
+      return;
+    }
+    const driver = this.configurationDriver();
+    const configuration = this.exactConfiguration(
+      await this.driverOperation(() =>
+        driver.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
+      ),
+      metadata,
+    );
+    this.validatePluginConfiguration(plugins, configuration.values);
   }
 
   private pluginDriver(): PluginDriver {

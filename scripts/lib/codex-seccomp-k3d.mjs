@@ -641,7 +641,7 @@ async function prepareCodexSeccompProfile({
   execFile,
   kubectl: kubectlBin,
   docker,
-  codexVersion = "0.163.0-alpha.1",
+  codexVersion = "0.163.0-alpha.2",
   commandTimeoutMs = timeoutMs + 15_000,
   env = process.env,
 } = {}) {
@@ -894,7 +894,7 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
   const cluster = await selectedDevelopmentCluster(directory);
   assertImmutableImageReference(image);
   const execute = requireExecFile(execFile);
-  const codexVersion = "0.163.0-alpha.1";
+  const codexVersion = "0.163.0-alpha.2";
   assertReviewedCodexVersion(codexVersion);
   const selection = { kubeconfig: cluster.kubeconfig, context: cluster.context };
   const namespace = `openclaw-dev-seccomp-${randomSuffix(4)}`;

@@ -546,6 +546,25 @@ export const scenarios = {
     description:
       "A rejected Google callback shows the generic sign-in error and keeps password recovery available.",
   },
+  googleAccountDisabled: {
+    group: "Pages/Sign in",
+    name: "Google account disabled",
+    path: "/console/?authError=google&authReason=account-disabled",
+    signedOut: true,
+    googleEnabled: true,
+    description:
+      "Google authenticated an identity attached to a disabled account, so the page says the account is disabled and names an administrator, not a retry, password or identity attach.",
+  },
+  recoveryOnlyAccountDisabled: {
+    group: "Pages/Sign in",
+    name: "Recovery-only account disabled",
+    path: "/console/?authError=github&authReason=account-disabled",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",
@@ -1368,6 +1387,7 @@ export const scenarios = {
     pluginCapabilities,
     pluginCatalog: {
       status: "error",
+      canLoad: true,
       message: "This credential does not have access to the plugin catalog.",
     },
     description:
@@ -1383,6 +1403,7 @@ export const scenarios = {
     pluginCapabilities,
     pluginCatalog: {
       status: "error",
+      canLoad: true,
       message: "The plugin catalog could not be loaded. Try again after restoring connectivity.",
     },
     description: "A simulated catalog failure is shown as an error, not a successful empty result.",
@@ -1395,7 +1416,7 @@ export const scenarios = {
     actions: [click("Configure plugins")],
     pluginCapabilities,
     description:
-      "The component explains that discovery requires an entered service account token with the Codex harness.",
+      "The component explains that discovery requires an entered service account token with the Codex harness. The empty list points to Plugin selections JSON for adding a plugin by ID instead of the unavailable Load plugins.",
   },
   pluginsCapabilitiesUnavailable: {
     group: "Components/Plugins",
@@ -1937,6 +1958,25 @@ export const scenarios = {
     description:
       "A rejected save retains its Configuration. Reload clears stale choices; retry requires a current repository and access level. Starting a new draft explicitly leaves repository-scoped recovery.",
   },
+  createModelFallbackSelection: {
+    group: "Pages/Create Agent",
+    name: "Choose an existing fallback as primary",
+    path: create,
+    modelFallbackSelection: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+      { selector: "#agent-model", value: "fallback-one" },
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "Changing the primary removes the unused old model and preserves the ordered fallback references, their model metadata and the existing transport. Simulated UI proof; no model request is executed.",
+    steps: [
+      "Inspect Configuration JSON: primary is openai/fallback-one; the directory contains fallback-one and fallback-two.",
+      "Choose fallback-two as primary. Both referenced model entries and their saved aliases/parameters remain.",
+      "Clear the Model ID, then enter another-model. Existing fallback metadata remains while the new primary is added.",
+    ],
+  },
   createPreset: {
     group: "Pages/Create Agent",
     name: "Preset variables",
@@ -2094,6 +2134,39 @@ export const scenarios = {
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
     description:
       "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+  },
+  createPresetInvalidField: {
+    group: "Pages/Create Agent",
+    name: "Preset with an invalid field",
+    path: create,
+    presetAgent: { executionMode: "turbo" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Codex assistant" },
+      click("Use Preset"),
+    ],
+    description:
+      "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
+    gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
+  },
+  createCapabilitiesDenied: {
+    group: "Pages/Create Agent",
+    name: "Agent creation needs an administrator",
+    path: create,
+    actions: form,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
+    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+  },
+  createCapabilitiesError: {
+    group: "Pages/Create Agent",
+    name: "Capability check failure",
+    path: create,
+    actions: form,
+    rules: [{ path: "/installation", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+    description:
+      "A transient capability-read failure keeps Create Agent disabled and offers Retry capability check.",
   },
   createNoPresets: {
     group: "Pages/Create Agent",
@@ -2545,6 +2618,8 @@ export const scenarios = {
     steps: [
       "The first catalog page loads in the background when the Plugins tab opens, using the saved Service Accounts token. Open Configure plugins to review Calendar's saved policy.",
       "Open Calendar and inspect the tool IDs beneath their titles. Type create into Filter tools, then clear it; filtering should keep the cursor in the search box.",
+      "In Available, select Calendar, filter tools by create, and expand Create event. Switch to Configured, filter plugins by Calendar, and choose Calendar with a different tool filter. Round-trip the tabs: each keeps its selection, query, tool filter, and expanded rows without another catalog request.",
+      "Remove Calendar from Configured: its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
       "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
       "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
     ],
@@ -2966,6 +3041,41 @@ export const scenarios = {
     steps: [
       "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
     ],
+  },
+  runtimeLogsReaderDownload: {
+    group: "Pages/Agent detail",
+    name: "Runtime logs downloaded by a log reader",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Download")],
+    description:
+      "A log reader without Agent operate has no runtime status or Pod picker. Log text still loads from the source's current Pod, and Download names the saved file after that Pod, as the status line does.",
+  },
+  runtimeLogsReaderNoPodDownload: {
+    group: "Pages/Agent detail",
+    name: "Log reader downloads after the Pod disappears",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    runtimeLogDownloadNoPod: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Download")],
+    description:
+      "Simulated UI: the page retains the last Pod's log text, but the Pod disappears before Download. The fresh download has a valid no-Pod response header, so the saved filename ends in no-pod.log rather than naming the previous Pod.",
   },
   runtimeLogsClusterRbac: {
     group: "Pages/Agent detail",
@@ -3883,6 +3993,20 @@ export const scenarios = {
     deployed: true,
     description:
       "Load, edit, save, and reload AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Changes apply to live files, not revisions.",
+  },
+  workspaceCleanCRLF: {
+    group: "Components/Workspace",
+    name: "Unchanged Windows line endings",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    workspaceFiles: { "USER.md": "# Saved USER.md\r\n# Windows instructions\r\n" },
+    description:
+      "An untouched CRLF file shows LF and stays clean. Save enables only after an edit.",
+    steps: [
+      "Reload USER.md without editing; Save stays disabled.",
+      "Edit USER.md, then Save and Reload.",
+    ],
+    gap: "Simulated files; no live Agent gateway.",
   },
   workspaceUnavailable: {
     group: "Components/Workspace",

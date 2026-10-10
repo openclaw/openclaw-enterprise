@@ -168,7 +168,9 @@ that field reports the prior exit.
 `readAgentRuntimeLogs(binding, request)` returns bounded **raw** lines from a
 listed Pod. Drivers re-check ownership and raise
 `RuntimeLogsForbiddenByClusterError` for a cluster `403`; OCC [redacts and bounds](../../guides/topics/agent-logs.md) output. Without them,
-or with `runtimeLogging: "driver"`, both routes answer `501`. The Kubernetes
+or with `runtimeLogging: "driver"`, both routes answer `501`. Kubernetes current
+log reads can return no lines while initial Pod/container preparation finishes;
+see [log availability](../../guides/topics/agent-logs.md). The Kubernetes
 implementation normalizes RFC3339 timestamp offsets to UTC without reducing
 fractional precision.
 

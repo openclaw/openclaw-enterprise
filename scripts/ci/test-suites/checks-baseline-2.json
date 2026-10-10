@@ -57,6 +57,7 @@
     "tests/integration/oidc-login-transport.test.mjs",
     "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
     "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.mjs",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
@@ -79,6 +80,7 @@
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.mjs",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
+    "tests/conformance/node-test-summary.test.mjs",
     "tests/conformance/repository-material-store.test.mjs",
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
@@ -118,6 +120,23 @@
       ]
     },
     {
+      "path": "tests/integration/first-agent-smoke.test.mjs",
+      "expectedTests": [
+        "stop observation accepts a fast shutdown and checks Pods afterward",
+        "default stop observation covers the selected gateway grace",
+        "the second stop can wait behind the serial worker's first gateway drain",
+        "an explicit shorter deadline is authoritative and does not start a later Pod read",
+        "permanent nonconvergence retains the active-pointer assertion and bounded state",
+        "a desired-state reversal fails without accepting an empty active pointer",
+        "an empty active pointer does not accept remaining Pods",
+        "both observation stages share the explicit deadline",
+        "invalid bounds fail before any observation",
+        "an observation that returns after its explicit deadline cannot report success",
+        "failed diagnostic reads return a fixed marker without exposing or throwing the error",
+        "diagnostics project only fixed lifecycle fields"
+      ]
+    },
+    {
       "path": "tests/integration/compute-singleton-worker.test.mjs",
       "expectedTests": [
         "before-commit Compute Drivers must expose an activation operation",
@@ -148,6 +167,9 @@
     },
     {
       "path": "tests/integration/ci-cleanup.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-image-failure-output.test.mjs"
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.mjs"
@@ -202,6 +224,9 @@
     },
     {
       "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/node-test-summary.test.mjs"
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"

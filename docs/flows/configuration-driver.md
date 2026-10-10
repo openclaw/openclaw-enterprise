@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-09
-last_updated_session: authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611
+updated: 2026-10-10
+last_updated_session: authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -202,6 +202,10 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before revision creation. (fix-996-999, findings 996-998)
+
+- 2026-10-10 11:29: Refuse Kubernetes native listeners that pass local readiness but cannot serve Pod-IP routes before revision creation. (authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc - f8a837e33b5c03bc0c92065e979485ee06960150)
 
 - 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's text, through the shared `requireDeployableRoster`; an existing row still reads and deploys as before. (q35-roster-save, finding 874)
 - 2026-10-09 15:00: A failed Configuration delete or update compensates only while the metadata row is unchanged, so a delete or update another request committed after the lock was released is never undone and leaves no orphan ConfigMap. (fix-944-945)

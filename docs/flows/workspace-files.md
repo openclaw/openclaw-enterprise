@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-10-10
-last_updated_session: fix-969
+last_updated_session: authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d
 ---
 
 # Agent Workspace Files Flow
@@ -121,6 +121,10 @@ a divergent file or missing or mismatched marker blocks startup and never
 authorizes replay over later user edits. Native setup output and
 failure details are suppressed at the delivery boundary to avoid disclosing
 contents.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
+preserves valid SDK `Date` termination times in `checkedAt`; missing or invalid
+times still use observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -351,6 +355,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
 
 - 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
 

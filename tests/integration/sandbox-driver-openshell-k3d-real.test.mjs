@@ -2,6 +2,7 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -2381,6 +2382,46 @@ async function prepareProductionInstallation(
       return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
     });
   } catch (error) {
+    // Preserve the provider's startup error before the fixture deletes its Pods. A revision
+    // timeout alone hides failures in Landlock, credential delivery, and the model probe.
+    const secrets = failureSecrets([
+      process.env,
+      {
+        APP_SERVER_TOKEN: transport.appServerToken,
+        GATEWAY_API_KEY: workspaceGateway.apiKey,
+      },
+    ]);
+    for (const namespace of new Set([placement, gatewayPlacement])) {
+      try {
+        for (const pod of await resources("pods", namespace)) {
+          for (const container of pod.spec.containers) {
+            if (!["agent", "gateway", "supervisor"].includes(container.name)) {
+              continue;
+            }
+            const logs = await kubectl(
+              "logs",
+              pod.metadata.name,
+              "--namespace",
+              namespace,
+              "--container",
+              container.name,
+              "--tail=80",
+            ).catch(() => "Pod logs unavailable");
+            const lines = logs
+              .split("\n")
+              .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
+              .slice(-12);
+            for (const line of lines) {
+              process.stderr.write(
+                `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
+              );
+            }
+          }
+        }
+      } catch {
+        process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
+      }
+    }
     const provisioningFailure = createSandboxDriver.provisioningFailures.get(deployed.data.id);
     if (provisioningFailure !== undefined) {
       assert.fail(

@@ -203,6 +203,7 @@ function normalizeManifest(raw) {
       name: laneName,
       env: envObject(lane.env, `lanes.${laneName}.env`, issues),
       requiredEnv: stringArray(lane.requiredEnv, `lanes.${laneName}.requiredEnv`, issues),
+      optionalEnv: stringArray(lane.optionalEnv, `lanes.${laneName}.optionalEnv`, issues),
       fileConcurrency: fileConcurrencyLimit(
         lane.fileConcurrency,
         `lanes.${laneName}.fileConcurrency`,
@@ -406,14 +407,14 @@ function shouldRemoveInheritedEnv(name) {
   );
 }
 
-function baseChildEnv(requiredEnv) {
+function baseChildEnv(inheritedEnv) {
   const env = { ...process.env };
   for (const name of Object.keys(env)) {
     if (shouldRemoveInheritedEnv(name)) {
       delete env[name];
     }
   }
-  for (const name of requiredEnv) {
+  for (const name of inheritedEnv) {
     if (process.env[name] !== undefined) {
       env[name] = process.env[name];
     }
@@ -910,7 +911,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     }
   }
 
-  const env = mergeEnv(baseChildEnv(lane.requiredEnv), lane.env, prepared.env);
+  const env = mergeEnv(
+    baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
+    lane.env,
+    prepared.env,
+  );
   for (const name of lane.requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(

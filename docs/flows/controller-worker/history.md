@@ -8,6 +8,44 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-10-10 15:30: Delete a refused Harness first; only failed stops back off. (fix-1025)
+
+- 2026-10-10 14:10: Yield refused-candidate stops to due work; persist their backoff. (fix-1022-1019)
+
+- 2026-10-10 13:15: Defer a refused-candidate stop that a shutdown interrupts. (fix-1021)
+
+- 2026-10-10 13:00: Refund claims lost during a refused-candidate stop. (fix-1010)
+
+- 2026-10-10 11:40: Stop a refused first deployment on any Compute. (fix-1016)
+
+- 2026-10-10 06:40: Back off and report a failing refused-candidate stop. (fix-1002-1004)
+
+- 2026-10-10 03:10: Stop an exclusive candidate the worker refuses before publishing its failure. (fix-990-991)
+
+- 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
+
+- 2026-10-04 04:20: Abort Compute when the last confirmed claim lease runs out, even if a renewal never answers. (bughunt-10-claimloss)
+
+- 2026-10-03 17:00: Finish published deployments after a last-attempt crash. (fix-recover-active-revision)
+
+- 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
+
+- 2026-10-03 16:00: Bound worker queries and restart a stuck run loop. (fix-worker-liveness)
+
+- 2026-10-02 06:30: Name Compute's pending reason in deployment progress and slow rechecks for long-pending revisions. (fix-deploy-pending-reasons)
+
+- 2026-10-01 17:20: Point Agent lifecycle admission at its HTTP owner; deployment audit keeps the admitted authorization. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
+
+- 2026-10-01 16:37: Added bounded Compute preparation failure diagnostics without changing retry outcomes. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
+
+- 2026-10-01 04:06: Document metrics client error ownership through release. (authoring-run/d0545dc8-f524-4ce5-a3ce-918838dddd92 - 97dfb6b9)
+
+- 2026-09-29 18:40: Continue maintenance past expired exhausted claims.
+
+- 2026-09-29 12:00: Continue maintenance after dependency exhaustion.
+
+- 2026-09-28 22:10: Expose exact-work pending reconciliation results through deployment status and the Console. (01a0eb85-73a8-7572-92a9-a6a06fbdf0a5 - 0aedecfd)
+
 - 2026-09-28 21:25: Apply the Driver interval to every incomplete repository cleanup pass. (authoring-run/b7089bf7-3566-4ce4-a761-d0e9fc197f6f - 8352c093)
 
 - 2026-09-28 12:53: Document deployment audit attribution and its transaction boundary. (authoring-run/c43b309b-ac83-4ece-ba43-85dc673d5342 - da62a0368fa4f3ab0a2fa6cca40d9952bf93cdb2)

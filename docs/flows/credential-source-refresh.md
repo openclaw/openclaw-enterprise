@@ -99,12 +99,15 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 `packages/occ/src/index.ts:updateCredentialSource`
 
-`PATCH` locks the source, reads its current or replacement Secrets, and checks
-the gateway status. For a `refresh` type it calls `configureRefresh` with a new
-request ID, then `rotate`, instead of the gateway's `updateSource`. A
-non-`ready` mint returns `503` before OCC replaces the Secret references, but
-OpenShell keeps the new material, and the next `GET` reports the failed mint.
-An update without `secrets` re-applies the recorded references. OpenShell
+`PATCH` locks the source, not the Namespace, so other Namespace writes do not
+wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
+must name a different Secret than the recorded one, or the update returns `409`
+before any Secret read: OpenShell may hold a newer token. `PATCH` then reads
+its Secrets and checks the gateway status. For a `refresh` type it calls
+`configureRefresh` with a new request ID, then `rotate`, instead of the
+gateway's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
+the Secret references, but OpenShell keeps the new material, the next `GET`
+reports the failed mint, and OCC records a `failure` audit event. OpenShell
 starts a new authorization epoch on each reconfiguration, even one whose mint
 fails, which revokes the stable placeholders of running Sandboxes, so Agents
 need a redeploy.
@@ -112,8 +115,10 @@ need a redeploy.
 `packages/occ/src/index.ts:rotateCredentialSource`
 
 `POST …/rotate` requires `credential_source:update`, a `ready` source, and a
-`refresh` type; a static type returns `409`. It calls `rotate` and returns the
-new status. The HTTP handler commits the audit event in the same transaction.
+`refresh` type; a static type returns `409`. It calls `rotate` under the source
+lock and returns the new status. The HTTP handler commits the audit event in
+the same transaction; a failed mint commits a `failure` event instead. A commit
+whose outcome is unknown records neither event.
 
 ### 5. Deletion
 
@@ -147,6 +152,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)
 - 2026-10-08 11:46: Reading a source no longer needs its type in the current catalog. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 3ce93bfda)

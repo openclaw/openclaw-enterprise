@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,7 +10,12 @@ import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
 import { loadYaml, dumpYaml, unusedPort, waitFor } from "./qa-utils.mjs";
-import { protectedText, registerQaSecret, grantQaSecret } from "./qa-secrets.mjs";
+import {
+  protectedText,
+  registerQaSecret,
+  grantQaSecret,
+  qaCommandFailureDetail,
+} from "./qa-secrets.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 
 function execute(command, args, options) {
@@ -48,7 +53,12 @@ export function launcherEnvironment() {
   return env;
 }
 
-export async function createQaInstallation(context, controlPlane, artifacts) {
+export async function createQaInstallation(
+  context,
+  controlPlane,
+  artifacts,
+  { repositoryInputs = true } = {},
+) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
@@ -84,7 +94,9 @@ export async function createQaInstallation(context, controlPlane, artifacts) {
     }
   }
   let repositoryInput;
-  const sourceInput = process.env.OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY;
+  const sourceInput = repositoryInputs
+    ? process.env.OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY
+    : undefined;
   if (sourceInput) {
     repositoryInput = join(directory, "repository-input");
     await mkdir(repositoryInput, { mode: 0o700 });
@@ -156,9 +168,13 @@ export async function createQaInstallation(context, controlPlane, artifacts) {
           `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
           { mode: 0o600 },
         );
+        if (f.credentials?.password) {
+          registerQaSecret(f.credentials.password);
+        }
+        const detail = qaCommandFailureDetail(error.stderr, options.env ?? env);
         // execFile errors embed argv and output, potentially containing tokens.
-        // Keep only the program and exit classification in public test output.
-        error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}`;
+        // Keep arguments/stdout private; include only redacted stderr for diagnosis.
+        error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}${detail ? `; stderr: ${detail}` : ""}`;
         delete error.cmd;
         delete error.stdout;
         delete error.stderr;
@@ -366,9 +382,71 @@ export async function createQaInstallation(context, controlPlane, artifacts) {
         "Agent deployment",
         async () => {
           const value = await f.api("GET", base + `/deployments/${agent.revision.id}`);
+          if (
+            value.error?.code === "RUNTIME_AUTHENTICATION_FAILED" &&
+            agent.preset === "OpenClaw"
+          ) {
+            // A failed deployment holds its Pod for diagnosis. Check delivery and
+            // provider rejection there without exporting the Pod's credential.
+            try {
+              const data = JSON.parse(
+                await f.kubectl(
+                  "get",
+                  "pods",
+                  "-A",
+                  "-l",
+                  `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${agent.revision.id},openclaw.dev/workload-role=gateway`,
+                  "-o",
+                  "json",
+                ),
+              );
+              const pods = data.items.filter((pod) => !pod.metadata.deletionTimestamp);
+              assert.equal(pods.length, 1);
+              const [pod] = pods;
+              const expected = createHash("sha256")
+                .update(
+                  await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential"),
+                )
+                .digest("hex");
+              const script = `
+                const crypto = require('node:crypto');
+                const key = process.env[process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV] ?? '';
+                const matchesInput = crypto.createHash('sha256').update(key).digest('hex') === process.argv[1];
+                const allowed = new Set(['invalid_api_key', 'insufficient_quota', 'model_not_found', 'unsupported_country_region_territory', 'account_deactivated', 'permission_denied', 'missing_required_parameter', 'invalid_organization', 'project_not_found']);
+                fetch('https://api.openai.com/v1/responses', {
+                  method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
+                  body: '{}', signal: AbortSignal.timeout(15000),
+                }).then(async (response) => {
+                  const body = await response.json().catch(() => ({}));
+                  const code = body.error?.code;
+                  console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, httpStatus: response.status, code: allowed.has(code) ? code : 'other' }));
+                }, () => console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, networkFailure: true })));
+              `;
+              const diagnostic = JSON.parse(
+                await f.kubectl(
+                  "-n",
+                  pod.metadata.namespace,
+                  "exec",
+                  pod.metadata.name,
+                  "-c",
+                  "gateway",
+                  "--",
+                  "node",
+                  "-e",
+                  script,
+                  expected,
+                ),
+              );
+              await f.record(`${agent.id}-${agent.revision.id}-authentication`, diagnostic);
+            } catch {
+              await f.record(`${agent.id}-${agent.revision.id}-authentication`, {
+                unavailable: true,
+              });
+            }
+          }
           assert.ok(
             !["failed", "cancelled"].includes(value.status),
-            `Agent deployment ${value.status}`,
+            `Agent deployment ${value.status}: ${JSON.stringify(value.error)}`,
           );
           return value.status === "succeeded" && value;
         },

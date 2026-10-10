@@ -115,18 +115,21 @@ trailing whitespace and no control characters or line or paragraph separators.
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), repository Service names, and paired metrics
-scraper selectors. Invalid values therefore fail before `values.yaml` or
-`installation.yaml` is written.
+last label starting with a letter), the GatewayClass and gateway API key Secret
+resource names, repository Service names, and paired metrics scraper selectors.
+Invalid values therefore fail before `values.yaml` or `installation.yaml` is
+written.
 
 `scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
-and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
-`client-id` and `client-secret` defaults when only one key is overridden, so those
-collisions also fail before deployment files are written.
-`signInSecretsDedicated` applies the chart's dedicated-Secret rule: each enabled
-provider's Secret, default or explicit, must differ from the installation,
-database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
-repository broker Secrets when enabled, and every provider checked before it.
+and client-secret Secret keys for GitHub, Google and OIDC, considering the chart's
+`client-id` and `client-secret` defaults when only one key is overridden.
+`dedicatedSecrets` applies the chart's dedicated-Secret rule in the chart's
+order: the ChatGPT admin, database CA, gateway API key, sign-in and repository
+Secrets must each differ from `occ-installation-startup`, `occ-database`,
+`occ-auth`, the generated Gateway TLS and root CA Secrets
+(`chartGatewaySecretNames`), the enabled log collector's Secrets and every Secret
+listed before it; only the two public CA Secrets may share one. A collision fails
+preflight before deployment files are written.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
@@ -280,6 +283,12 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10: Public CA Secrets may share one Secret, as in the chart.
+
+- 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
+
+- 2026-10-10: Refuse gateway API key Secret names that Kubernetes refuses.
 
 - 2026-10-10 02:33: Merge current main while retaining selector owners and Kubernetes DNS-subdomain parity. (authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c - db4ccbdea96a752cd99a66cf4cf02c195f5fe3ba)
 

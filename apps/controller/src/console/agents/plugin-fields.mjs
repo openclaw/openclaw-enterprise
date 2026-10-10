@@ -93,10 +93,32 @@ export function createPluginFields({
   createApproverField,
 }) {
   let disabled = false;
-  let activeId = null;
   let configuredOnly = false;
-  let availableQuery = "";
-  let toolQuery = "";
+  const tabs = [newTabState(), newTabState()];
+  let renderedTab = null;
+  let renderedPlugin = null;
+
+  function newTabState() {
+    return { activeId: null, query: "", toolQuery: "", expanded: new Set() };
+  }
+
+  function tabState() {
+    return tabs[Number(configuredOnly)];
+  }
+
+  function clearDetails(state) {
+    state.activeId = null;
+    state.toolQuery = "";
+    state.expanded.clear();
+  }
+
+  function rememberExpandedTools() {
+    if (renderedTab && renderedPlugin === renderedTab.activeId) {
+      renderedTab.expanded = new Set(
+        [...detail.querySelectorAll("details[data-tool][open]")].map((node) => node.dataset.tool),
+      );
+    }
+  }
   let waitingForCatalog = false;
   const search = element("input", {
     type: "search",
@@ -142,8 +164,7 @@ export function createPluginFields({
       return;
     }
     if (!catalog?.canLoad && Object.keys(selections() ?? {}).length) {
-      configuredOnly = true;
-      render();
+      showConfigured(true);
     }
     dialog.showModal();
     search.focus();
@@ -216,24 +237,26 @@ export function createPluginFields({
   );
 
   function loadPage(direction) {
-    activeId = null;
-    onLoadPlugins?.(direction, availableQuery);
+    clearDetails(tabs[0]);
+    onLoadPlugins?.(direction, tabs[0].query);
   }
 
   function showConfigured(value) {
     waitingForCatalog = false;
+    rememberExpandedTools();
     configuredOnly = value;
+    search.value = tabState().query;
     if (value) {
       onCancelDiscovery?.();
     }
-    search.value = value ? "" : availableQuery;
-    activeId = null;
     render();
   }
 
   function showPlugin(entry) {
-    activeId = entry.id;
-    toolQuery = "";
+    if (tabState().activeId !== entry.id) {
+      clearDetails(tabState());
+      tabState().activeId = entry.id;
+    }
     render();
     detail.querySelector("h3")?.focus();
     if (
@@ -336,9 +359,7 @@ export function createPluginFields({
   }
 
   function render() {
-    const open = new Set(
-      [...detail.querySelectorAll("details[data-tool][open]")].map((node) => node.dataset.tool),
-    );
+    rememberExpandedTools();
     const focused = document.activeElement?.getAttribute("aria-label");
     const focusedSelection =
       focused === "Filter tools"
@@ -373,15 +394,27 @@ export function createPluginFields({
         entries.set(id, { id, name: id, tools: null });
       }
     }
-    if (activeId && !entries.has(activeId)) {
-      activeId = null;
+    const availableIds = new Set(
+      (catalog?.status === "ready"
+        ? catalog.entries
+        : (catalog?.knownEntries ?? catalog?.entries ?? [])
+      ).map((entry) => entry.id),
+    );
+    if (tabs[0].activeId && !availableIds.has(tabs[0].activeId)) {
+      clearDetails(tabs[0]);
     }
+    if (tabs[1].activeId && !Object.hasOwn(values ?? {}, tabs[1].activeId)) {
+      clearDetails(tabs[1]);
+    }
+    renderedTab = tabState();
+    renderedPlugin = renderedTab.activeId;
+    const open = renderedTab.expanded;
     status.textContent =
       catalog?.message ??
       "Enter a service account token with the Codex harness to discover plugins. Existing selections remain in JSON.";
     status.classList.toggle("plugin-loading", catalogLoading);
     if (catalogLoading) {
-      status.textContent = availableQuery.trim()
+      status.textContent = tabs[0].query.trim()
         ? "Searching plugins…"
         : "Loading available plugins…";
     } else if (catalog?.status === "error") {
@@ -414,7 +447,7 @@ export function createPluginFields({
       status.textContent = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     list.setAttribute("aria-busy", String(catalogLoading));
-    workspace.dataset.showDetails = String(activeId !== null);
+    workspace.dataset.showDetails = String(tabState().activeId !== null);
     const query = configuredOnly || !onLoadPlugins ? search.value.trim().toLowerCase() : "";
     const candidates = configuredOnly
       ? Object.keys(values ?? {}).map((id) => entries.get(id))
@@ -436,7 +469,7 @@ export function createPluginFields({
         const item = button(pluginIdentity(entry), () => showPlugin(entry), {
           className: "plugin-list-item",
           "aria-label": entry.name,
-          "aria-current": String(activeId === entry.id),
+          "aria-current": String(tabState().activeId === entry.id),
         });
         item.append(
           element(
@@ -482,7 +515,7 @@ export function createPluginFields({
       }),
     );
     detail.replaceChildren(
-      ...[entries.get(activeId)].filter(Boolean).map((entry) => {
+      ...[entries.get(tabState().activeId)].filter(Boolean).map((entry) => {
         const selected = values?.[entry.id];
         let defaultReviewer = null;
         const details = element(
@@ -491,7 +524,7 @@ export function createPluginFields({
           button(
             "Back to plugins",
             () => {
-              activeId = null;
+              clearDetails(tabState());
               render();
               search.focus();
             },
@@ -740,7 +773,7 @@ export function createPluginFields({
         }
         const toolRows = [];
         const filterTools = () => {
-          const query = toolQuery.toLowerCase();
+          const query = tabState().toolQuery.toLowerCase();
           for (const [tool, row] of toolRows) {
             row.hidden = ![tool.name, tool.description ?? "", tool.id].some((value) =>
               value.toLowerCase().includes(query),
@@ -752,10 +785,10 @@ export function createPluginFields({
             type: "search",
             "aria-label": "Filter tools",
             placeholder: "Filter tools",
-            value: toolQuery,
+            value: tabState().toolQuery,
           });
           filter.addEventListener("input", () => {
-            toolQuery = filter.value;
+            tabState().toolQuery = filter.value;
             filterTools();
           });
           details.append(
@@ -938,11 +971,13 @@ export function createPluginFields({
               ? "No plugins configured. Choose Available plugins to add one."
               : catalog?.status === "ready"
                 ? "No plugins were returned."
-                : "Load plugins to browse available choices.",
+                : !catalog?.canLoad
+                  ? "To add a plugin by ID, choose Done and edit Plugin selections JSON."
+                  : "Load plugins to browse available choices.",
         ),
       );
     }
-    if (!activeId) {
+    if (!tabState().activeId) {
       detail.append(
         element(
           "p",
@@ -958,7 +993,7 @@ export function createPluginFields({
         node.dataset.policyUnsupported === "true";
     }
     // Detail refreshes replace focused controls; keep the search caret in place.
-    if (focusedHeading && focusedPlugin === activeId) {
+    if (focusedHeading && focusedPlugin === tabState().activeId) {
       detail.querySelector("h3")?.focus();
     } else if (focused) {
       const control = [...detail.querySelectorAll("[aria-label]")].find(
@@ -975,11 +1010,11 @@ export function createPluginFields({
   }
   input.addEventListener("input", render);
   search.addEventListener("input", () => {
+    tabState().query = search.value;
     if (configuredOnly || !onLoadPlugins) {
       render();
       return;
     }
-    availableQuery = search.value;
     loadPage("search");
   });
   render();
@@ -1003,10 +1038,12 @@ export function createPluginFields({
       }
     },
     resetSearch() {
-      availableQuery = "";
-      if (!configuredOnly) {
-        search.value = "";
+      // Discovery calls this when credentials or the provider change.
+      for (const state of tabs) {
+        clearDetails(state);
+        state.query = "";
       }
+      search.value = "";
       render();
     },
     setCapabilities(value) {
@@ -1018,7 +1055,7 @@ export function createPluginFields({
       catalog = value;
       if (load) {
         waitingForCatalog = false;
-        configuredOnly = false;
+        showConfigured(false);
         loadPage("refresh");
       } else {
         render();

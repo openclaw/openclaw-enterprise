@@ -75,11 +75,13 @@
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
+        "database routing refuses invalid ports before emitting NetworkPolicies",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
         "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
+        "production peer matchLabels keep the native Kubernetes map contract",
         "Collector exporter ports preserve decimal meaning in Kubernetes YAML"
       ]
     },

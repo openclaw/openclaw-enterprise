@@ -55,11 +55,31 @@ export async function waitForDockerLog(containerName, pattern) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.
-${output}`);
+${failureTail(output)}`);
 }
 
 export function commandOutput(error) {
   return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
+}
+
+// CI keeps only the first 16 KiB of a failure message (scripts/ci/reporter.mjs),
+// so a whole container log in an error loses its end: the wrapper's stderr and
+// the actual failure (finding 976 misread a cut log as a Doctor stall). Errors
+// carry at most the last `limit` characters of process output instead, from a
+// line start when one is near, so the cut does not split a value the reporter
+// would redact.
+export const failureOutputLimit = 12 * 1024;
+
+export function failureTail(output, limit = failureOutputLimit) {
+  if (output.length <= limit) {
+    return output;
+  }
+  let tail = output.slice(-limit);
+  const lineEnd = tail.indexOf("\n");
+  if (lineEnd !== -1 && lineEnd < 1024) {
+    tail = tail.slice(lineEnd + 1);
+  }
+  return `[... ${output.length - tail.length} earlier chars omitted ...]\n${tail}`;
 }
 
 export async function temporaryGatewayConfiguration(t, harnessId) {
@@ -129,7 +149,7 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
       "-e",
       'fetch("http://127.0.0.1:8080/readyz").then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));',
     ]).catch((error) => {
-      lastReadinessOutput = commandOutput(error);
+      lastReadinessOutput = failureTail(commandOutput(error), 2048);
       return undefined;
     });
     if (ready !== undefined) {
@@ -137,7 +157,7 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Gateway readiness timed out.${lastReadinessOutput}`);
+  throw new Error(`Gateway readiness timed out.\n${lastReadinessOutput}`);
 }
 
 export async function listGatewayPlugins(containerName) {
@@ -154,9 +174,10 @@ export async function listGatewayPlugins(containerName) {
   try {
     return JSON.parse(stdout);
   } catch (error) {
-    throw new Error(`OpenClaw plugin list output was not valid JSON.\n${stdout}`, {
-      cause: error,
-    });
+    throw new Error(
+      `OpenClaw plugin list output was not valid JSON.\n${failureTail(stdout, 2048)}`,
+      { cause: error },
+    );
   }
 }
 
@@ -186,6 +207,7 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     readinessAttempts,
     tmpfs = ["/home/node:size=1024m,uid=1000,gid=1000,mode=700"],
     volumes = [],
+    network = "none",
     waitUntilReady = true,
     withAppServer = true,
   } = options;
@@ -227,7 +249,7 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     "--tmpfs",
     "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
     "--network",
-    "none",
+    network,
     ...volumes.flatMap((value) => ["--volume", value]),
     ...environment.flatMap((value) => ["-e", value]),
     "--entrypoint",
@@ -251,13 +273,22 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     };
   } catch (error) {
     const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-    throw new Error(`${error.message}\n${commandOutput(logs)}`, { cause: error });
+    // A failed docker command's message carries its whole stderr after the
+    // line that names the command.
+    const [headline, ...detail] = error.message.split("\n");
+    const failure = [
+      headline.slice(0, 512),
+      ...(detail.length > 0 ? [failureTail(detail.join("\n"), 2560)] : []),
+    ];
+    throw new Error(`${failure.join("\n")}\n${failureTail(commandOutput(logs))}`, {
+      cause: error,
+    });
   }
 }
 
 const manualReviewedCodexSeccompProfileSha256 =
   "71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f";
-const reviewedCodexSeccompProfileFilePattern = /^codex-0\.163\.0-alpha\.1-([a-f0-9]{64})\.json$/;
+const reviewedCodexSeccompProfileFilePattern = /^codex-0\.163\.0-alpha\.2-([a-f0-9]{64})\.json$/;
 
 async function ciPreparedCodexSeccompProfile(ciStatePath) {
   if (ciStatePath === undefined || ciStatePath.length === 0) {
@@ -320,7 +351,7 @@ export async function reviewedCodexSeccompSecurityOptions({
   const expected = basename(profile).match(reviewedCodexSeccompProfileFilePattern)?.[1];
   assert.ok(
     expected,
-    "OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-0.163.0-alpha.1-<profile-sha256>.json.",
+    "OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-0.163.0-alpha.2-<profile-sha256>.json.",
   );
 
   let contents;
@@ -337,7 +368,7 @@ export async function reviewedCodexSeccompSecurityOptions({
   assert.equal(
     actual,
     expected,
-    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex 0.163.0-alpha.1 profile filename digest ${expected}.`,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex 0.163.0-alpha.2 profile filename digest ${expected}.`,
   );
 
   const prepared = await ciPreparedCodexSeccompProfile(ciStatePath);

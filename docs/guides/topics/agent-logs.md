@@ -198,6 +198,7 @@ Kubernetes keeps only each container's current and previous instance, nothing
 from deleted Pods; for
 older output, use your [observability backend](../observability.md). While a
 container crash-loops, the previous instance can briefly read as empty.
+Initial `PodInitializing` or `ContainerCreating` can also read as empty; following resumes when the container starts.
 
 ## Sandbox source
 

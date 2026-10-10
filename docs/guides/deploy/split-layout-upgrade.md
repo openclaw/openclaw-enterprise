@@ -3,7 +3,7 @@
 Single-cluster Installations created by the 2026-09-28 release keep each
 Namespace's Gateways, Gateway state and canonical Secrets in a separate
 `oce-gateways-<hash>` namespace. The current controller refuses to start on that
-layout; the [breaking-change notice](breaking-changes.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
+layout; the [breaking-change notice](breaking-changes-archive.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
 says how to tell. This page moves each tenant to the shared layout before the
 [control-plane upgrade](production-upgrade.md#upgrade-the-control-plane). Adopt
 in place where you can; use the export fallback for tenants that can't be

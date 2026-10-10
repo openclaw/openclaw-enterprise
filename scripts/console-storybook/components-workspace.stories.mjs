@@ -12,3 +12,5 @@ export const WorkspaceMissing = { ...story("workspaceMissing"), name: "Missing f
 export const WorkspaceUnknown = { ...story("workspaceUnknown"), name: "Write outcome unknown" };
 
 export const WorkspaceNavigation = story("workspaceNavigation");
+
+export const WorkspaceCleanCRLF = story("workspaceCleanCRLF");

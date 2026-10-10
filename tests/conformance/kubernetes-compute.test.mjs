@@ -50,9 +50,11 @@ import {
   ServiceAccountCredentialSecretExistsError,
 } from "../../packages/occ/src/index.ts";
 import {
+  ComputeStopYieldedError,
   currentComputeAbortSignal,
   withComputeAbortSignal,
   withComputeWorkWaiting,
+  withYieldingComputeStop,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -4177,6 +4179,13 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       /identityScopes/i,
     ],
     [{ gateway: { trustedProxies: ["10.99.0.0/16"] } }, /gatewayTrustedProxyCidrs/i],
+    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
+    [
+      {
+        plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
+      },
+      /appServer\.approvalPolicy must not be "untrusted"/,
+    ],
   ]) {
     for (const configure of [options, routedOptions]) {
       for (const operation of ["prepareRevision", "activateRevision"]) {
@@ -4215,6 +4224,210 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       plane: "execution",
     }),
   );
+});
+
+test("Kubernetes refuses native listener addresses that cannot serve its Pod-facing routes", async () => {
+  const invalid = [
+    [{ bind: "loopback" }, "gateway.bind"],
+    [{ bind: "tailnet" }, "gateway.bind"],
+    // Native's schema refuses these at startup; admission names them first.
+    [{ bind: "Loopback" }, "gateway.bind"],
+    [{ bind: "all" }, "gateway.bind"],
+    [{ bind: 7 }, "gateway.bind"],
+    [{ bind: "custom", customBindHost: "127.0.0.1" }, "gateway.customBindHost"],
+    [{ bind: "custom", customBindHost: " 127.1.2.3 " }, "gateway.customBindHost"],
+    // Custom needs a plain IPv4 the Pod owns at startup; a Pod IP changes on reschedule.
+    [{ bind: "custom" }, "gateway.customBindHost"],
+    [{ bind: "custom", customBindHost: "" }, "gateway.customBindHost"],
+    [{ bind: "custom", customBindHost: "localhost" }, "gateway.customBindHost"],
+    [{ bind: "custom", customBindHost: "::" }, "gateway.customBindHost"],
+    [{ bind: "custom", customBindHost: "10.42.0.17" }, "gateway.customBindHost"],
+    // Tailscale serve and funnel force a loopback listener whatever bind says.
+    [{ tailscale: { mode: "serve" } }, "gateway.tailscale.mode"],
+    [{ bind: "lan", tailscale: { mode: "funnel" } }, "gateway.tailscale.mode"],
+    [{ tailscale: "serve" }, "gateway.tailscale"],
+  ];
+  for (const configure of [options, routedOptions]) {
+    const driver = createKubernetesComputeDriver(configure());
+    let settingFailure;
+    for (const [gateway, setting] of invalid) {
+      const candidate = routedRevision(driver, { configuration: { gateway } });
+      assert.throws(
+        () => driver.validateGatewaySettings(candidate.configuration),
+        (error) => error instanceof ComputeGatewaySettingError && error.setting === setting,
+      );
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: candidate.configuration,
+          }),
+        (error) => error instanceof ComputeGatewaySettingError && error.setting === setting,
+      );
+      // No remote read or write is necessary to reject a listener that cannot
+      // accept the Service's Pod-IP traffic. This protects both worker phases.
+      driver.clients = async () => {
+        throw new Error("unexpected cluster access");
+      };
+      // Preparation refuses it like any other gateway setting, not as an admission conflict.
+      if (settingFailure === undefined) {
+        const other = routedRevision(driver, { configuration: { gateway: { auth: null } } });
+        settingFailure = await driver.prepareRevision(other, authContext(other)).then(
+          () => assert.fail("gateway.auth null must be refused"),
+          (error) => error,
+        );
+        assert.match(settingFailure.message, /gateway\.auth /);
+      }
+      for (const operation of ["prepareRevision", "activateRevision"]) {
+        await assert.rejects(
+          driver[operation](candidate, authContext(candidate)),
+          (error) =>
+            error.constructor === settingFailure.constructor &&
+            new RegExp(setting.replaceAll(".", "\\.")).test(error.message),
+        );
+      }
+    }
+    for (const gateway of [
+      {},
+      { bind: "auto" },
+      { bind: "lan" },
+      { bind: "custom", customBindHost: " 0.0.0.0 " },
+      { bind: "lan", customBindHost: "127.0.0.1" },
+      { tailscale: { mode: "off" } },
+    ]) {
+      assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway }));
+    }
+  }
+});
+
+test("Kubernetes renders an all-interfaces native listener when gateway.bind is omitted or auto", async () => {
+  // Native resolves omitted and auto to 127.0.0.1 unless it detects a container, and
+  // containerd on cgroup v2 leaves no marker it recognizes. The rendered document, not
+  // native detection, must put the listener on the Pod IP that Services target.
+  for (const [gateway, bind] of [
+    [{}, "lan"],
+    [{ bind: "auto" }, "lan"],
+    [{ bind: "lan" }, "lan"],
+    [{ bind: "custom", customBindHost: "0.0.0.0" }, "custom"],
+  ]) {
+    const { revision, read, prepare } = dedicatedFirstDeployFixture();
+    delete revision.configuration.gateway.bind;
+    Object.assign(revision.configuration.gateway, gateway);
+    await prepare();
+    const rendered = JSON.parse(
+      read(
+        "ConfigMap",
+        `gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`,
+        kubernetesNamespaceName(tenant.id),
+      ).data["openclaw.json"],
+    );
+    assert.equal(rendered.gateway.bind, bind, JSON.stringify(gateway));
+  }
+});
+
+test("Kubernetes keeps a revision's gateway document rendered before the lan bind", async (t) => {
+  // A two-cluster Installation's gateway document carries the execution cluster's CA beside it.
+  const directory = await mkdtemp(join(tmpdir(), "oce-execution-ca-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const certificate = join(directory, "execution-ca.pem");
+  const generated = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      join(directory, "execution-ca.key"),
+      "-out",
+      certificate,
+      "-subj",
+      "/CN=execution-ca",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  const executionCluster = {
+    ...twoClusterOptions().executionCluster,
+    caBundle: await readFile(certificate, "utf8"),
+  };
+  for (const [bind, computeOptions] of [
+    [undefined, {}],
+    ["auto", {}],
+    ["lan", {}],
+    [undefined, { executionCluster }],
+  ]) {
+    const { driver, revision, objects, records, state, context } = workspaceSetupFixture(
+      false,
+      true,
+      undefined,
+      computeOptions,
+    );
+    if (computeOptions.executionCluster !== undefined) {
+      // One stand-in API serves both clusters.
+      driver.executionApiClients = driver.apiClients;
+    }
+    revision.configuration = structuredClone(revision.configuration);
+    if (bind !== undefined) {
+      revision.configuration.gateway.bind = bind;
+    }
+    state.ready = true;
+    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+    const documentKey = [...objects.keys()].find((key) =>
+      key.endsWith(`:gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`),
+    );
+    const current = structuredClone(objects.get(documentKey));
+    assert.equal(current.data["execution-ca.pem"], computeOptions.executionCluster?.caBundle);
+    const rendered = JSON.parse(current.data["openclaw.json"]);
+    assert.equal(rendered.gateway.bind, "lan");
+    // Earlier controllers wrote an omitted or auto bind as submitted; that rendering differed
+    // from the current one only in this key. Kubernetes refuses edits to an immutable
+    // ConfigMap, so re-preparing a revision prepared then (as maintenance and recovery do)
+    // must keep that document instead of failing.
+    const earlier = structuredClone(rendered);
+    if (bind === "auto") {
+      earlier.gateway.bind = bind;
+    } else {
+      delete earlier.gateway.bind;
+    }
+    const kept = {
+      ...current,
+      data: { ...current.data, "openclaw.json": JSON.stringify(earlier) },
+    };
+    objects.set(documentKey, structuredClone(kept));
+    const writes = records.length;
+    if (bind === "lan") {
+      // An explicit lan bind always rendered lan: nothing earlier to keep.
+      await assert.rejects(
+        driver.prepareRevision(revision, context),
+        /Refusing invalid immutable Kubernetes ConfigMap gateway-/,
+      );
+    } else {
+      assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+      assert.deepEqual(objects.get(documentKey).data, kept.data, "the earlier document stays");
+    }
+    assert.equal(
+      records.slice(writes).some(({ kind }) => kind === "ConfigMap"),
+      false,
+      "an immutable gateway document is never rewritten",
+    );
+    // Any other difference, such as a loopback bind, is still refused.
+    const tampered = structuredClone(rendered);
+    tampered.gateway.bind = "loopback";
+    objects.set(documentKey, {
+      ...structuredClone(current),
+      data: { ...current.data, "openclaw.json": JSON.stringify(tampered) },
+    });
+    await assert.rejects(
+      driver.prepareRevision(revision, context),
+      /Refusing invalid immutable Kubernetes ConfigMap gateway-/,
+    );
+  }
 });
 
 test("agent provisioning validation reuses native trusted-proxy admission before cluster access", () => {
@@ -7118,6 +7331,16 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   const pods = { agent: pod("agent"), gateway: pod("gateway") };
   const proxyReads = [];
   const podListReads = [];
+  // A healthy runtime reports no held startup failure on its status path.
+  let runtimeStatus = (role) => ({
+    revisionId: revision.id,
+    container: role,
+    podUid: pods[role].metadata.uid,
+  });
+  let diagnosticsServing = true;
+  // Unrun channel checks the Gateway adds to its one socket check (a status report may carry at
+  // most 32 checks).
+  let extraGatewayChecks = 0;
   driver.apiClients = Promise.resolve({
     core: {
       async listNamespace({ labelSelector }) {
@@ -7150,10 +7373,16 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
       },
       async connectGetNamespacedPodProxyWithPath({ name, namespace, path }) {
         proxyReads.push({ name, namespace, path });
-        assert.equal(path, "openclaw/runtime/diagnostics");
         const role = name.startsWith("agent-") ? "agent" : "gateway";
         assert.equal(namespace, role === "gateway" ? gatewayNamespaceName : namespaceName);
         assert.equal(name, `${pods[role].metadata.name}:18791`);
+        if (path === "openclaw/runtime/status") {
+          return runtimeStatus(role);
+        }
+        assert.equal(path, "openclaw/runtime/diagnostics");
+        if (!diagnosticsServing) {
+          throw Object.assign(new Error("status port not serving"), { code: 503, headers: {} });
+        }
         return {
           revisionId: revision.id,
           container: role,
@@ -7166,6 +7395,12 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
               state: role === "agent" ? "succeeded" : "unknown",
               checkedAt: role === "agent" ? "2026-09-19T12:00:00.000Z" : null,
             },
+            ...Array.from({ length: role === "gateway" ? extraGatewayChecks : 0 }, (_, index) => ({
+              component: "gateway",
+              check: `channel-${index}`,
+              state: "unknown",
+              checkedAt: null,
+            })),
           ],
         };
       },
@@ -7188,20 +7423,137 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     ],
   );
   assert.equal(diagnostics.checks.find((check) => check.component === "gateway")?.checkedAt, null);
-  assert.deepEqual(proxyReads, [
+  const reads = (path) =>
+    proxyReads
+      .filter((read) => read.path === path)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  for (const path of ["openclaw/runtime/diagnostics", "openclaw/runtime/status"]) {
+    assert.deepEqual(reads(path), [
+      { name: "agent-runtime-diagnostics-pod:18791", namespace: namespaceName, path },
+      { name: "gateway-runtime-diagnostics-pod:18791", namespace: gatewayNamespaceName, path },
+    ]);
+  }
+  // Each private read lists the Pod before and after the proxy call.
+  assert.equal(podListReads.filter((role) => role === "agent").length, 4);
+  assert.equal(podListReads.filter((role) => role === "gateway").length, 4);
+
+  const binding = { namespace: tenant, agent, revision };
+  // A Gateway holding a startup failure still answers diagnostics, with channel
+  // checks it could not run. The failure it holds on the status path leads the
+  // observation (ahead of the 32-check cap) as a failed check named after the
+  // startup step.
+  const heldFailure = {
+    component: "gateway",
+    check: "peer-bridge-record",
+    checkedAt: "2026-09-19T11:59:00.000Z",
+    code: "UNAVAILABLE",
+  };
+  runtimeStatus = (role) => ({
+    revisionId: revision.id,
+    container: role,
+    podUid: pods[role].metadata.uid,
+    ...(role === "gateway" ? { runtimeFailure: heldFailure } : {}),
+  });
+  assert.deepEqual(
+    (await driver.diagnoseAgentDeployment(binding)).checks.map(
+      ({ component, check, state, code }) => ({ component, check, state, code }),
+    ),
+    [
+      { component: "gateway", check: "peer-bridge-record", state: "failed", code: "UNAVAILABLE" },
+      { component: "agent", check: "auth", state: "succeeded", code: undefined },
+      { component: "gateway", check: "socket", state: "unknown", code: undefined },
+    ],
+  );
+  // When the diagnostics endpoint does not answer, the held failure still says why.
+  diagnosticsServing = false;
+  const notServing = (component) => ({
+    component,
+    check: "runtime-status",
+    state: "unknown",
+    checkedAt: null,
+    code: "UNAVAILABLE",
+  });
+  assert.deepEqual((await driver.diagnoseAgentDeployment(binding)).checks, [
+    { ...heldFailure, state: "failed" },
+    notServing("agent"),
+    notServing("gateway"),
+  ]);
+  diagnosticsServing = true;
+
+  // An Agent holding a failed model check reports it as well, without its cause and at
+  // millisecond precision. Held failures lead, and the 32-check cap drops diagnostics checks.
+  const gatewayHeld = runtimeStatus;
+  runtimeStatus = (role) =>
+    role === "gateway"
+      ? gatewayHeld(role)
+      : {
+          ...gatewayHeld(role),
+          runtimeFailure: {
+            component: "agent",
+            check: "model-probe",
+            checkedAt: "2026-09-19T11:58:00Z",
+            code: "MODEL_PROBE_FAILED",
+            cause: { kind: "PROBE_STATUS", detail: "format" },
+          },
+        };
+  extraGatewayChecks = 31;
+  const capped = (await driver.diagnoseAgentDeployment(binding)).checks;
+  assert.equal(capped.length, 32);
+  assert.deepEqual(capped.slice(0, 3), [
     {
-      name: "agent-runtime-diagnostics-pod:18791",
-      namespace: namespaceName,
-      path: "openclaw/runtime/diagnostics",
+      component: "agent",
+      check: "model-probe",
+      state: "failed",
+      checkedAt: "2026-09-19T11:58:00.000Z",
+      code: "MODEL_PROBE_FAILED",
     },
+    { ...heldFailure, state: "failed" },
     {
-      name: "gateway-runtime-diagnostics-pod:18791",
-      namespace: gatewayNamespaceName,
-      path: "openclaw/runtime/diagnostics",
+      component: "agent",
+      check: "auth",
+      state: "succeeded",
+      checkedAt: "2026-09-19T12:00:00.000Z",
     },
   ]);
-  assert.equal(podListReads.filter((role) => role === "agent").length, 2);
-  assert.equal(podListReads.filter((role) => role === "gateway").length, 2);
+  assert.equal(capped.at(-1).check, "channel-27");
+  extraGatewayChecks = 0;
+  runtimeStatus = gatewayHeld;
+
+  // A status read that is refused or returns another Pod's report adds nothing;
+  // the diagnostics read alone decides the observation.
+  const held = runtimeStatus;
+  for (const failingStatus of [
+    () => {
+      throw Object.assign(new Error("pods/proxy denied"), { code: 403, headers: {} });
+    },
+    (role) => ({ ...held(role), podUid: "replaced-pod-uid" }),
+    (role) => ({ ...held(role), runtimeFailure: { ...heldFailure, code: "not a code" } }),
+    // Parseable, but outside the timestamps OCC accepts.
+    (role) => ({
+      ...held(role),
+      runtimeFailure: { ...heldFailure, checkedAt: "+010000-01-01T00:00:00.000Z" },
+    }),
+  ]) {
+    runtimeStatus = failingStatus;
+    assert.deepEqual(
+      (await driver.diagnoseAgentDeployment(binding)).checks.map(({ check }) => check),
+      ["auth", "socket"],
+    );
+  }
+
+  // Tolerating a failed status read never swallows the caller's cancellation.
+  const owner = new AbortController();
+  const cancelled = new Error("diagnostics caller went away");
+  runtimeStatus = async () => {
+    // The diagnostics reads have finished by now, so only the failed status read sees it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    owner.abort(cancelled);
+    throw Object.assign(new Error("pods/proxy denied"), { code: 403, headers: {} });
+  };
+  await assert.rejects(
+    withComputeAbortSignal(owner.signal, () => driver.diagnoseAgentDeployment(binding)),
+    (error) => error === cancelled,
+  );
 });
 
 test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod readbacks", async () => {
@@ -10599,6 +10951,48 @@ test("resource quantities written as bare numbers name the field and the quoting
   KubernetesComputeDriver.validateConfiguration(quoted);
 });
 
+// Expected ordering comes from the API server's Quantity.Cmp semantics. These
+// values exercise decimal/binary equivalence, Nano rounding, exact large integers
+// and BinarySI saturation that a floating-point conversion cannot preserve.
+test("resource requests must fit their limits before Namespace or workload preparation", () => {
+  const pairs = [
+    ["cpu", "500m", "250m", false],
+    ["cpu", "0.5", "250m", false],
+    ["cpu", "250m", "0.5", true],
+    ["cpu", "2e-3", "1m", false],
+    ["cpu", "1.00000000001", "1.000000001", true],
+    ["memory", "2Gi", "1.5Gi", false],
+    ["memory", "1.5Gi", "2Gi", true],
+    ["memory", "1.5Ki", "1536", true],
+    ["memory", "0.00000000001", "1n", true],
+    ["memory", "9223372036854775808", "9223372036854775807", false],
+    ["memory", "8Ei", "9223372036854775807", true],
+    ["memory", "9E", "8Ei", true],
+    ["memory", "\u00851Gi\u0085", "1024Mi", true],
+  ];
+  for (const role of ["gateway", "agent", "namespace.containerDefaults"]) {
+    for (const [resource, request, limit, accepted] of pairs) {
+      const configured = separateResources();
+      const selected =
+        role === "namespace.containerDefaults"
+          ? configured.resources.namespace.containerDefaults
+          : configured.resources[role];
+      selected.requests[resource] = request;
+      selected.limits[resource] = limit;
+      if (accepted) {
+        assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
+      } else {
+        assert.throws(
+          () => createKubernetesComputeDriver(configured),
+          (error) =>
+            error.message.includes(`resources.${role}.requests.${resource}`) &&
+            error.message.includes("cannot exceed its limit"),
+        );
+      }
+    }
+  }
+});
+
 test("transport secret prefix must produce a DNS-safe credential Secret name", () => {
   for (const transportSecretPrefix of ["Bad_Prefix", "bad prefix", `${"a".repeat(242)}`]) {
     assert.throws(
@@ -11764,6 +12158,147 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
+test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
+  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
+  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
+  // Any other stop drains the Gateway into the running Harness first.
+  const driver = new KubernetesComputeDriver(options());
+  const revision = routedRevision(driver, { id: "revision-refused-stop-order" });
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const namespaceResource = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: namespace,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": revision.namespaceId,
+      },
+      annotations: { "openclaw.dev/namespace-id": revision.namespaceId },
+    },
+  };
+  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const deployment = driver.deployment(
+    deploymentName,
+    {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: revision.servicePrincipalId,
+      revisionId: revision.id,
+    },
+    { name: namespace, plane: "execution" },
+    "agent:local",
+    `agent-${digest(revision.agentId)}`,
+    "agent",
+    {},
+    "info",
+    undefined,
+    undefined,
+    undefined,
+    preparedAuth(driver, namespace, false),
+  );
+  deployment.metadata.uid = "refused-stop-order-agent-uid";
+  const gatewayPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "refused-stop-order-gateway-pod",
+      namespace,
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "gateway",
+      },
+    },
+  };
+  let events = [];
+  let deploymentPresent = true;
+  let gatewayPodsLeft = 0;
+  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
+  driver.apiClients = Promise.resolve({
+    core: {
+      async readNamespacedConfigMap() {
+        throw notFound();
+      },
+      async readNamespacedSecret() {
+        throw notFound();
+      },
+      async readNamespacedService() {
+        throw notFound();
+      },
+      async readNamespacedServiceAccount() {
+        throw notFound();
+      },
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
+      },
+      async readNamespace({ name }) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
+          return {
+            ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
+            status: { phase: "Active" },
+          };
+        }
+        return structuredClone(namespaceResource);
+      },
+      async listNamespacedPod(request) {
+        const role = Object.fromEntries(
+          request.labelSelector.split(",").map((entry) => entry.split("=")),
+        )["openclaw.dev/workload-role"];
+        events.push(`list ${role} Pods`);
+        if (role === "gateway" && gatewayPodsLeft > 0) {
+          gatewayPodsLeft -= 1;
+          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
+        }
+        return { apiVersion: "v1", kind: "PodList", items: [] };
+      },
+    },
+    apps: {
+      async readNamespacedDeployment({ name }) {
+        if (name === deploymentName && deploymentPresent) {
+          return structuredClone(deployment);
+        }
+        throw notFound();
+      },
+      async deleteNamespacedDeployment({ name }) {
+        assert.equal(name, deploymentName);
+        events.push("delete Agent Deployment");
+        deploymentPresent = false;
+      },
+    },
+    objects: {},
+  });
+
+  // Other Work is waiting, so the refused candidate's stop yields at the Gateway wait, after
+  // the Harness's deletion was issued.
+  gatewayPodsLeft = 1;
+  await assert.rejects(
+    withComputeWorkWaiting(
+      async () => true,
+      () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
+  );
+  assert.deepEqual(events, ["delete Agent Deployment", "list agent Pods", "list gateway Pods"]);
+  assert.equal(deploymentPresent, false);
+
+  // Any other stop drains the Gateway before it deletes the Harness, and does not yield.
+  events = [];
+  deploymentPresent = true;
+  gatewayPodsLeft = 1;
+  await withComputeWorkWaiting(
+    async () => true,
+    () => driver.stopRevision(revision),
+  );
+  assert.deepEqual(events, [
+    "list gateway Pods",
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+});
+
 test("stopping a provider-owned Kubernetes revision waits for Sandbox workload termination", async () => {
   let cleanupComplete = false;
   let podObservations = 0;
@@ -11864,6 +12399,28 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
 
   await driver.stopRevision(revision);
   assert.equal(cleanupComplete, true);
+  assert.equal(podObservations, 2);
+
+  // Other Work waiting ends a yielding stop's wait after one observation of a live Pod; the
+  // caller retries the stop (finding 1022). Any other stop keeps waiting for termination.
+  const waiting = async () => true;
+  podObservations = 0;
+  await assert.rejects(
+    withComputeWorkWaiting(waiting, () =>
+      withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
+  );
+  assert.equal(podObservations, 1);
+  podObservations = 0;
+  await withComputeWorkWaiting(waiting, () => driver.stopRevision(revision));
+  assert.equal(podObservations, 2);
+  // With nothing waiting, a yielding stop waits too.
+  podObservations = 0;
+  await withComputeWorkWaiting(
+    async () => false,
+    () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+  );
   assert.equal(podObservations, 2);
 });
 
@@ -14244,6 +14801,52 @@ for (const embedded of [true, false]) {
   });
 }
 
+for (const embedded of [true, false]) {
+  test(`Kubernetes ${embedded ? "embedded" : "dedicated"} initializer failure preserves SDK Date evidence and missing-time fallback`, async () => {
+    for (const scenario of [
+      { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: false },
+      { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: true },
+      { finishedAt: new Date(Number.NaN) },
+      { finishedAt: null },
+      { finishedAt: undefined },
+      { finishedAt: "not-a-time" },
+    ]) {
+      const fixture = workspaceSetupFixture(embedded);
+      fixture.state.failedInitializer = true;
+      const clients = await fixture.driver.apiClients;
+      const list = clients.core.listNamespacedPod;
+      // The shipped SDK decodes the API's finishedAt into Date. A waiting
+      // restart keeps the last failed instance's time; absent times use now.
+      clients.core.listNamespacedPod = async (request) => {
+        const response = await list(request);
+        for (const pod of response.items) {
+          for (const status of pod.status?.initContainerStatuses ?? []) {
+            if (status.name === "initialize-workspace") {
+              status.state.terminated.finishedAt = scenario.finishedAt;
+              if (scenario.waiting) {
+                status.lastState = status.state;
+                status.state = { waiting: { reason: "CrashLoopBackOff" } };
+              }
+            }
+          }
+        }
+        return response;
+      };
+      const before = Date.now();
+      const result = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
+      const after = Date.now();
+      assert.equal(result.ready, false);
+      assert.equal(result.runtimeFailure.code, "WORKSPACE_SETUP_FAILED");
+      const checkedAt = Date.parse(result.runtimeFailure.checkedAt);
+      if (scenario.finishedAt instanceof Date && !Number.isNaN(scenario.finishedAt.getTime())) {
+        assert.equal(checkedAt, scenario.finishedAt.getTime());
+      } else {
+        assert.ok(checkedAt >= before && checkedAt <= after);
+      }
+    }
+  });
+}
+
 for (const method of ["api_key", "codex_pat"]) {
   test(`dedicated ${method} preparation shares the tenant namespace while separating Gateway state and credentials`, async () => {
     const fixture = workspaceSetupFixture(false);
@@ -14634,6 +15237,113 @@ test("dedicated Harness deactivation still closes pre-upgrade Service selectors"
   assert.deepEqual(objects.get(serviceKey).spec.selector, {
     "app.kubernetes.io/name": `${serviceName}-inactive`,
   });
+});
+
+// Codex config.toml as earlier controllers rendered it for a plugin-free Agent.
+const CODEX_CONFIG_BEFORE_PLUGIN_DEFAULTS = `[features]
+apps = false
+plugins = false
+remote_plugin = false
+
+[apps._default]
+enabled = false
+`;
+const CODEX_CONFIG_BEFORE_APPROVAL_POLICY = `${CODEX_CONFIG_BEFORE_PLUGIN_DEFAULTS}
+[plugins._default]
+enabled = false
+`;
+
+test("an upgraded controller keeps an active Codex revision's earlier plugin-runtime ConfigMap", async () => {
+  for (const policy of ["on-request", "on-failure", "never", undefined]) {
+    const { driver, revision, namespace, objects, records, state, context } =
+      workspaceSetupFixture(false);
+    revision.configuration = structuredClone(revision.configuration);
+    revision.configuration.plugins = {
+      entries: { codex: { config: { appServer: { approvalPolicy: policy } } } },
+    };
+    state.ready = true;
+    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+    const runtimeKey = [...objects.keys()].find((key) =>
+      key.startsWith(`ConfigMap:${namespace}:plugin-runtime-`),
+    );
+    const current = structuredClone(objects.get(runtimeKey));
+    assert.equal(current.immutable, true);
+    assert.equal(
+      current.data["config.toml"].startsWith("approval_policy = "),
+      policy !== undefined,
+    );
+    if (policy === "on-failure") {
+      // The Gateway runs on-failure as on-request, so native startup gets on-request.
+      assert.ok(current.data["config.toml"].startsWith('approval_policy = "on-request"\n'));
+    }
+    const earlier = [CODEX_CONFIG_BEFORE_PLUGIN_DEFAULTS, CODEX_CONFIG_BEFORE_APPROVAL_POLICY];
+    if (policy === "on-failure") {
+      // #1995 rendered the configured value as written.
+      earlier.push(`approval_policy = "on-failure"\n\n${CODEX_CONFIG_BEFORE_APPROVAL_POLICY}`);
+    }
+    // Kubernetes refuses edits to an immutable ConfigMap, so a revision prepared before
+    // the upgrade keeps the file its Pods mounted. Re-preparing the active revision must
+    // finish instead of refusing it until the Agent is deployed again.
+    for (const config of earlier) {
+      if (config === current.data["config.toml"]) {
+        continue;
+      }
+      objects.set(runtimeKey, {
+        ...structuredClone(current),
+        data: { ...current.data, "config.toml": config },
+      });
+      const writes = records.length;
+      assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+      assert.equal(
+        records.slice(writes).some(({ kind }) => kind === "ConfigMap"),
+        false,
+        "an earlier rendering is kept, never rewritten",
+      );
+      assert.equal(objects.get(runtimeKey).data["config.toml"], config);
+    }
+    // Content no controller rendered for this revision is still refused.
+    for (const tamper of [
+      (configMap) => {
+        configMap.data["config.toml"] =
+          `approval_policy = "untrusted"\n\n${CODEX_CONFIG_BEFORE_APPROVAL_POLICY}`;
+      },
+      (configMap) => {
+        configMap.data["config.toml"] = CODEX_CONFIG_BEFORE_PLUGIN_DEFAULTS.replace(
+          "apps = false",
+          "apps = true",
+        );
+      },
+      (configMap) => {
+        configMap.data["config.toml"] = CODEX_CONFIG_BEFORE_APPROVAL_POLICY;
+        configMap.data["runtime.json"] = JSON.stringify({
+          kind: "codex",
+          selections: {},
+          extra: 1,
+        });
+      },
+      (configMap) => {
+        configMap.data["config.toml"] = CODEX_CONFIG_BEFORE_PLUGIN_DEFAULTS;
+        configMap.immutable = false;
+      },
+      (configMap) => {
+        configMap.data["config.toml"] = CODEX_CONFIG_BEFORE_PLUGIN_DEFAULTS;
+        configMap.data["extra.toml"] = "";
+      },
+    ]) {
+      const configMap = structuredClone(current);
+      tamper(configMap);
+      objects.set(runtimeKey, configMap);
+      const writes = records.length;
+      await assert.rejects(
+        driver.prepareRevision(revision, context),
+        /Refusing invalid immutable Kubernetes ConfigMap plugin-runtime-/,
+      );
+      assert.equal(
+        records.slice(writes).some(({ kind }) => kind === "ConfigMap"),
+        false,
+      );
+    }
+  }
 });
 
 test("dedicated Gateway references canonical CP channel Secrets and rejects a replaced source", async () => {
@@ -15893,6 +16603,8 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
     eventError: undefined,
     eventPage: undefined,
     nodeName: "runtime-logs-node",
+    waitingReason: undefined,
+    containerId: undefined,
     extraEvents: [],
     containerStatus: undefined,
   };
@@ -15912,14 +16624,21 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
     },
     spec: state.nodeName === undefined ? {} : { nodeName: state.nodeName },
     status: {
-      phase: "Running",
-      conditions: [{ type: "Ready", status: "True" }],
+      phase:
+        state.waitingReason === undefined || state.waitingReason === "CrashLoopBackOff"
+          ? "Running"
+          : "Pending",
+      conditions: [{ type: "Ready", status: state.waitingReason === undefined ? "True" : "False" }],
       containerStatuses: [
         {
           name: role,
-          ready: true,
+          ready: state.waitingReason === undefined,
           restartCount: state.restartCount[role],
-          state: { running: { startedAt: new Date("2026-09-30T11:00:00Z") } },
+          state:
+            state.waitingReason === undefined
+              ? { running: { startedAt: new Date("2026-09-30T11:00:00Z") } }
+              : { waiting: { reason: state.waitingReason } },
+          ...(state.containerId === undefined ? {} : { containerID: state.containerId }),
           ...(state.restartCount[role] === 0
             ? {}
             : {
@@ -16533,6 +17252,81 @@ test("Kubernetes runtime log and Event 403s become the typed cluster RBAC error"
     fixture.request("gateway", { previous: true }),
   );
   assert.deepEqual(empty.lines, []);
+});
+
+test("Kubernetes initial container log reads wait without swallowing other failures", async (t) => {
+  for (const source of ["gateway", "agent"]) {
+    for (const reason of ["PodInitializing", "ContainerCreating"]) {
+      await t.test(`${source}: ${reason}`, async () => {
+        const fixture = runtimeLogDriverFixture();
+        fixture.state.waitingReason = reason;
+        fixture.state.restartCount[source] = 0;
+        const waiting = (
+          message = `container "${source}" in pod "${source}-runtime-logs-pod" is waiting to start: ${reason}`,
+        ) =>
+          Object.assign(new Error("Kubernetes BadRequest"), {
+            statusCode: 400,
+            body: JSON.stringify({
+              apiVersion: "v1",
+              kind: "Status",
+              code: 400,
+              reason: "BadRequest",
+              message,
+            }),
+          });
+        fixture.state.logError = waiting();
+        const empty = await fixture.driver.readAgentRuntimeLogs(
+          fixture.binding,
+          fixture.request(source),
+        );
+        assert.deepEqual(empty.lines, []);
+        assert.equal(empty.stream.restartCount, 0);
+        assert.equal(empty.truncated, false);
+
+        // Pod status can lag startup. A readable current instance must still be read.
+        fixture.state.logError = undefined;
+        fixture.state.logs[source] = "2026-09-30T12:00:00Z runtime started\n";
+        const running = await fixture.driver.readAgentRuntimeLogs(
+          fixture.binding,
+          fixture.request(source),
+        );
+        assert.deepEqual(running.lines, [{ time: "2026-09-30T12:00:00Z", raw: "runtime started" }]);
+
+        for (const message of [
+          "sinceSeconds must be greater than 0",
+          `container "${source}" in pod "different-pod" is waiting to start: ${reason}`,
+          `container "different-container" in pod "${source}-runtime-logs-pod" is waiting to start: ${reason}`,
+        ]) {
+          fixture.state.logError = waiting(message);
+          await assert.rejects(
+            fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request(source)),
+            fixture.state.logError,
+          );
+        }
+
+        // An assigned instance ID makes initial absence uncertain; keep the failure.
+        fixture.state.waitingReason = "ContainerCreating";
+        fixture.state.logError = waiting(
+          `container "${source}" in pod "${source}-runtime-logs-pod" is waiting to start: ContainerCreating`,
+        );
+        fixture.state.containerId = "containerd://existing-instance";
+        await assert.rejects(
+          fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request(source)),
+          fixture.state.logError,
+        );
+        fixture.state.containerId = undefined;
+        fixture.state.restartCount[source] = 1;
+        fixture.state.waitingReason = "CrashLoopBackOff";
+        fixture.state.logError = waiting(
+          `container "${source}" in pod "${source}-runtime-logs-pod" is waiting to start: CrashLoopBackOff`,
+        );
+        await assert.rejects(
+          fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request(source)),
+          fixture.state.logError,
+        );
+      });
+    }
+  }
 });
 
 test("Kubernetes runtime log reads drop kubelet's untimestamped log-unavailable answer", async () => {

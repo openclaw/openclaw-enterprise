@@ -120,7 +120,7 @@ test(
         "--version",
       )
     ).trim();
-    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.163.0-alpha.1";
+    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.163.0-alpha.2";
     assert.ok(codexVersion.includes(expectedCodexVersion));
     context.diagnostic(`dedicated: ${codexVersion}`);
     await assertUnauthorizedCodexSocket(topology);

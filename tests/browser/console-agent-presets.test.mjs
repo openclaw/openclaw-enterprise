@@ -32,6 +32,7 @@ import {
   waitForInputValue,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   createModelCredentialSecret,
@@ -146,6 +147,105 @@ test("Preset string variables preserve multiline defaults, edits and restored dr
       `/namespaces/${namespace.id}/presets/${preset.data.id}`,
     );
     assert.equal(stored.data.template.variables.notes.default, scenario.value, scenario.name);
+  }
+});
+
+test("Selecting an existing fallback keeps the referenced model catalog deployable", async (t) => {
+  for (const fullReferenceIds of [false, true]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap("Model selection");
+    const namespace = await fixture.createNamespace("Fallback choices", { ready: true });
+    const ids = ["primary-model", "fallback-one", "fallback-two"];
+    const reference = (id) => `openai/${id}`;
+    const values = {
+      agents: {
+        defaults: {
+          model: { primary: reference(ids[0]), fallbacks: ids.slice(1).map(reference) },
+          models: Object.fromEntries(
+            ids.map((id) => [
+              reference(id),
+              {
+                agentRuntime: { id: "openclaw" },
+                alias: `Saved ${id}`,
+                params: { temperature: 0.3 },
+              },
+            ]),
+          ),
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://models.example.test/v1",
+            api: "openai-responses",
+            models: ids.map((id) => ({
+              id: fullReferenceIds ? reference(id) : id,
+              name: id,
+              contextWindow: 128000,
+              maxTokens: 8192,
+              reasoning: true,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            })),
+          },
+        },
+      },
+    };
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: {
+        name: "Fallback models",
+        template: { configuration: { values }, agent: { executionMode: "embedded" } },
+      },
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const editor = page.locator("#configuration-json");
+    const model = page.getByLabel("Model ID", { exact: true });
+    const checkSelection = async (id, retained) => {
+      await model.fill(id);
+      await model.press("Tab");
+      const selected = JSON.parse(await editor.inputValue());
+      assert.equal(selected.agents.defaults.model.primary, reference(id));
+      assert.deepEqual(selected.agents.defaults.model.fallbacks, ids.slice(1).map(reference));
+      assert.deepEqual(
+        selected.models.providers.openai.models.map((entry) =>
+          entry.id.includes("/") ? entry.id.split("/").slice(1).join("/") : entry.id,
+        ),
+        retained,
+      );
+      for (const fallback of ids.slice(1)) {
+        assert.deepEqual(
+          selected.agents.defaults.models[reference(fallback)],
+          values.agents.defaults.models[reference(fallback)],
+        );
+        assert.deepEqual(
+          selected.models.providers.openai.models.find(
+            (entry) => entry.id === fallback || entry.id === reference(fallback),
+          ),
+          values.models.providers.openai.models.find(
+            (entry) => entry.id === fallback || entry.id === reference(fallback),
+          ),
+        );
+      }
+      const configuration = await fixture.createConfiguration(namespace.id, selected);
+      const reread = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.equal(reread.status, 200);
+      assert.deepEqual(reread.data.values, selected);
+      assert.equal(resolveConfiguredHarnessId(reread.data.values), "openclaw");
+      return selected;
+    };
+    const selected = await checkSelection(ids[1], ids.slice(1));
+    assert.equal(selected.agents.defaults.models[reference(ids[0])], undefined);
+    await checkSelection(ids[2], ids.slice(1));
+    // Clearing a text input is a temporary editor state, not permission to drop a fallback.
+    await model.fill("");
+    await model.press("Tab");
+    await checkSelection("another-model", [...ids.slice(1), "another-model"]);
   }
 });
 
@@ -659,7 +759,9 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
-      .getByText(/^(No plugins were returned\.|Load plugins to browse available choices\.)$/)
+      .getByText(
+        /^(No plugins were returned\.|Load plugins to browse available choices\.|To add a plugin by ID, choose Done and edit Plugin selections JSON\.)$/,
+      )
       .count(),
     0,
   );
@@ -695,7 +797,9 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
-      .getByText(/^(No plugins were returned\.|Load plugins to browse available choices\.)$/)
+      .getByText(
+        /^(No plugins were returned\.|Load plugins to browse available choices\.|To add a plugin by ID, choose Done and edit Plugin selections JSON\.)$/,
+      )
       .count(),
     0,
   );
@@ -1411,7 +1515,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByLabel("Execution", { exact: true }).fill("invalid");
   await apply.click();
   await page
-    .getByText("Rendered Preset contains invalid Agent fields or Secret bindings.")
+    .getByText(
+      'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
+    )
     .waitFor();
   assert.equal(await save.count(), 0);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
@@ -2460,7 +2566,9 @@ test("invalid Preset application retains chooser edits and preserves the selecte
     await mode.fill("invalid");
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await page
-      .getByText("Rendered Preset contains invalid Agent fields or Secret bindings.")
+      .getByText(
+        'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
+      )
       .waitFor();
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
