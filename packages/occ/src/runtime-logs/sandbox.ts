@@ -26,12 +26,12 @@ import {
   type SanitizedRuntimeLogRecord,
 } from "./sanitize.ts";
 
+import { boundedRuntimeLogPage } from "./page-budget.ts";
+
 const SANDBOX_NAME = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
 const SANDBOX_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const MAX_FIELDS_PER_LINE = 64;
-const MAX_PAGE_BYTES = 512 * 1024;
-const MAX_LINE_BYTES_COUNTED = 8 * 1024;
 
 /** Fixed notice for loss the API cannot observe (AL2). */
 export const SANDBOX_LOG_RETENTION =
@@ -102,12 +102,8 @@ export function sandboxLogLineHash(line: Readonly<SandboxLogLine>): string {
   );
 }
 
-function lineBytes(line: Readonly<SandboxLogLine>): number {
-  let size = Buffer.byteLength(line.message, "utf8") + Buffer.byteLength(line.target, "utf8");
-  for (const [key, value] of Object.entries(line.fields)) {
-    size += key.length + Buffer.byteLength(value, "utf8");
-  }
-  return Math.min(size, MAX_LINE_BYTES_COUNTED) + 256;
+function sandboxPrefixHash(lines: readonly SandboxLogLine[], count: number): string {
+  return runtimeLogLineHash(lines.slice(0, count).map(sandboxLogLineHash).join("\0"));
 }
 
 export interface ReadSandboxLogPageInput {
@@ -228,12 +224,15 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
   }
   // For this source the cursor's `lastTime` is the resume time, not the newest line.
   const resume = prior?.lastTime === null ? undefined : prior;
+  const checkpoint = prior?.sandboxWindow;
   const sinceTime =
-    resume !== undefined
-      ? resume.lastTime!
-      : query.sinceSeconds === undefined
-        ? undefined
-        : new Date(now() - query.sinceSeconds * 1000).toISOString();
+    checkpoint !== undefined
+      ? (checkpoint.since ?? undefined)
+      : resume !== undefined
+        ? resume.lastTime!
+        : query.sinceSeconds === undefined
+          ? undefined
+          : new Date(now() - query.sinceSeconds * 1000).toISOString();
   const tailLines = Math.min(query.tailLines, RUNTIME_LOG_MAX_TAIL_LINES);
   const chunk = validChunk(
     await input.readLogs({ lines: tailLines, ...(sinceTime === undefined ? {} : { sinceTime }) }),
@@ -254,20 +253,64 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
   if (replaced) {
     leading.push(runtimeLogGap("stream_replaced", stream));
   }
-  const continuing = resume !== undefined && !replaced;
+  const checkpointValid =
+    checkpoint !== undefined &&
+    !replaced &&
+    checkpoint.tailLines === tailLines &&
+    checkpoint.seen <= chunk.lines.length &&
+    checkpoint.hash === sandboxPrefixHash(chunk.lines, checkpoint.seen) &&
+    !(
+      checkpoint.total !== chunk.bufferTotal &&
+      (checkpoint.total >= tailLines || chunk.bufferTotal >= tailLines)
+    );
+  const checkpointLost = checkpoint !== undefined && !replaced && !checkpointValid;
+  // A position-only checkpoint retains its pre-cut baseline. A resumable timed
+  // cut can also retain a window witness beside advanced overlap. If that witness
+  // changes, an ordered earlier timestamp establishes the overlap group's start;
+  // otherwise a fresh snapshot with a gap may replay, but must not hide unread copies.
+  const resumeTime = replaced ? null : (resume?.lastTime ?? null);
+  const timed = chunk.lines.filter((line) => line.time !== null);
+  const overlapContext =
+    !checkpointLost ||
+    resumeTime === null ||
+    (timed.some((line) => compareRuntimeLogTime(line.time!, resumeTime) < 0) &&
+      timed.every(
+        (line, index) =>
+          index === 0 || compareRuntimeLogTime(line.time!, timed[index - 1]!.time!) >= 0,
+      ));
+  const baseTime = overlapContext ? resumeTime : null;
+  const baseHashes = replaced || !overlapContext ? [] : (prior?.lastHashes ?? []);
+  const continuing = baseTime !== null && !replaced;
+  if (checkpointLost) {
+    leading.push(
+      runtimeLogGap(
+        chunk.bufferTotal >= tailLines ? "window_exceeded" : "buffer_lost",
+        stream,
+        chunk.lines.find((line) => line.time !== null)?.time ?? null,
+      ),
+    );
+  }
   // Lines already delivered that the read returned again, with their times.
   const matched: OverlapLine[] = [];
   const carried: OverlapLine[] = [];
   let gapFloor: string | null = null;
-  let lines = chunk.lines;
+  let eligible = chunk.lines.map((line, index) => ({ line, index }));
   if (continuing) {
     const remaining = new Map<string, number>();
-    for (const hash of resume.lastHashes) {
+    for (const hash of baseHashes) {
       remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
     }
-    lines = lines.filter((line) => {
+    eligible = eligible.filter(({ line, index }) => {
       if (line.time === null) {
         return true;
+      }
+      // A retained witness reads its original window; the advanced overlap has
+      // already delivered timed rows before this floor.
+      if (
+        compareRuntimeLogTime(line.time, baseTime) < 0 &&
+        !(checkpointValid && index >= checkpoint.count)
+      ) {
+        return false;
       }
       const hash = sandboxLogLineHash(line);
       const count = remaining.get(hash) ?? 0;
@@ -283,16 +326,16 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
     // forgotten once the window moves past that time instead of being shown again.
     for (const [hash, count] of remaining) {
       for (let index = 0; index < count; index += 1) {
-        carried.push({ time: resume.lastTime!, hash });
+        carried.push({ time: baseTime, hash });
       }
     }
     // Lines the source dropped by time were older than the resume time: nothing between
     // pages is missing. A cursor with no remembered lines has nothing to anchor on.
     const olderSeen = chunk.lines.length < chunk.bufferTotal;
-    if (resume.lastHashes.length > 0 && matched.length === 0 && !olderSeen) {
-      const earliest = lines.find((line) => line.time !== null)?.time ?? null;
+    if (baseHashes.length > 0 && matched.length === 0 && !olderSeen) {
+      const earliest = eligible.find(({ line }) => line.time !== null)?.line.time ?? null;
       // The gap covers everything before the lines read now; resume from the oldest.
-      for (const line of lines) {
+      for (const { line } of eligible) {
         if (
           line.time !== null &&
           (gapFloor === null || compareRuntimeLogTime(line.time, gapFloor) < 0)
@@ -309,58 +352,135 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
       );
     }
   }
-  let pageBytes = 0;
-  let pageCut = false;
-  const delivered: SandboxLogLine[] = [];
-  for (const line of lines) {
-    pageBytes += lineBytes(line);
-    if (pageBytes > MAX_PAGE_BYTES) {
-      pageCut = true;
-      break;
-    }
-    delivered.push(line);
-  }
-  const sanitized = sanitizeSandboxLogLines(stream, delivered);
-  const window = overlapWindow(
-    [
-      ...carried,
-      ...matched,
-      ...delivered
-        .filter((line) => line.time !== null)
-        .map((line) => ({ time: line.time!, hash: sandboxLogLineHash(line) })),
-    ],
-    // A view's first page floors the resume time at its requested window start, so a
-    // cursor poll without `sinceSeconds` (after an empty page) reads nothing older.
-    gapFloor ?? (continuing ? resume.lastTime : (sinceTime ?? null)),
+  const remaining = checkpointValid
+    ? eligible.filter(({ index }) => index >= checkpoint.count)
+    : eligible;
+  const lines = remaining.map(({ line }) => line);
+  // A later ordered tail cannot establish order in this observed snapshot.
+  // Keep its positional baseline when delayed batches made its times uncertain.
+  const orderedSnapshot = chunk.lines.every(
+    (line, index) =>
+      line.time !== null &&
+      (index === 0 ||
+        (chunk.lines[index - 1]!.time !== null &&
+          compareRuntimeLogTime(line.time, chunk.lines[index - 1]!.time!) >= 0)),
   );
-  const records = [
-    ...leading,
-    ...sanitized.records,
-    ...(window.overflow === null
-      ? []
-      : [runtimeLogGap("window_exceeded", stream, window.overflow)]),
-    ...(pageCut ? [runtimeLogGap("truncated", stream, delivered.at(-1)?.time ?? null)] : []),
-  ];
-  // The cursor reuses the container position shape: `pod` holds the Sandbox name and
-  // `podUid` the Sandbox object ID the source reported.
-  const position: RuntimeLogCursorPosition = {
-    viewId,
-    pod: chunk.sandbox,
-    podUid: sandboxId,
-    restartCount: 0,
-    previous: false,
-    lastTime: window.since,
-    lastHashes: window.hashes,
-    issuedAt: now(),
-  };
-  return Object.freeze({
-    revisionId: description.revisionId,
-    source: "sandbox",
-    stream: Object.freeze(stream),
-    observedAt: new Date(now()).toISOString(),
-    records: Object.freeze(records),
-    withheld: sanitized.withheld,
-    truncated: pageCut,
-    cursor: codec.encode(binding, position),
+  const issuedAt = now();
+  const observedAt = new Date(issuedAt).toISOString();
+  return boundedRuntimeLogPage(lines.length, (end) => {
+    const delivered = lines.slice(0, end);
+    const pageCut = end < lines.length;
+    const consumed =
+      end === lines.length
+        ? chunk.lines.length
+        : end === 0
+          ? checkpointValid
+            ? checkpoint.count
+            : 0
+          : remaining[end - 1]!.index + 1;
+    const consumedLines = eligible.filter(({ index }) => index < consumed).map(({ line }) => line);
+    const sanitized = sanitizeSandboxLogLines(stream, delivered);
+    const window = overlapWindow(
+      [
+        ...carried,
+        ...matched,
+        ...consumedLines
+          .filter((line) => line.time !== null)
+          .map((line) => ({ time: line.time!, hash: sandboxLogLineHash(line) })),
+      ],
+      // A view's first page floors the resume time at its requested window start, so a
+      // cursor poll without `sinceSeconds` (after an empty page) reads nothing older.
+      gapFloor ?? (continuing ? baseTime : (sinceTime ?? null)),
+    );
+    // A full moving tail invalidates positional checkpoints on every append. Use
+    // the normal delivered overlap when it still covers every undelivered time.
+    // A partial timestamp group still fits when the overlap counts every delivered
+    // occurrence at its time. Untimed rows, overflow, or a suffix before the overlap
+    // floor require the signed snapshot until that observed window drains.
+    const newestDelivered = delivered.reduce<string | null>(
+      (newest, line) =>
+        line.time !== null && (newest === null || compareRuntimeLogTime(line.time, newest) > 0)
+          ? line.time
+          : newest,
+      null,
+    );
+    const retainCheckpoint =
+      (pageCut &&
+        (!orderedSnapshot ||
+          chunk.bufferTotal < tailLines ||
+          consumedLines.some((line) => line.time === null) ||
+          window.overflow !== null ||
+          window.since === null ||
+          newestDelivered === null ||
+          lines
+            .slice(end)
+            .some(
+              (line) => line.time === null || compareRuntimeLogTime(line.time, window.since!) < 0,
+            ))) ||
+      (checkpoint !== undefined &&
+        (consumedLines.some((line) => line.time === null) || lines.length === 0));
+    // Every wire cut needs a witness: a late identical copy may arrive after
+    // this read, even when its current suffix has no repeated hash.
+    const saveCheckpoint = pageCut || retainCheckpoint;
+    // Identical occurrences in a full single-time tail can roll without visible change.
+    const firstTime = chunk.lines[0]?.time;
+    const fullSingleTime =
+      firstTime != null &&
+      chunk.lines.length >= tailLines &&
+      chunk.lines.every(
+        (line) => line.time !== null && compareRuntimeLogTime(line.time, firstTime) === 0,
+      );
+    const unobservableTail =
+      (saveCheckpoint || checkpoint !== undefined || fullSingleTime) &&
+      chunk.bufferTotal >= tailLines;
+    const records = [
+      ...leading,
+      ...(unobservableTail &&
+      window.overflow === null &&
+      !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
+        ? [runtimeLogGap("window_exceeded", stream)]
+        : []),
+      ...sanitized.records,
+      ...(window.overflow === null
+        ? []
+        : [runtimeLogGap("window_exceeded", stream, window.overflow)]),
+      ...(pageCut ? [runtimeLogGap("truncated", stream, delivered.at(-1)?.time ?? null)] : []),
+    ];
+    // The cursor reuses the container position shape: `pod` holds the Sandbox name and
+    // `podUid` the Sandbox object ID the source reported.
+    const position: RuntimeLogCursorPosition = {
+      viewId,
+      pod: chunk.sandbox,
+      podUid: sandboxId,
+      restartCount: 0,
+      previous: false,
+      // Pin the baseline for positional-only cuts. Safe timed overlap can advance
+      // beside the raw witness without crossing an undelivered time.
+      lastTime: retainCheckpoint ? (baseTime ?? sinceTime ?? null) : window.since,
+      lastHashes: retainCheckpoint ? baseHashes : window.hashes,
+      ...(saveCheckpoint
+        ? {
+            sandboxWindow: {
+              since: sinceTime ?? null,
+              tailLines,
+              count: consumed,
+              seen: chunk.lines.length,
+              hash: sandboxPrefixHash(chunk.lines, chunk.lines.length),
+              total: chunk.bufferTotal,
+            },
+          }
+        : {}),
+      issuedAt,
+    };
+    return Object.freeze({
+      revisionId: description.revisionId,
+      source: "sandbox",
+      stream: Object.freeze(stream),
+      observedAt,
+      records: Object.freeze(records),
+      withheld: sanitized.withheld,
+      truncated: pageCut,
+      cursor: codec.encode(binding, position),
+    });
   });
 }

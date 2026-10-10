@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
@@ -132,12 +132,24 @@ function openShellSandboxDriver(gatewayClient) {
   );
 }
 
-async function sandboxFixture() {
+async function sandboxFixture(options = {}) {
   const gateway = logOnlyGatewayClient();
   const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE });
+  const sandboxDriver = openShellSandboxDriver(gateway.client);
+  if (options.sandboxName !== undefined) {
+    const read = sandboxDriver.readSandboxLogs.bind(sandboxDriver);
+    // Exercise the core's accepted Driver identity width without replacing paging.
+    sandboxDriver.readSandboxLogs = async (...args) => ({
+      ...(await read(...args)),
+      sandbox: options.sandboxName,
+    });
+  }
   const fixture = await createRuntimeLogFixture({
     computeDriver,
-    sandboxDriver: openShellSandboxDriver(gateway.client),
+    sandboxDriver,
+    ...(options.cursorSecret === undefined
+      ? {}
+      : { agentRuntimeLogs: { enabled: true, cursorSecret: options.cursorSecret } }),
   });
   const target = await fixture.deployAgent("sandbox-logs");
   return { ...fixture, gateway, target };
@@ -1031,4 +1043,1083 @@ test("sandbox sanitization stays linear on hostile 32 KiB OCSF lines", async () 
     assert.equal(records.length, 1);
     assert.ok(elapsed < budgetMs, `${message.slice(0, 24)} took ${elapsed.toFixed(0)} ms of CPU`);
   }
+});
+
+test("sandbox wire pages include escaped diagnostics and resume without losing records", async () => {
+  const fixture = await sandboxFixture();
+  const started = Date.now() - 1000;
+  fixture.gateway.state.lines = Array.from({ length: 200 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time: new Date(started + index).toISOString(),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; 网络🙂 process arguments: ${'--option="value" '.repeat(500)}`,
+    fields: {},
+  }));
+  const seen = [];
+  let cursor;
+  let pages = 0;
+  do {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(
+        `source=sandbox&tailLines=200${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200, response.text.slice(0, 200));
+    assert.equal(response.body.meta.requestId.length, 40);
+    assert.equal(
+      Buffer.byteLength(response.text, "utf8"),
+      Buffer.byteLength(JSON.stringify(response.body), "utf8"),
+    );
+    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    if (pages === 0) {
+      assert.equal(response.data.truncated, true);
+    }
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    cursor = response.data.cursor;
+    pages += 1;
+    if (!response.data.truncated) {
+      break;
+    }
+    assert.ok(lines.length > 0, "a byte-cut page must advance");
+  } while (pages < 10);
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 200 }, (_, index) => index),
+  );
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&cursor=${cursor}`),
+  );
+  assert.deepEqual(
+    replay.data.records.filter(({ type }) => type === "line"),
+    [],
+  );
+  assert.equal(
+    fixture.gateway.requests.length,
+    pages + 1,
+    "prefix builds make no extra gateway reads",
+  );
+  assert.equal(
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view")
+      .length,
+    1,
+  );
+  const download = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&download=true"),
+  );
+  assert.equal(download.status, 200);
+  assert.ok(Buffer.byteLength(download.text, "utf8") <= 512 * 1024);
+});
+
+test("sandbox wire budgeting handles empty, single and grouped withheld pages", async () => {
+  const fixture = await sandboxFixture();
+  const started = Date.now() - 1000;
+  const row = (message, index = 0) => ({
+    sandboxId: SANDBOX_ID,
+    time: new Date(started + index).toISOString(),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message,
+    fields: {},
+  });
+  for (const lines of [[], [row(`single 网络🙂 ${'--option="value" '.repeat(500)}`)]]) {
+    fixture.gateway.state.lines = lines;
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath("source=sandbox&tailLines=200"),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.data.truncated, false);
+    assert.equal(response.data.records.filter(({ type }) => type === "line").length, lines.length);
+    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+  }
+  fixture.gateway.state.lines = Array.from({ length: 80 }, (_, index) =>
+    row(JSON.stringify({ ordinary_metadata: "diagnostic ".repeat(900) }), index),
+  );
+  const withheld = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=200"),
+  );
+  assert.equal(withheld.status, 200);
+  assert.equal(withheld.data.truncated, false);
+  assert.equal(withheld.data.withheld, 80);
+  assert.equal(withheld.data.records.filter(({ type }) => type === "withheld")[0].count, 80);
+  assert.ok(Buffer.byteLength(withheld.text, "utf8") <= 512 * 1024);
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&cursor=${withheld.data.cursor}`),
+  );
+  assert.deepEqual(
+    replay.data.records.filter(({ type }) => type === "line" || type === "withheld"),
+    [],
+  );
+});
+
+test("sandbox wire-cut timestamp groups drain before advancing beyond their time", async () => {
+  const fixture = await sandboxFixture();
+  const time = new Date(Date.now() - 1000).toISOString().replace("Z", "000000Z");
+  fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+    fields: {},
+  }));
+  const seen = [];
+  let cursor;
+  for (let page = 0; page < 10; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(
+        `source=sandbox&tailLines=200${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+    assert.ok(lines.length > 0);
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 150 }, (_, index) => index),
+  );
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=200&cursor=${cursor}`),
+  );
+  assert.deepEqual(
+    replay.data.records.filter(({ type }) => type === "line"),
+    [],
+  );
+});
+
+test("sandbox wire-cut prefixes without timestamps drain and suppress an unchanged snapshot", async () => {
+  const fixture = await sandboxFixture();
+  fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time: null,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+    fields: {},
+  }));
+  const seen = [];
+  let cursor;
+  for (let page = 0; page < 10; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(
+        `source=sandbox&tailLines=200${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+    assert.ok(lines.length > 0);
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 150 }, (_, index) => index),
+  );
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=200&cursor=${cursor}`),
+  );
+  assert.deepEqual(
+    replay.data.records.filter(({ type }) => type === "line"),
+    [],
+  );
+});
+
+test("sandbox byte-window checkpoints preserve the pre-cut overlap baseline", async () => {
+  const fixture = await sandboxFixture();
+  const time = new Date(Date.now() - 1000).toISOString().replace("Z", "000000Z");
+  const anchor = {
+    sandboxId: SANDBOX_ID,
+    time,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: "prior diagnostic",
+    fields: {},
+  };
+  fixture.gateway.state.lines = [anchor];
+  const initial = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=200"),
+  );
+  const later = new Date(Date.parse(time) + 1).toISOString().replace("Z", "000000Z");
+  fixture.gateway.state.lines = [
+    anchor,
+    ...Array.from({ length: 150 }, (_, index) => ({
+      ...anchor,
+      time: later,
+      message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+    })),
+  ];
+  const seen = [];
+  let cursor = initial.data.cursor;
+  for (let page = 0; page < 10; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=200&cursor=${cursor}`),
+    );
+    assert.equal(response.status, 200);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    assert.ok(lines.every(({ message }) => message !== "prior diagnostic"));
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 150 }, (_, index) => index),
+  );
+});
+
+test("sandbox byte-window changes report a gap before a fresh value snapshot", async () => {
+  for (const changed of ["prefix", "clipped size", "query tail"]) {
+    const fixture = await sandboxFixture();
+    const row = (index) => ({
+      sandboxId: SANDBOX_ID,
+      time: null,
+      level: "INFO",
+      target: "supervisor",
+      source: "sandbox",
+      message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+      fields: {},
+    });
+    fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => row(index));
+    const tail = changed === "clipped size" ? 100 : 200;
+    const first = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=${tail}`),
+    );
+    assert.equal(first.data.truncated, true);
+    if (changed === "prefix") {
+      fixture.gateway.state.lines[0] = {
+        ...row(0),
+        message: `changed row=0; ${'"a" '.repeat(1000)}`,
+      };
+    }
+    if (changed === "clipped size") {
+      fixture.gateway.state.lines.splice(99);
+    }
+    const next = await fixture.request(
+      "GET",
+      fixture.target.logsPath(
+        `source=sandbox&tailLines=${changed === "query tail" ? 100 : tail}&cursor=${first.data.cursor}`,
+      ),
+    );
+    assert.equal(next.status, 200);
+    assert.ok(Buffer.byteLength(next.text, "utf8") <= 512 * 1024);
+    assert.ok(
+      next.data.records.some(
+        ({ type, reason }) => type === "gap" && ["buffer_lost", "window_exceeded"].includes(reason),
+      ),
+      changed,
+    );
+    assert.ok(
+      next.data.records.some(({ type }) => type === "line"),
+      changed,
+    );
+  }
+});
+
+test("sandbox byte-window checkpoints notice changes to an undelivered suffix", async () => {
+  const fixture = await sandboxFixture();
+  const row = (index) => ({
+    sandboxId: SANDBOX_ID,
+    time: null,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+    fields: {},
+  });
+  fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => row(index));
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=200"),
+  );
+  fixture.gateway.state.lines[149] = {
+    ...row(149),
+    message: `changed suffix; ${'"a" '.repeat(1000)}`,
+  };
+  const next = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=200&cursor=${first.data.cursor}`),
+  );
+  assert.equal(next.status, 200);
+  assert.ok(
+    next.data.records.some(({ type, reason }) => type === "gap" && reason === "buffer_lost"),
+  );
+});
+
+test("sandbox fitting untimed replacement snapshots retain replay progress", async () => {
+  for (const changed of ["tail", "buffer"]) {
+    const fixture = await sandboxFixture();
+    fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => ({
+      sandboxId: SANDBOX_ID,
+      time: null,
+      level: "INFO",
+      target: "supervisor",
+      source: "sandbox",
+      message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+      fields: {},
+    }));
+    const first = await fixture.request(
+      "GET",
+      fixture.target.logsPath("source=sandbox&tailLines=200"),
+    );
+    assert.equal(first.data.truncated, true);
+    if (changed === "buffer") {
+      fixture.gateway.state.lines.splice(25);
+    }
+    const tail = changed === "tail" ? 25 : 200;
+    const replacement = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=${tail}&cursor=${first.data.cursor}`),
+    );
+    assert.equal(replacement.status, 200);
+    assert.equal(replacement.data.truncated, false);
+    assert.ok(
+      replacement.data.records.some(
+        ({ type, reason }) => type === "gap" && ["buffer_lost", "window_exceeded"].includes(reason),
+      ),
+    );
+    assert.equal(replacement.data.records.filter(({ type }) => type === "line").length, 25);
+    const replay = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=${tail}&cursor=${replacement.data.cursor}`),
+    );
+    assert.equal(replay.status, 200);
+    assert.deepEqual(
+      replay.data.records.filter(({ type }) => type === "line"),
+      [],
+      changed,
+    );
+  }
+});
+
+test("sandbox full untimed checkpoints disclose saturation when total equals the tail", async () => {
+  const fixture = await sandboxFixture();
+  fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time: null,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; diagnostic ${'"a" '.repeat(1000)}`,
+    fields: {},
+  }));
+  const seen = [];
+  let cursor;
+  for (let page = 0; page < 10; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(
+        `source=sandbox&tailLines=100${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(
+      response.data.records.some(
+        ({ type, reason }) => type === "gap" && reason === "window_exceeded",
+      ),
+    );
+    seen.push(
+      ...response.data.records
+        .filter(({ type }) => type === "line")
+        .map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])),
+    );
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 100 }, (_, i) => i + 50),
+  );
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=100&cursor=${cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+  assert.ok(
+    replay.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+  );
+});
+
+test("sandbox empty checkpoint recovery suppresses the next single untimed snapshot", async () => {
+  const fixture = await sandboxFixture();
+  fixture.gateway.state.lines = Array.from({ length: 150 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time: null,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; ${'"a" '.repeat(1000)}`,
+    fields: {},
+  }));
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=200"),
+  );
+  assert.equal(first.data.truncated, true);
+  fixture.gateway.state.lines = [];
+  const empty = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&cursor=${first.data.cursor}`),
+  );
+  assert.equal(empty.status, 200);
+  assert.ok(
+    empty.data.records.some(({ type, reason }) => type === "gap" && reason === "buffer_lost"),
+  );
+  fixture.gateway.state.lines = [
+    {
+      sandboxId: SANDBOX_ID,
+      time: null,
+      level: "INFO",
+      target: "supervisor",
+      source: "sandbox",
+      message: "worker ready",
+      fields: {},
+    },
+  ];
+  const single = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&cursor=${empty.data.cursor}`),
+  );
+  assert.equal(single.data.records.filter(({ type }) => type === "line").length, 1);
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&cursor=${single.data.cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+});
+
+test("sandbox full timed checkpoints retain their gap through final drain below hash capacity", async () => {
+  const fixture = await sandboxFixture();
+  fixture.gateway.state.lines = Array.from({ length: 40 }, () =>
+    sandboxLine(1, `same diagnostic ${'"'.repeat(8000)}`),
+  );
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=40"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  const last = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=40&cursor=${first.data.cursor}`),
+  );
+  assert.equal(last.status, 200);
+  assert.equal(last.data.truncated, false);
+  assert.equal(
+    [...first.data.records, ...last.data.records].filter(({ type }) => type === "line").length,
+    40,
+  );
+  assert.ok(
+    last.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+    "identical rolling remains unobservable after the checkpoint closes",
+  );
+  assert.ok(Buffer.byteLength(last.text) <= 512 * 1024);
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=40&cursor=${last.data.cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+});
+
+for (const wideIdentity of [false, true]) {
+  test(`sandbox full overlap cuts keep ${wideIdentity ? "maximum Driver identities" : "legacy cursors"} within admission limits`, async () => {
+    const cursorSecret = "disposable-legacy-baseline-cursor-secret-32";
+    const fixture = await sandboxFixture({
+      cursorSecret,
+      ...(wideIdentity ? { sandboxName: "s".repeat(253) } : {}),
+    });
+    const start = Date.now() - 1000;
+    const row = (i, message) => ({
+      sandboxId: wideIdentity ? "i".repeat(128) : SANDBOX_ID,
+      time: new Date(start + i).toISOString().replace("Z", "000000Z"),
+      level: "INFO",
+      target: "supervisor",
+      source: "sandbox",
+      message,
+      fields: {},
+    });
+    const anchors = Array.from({ length: 48 }, (_, i) => row(i, `anchor=${i}`));
+    fixture.gateway.state.lines = anchors;
+    const prime = await fixture.request(
+      "GET",
+      fixture.target.logsPath("source=sandbox&tailLines=200"),
+    );
+    assert.equal(prime.status, 200);
+    fixture.gateway.state.lines = [
+      ...anchors,
+      ...Array.from({ length: 150 }, (_, i) =>
+        row(i + 100, `row=${i}; diagnostic ${'--option="value" '.repeat(500)}`),
+      ),
+    ];
+    let cursor = prime.data.cursor;
+    if (!wideIdentity) {
+      // Existing v1 cursors store overlap hashes as an array; retain route decoding.
+      const decoded = JSON.parse(Buffer.from(cursor.split(".")[1], "base64url"));
+      decoded.h = decoded.h.match(/.{16}/g);
+      const payload = Buffer.from(JSON.stringify(decoded)).toString("base64url");
+      const mac = createHmac("sha256", cursorSecret)
+        .update(`occ-runtime-logs-cursor\0${payload}`)
+        .digest("base64url");
+      cursor = `v1.${payload}.${mac}`;
+    }
+    const seen = [];
+    for (let page = 0; page < 10; page += 1) {
+      const response = await fixture.request(
+        "GET",
+        fixture.target.logsPath(`source=sandbox&tailLines=200&cursor=${cursor}`),
+      );
+      assert.equal(response.status, 200);
+      const lines = response.data.records.filter(({ type }) => type === "line");
+      assert.ok(
+        lines.every(({ message }) => message.startsWith("row=")),
+        "partial checkpoints retain the anchor baseline",
+      );
+      seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+      cursor = response.data.cursor;
+      assert.ok(cursor.length <= 2048);
+      assert.match(cursor, /^v1\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$/);
+      if (!response.data.truncated) {
+        break;
+      }
+    }
+    assert.deepEqual(
+      seen,
+      Array.from({ length: 150 }, (_, i) => i),
+    );
+    const replay = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=200&cursor=${cursor}`),
+    );
+    assert.equal(replay.status, 200);
+    assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+  });
+}
+
+test("sandbox follows a growing full wire-cut tail without replaying its delivered prefix", async () => {
+  const fixture = await sandboxFixture();
+  const start = Date.now() - 120_000;
+  const row = (index) => ({
+    sandboxId: SANDBOX_ID,
+    time: new Date(start + index * 1000).toISOString().replace("Z", "000000Z"),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    fields: {},
+  });
+  fixture.gateway.state.lines = Array.from({ length: 100 }, (_, index) => row(index));
+  let cursor;
+  const seen = [];
+  const counts = [];
+  for (let poll = 0; poll < 6; poll += 1) {
+    if (poll > 0) {
+      const offset = fixture.gateway.state.lines.length;
+      fixture.gateway.state.lines.push(
+        ...Array.from({ length: 3 }, (_, index) => row(offset + index)),
+      );
+    }
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(
+        `source=sandbox&tailLines=100${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    counts.push(lines.length);
+    if (poll === 0) {
+      assert.equal(response.data.truncated, true);
+    }
+    cursor = response.data.cursor;
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 115 }, (_, index) => index),
+  );
+  assert.deepEqual(counts.slice(2), [3, 3, 3, 3]);
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=100&cursor=${cursor}`),
+  );
+  assert.deepEqual(
+    replay.data.records.filter(({ type }) => type === "line"),
+    [],
+  );
+});
+
+for (const { tailLines, identical } of [
+  { tailLines: 200, identical: false },
+  { tailLines: 1000, identical: false },
+  { tailLines: 1000, identical: true },
+]) {
+  test(`sandbox follows full ${tailLines}-line wire cuts inside ${identical ? "identical" : "distinct"} millisecond timestamp groups`, async () => {
+    const fixture = await sandboxFixture();
+    const start = Date.now() - 120_000;
+    const total = tailLines + 21;
+    // Deterministic 2–3-line millisecond groups model the supported timestamp
+    // precision. A full moving source must resume inside a partly delivered group.
+    let seed = 1;
+    const offsets = [];
+    for (let offset = 0; offsets.length < total; offset += 1) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const count = 2 + (seed >>> 31);
+      offsets.push(...Array.from({ length: count }, () => offset));
+    }
+    const row = (index) => ({
+      sandboxId: SANDBOX_ID,
+      time: new Date(start + offsets[index]).toISOString().replace("Z", "000000Z"),
+      level: "INFO",
+      target: "supervisor",
+      source: "sandbox",
+      message: `row=${identical ? offsets[index] : index}; ${"ordinary diagnostic ".repeat(tailLines === 200 ? 350 : 105)}`,
+      fields: {},
+    });
+    fixture.gateway.state.lines = Array.from({ length: tailLines }, (_, index) => row(index));
+    let cursor;
+    let splitGroup = false;
+    const seen = [];
+    for (let poll = 0; poll < 8; poll += 1) {
+      if (poll > 0) {
+        const offset = fixture.gateway.state.lines.length;
+        fixture.gateway.state.lines.push(
+          ...Array.from({ length: 3 }, (_, index) => row(offset + index)),
+        );
+      }
+      fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
+      const response = await fixture.request(
+        "GET",
+        fixture.target.logsPath(
+          `source=sandbox&tailLines=${tailLines}${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+        ),
+      );
+      assert.equal(response.status, 200);
+      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      const lines = response.data.records.filter(({ type }) => type === "line");
+      const indices = lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1]));
+      seen.push(...indices);
+      if (response.data.truncated && indices.length > 0) {
+        const last = indices.at(-1);
+        splitGroup ||= identical
+          ? lines.filter(({ message }) => message === lines.at(-1).message).length <
+            fixture.gateway.state.lines
+              .slice(-tailLines)
+              .filter(({ message }) => message === lines.at(-1).message).length
+          : offsets[last] === offsets[last + 1];
+      }
+      cursor = response.data.cursor;
+    }
+    assert.ok(splitGroup, "the response cut exercises a partly delivered timestamp group");
+    assert.deepEqual(
+      seen,
+      Array.from({ length: total }, (_, index) => (identical ? offsets[index] : index)),
+    );
+    const replay = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=${tailLines}&cursor=${cursor}`),
+    );
+    assert.equal(replay.status, 200);
+    assert.deepEqual(
+      replay.data.records.filter(({ type }) => type === "line"),
+      [],
+    );
+  });
+}
+
+test("sandbox full wire-cut pages retain already-delivered untimed prefixes", async () => {
+  const start = Date.now() - 120_000;
+  const rows = Array.from({ length: 100 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time: index === 0 ? null : new Date(start + index * 1000).toISOString().replace("Z", "000000Z"),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    fields: {},
+  }));
+  // This supported raw-null-time response cannot be ordered by the request floor.
+  // Keep the observed unknown row alongside the matching timed rows.
+  const gatewayClient = {
+    async getSandboxLogs(request) {
+      const tail = rows.slice(-request.lines);
+      return {
+        lines: tail.filter(
+          (line) =>
+            line.time === null || request.sinceTime === undefined || line.time >= request.sinceTime,
+        ),
+        bufferTotal: tail.length,
+      };
+    },
+  };
+  const fixture = await createRuntimeLogFixture({
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
+    sandboxDriver: openShellSandboxDriver(gatewayClient),
+  });
+  const target = await fixture.deployAgent("full-mixed-wire-tail");
+  const seen = [];
+  let cursor;
+  for (let poll = 0; poll < 3; poll += 1) {
+    const response = await fixture.request(
+      "GET",
+      target.logsPath(
+        `source=sandbox&tailLines=100${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    if (poll === 0) {
+      assert.equal(response.data.truncated, true);
+    }
+    if (poll === 2) {
+      assert.equal(lines.length, 0, "the drained snapshot does not replay its untimed prefix");
+    }
+    cursor = response.data.cursor;
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 100 }, (_, index) => index),
+  );
+});
+
+test("sandbox partial identical groups preserve rollover uncertainty beside newer timestamps", async () => {
+  const fixture = await sandboxFixture();
+  const time = new Date(Date.now() - 1000).toISOString().replace("Z", "000000Z");
+  const originalCount = 40;
+  const original = Array.from({ length: originalCount }, () => ({
+    sandboxId: SANDBOX_ID,
+    time,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `same diagnostic ${'"'.repeat(8000)}`,
+    fields: {},
+  }));
+  fixture.gateway.state.lines = original;
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=40"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  const delivered = first.data.records.filter(({ type }) => type === "line").length;
+  assert.ok(delivered > 0 && delivered < originalCount);
+  // The delivered copies leave the requested tail; identical unread copies
+  // cannot identify their occurrence by hash. Newer times hide that ambiguity
+  // from a single-time check, so the changed snapshot must retain its gap.
+  fixture.gateway.state.lines.push(
+    ...Array.from({ length: delivered }, (_, index) => ({
+      ...original[0],
+      time: new Date(Date.parse(time) + index + 1).toISOString().replace("Z", "000000Z"),
+      message: `new diagnostic ${index}`,
+    })),
+  );
+  fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
+  const second = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=40&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.equal(
+    second.data.records.filter(
+      ({ type, message }) => type === "line" && message.startsWith("same diagnostic"),
+    ).length,
+    originalCount - delivered,
+    "the unread identical copies remain in the surviving snapshot",
+  );
+  assert.ok(Buffer.byteLength(second.text) <= 512 * 1024);
+  assert.ok(
+    second.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+  );
+});
+
+test("sandbox matching witnesses deliver new late rows below the advanced overlap floor", async () => {
+  const fixture = await sandboxFixture();
+  const start = Date.now() - 2000;
+  const recent = Array.from({ length: 300 }, (_, index) => ({
+    sandboxId: SANDBOX_ID,
+    time: new Date(start + Math.floor(index / 3)).toISOString().replace("Z", "000000Z"),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `group=${Math.floor(index / 3)}; ${"ordinary diagnostic ".repeat(105)}`,
+    fields: {},
+  }));
+  // An already full ring can grow the filtered window without changing its
+  // total or prior value prefix: the evicted rows are before the query floor.
+  const older = Array.from({ length: 1700 }, () => ({
+    ...recent[0],
+    time: new Date(start - 20_000).toISOString().replace("Z", "000000Z"),
+    message: "older diagnostic",
+  }));
+  fixture.gateway.state.lines = [...older, ...recent];
+  fixture.gateway.state.bufferTotal = 2000;
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=1000&sinceSeconds=10"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  fixture.gateway.state.lines.shift();
+  fixture.gateway.state.lines.push({
+    ...recent[0],
+    time: new Date(start - 2000).toISOString().replace("Z", "000000Z"),
+    message: "new late diagnostic",
+  });
+  const seen = [...first.data.records.filter(({ type }) => type === "line")];
+  let cursor = first.data.cursor;
+  for (let page = 0; page < 5; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=1000&cursor=${cursor}`),
+    );
+    assert.equal(response.status, 200);
+    seen.push(...response.data.records.filter(({ type }) => type === "line"));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+  }
+  assert.equal(seen.filter(({ message }) => message.startsWith("group=")).length, 300);
+  assert.equal(seen.filter(({ message }) => message === "new late diagnostic").length, 1);
+});
+
+test("sandbox retains witnesses for unread copies of incoming overlap hashes", async () => {
+  const fixture = await sandboxFixture();
+  const start = Date.now() - 1000;
+  const x = {
+    sandboxId: SANDBOX_ID,
+    time: new Date(start).toISOString(),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: "remembered diagnostic X",
+    fields: {},
+  };
+  fixture.gateway.state.lines = [x];
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=42"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.records.filter(({ type }) => type === "line").length, 1);
+  const ys = Array.from({ length: 40 }, (_, index) => ({
+    ...x,
+    time: new Date(start + 1).toISOString(),
+    message: `Y=${index}; ${'"'.repeat(8000)}`,
+  }));
+  fixture.gateway.state.lines = [x, ...ys, x];
+  const second = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=42&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.equal(second.data.truncated, true);
+  assert.equal(
+    second.data.records.filter(({ type, message }) => type === "line" && message === x.message)
+      .length,
+    0,
+  );
+  // The delivered X leaves the tail while its unread identical late copy survives.
+  // Without a raw witness, the incoming overlap hash consumes that unread copy.
+  fixture.gateway.state.lines.push({
+    ...x,
+    time: new Date(start + 2).toISOString(),
+    message: "new diagnostic Z",
+  });
+  fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
+  const seen = [];
+  const gaps = [];
+  let cursor = second.data.cursor;
+  for (let page = 0; page < 5; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=42&cursor=${cursor}`),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+    seen.push(...response.data.records.filter(({ type }) => type === "line"));
+    gaps.push(...response.data.records.filter(({ type }) => type === "gap"));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+  }
+  assert.equal(
+    seen.filter(({ message }) => message === x.message).length,
+    1,
+    "the unread identical copy remains visible",
+  );
+  assert.ok(
+    gaps.some(({ reason }) => reason === "window_exceeded"),
+    "lost ordered context must disclose reset and possible replay",
+  );
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=42&cursor=${cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+});
+
+test("sandbox cut witnesses retain copies arriving after a distinct partial group rolls", async () => {
+  const fixture = await sandboxFixture();
+  const start = Date.now() - 1000;
+  const line = (index, offset, large = false) => ({
+    sandboxId: SANDBOX_ID,
+    time: new Date(start + offset).toISOString(),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; ${large ? '"'.repeat(8000) : "ordinary diagnostic"}`,
+    fields: {},
+  });
+  const original = [
+    ...Array.from({ length: 40 }, (_, index) => line(index, 0, true)),
+    line(40, 1),
+    line(41, 1),
+  ];
+  fixture.gateway.state.lines = [...original];
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=42"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  const delivered = first.data.records.filter(({ type }) => type === "line").length;
+  assert.ok(delivered > 0 && delivered < 40);
+  // All delivered originals roll out, then one late identical copy arrives.
+  // The original fetched suffix had no equal hash, so only retained window
+  // evidence can disclose the changed snapshot and keep this new occurrence.
+  fixture.gateway.state.lines.push(
+    original[0],
+    ...Array.from({ length: delivered - 1 }, (_, index) => line(42 + index, 2)),
+  );
+  fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
+  const second = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=42&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.ok(Buffer.byteLength(second.text) <= 512 * 1024);
+  assert.deepEqual(
+    second.data.records
+      .filter(({ type }) => type === "line")
+      .map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])),
+    [
+      ...Array.from({ length: 42 - delivered }, (_, index) => delivered + index),
+      0,
+      ...Array.from({ length: delivered - 1 }, (_, index) => 42 + index),
+    ],
+  );
+  assert.ok(
+    second.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+  );
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=42&cursor=${second.data.cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+});
+
+test("sandbox cut recovery does not infer history order from a surviving ordered tail", async () => {
+  const fixture = await sandboxFixture();
+  const start = Date.now() - 1000;
+  const line = (index, offset = 0, large = true) => ({
+    sandboxId: SANDBOX_ID,
+    time: new Date(start + offset).toISOString(),
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; ${large ? '"'.repeat(8000) : "ordinary diagnostic"}`,
+    fields: {},
+  });
+  const original = Array.from({ length: 100 }, (_, index) =>
+    line(index, index === 20 ? -10_000 : 0),
+  );
+  fixture.gateway.state.lines = [...original];
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=100"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  const delivered = first.data.records.filter(({ type }) => type === "line").length;
+  assert.ok(delivered > 21 && delivered < 48);
+  // The out-of-order delivered prefix rolls into a currently ordered tail.
+  // That surviving order does not identify the new copy of an evicted row.
+  fixture.gateway.state.lines.push(
+    original[0],
+    ...Array.from({ length: 19 }, (_, index) => line(100 + index, 0, false)),
+  );
+  fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
+  const seen = [];
+  const gaps = [];
+  let cursor = first.data.cursor;
+  for (let page = 0; page < 5; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      fixture.target.logsPath(`source=sandbox&tailLines=100&cursor=${cursor}`),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+    seen.push(
+      ...response.data.records
+        .filter(({ type }) => type === "line")
+        .map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])),
+    );
+    gaps.push(...response.data.records.filter(({ type }) => type === "gap"));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+  }
+  assert.equal(
+    seen.filter((index) => index === 0).length,
+    1,
+    "the late copy remains unread even if the current tail is ordered",
+  );
+  for (let index = delivered; index < 100; index += 1) {
+    assert.equal(seen.filter((value) => value === index).length, 1);
+  }
+  assert.ok(gaps.some(({ reason }) => reason === "window_exceeded"));
+  const replay = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=100&cursor=${cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
 });

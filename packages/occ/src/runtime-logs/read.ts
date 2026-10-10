@@ -17,14 +17,16 @@ import {
 } from "./cursor.ts";
 import {
   runtimeLogGap,
+  runtimeLogEvidence,
   sanitizeRuntimeLogChunk,
   type SanitizedRuntimeLogRecord,
 } from "./sanitize.ts";
 
+import { boundedRuntimeLogPage } from "./page-budget.ts";
+
 export const RUNTIME_LOG_LIMIT_BYTES = 1024 * 1024;
 export const RUNTIME_LOG_DEFAULT_TAIL_LINES = 200;
 export const RUNTIME_LOG_MAX_TAIL_LINES = 1000;
-const RUNTIME_LOG_MAX_PAGE_BYTES = 512 * 1024;
 const RUNTIME_LOG_MAX_FRONTIER_HASHES = 16;
 const RESUME_OVERLAP_SECONDS = 2;
 
@@ -138,6 +140,12 @@ function validChunk(value: unknown, source: RuntimeLogSourceId): AgentRuntimeLog
   return chunk;
 }
 
+function containerPrefixHash(lines: AgentRuntimeLogChunk["lines"], count: number): string {
+  return runtimeLogLineHash(
+    JSON.stringify(lines.slice(0, count).map(({ time, raw }) => [time, raw])),
+  );
+}
+
 export interface ReadRuntimeLogPageInput {
   readonly description: Readonly<AgentRuntimeDescription>;
   readonly query: RuntimeLogQuery;
@@ -217,6 +225,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     leading.push(runtimeLogGap("stream_replaced", stream));
   }
   const resume = sameStream && prior.lastTime !== null ? prior : undefined;
+  const checkpoint = sameStream ? prior.containerWindow : undefined;
   // A view that has delivered no line yet (a quiet container, or an empty
   // `sinceSeconds` window) continues from its previous page, not from the whole tail:
   // cursor polls need not repeat `sinceSeconds`, and a cursor reads newer lines only.
@@ -242,12 +251,28 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   const secondsSince = (time: number) =>
     Math.min(86_400, Math.max(1, Math.ceil((now() - time) / 1000) + RESUME_OVERLAP_SECONDS));
   const sinceSeconds =
-    resume !== undefined
-      ? secondsSince(Date.parse(resume.lastTime!))
-      : quiet !== undefined
-        ? secondsSince(quiet.issuedAt)
-        : query.sinceSeconds;
+    checkpoint !== undefined
+      ? checkpoint.sinceTime === null
+        ? undefined
+        : Math.min(
+            86_400,
+            Math.max(
+              1,
+              Math.ceil((now() - Date.parse(checkpoint.sinceTime)) / 1000) + RESUME_OVERLAP_SECONDS,
+            ),
+          )
+      : resume !== undefined
+        ? secondsSince(Date.parse(resume.lastTime!))
+        : quiet !== undefined
+          ? secondsSince(quiet.issuedAt)
+          : query.sinceSeconds;
   const readStartedAt = now();
+  let windowSinceTime =
+    checkpoint !== undefined
+      ? checkpoint.sinceTime
+      : sinceSeconds === undefined
+        ? null
+        : new Date(readStartedAt - sinceSeconds * 1000).toISOString();
   const chunk = validChunk(
     await input.readLogs({
       source: sourceId,
@@ -286,16 +311,72 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     leading.push(runtimeLogGap("stream_replaced", observedStream));
   }
   // The byte limit cuts the final line; a partial line may end inside a token.
-  const completeLines = chunk.truncated ? chunk.lines.slice(0, -1) : chunk.lines;
-  let lines = completeLines;
+  const fetchedLines = chunk.truncated ? chunk.lines.slice(0, -1) : chunk.lines;
+  // Relative seconds can round the next read outward. Canonicalize the observed
+  // window before hashing/counting it so earlier rows cannot cause a false reset.
+  // The initial floor must also retain every timestamp the backend actually read,
+  // even when its clock differs from OCC's.
+  if (checkpoint === undefined && windowSinceTime !== null) {
+    for (const line of fetchedLines) {
+      if (
+        validRuntimeLogFrontierTime(line.time) &&
+        compareRuntimeLogTime(line.time, windowSinceTime) < 0
+      ) {
+        windowSinceTime = line.time;
+      }
+    }
+  }
+  const completeLines =
+    checkpoint?.sinceTime == null
+      ? fetchedLines
+      : fetchedLines.filter(
+          (line) =>
+            !validRuntimeLogFrontierTime(line.time) ||
+            compareRuntimeLogTime(line.time, checkpoint.sinceTime!) >= 0,
+        );
+
+  const checkpointValid =
+    checkpoint !== undefined &&
+    !replacedDuringRead &&
+    checkpoint.tailLines === query.tailLines &&
+    checkpoint.truncated === chunk.truncated &&
+    checkpoint.seen <= completeLines.length &&
+    checkpoint.hash === containerPrefixHash(completeLines, checkpoint.seen);
+  const checkpointLost = checkpoint !== undefined && !replacedDuringRead && !checkpointValid;
+  // A moving timed window resumes from delivered progress, not the pre-cut baseline.
+  // A changed tail or ambiguous single-time replacement still takes a fresh snapshot.
+  const recoverDelivered =
+    checkpointLost &&
+    checkpoint.tailLines === query.tailLines &&
+    prior?.lastTime != null &&
+    completeLines.some(
+      (line) => line.time !== null && compareRuntimeLogTime(line.time, prior.lastTime!) !== 0,
+    );
+  const baseline =
+    checkpoint === undefined || recoverDelivered
+      ? prior
+      : {
+          ...prior!,
+          lastTime: checkpoint.baseTime,
+          lastHashes: checkpoint.baseHashes,
+          frontierComplete: checkpoint.baseComplete,
+          frontierCount: checkpoint.baseCount,
+        };
+  const dedupResume =
+    sameStream && !replacedDuringRead && baseline?.lastTime != null ? baseline : undefined;
+  let eligible = completeLines.map((line, index) => ({ line, index }));
+  const windowHash = containerPrefixHash(completeLines, completeLines.length);
+  const evidence = runtimeLogEvidence(completeLines);
+  const untimedPrefix = completeLines.every(({ time }) => time === null);
   // A line longer than the byte limit fills the page alone; its leading time is intact.
   const earliest =
-    (completeLines.length === 0 ? chunk.lines : lines).find((line) => line.time !== null)?.time ??
-    null;
+    (completeLines.length === 0 ? chunk.lines : completeLines).find((line) => line.time !== null)
+      ?.time ?? null;
   // A full tail since a quiet view's previous read may have dropped its oldest lines.
   // A byte-cut page counts as full: the Driver cuts after applying the tail.
   if (
     quiet !== undefined &&
+    checkpoint === undefined &&
     !replacedDuringRead &&
     (chunk.lines.length >= query.tailLines || chunk.truncated) &&
     earliest !== null
@@ -303,22 +384,22 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
   }
   // Legacy cursors carry no count: a history below the maximum dropped no hash.
-  const resumeCount =
-    resume === undefined
+  const dedupResumeCount =
+    dedupResume === undefined
       ? 0
-      : (resume.frontierCount ??
-        (resume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
-          ? resume.lastHashes.length
+      : (dedupResume.frontierCount ??
+        (dedupResume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
+          ? dedupResume.lastHashes.length
           : undefined));
   // Whether this read skipped the frontier's delivered lines by position.
   let positional = false;
-  if (resume !== undefined && !replacedDuringRead) {
-    const lastTime = resume.lastTime!;
+  if (dedupResume !== undefined && !replacedDuringRead) {
+    const lastTime = dedupResume.lastTime!;
     // The hashes cover every line delivered at `lastTime` only while the count fits.
-    const fullHistory = resumeCount === resume.lastHashes.length;
-    const complete = resume.frontierComplete === true && fullHistory;
+    const fullHistory = dedupResumeCount === dedupResume.lastHashes.length;
+    const complete = dedupResume.frontierComplete === true && fullHistory;
     const remaining = new Map<string, number>();
-    for (const hash of resume.lastHashes) {
+    for (const hash of dedupResume.lastHashes) {
       remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
     }
     // The overlap re-reads the last delivered line unless the tail dropped it. The
@@ -334,7 +415,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     // A complete frontier delivered its timestamp group from the group's first line,
     // in log order. When this read also holds the group's first line (it starts
     // earlier, or is a short uncut page) and its timed lines are in order through
-    // that time, the first `resumeCount` lines at `lastTime` are the delivered ones
+    // that time, the first `dedupResumeCount` lines at `lastTime` are the delivered ones
     // whatever their text, so a group larger than the hash history neither replays
     // nor hides later lines. The remembered hashes must match the end of that run;
     // otherwise hashes decide, as below.
@@ -347,22 +428,27 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     const timed = completeLines.slice(0, groupEnd + 1).filter((line) => line.time !== null);
     const group = timed.filter((line) => compareRuntimeLogTime(line.time!, lastTime) === 0);
     positional =
-      resume.frontierComplete === true &&
-      resumeCount !== undefined &&
-      group.length >= resumeCount &&
+      dedupResume.frontierComplete === true &&
+      dedupResumeCount !== undefined &&
+      group.length >= dedupResumeCount &&
       ((earliest !== null && compareRuntimeLogTime(earliest, lastTime) < 0) ||
-        (chunk.lines.length < query.tailLines && !chunk.truncated)) &&
+        (chunk.lines.length < query.tailLines && !chunk.truncated) ||
+        // A matching checkpoint retains positional proof from the original
+        // window across growth and subsequent cuts, without inferring it anew.
+        (checkpointValid && checkpoint.basePositional === true)) &&
       timed.every(
         (line, index) =>
           validRuntimeLogFrontierTime(line.time) &&
           (index === 0 || compareRuntimeLogTime(line.time, timed[index - 1]!.time!) >= 0),
       ) &&
-      resume.lastHashes.every(
+      dedupResume.lastHashes.every(
         (hash, index) =>
-          runtimeLogLineHash(group[resumeCount - resume.lastHashes.length + index]!.raw) === hash,
+          runtimeLogLineHash(
+            group[dedupResumeCount - dedupResume.lastHashes.length + index]!.raw,
+          ) === hash,
       );
     let groupIndex = 0;
-    lines = lines.filter((line) => {
+    eligible = eligible.filter(({ line }) => {
       if (line.time === null) {
         return true;
       }
@@ -372,7 +458,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       }
       if (positional) {
         groupIndex += 1;
-        return groupIndex > resumeCount!;
+        return groupIndex > dedupResumeCount!;
       }
       // Equal text at the frontier can be a new occurrence. Consume only the
       // occurrences delivered before this poll, including repeated hashes.
@@ -388,185 +474,238 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       return false;
     });
   }
-  // Bound the page. Later lines are dropped so the cursor resumes after the last
-  // delivered line; the Driver's byte cut already dropped the final partial line.
-  let pageBytes = 0;
-  let pageCut = false;
-  const delivered: (typeof lines)[number][] = [];
-  for (const line of lines) {
-    pageBytes += Math.min(Buffer.byteLength(line.raw, "utf8"), 8 * 1024) + 256;
-    if (pageBytes > RUNTIME_LOG_MAX_PAGE_BYTES) {
-      pageCut = true;
-      break;
-    }
-    delivered.push(line);
+  if (
+    checkpointLost &&
+    !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
+  ) {
+    leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
   }
-  // A resumed read starts RESUME_OVERLAP_SECONDS (plus up to one second of rounding)
-  // before the newest delivered line. When the overlap and the next line do not fit in
-  // the byte limit (typically one line longer than 1 MiB), the read delivers nothing
-  // new and the cursor never moves. `stalledAt` is that cut line's time, set only when
-  // every poll re-reads the same lines: each complete line is inside the overlap every
-  // read covers. Once the cut line is older than where a poll from this read starts
-  // (overlap plus one second of rounding), drop the frontier and continue in the form
-  // a fresh view already takes after one oversized line: no delivered time, reading
-  // from this read (`issuedAt`). There is no cursor format change. Bounded costs:
-  // - the lines logged after the cut line until this read are lost (no read could
-  //   reach them past the limit); the window_exceeded gap says so;
-  // - a carried PEM context keeps no delivered frontier (`pemAfterTime` null), so an
-  //   open block cannot close and a later BEGIN stays open for the rest of the view:
-  //   more masking, never less;
-  // - the new read has no time de-duplication, so kubelet clock skew behind OCC by
-  //   more than the guard can re-deliver lines near the old frontier;
-  // - until the cut line is past the guard (up to about 3 s) the view stays put.
-  const cutLine = chunk.truncated ? chunk.lines.at(-1) : undefined;
-  const overlapStart =
-    resume === undefined ? 0 : Date.parse(resume.lastTime!) - RESUME_OVERLAP_SECONDS * 1000;
-  const stalledAt =
-    resume !== undefined &&
-    !replacedDuringRead &&
-    delivered.every((line) => line.time === null) &&
-    completeLines.every((line) => line.time === null || Date.parse(line.time) >= overlapStart) &&
-    validRuntimeLogFrontierTime(cutLine?.time) &&
-    compareRuntimeLogTime(cutLine.time, resume.lastTime!) >= 0
-      ? cutLine.time
-      : undefined;
-  const skipStalled =
-    stalledAt !== undefined &&
-    Date.parse(stalledAt) < readStartedAt - (RESUME_OVERLAP_SECONDS + 1) * 1000;
-  // Context belongs AFTER the authenticated delivered frontier, never before the
-  // fetched overlap. Hashes and equal timestamps cannot prove a new closing line.
-  const pemPrior =
-    sameStream && !replacedDuringRead && prior.pemOpen !== undefined ? prior : undefined;
-  // Locate the consumed prefix by the actual subsequence retained above, not by
-  // hashes. Validate ordering only through the last delivered line: future fetched
-  // lines must neither close context nor advance its persistent frontier.
-  let nextDelivered = 0;
-  let prefixEnd = 0;
-  for (const [index, line] of completeLines.entries()) {
-    if (nextDelivered < delivered.length && line === delivered[nextDelivered]) {
-      nextDelivered += 1;
-      prefixEnd = index + 1;
-    }
-  }
-  const prefix = completeLines.slice(0, prefixEnd);
-  const ordered = prefix.every(
-    (line, index) =>
-      validRuntimeLogFrontierTime(line.time) &&
-      (index === 0 || compareRuntimeLogTime(line.time, prefix[index - 1]!.time!) >= 0),
-  );
-  // Uncertain chronology also applies when BEGIN is first observed in this page.
-  // Without this guard, an older/null-time END could close it before any signed
-  // context exists, leaving a false closed state that later polls cannot repair.
-  const canClose = !ordered
-    ? delivered.map(() => false)
-    : pemPrior === undefined
-      ? undefined
-      : delivered.map(
-          (line) =>
-            pemPrior.pemAfterTime != null &&
-            line.time !== null &&
-            compareRuntimeLogTime(line.time, pemPrior.pemAfterTime) > 0,
-        );
-  const sanitized = sanitizeRuntimeLogChunk(
-    {
-      stream: observedStream,
-      lines: delivered,
-      truncated: false,
-    },
-    { open: pemPrior?.pemOpen, canClose },
-  );
-  let pemAfterTime = pemPrior?.pemAfterTime ?? null;
-  if (delivered.length > 0) {
-    if (!ordered || (pemPrior !== undefined && pemPrior.pemAfterTime === null)) {
-      // A later timestamped page cannot reconstruct an unknown boundary.
-      pemAfterTime = null;
-    } else {
-      const deliveredTime = delivered.at(-1)!.time!;
-      if (pemAfterTime === null || compareRuntimeLogTime(deliveredTime, pemAfterTime) > 0) {
-        pemAfterTime = deliveredTime;
-      }
-    }
-  }
-  if (skipStalled) {
-    pemAfterTime = null;
-  }
-  const truncated = chunk.truncated || pageCut;
-  const records = [
-    // The skip's own gap replaces a window_exceeded gap dated at the same cut line.
-    ...(skipStalled
-      ? leading.filter((record) => record.type !== "gap" || record.reason !== "window_exceeded")
-      : leading),
-    ...sanitized.records,
-    ...(skipStalled
-      ? [runtimeLogGap("window_exceeded", observedStream, stalledAt, true)]
-      : truncated
-        ? [
-            runtimeLogGap(
-              "truncated",
-              observedStream,
-              delivered.at(-1)?.time ?? null,
-              stalledAt !== undefined,
-            ),
-          ]
-        : []),
-  ];
-  const last = [...delivered].reverse().find((line) => line.time !== null);
-  const kept = resume !== undefined && !replacedDuringRead && !skipStalled;
-  let lastTime = kept ? resume.lastTime : null;
-  let lastHashes = kept ? [...resume.lastHashes] : [];
-  let frontierComplete = kept ? resume.frontierComplete === true : false;
-  // Lines matched by hash at the kept frontier need not follow the counted run, so
-  // the count no longer proves positions.
-  const hashMatchedAtFrontier =
-    kept &&
-    !positional &&
-    delivered.some(
-      (line) => line.time !== null && compareRuntimeLogTime(line.time, resume.lastTime!) === 0,
+  const remaining = checkpointValid
+    ? eligible.filter(({ index }) => index >= checkpoint.count)
+    : eligible;
+  const lines = remaining.map(({ line }) => line);
+  const progressResume = checkpointValid ? resume : dedupResume;
+  const progressCount =
+    progressResume === undefined
+      ? 0
+      : (progressResume.frontierCount ??
+        (progressResume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
+          ? progressResume.lastHashes.length
+          : undefined));
+  return boundedRuntimeLogPage(lines.length, (end) => {
+    input.signal.throwIfAborted();
+    const delivered = lines.slice(0, end);
+    const pageCut = end < lines.length;
+    // A resumed read starts RESUME_OVERLAP_SECONDS (plus up to one second of rounding)
+    // before the newest delivered line. When the overlap and the next line do not fit in
+    // the byte limit (typically one line longer than 1 MiB), the read delivers nothing
+    // new and the cursor never moves. `stalledAt` is that cut line's time, set only when
+    // every poll re-reads the same lines: each complete line is inside the overlap every
+    // read covers. Once the cut line is older than where a poll from this read starts
+    // (overlap plus one second of rounding), drop the frontier and continue in the form
+    // a fresh view already takes after one oversized line: no delivered time, reading
+    // from this read (`issuedAt`). There is no cursor format change. Bounded costs:
+    // - the lines logged after the cut line until this read are lost (no read could
+    //   reach them past the limit); the window_exceeded gap says so;
+    // - a carried PEM context keeps no delivered frontier (`pemAfterTime` null), so an
+    //   open block cannot close and a later BEGIN stays open for the rest of the view:
+    //   more masking, never less;
+    // - the new read has no time de-duplication, so kubelet clock skew behind OCC by
+    //   more than the guard can re-deliver lines near the old frontier;
+    // - until the cut line is past the guard (up to about 3 s) the view stays put.
+    const cutLine = chunk.truncated ? chunk.lines.at(-1) : undefined;
+    const overlapStart =
+      resume === undefined ? 0 : Date.parse(resume.lastTime!) - RESUME_OVERLAP_SECONDS * 1000;
+    const stalledAt =
+      resume !== undefined &&
+      !replacedDuringRead &&
+      delivered.every((line) => line.time === null) &&
+      completeLines.every((line) => line.time === null || Date.parse(line.time) >= overlapStart) &&
+      validRuntimeLogFrontierTime(cutLine?.time) &&
+      compareRuntimeLogTime(cutLine.time, resume.lastTime!) >= 0
+        ? cutLine.time
+        : undefined;
+    const skipStalled =
+      stalledAt !== undefined &&
+      Date.parse(stalledAt) < readStartedAt - (RESUME_OVERLAP_SECONDS + 1) * 1000;
+    // Context belongs AFTER the authenticated delivered frontier, never before the
+    // fetched overlap. Hashes and equal timestamps cannot prove a new closing line.
+    const pemPrior =
+      sameStream && !replacedDuringRead && prior.pemOpen !== undefined ? prior : undefined;
+    // Locate the consumed prefix by the actual subsequence retained above, not by
+    // hashes. Validate ordering only through the last delivered line: future fetched
+    // lines must neither close context nor advance its persistent frontier.
+    const prefixEnd =
+      end === 0 ? (checkpointValid ? checkpoint.count : 0) : remaining[end - 1]!.index + 1;
+    const consumed = end === lines.length ? completeLines.length : prefixEnd;
+    // All-untimed prefixes need signed progress after a Driver byte cut. Mixed
+    // prefixes resume through their delivered time after draining, disclosing the reset.
+    const retainCheckpoint =
+      !skipStalled &&
+      (pageCut ||
+        (checkpoint !== undefined &&
+          (!chunk.truncated || untimedPrefix) &&
+          (eligible.some(({ line }) => line.time === null) || lines.length === 0)));
+    const prefix = completeLines.slice(0, prefixEnd);
+    const ordered = prefix.every(
+      (line, index) =>
+        validRuntimeLogFrontierTime(line.time) &&
+        (index === 0 || compareRuntimeLogTime(line.time, prefix[index - 1]!.time!) >= 0),
     );
-  let frontierCount = !kept ? 0 : hashMatchedAtFrontier ? undefined : resumeCount;
-  if (last !== undefined) {
-    if (lastTime === null || compareRuntimeLogTime(last.time!, lastTime) !== 0) {
-      lastHashes = [];
-      frontierCount = 0;
-      // The first fetched timestamp can have been clipped by the requested tail.
-      // A later frontier starts inside the fetched range; otherwise only a short,
-      // uncut Driver page proves that no earlier copies were outside the tail.
-      frontierComplete =
-        ordered &&
-        ((earliest !== null && compareRuntimeLogTime(earliest, last.time!) < 0) ||
-          (chunk.lines.length < query.tailLines && !chunk.truncated));
-    }
-    lastTime = last.time;
-    for (const line of delivered) {
-      if (line.time !== null && compareRuntimeLogTime(line.time, lastTime!) === 0) {
-        lastHashes.push(runtimeLogLineHash(line.raw));
-        if (frontierCount !== undefined) {
-          frontierCount += 1;
+    // Uncertain chronology also applies when BEGIN is first observed in this page.
+    // Without this guard, an older/null-time END could close it before any signed
+    // context exists, leaving a false closed state that later polls cannot repair.
+    const canClose = !ordered
+      ? delivered.map(() => false)
+      : pemPrior === undefined
+        ? undefined
+        : delivered.map(
+            (line) =>
+              pemPrior.pemAfterTime != null &&
+              line.time !== null &&
+              compareRuntimeLogTime(line.time, pemPrior.pemAfterTime) > 0,
+          );
+    const sanitized = sanitizeRuntimeLogChunk(
+      {
+        stream: observedStream,
+        lines: delivered,
+        truncated: false,
+      },
+      {
+        open: pemPrior?.pemOpen,
+        canClose,
+        evidence: remaining.slice(0, end).map(({ index }) => evidence.masks.get(index)),
+        withheld: remaining.slice(0, end).map(({ index }) => evidence.withheld.get(index)),
+      },
+    );
+    let pemAfterTime = pemPrior?.pemAfterTime ?? null;
+    if (delivered.length > 0) {
+      if (!ordered || (pemPrior !== undefined && pemPrior.pemAfterTime === null)) {
+        // A later timestamped page cannot reconstruct an unknown boundary.
+        pemAfterTime = null;
+      } else {
+        const deliveredTime = delivered.at(-1)!.time!;
+        if (pemAfterTime === null || compareRuntimeLogTime(deliveredTime, pemAfterTime) > 0) {
+          pemAfterTime = deliveredTime;
         }
       }
     }
-  }
-  const position: RuntimeLogCursorPosition = {
-    viewId,
-    pod: pod.name,
-    podUid: observedStream.podUid!,
-    restartCount: observedStream.restartCount!,
-    previous: query.previous,
-    lastTime,
-    lastHashes: lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES),
-    frontierComplete,
-    ...(frontierCount === undefined ? {} : { frontierCount }),
-    ...(sanitized.pemOpen === undefined ? {} : { pemOpen: sanitized.pemOpen, pemAfterTime }),
-    issuedAt: readStartedAt,
-  };
-  return Object.freeze({
-    revisionId: description.revisionId,
-    source: query.source,
-    stream: Object.freeze(observedStream),
-    observedAt,
-    records: Object.freeze(records),
-    withheld: sanitized.withheld,
-    truncated,
-    cursor: codec.encode(binding, position),
+    if (skipStalled) {
+      pemAfterTime = null;
+    }
+    const truncated = chunk.truncated || pageCut;
+    const records = [
+      // The skip's own gap replaces a window_exceeded gap dated at the same cut line.
+      ...(skipStalled
+        ? leading.filter((record) => record.type !== "gap" || record.reason !== "window_exceeded")
+        : leading),
+      // Closing a full checkpoint cannot establish that identical tail rolling
+      // retained every occurrence; preserve its gap on the final delivered page.
+      ...(!skipStalled &&
+      (retainCheckpoint || checkpoint !== undefined) &&
+      (completeLines.length >= query.tailLines || chunk.truncated) &&
+      !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
+        ? [runtimeLogGap("window_exceeded", observedStream, earliest)]
+        : []),
+      ...sanitized.records,
+      ...(skipStalled
+        ? [runtimeLogGap("window_exceeded", observedStream, stalledAt, true)]
+        : truncated
+          ? [
+              runtimeLogGap(
+                "truncated",
+                observedStream,
+                delivered.at(-1)?.time ?? null,
+                stalledAt !== undefined,
+              ),
+            ]
+          : []),
+    ];
+    const last = [...delivered].reverse().find((line) => line.time !== null);
+    const kept = progressResume !== undefined && !replacedDuringRead && !skipStalled;
+    let lastTime = kept ? progressResume.lastTime : null;
+    let lastHashes = kept ? [...progressResume.lastHashes] : [];
+    let frontierComplete = kept ? progressResume.frontierComplete === true : false;
+    // Lines matched by hash at the kept frontier need not follow the counted run, so
+    // the count no longer proves positions.
+    const hashMatchedAtFrontier =
+      kept &&
+      !checkpointValid &&
+      !positional &&
+      delivered.some(
+        (line) =>
+          line.time !== null && compareRuntimeLogTime(line.time, progressResume.lastTime!) === 0,
+      );
+    let frontierCount = !kept ? 0 : hashMatchedAtFrontier ? undefined : progressCount;
+    if (last !== undefined) {
+      if (lastTime === null || compareRuntimeLogTime(last.time!, lastTime) !== 0) {
+        lastHashes = [];
+        frontierCount = 0;
+        // The first fetched timestamp can have been clipped by the requested tail.
+        // A later frontier starts inside the fetched range; otherwise only a short,
+        // uncut Driver page proves that no earlier copies were outside the tail.
+        frontierComplete =
+          ordered &&
+          ((earliest !== null && compareRuntimeLogTime(earliest, last.time!) < 0) ||
+            (chunk.lines.length < query.tailLines && !chunk.truncated));
+      }
+      lastTime = last.time;
+      for (const line of delivered) {
+        if (line.time !== null && compareRuntimeLogTime(line.time, lastTime!) === 0) {
+          lastHashes.push(runtimeLogLineHash(line.raw));
+          if (frontierCount !== undefined) {
+            frontierCount += 1;
+          }
+        }
+      }
+    }
+    // Recovery may return older rows from a fresh window. Preserve masking, but
+    // never encode a PEM time boundary inconsistent with the delivered frontier.
+    if (
+      pemAfterTime !== null &&
+      (lastTime === null || compareRuntimeLogTime(pemAfterTime, lastTime) !== 0)
+    ) {
+      pemAfterTime = null;
+    }
+    const position: RuntimeLogCursorPosition = {
+      viewId,
+      pod: pod.name,
+      podUid: observedStream.podUid!,
+      restartCount: observedStream.restartCount!,
+      previous: query.previous,
+      lastTime,
+      lastHashes: lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES),
+      frontierComplete,
+      ...(frontierCount === undefined ? {} : { frontierCount }),
+      ...(sanitized.pemOpen === undefined ? {} : { pemOpen: sanitized.pemOpen, pemAfterTime }),
+      ...(retainCheckpoint
+        ? {
+            containerWindow: {
+              sinceTime: windowSinceTime,
+              tailLines: query.tailLines,
+              count: consumed,
+              seen: completeLines.length,
+              hash: windowHash,
+              truncated: chunk.truncated,
+              baseTime: dedupResume?.lastTime ?? null,
+              baseHashes: dedupResume?.lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES) ?? [],
+              baseComplete: dedupResume?.frontierComplete === true,
+              basePositional: positional,
+              ...(dedupResumeCount === undefined ? {} : { baseCount: dedupResumeCount }),
+            },
+          }
+        : {}),
+      issuedAt: readStartedAt,
+    };
+    return Object.freeze({
+      revisionId: description.revisionId,
+      source: query.source,
+      stream: Object.freeze(observedStream),
+      observedAt,
+      records: Object.freeze(records),
+      withheld: sanitized.withheld,
+      truncated,
+      cursor: codec.encode(binding, position),
+    });
   });
 }
