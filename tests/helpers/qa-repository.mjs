@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,
@@ -299,9 +300,16 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
         "independent GitHub observer credential",
       )
     : undefined;
-  assert.ok(
-    observerToken || process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY,
-    "select an independent observer credential or managed gh wrapper",
+  const observerAppInput = process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY;
+  const selectedObservers = [
+    observerToken,
+    observerAppInput,
+    process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY,
+  ].filter(Boolean);
+  assert.equal(
+    selectedObservers.length,
+    1,
+    "select exactly one independent observer credential, App input directory, or managed gh wrapper",
   );
   // A selected managed wrapper may authenticate from its caller's environment.
   // Forward credentials only to the host observer/Git calls, never the launcher
@@ -309,22 +317,31 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   const observerEnvironment = observerToken
     ? { GH_TOKEN: observerToken }
     : Object.fromEntries(
-        ["GH_TOKEN", "GITHUB_TOKEN"]
-          .filter((name) => process.env[name])
-          .map((name) => [name, process.env[name]]),
+        observerAppInput
+          ? []
+          : ["GH_TOKEN", "GITHUB_TOKEN"]
+              .filter((name) => process.env[name])
+              .map((name) => [name, process.env[name]]),
       );
   for (const value of Object.values(observerEnvironment)) {
     registerQaSecret(value);
   }
-  const observe = createRepositoryObserver({
-    repository,
-    binary: process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY ?? "gh",
-    run: (cmd, args, options) =>
-      f.run(cmd, args, {
-        ...options,
-        env: { ...f.env, ...options?.env, ...observerEnvironment },
-      }),
-  });
+  const runObserverCommand = (cmd, args, options) =>
+    f.run(cmd, args, {
+      ...options,
+      env: { ...f.env, ...options?.env, ...observerEnvironment },
+    });
+  const observe = observerAppInput
+    ? await createGitHubAppRepositoryObserver({
+        repository,
+        inputDirectory: observerAppInput,
+        run: runObserverCommand,
+      })
+    : createRepositoryObserver({
+        repository,
+        binary: process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY ?? "gh",
+        run: runObserverCommand,
+      });
   const { data: remote } = await observe("GET");
   assert.equal(String(remote.id), String(entry.repositoryId));
   assert.equal(remote.full_name.toLowerCase(), repository.toLowerCase());

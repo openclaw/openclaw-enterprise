@@ -88,6 +88,9 @@ if (selection.repository) {
     await writeFile(join(repository, name), process.env[source], { mode: 0o600, flag: "wx" });
   }
   entries.push(`OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=${repository}`);
+  if ((process.env.QA_REPOSITORY_FIXTURE ?? "default") === "isolated") {
+    entries.push(`OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=${repository}`);
+  }
 }
 entries.push(`OCC_TEST_QA_ARTIFACTS=${join(process.env.RUNNER_TEMP, "qa-matrix-evidence")}`);
 validateQaInputs(selection, {
