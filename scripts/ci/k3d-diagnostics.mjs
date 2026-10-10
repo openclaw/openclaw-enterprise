@@ -302,6 +302,7 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
 
 const AGENT_POD_SELECTOR = "app.kubernetes.io/managed-by=openclaw-enterprise";
 const WATCH_SECONDS = 3 * 60 * 60;
+const WATCH_START_TIMEOUT_MS = 10_000;
 const MAX_WATCH_BYTES = 32 * 1024 * 1024;
 const MAX_ACTIVITY_RECORDS = 200;
 const MAX_ACTIVITY_FILES = 40;
@@ -583,6 +584,25 @@ async function stopWatch(child) {
   clearTimeout(timer);
 }
 
+async function waitForInitialWatch(child, path) {
+  const deadline = Date.now() + WATCH_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("Agent namespace watch could not start.");
+    }
+    for (const { type, object } of watchLines(await readWatchTail(path))) {
+      if (
+        type === "BOOKMARK" &&
+        object.metadata.annotations?.["k8s.io/initial-events-end"] === "true"
+      ) {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Agent namespace watch startup timed out.");
+}
+
 /**
  * Watches Agent Pods and Kubernetes events in each prepared k3d cluster while
  * one test file runs. Tests delete their namespaces, and their events with
@@ -618,57 +638,56 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
   if (clusters.length === 0) {
     return undefined;
   }
-  const watches = [];
-  for (const cluster of clusters) {
-    const kubectl = cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl";
-    const scope = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
-    const capture = randomUUID();
-    const paths = {
-      events: join(cluster.directory, `agent-activity-${capture}-events.ndjson`),
-      pods: join(cluster.directory, `agent-activity-${capture}-pods.ndjson`),
-    };
-    const children = [];
-    for (const [kind, path] of Object.entries(paths)) {
-      const query =
-        kind === "pods"
-          ? `/api/v1/pods?watch=true&timeoutSeconds=${WATCH_SECONDS}&labelSelector=${encodeURIComponent(AGENT_POD_SELECTOR)}`
-          : `/api/v1/events?watch=true&timeoutSeconds=${WATCH_SECONDS}`;
-      // The raw watch streams one JSON object per line straight to the cluster's
-      // private directory, which cleanup removes; only the projection is kept.
-      let output;
-      try {
-        output = await open(path, "w", 0o600);
-      } catch (error) {
-        // The caller gets no finish to call: stop the watches already started, whose
-        // running child processes would otherwise keep the runner alive, and drop
-        // their streams.
-        const started = [...watches, { paths, children }];
-        await Promise.all(started.flatMap((watch) => watch.children).map(stopWatch));
-        await Promise.all(
-          started
-            .flatMap((watch) => Object.values(watch.paths))
-            .map((stream) => rm(stream, { force: true })),
-        );
-        throw error;
-      }
-      try {
-        const child = spawn(kubectl, [...scope, "get", "--raw", query], {
-          stdio: ["ignore", output.fd, "ignore"],
-        });
-        child.on("error", () => {});
-        children.push(child);
-      } finally {
-        await output.close();
-      }
-    }
-    watches.push({ cluster, paths, children });
-  }
-  // Inside the first cluster's private directory, which cleanup removes.
+  // Container logs are independent of the optional watches. A stalled observer must
+  // not remove the failed wait's log and snapshots from the diagnostics artifact.
   let containerLogDirectory = join(clusters[0].directory, `container-logs-${randomUUID()}`);
   try {
     await mkdir(containerLogDirectory, { mode: 0o700 });
   } catch {
     containerLogDirectory = undefined;
+  }
+  const watches = [];
+  try {
+    for (const cluster of clusters) {
+      const kubectl = cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl";
+      const scope = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
+      const capture = randomUUID();
+      const paths = {
+        events: join(cluster.directory, `agent-activity-${capture}-events.ndjson`),
+        pods: join(cluster.directory, `agent-activity-${capture}-pods.ndjson`),
+      };
+      const children = [];
+      // Register ownership before opening either stream so partial startup is cleaned up.
+      watches.push({ cluster, paths, children });
+      for (const [kind, path] of Object.entries(paths)) {
+        const query =
+          kind === "pods"
+            ? `/api/v1/pods?watch=true&timeoutSeconds=${WATCH_SECONDS}&labelSelector=${encodeURIComponent(AGENT_POD_SELECTOR)}`
+            : `/api/v1/events?watch=true&timeoutSeconds=${WATCH_SECONDS}`;
+        const initialQuery = `${query}&sendInitialEvents=true&allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan`;
+        // Raw streams stay private; only their projection is published.
+        const output = await open(path, "w", 0o600);
+        let child;
+        try {
+          child = spawn(kubectl, [...scope, "get", "--raw", initialQuery], {
+            stdio: ["ignore", output.fd, "ignore"],
+          });
+          child.on("error", () => {});
+          children.push(child);
+        } finally {
+          await output.close();
+        }
+        // A spawned kubectl can still be connecting while a short-lived Pod disappears.
+        await waitForInitialWatch(child, path);
+      }
+    }
+  } catch {
+    await Promise.all(watches.flatMap(({ children }) => children).map(stopWatch));
+    await Promise.all(
+      watches.flatMap(({ paths }) => Object.values(paths)).map((path) => rm(path, { force: true })),
+    );
+    watches.length = 0;
+    console.error(`[run:${lane}] Agent namespace activity unavailable for ${file}`);
   }
   return {
     env:

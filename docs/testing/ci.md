@@ -105,10 +105,12 @@ kubeconfig, environment values and Pod specs are excluded. After a failed prepar
 run, local callers must run `node scripts/ci/cleanup.mjs --state <state-file>`.
 Diagnostics explain setup failures without establishing coverage.
 
-In k3d lanes the runner gives each file a private `OPENCLAW_CI_CONTAINER_LOG_DIR`.
-A test that follows a container with `tests/helpers/container-log-capture.mjs`
-writes a record there only when a wait fails: its markers, Pod and event
-snapshots, and the log, waiting up to 60 s for the container to exit.
+Before each k3d file, the runner awaits initial Pod/Event synchronization
+([flow](../flows/github-actions-testing.md#2-prepare-resources-under-the-job-owner)).
+The independent private `OPENCLAW_CI_CONTAINER_LOG_DIR` remains available when
+watch startup fails. On failed waits,
+`tests/helpers/container-log-capture.mjs` records markers, Pod/event snapshots
+and logs, waiting up to 60 s for container exit.
 `scripts/ci/k3d-diagnostics.mjs:projectContainerLog` keeps at most 1,500 lines,
 redacts environment values and secret shapes in lines and event messages, and
 adds the record to the same report under `containerLogs`. The platform recovery
