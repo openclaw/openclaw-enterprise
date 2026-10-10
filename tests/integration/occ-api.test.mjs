@@ -7100,6 +7100,166 @@ test("deploy audit preserves its authorization decision and rolls back with appe
   assert.equal(fixture.auditSink.events.length, failureAuditCount);
 });
 
+test("deploy grants the deployer exact revision read only when it can hold and use the binding", async () => {
+  const fixture = await createInjectedFixture();
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller, "Deployer revision read");
+  const namespace = await createNamespace(controller, "deployer-revision-read");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const agent = await createAgent(controller, namespace.id, "deployer-read-agent");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const deployerRole = `role_${namespace.id}_deployed_revision_read`;
+  const deployPermissions = [
+    { action: "read", resourceKind: "agent" },
+    { action: "deploy", resourceKind: "agent" },
+    { action: "read", resourceKind: "configuration" },
+    { action: "operate", resourceKind: "secret" },
+  ];
+  const policy = async (kind) =>
+    (await controller.request("GET", `/namespaces/${namespace.id}/iam/${kind}`)).data;
+  // This fixture's IAM Driver reads its own seed, not platform State policy, so this case
+  // proves which grant admission writes and audits; postgres-deployer-revision-read proves
+  // the written grant takes effect.
+
+  // The administrator already reads every revision, so her deploy writes nothing.
+  const byAdministrator = await fixture.controller.deployAgentWithAuthorization(
+    fixture.principal.id,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  assert.deepEqual(byAdministrator.grantedAccessBindings, []);
+  assert.equal(byAdministrator.revisionReadGrantSkipped, "already-readable");
+  assert.deepEqual(await policy("access-bindings"), []);
+
+  // An Installation-scoped ServicePrincipal may deploy but cannot be the subject of a
+  // Namespace binding. Its deploy still succeeds, writes no grant and leaves no Role.
+  fixture.state.identities.push({ kind: "service_principal", id: "service-installation-deployer" });
+  fixture.state.roles.push({ id: "role-installation-deployer", permissions: deployPermissions });
+  fixture.state.bindings.push({
+    id: "binding-installation-deployer",
+    subjectKind: "identity",
+    subjectId: "service-installation-deployer",
+    roleId: "role-installation-deployer",
+  });
+  const unbindable = await fixture.controller.deployAgentWithAuthorization(
+    "service-installation-deployer",
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  assert.deepEqual(unbindable.grantedAccessBindings, []);
+  assert.equal(unbindable.revisionReadGrantSkipped, "subject-not-bindable");
+  assert.equal(
+    (await policy("roles")).some((role) => role.id === deployerRole),
+    false,
+  );
+
+  // A person who may deploy but not read revisions.
+  const { principal: member } = await fixture.createAuthPrincipal("deployer-read-member");
+  fixture.state.identities.push(member);
+  fixture.state.roles.push({
+    id: "role-deployer-read-member",
+    namespaceId: namespace.id,
+    permissions: deployPermissions,
+  });
+  fixture.state.bindings.push({
+    id: "binding-deployer-read-member",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.id,
+    roleId: "role-deployer-read-member",
+  });
+  const deployAsMember = async () => {
+    const admitted = await injectedRequest(
+      fixture.createApp(member),
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const event = fixture.auditSink.events.find(
+      (candidate) =>
+        candidate.action === "openclaw.agents.deploy" && candidate.resource.id === admitted.data.id,
+    );
+    return { revision: admitted.data, details: event?.details };
+  };
+
+  // A matching deny Restriction on revision read overrides even an exact binding, so a grant
+  // would have no effect: the deploy still succeeds, writes no Role or binding, and its event
+  // names the Restriction instead.
+  fixture.state.restrictions.push({
+    id: "restriction-revision-read",
+    action: "read",
+    resourceKind: "agent_revision",
+    effect: "deny",
+  });
+  const restricted = await deployAsMember();
+  assert.equal(restricted.details?.revisionReadGrantSkipped, "restricted");
+  assert.deepEqual(restricted.details?.revisionReadRestrictionIds, ["restriction-revision-read"]);
+  assert.equal(restricted.details?.grantedAccessBindings, undefined);
+  assert.deepEqual(await policy("access-bindings"), []);
+  assert.equal(
+    (await policy("roles")).some((role) => role.id === deployerRole),
+    false,
+  );
+  fixture.state.restrictions.pop();
+
+  // Without it she gets exact read of the revision she admitted, named in the deploy event.
+  const deployed = await deployAsMember();
+  const grant = {
+    id: `binding_${deployed.revision.id}_deployer_read`,
+    subjectKind: "identity",
+    subjectId: member.id,
+    roleId: deployerRole,
+    resourceKind: "agent_revision",
+    resourceId: deployed.revision.id,
+  };
+  assert.deepEqual(deployed.details?.grantedAccessBindings, [grant]);
+  assert.equal(deployed.details?.revisionReadGrantSkipped, undefined);
+  assert.equal(deployed.details?.revisionReadRestrictionIds, undefined);
+  assert.deepEqual(
+    (await policy("access-bindings")).filter((binding) => binding.roleId === deployerRole),
+    [{ ...grant, namespaceId: namespace.id }],
+  );
+  assert.deepEqual((await policy("roles")).find((role) => role.id === deployerRole)?.permissions, [
+    { action: "read", resourceKind: "agent_revision" },
+  ]);
+
+  // An IAM Driver that keeps policy outside platform State gets no grant written here; the
+  // result says so instead of looking like a caller who could already read the revision.
+  const externalDriver = {
+    id: "iam-external-policy",
+    capability: "iam",
+    implementation: "deployer-revision-read-test",
+    async lookupIdentity() {
+      return undefined;
+    },
+    async authorize(request) {
+      return {
+        allowed: true,
+        reason: "admitted for the external-policy deploy case",
+        driverId: "iam-external-policy",
+        evidence: {
+          identityId: request.principalId,
+          groupIds: [],
+          bindingIds: [],
+          roleIds: [],
+          restrictionIds: [],
+        },
+      };
+    },
+  };
+  fixture.controller.registerDriver(externalDriver);
+  fixture.controller.selectDriver("iam", externalDriver.id);
+  const external = await fixture.controller.deployAgentWithAuthorization(
+    member.id,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  assert.deepEqual(external.grantedAccessBindings, []);
+  assert.equal(external.revisionReadGrantSkipped, "external-iam-policy");
+});
+
 test("IAM and audit dependency failures fail closed without orphaned state", async () => {
   const bootstrapFailure = await createInjectedFixture();
   const originalBootstrapAppend = bootstrapFailure.auditSink.append;

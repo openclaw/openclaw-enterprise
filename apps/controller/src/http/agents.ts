@@ -8,6 +8,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
+  deployerRevisionReadAuditDetails,
   NamespaceNotReadyError,
   RepositoryOptionsUnavailableError,
   restrictionsRemovedWithAgent,
@@ -381,7 +382,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           (admitted) =>
             mutationEvent(
               { kind: "agent_revision", id: admitted.revision.id, namespaceId },
-              undefined,
+              deployerRevisionReadAuditDetails(admitted),
               admitted.authorization,
             ),
         );

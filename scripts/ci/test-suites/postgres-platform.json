@@ -15,6 +15,7 @@
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-deployer-revision-read.test.mjs",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -151,6 +152,12 @@
       "path": "tests/integration/postgres-agent-deletion-audit.test.mjs",
       "expectedTests": [
         "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-deployer-revision-read.test.mjs",
+      "expectedTests": [
+        "a deploy grants its deployer exact read of the admitted revision unless a Restriction denies it, audited and removed with the Agent"
       ]
     },
     {
