@@ -232,11 +232,12 @@ sign-out clear prior host-only `openclaw_occ` and `openclaw_occ_shared` cookie
 names so browsers never choose between duplicates.
 
 Native-host requests authenticate the shared OCE session, resolve the exact
-Agent represented by the requested host, authorize exact Agent `administer`, and
-validate the current active revision and supported native configuration before
-proxying. OCC strips browser cookies, `Authorization`, API and session keys,
-forwarded identity, and native scope headers before forwarding upstream, so the native
-gateway never receives the OCE session cookie. Native chat or other Agent-host
+Agent represented by the requested host, authorize exact Agent `use` with a
+direct runtime-role assignment, and validate the current active revision before
+proxying. OCC strips browser credentials and native identity, role, policy-digest
+and scope headers, then injects the verified human transport descriptor. The native
+Gateway never receives the OCE session cookie. See the
+[native authority contract](agent-native-admin.md#native-authority-and-drift). Native chat or other Agent-host
 activity does not renew the console session.
 
 ## Account provisioning

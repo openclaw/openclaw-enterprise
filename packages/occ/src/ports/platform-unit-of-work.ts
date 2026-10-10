@@ -117,6 +117,7 @@ export function bindPlatformUnitOfWork(
       "getAccessBinding",
       "listRestrictionsTargeting",
       "createAccessBinding",
+      "updateRuntimeRole",
       "deleteAccessBinding",
       "listServicePrincipals",
       "getServicePrincipal",

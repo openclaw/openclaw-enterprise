@@ -661,6 +661,7 @@ export const IAMAccessBindingSchema = Type.Union([
   Type.Object(
     {
       ...IAMAccessBindingBaseSchema,
+      runtimeRole: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
       resourceKind: ResourceKindSchema,
       resourceId: Type.String({ minLength: 1, maxLength: 200 }),
     },

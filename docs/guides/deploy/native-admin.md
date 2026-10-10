@@ -1,6 +1,16 @@
 # Deploy native admin UI access
 
-Enable Agent native admin UI access only for a trusted-operator pilot. The feature lets exact Agent administrators open the stock native UI through OCC on an isolated per-Agent browser host using their ordinary OCE console session. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+Enable OpenClaw access through OCC with an explicit runtime assignment for each person. The selected native role determines their permissions. Configured roles require a runtime built from the [patched image recipe](../../../deploy/runtime/README.md). The built-in `platform-administrator` role can retain the existing administrator transport without named roles. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+
+## Existing Agents
+
+Existing eligible human native administrators receive explicit `platform-administrator` assignments on upgrade, preserving entry without named `gateway.roles`. An Installation administrator can downgrade or remove these assignments in **Share Agent**, independently of OCE management permissions. See [Who can open it](../../reference/agent-native-admin.md#who-can-open-it) for the authorization rules.
+
+To introduce restricted roles on an existing Agent:
+
+1. Use the patched runtime image and [configure the Agent](#configure-each-agent) with named `gateway.roles.definitions` and a `gateway.roles.default` naming one of them. Deploy the new version and wait for it to become active. The Kubernetes Driver configures the trusted-proxy role headers.
+2. Open **Share Agent**, enter the person's Principal ID, and select their OpenClaw role.
+3. Sign in as that person and open **Open OpenClaw**. An `administer` grant alone no longer grants entry; each person needs exact Agent `use` permission and a runtime assignment.
 
 ## Local development
 
@@ -9,8 +19,7 @@ Agent into native admin access:
 
 1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
    console, for example with the Standard Codex Preset. Wait for its active
-   version. The account opening the UI needs `administer` permission on that
-   exact Agent.
+   version. Use **Share Agent** to assign your existing Principal ID `platform-administrator` on that Agent. Named `gateway.roles` are optional; configure and deploy them when you need restricted roles and individual native profiles.
 2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
    to obtain the exact `data.origin` and active revision ID from the status
    route. Include the returned port; do not construct or reuse another Agent's
@@ -25,7 +34,7 @@ Agent into native admin access:
    if it changed, refresh and review the current Configuration again.
 4. Save the Configuration and select **Deploy new version**. Once it is active,
    request status again and expect `available` with the same origin. Open
-   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
+   **OpenClaw** on the Agent detail page. For stale drafts or uncertain
    saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
 
 The [first-Agent command](../first-agent.md) creates a separate Agent with native UI
@@ -41,7 +50,7 @@ console-managed Agent for this native admin walkthrough.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
 - The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
 - Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy admin device auto-approval.
-- Operators who use the console have exact Agent `administer` permission.
+- Operators who use the console have exact Agent `use` permission with an explicit runtime-role assignment.
 
 <a id="steps"></a>
 
@@ -147,7 +156,7 @@ its matching identity fields and opt-in settings in the saved Configuration.
 
 ## Configure each Agent
 
-Configure each pilot Agent after the API feature and wildcard route are enabled. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
+Configure each Agent after the API feature and wildcard route are enabled. Deploy the Agent, then assign your existing Principal ID through **Share Agent**. Kubernetes offers `platform-administrator` for full native access without defining named roles. To use restricted roles and individual native profiles, configure and deploy `gateway.roles` first, then select a configured role. Without that assignment, the status endpoint returns `403`, including for Installation administrators. For configured roles, Kubernetes adds the trusted role headers and reserved service and administrator policies; retain canonical native role definitions in OCE. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
 
 ```text
 https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
@@ -161,7 +170,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. The `roles` block below is optional when only using `platform-administrator`; keep the UI origin and device auto-approval settings. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {
@@ -171,14 +180,29 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
       "mode": "trusted-proxy",
       "trustedProxy": {
         "userHeader": "x-occ-identity",
-        "allowUsers": ["occ-workspace-files"],
+        "allowUsers": [],
         "deviceAutoApprove": {
           "enabled": true,
-          "scopes": ["operator.admin"]
+          "scopes": ["operator.read", "operator.write", "operator.admin"]
         }
       },
       "identityScopes": {
         "occ-workspace-files": ["operator.admin"]
+      }
+    },
+    "roles": {
+      "default": "reviewer",
+      "definitions": {
+        "reviewer": {
+          "sessions": { "others": "view" },
+          "agents": ["main"],
+          "scopes": ["operator.read"]
+        },
+        "administrator": {
+          "sessions": { "others": "write" },
+          "agents": "*",
+          "scopes": ["operator.admin"]
+        }
       }
     },
     "controlUi": {
@@ -188,6 +212,8 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
   }
 }
 ```
+
+Device auto-approval must include the scopes used by each assigned role. It approves the device; the assigned role still limits the person's permissions.
 
 Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
 
@@ -279,7 +305,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                      |
 | API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                |
 | API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.                           |
-| Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                                           |
+| Console panel is hidden                             | Feature enablement and exact Agent `use` permission with an explicit runtime-role assignment.                                                                                         |
 | Panel or status API reports `stopped`               | A stopped Agent with no active revision returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                |
 | Panel or status API reports `unavailable`           | No version is serving: there is no active revision yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy. |
 | Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the active revision.                                                     |

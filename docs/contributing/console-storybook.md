@@ -1,8 +1,7 @@
 # Console Storybook
 
-Browse production Console pages, components, and Agent workflows against an
-in-memory fixture. Previews contact no services and run no workloads. Use dummy
-credentials.
+Console previews use in-memory fixtures. They contact no services and
+run no workloads. Use dummy credentials.
 
 ## Run locally
 
@@ -13,9 +12,8 @@ npm run storybook:install
 npm run storybook
 ```
 
-Open `http://127.0.0.1:6006`. Each story starts an independent fixture, ignoring
-existing Installations and other tabs' sessions; **Reset story** discards its
-changes.
+Open `http://127.0.0.1:6006`. Stories have independent fixtures; **Reset story**
+discards changes.
 
 To build and serve a static copy:
 
@@ -69,13 +67,19 @@ Stories reach error states through real controls after loading fixture data.
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                              |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials             | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
-| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                                                          |
+| Native admin            | Available launch, stopped, UI configuration required, assigned role missing, insufficient pairing permissions, unsupported Compute transport, administrator self-assignment and explicit Refresh recovery, disabled panel hidden, and ordinary-user denial hidden. The launch target is an explanatory fixture page.                                                                                              |
 | Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                                                                |
 | Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                                                      |
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                                                      |
 
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
+
+In **Components/Native admin → Administrator Needs Assignment**, follow the
+hint, assign the fixture Principal `platform-administrator` in Share Agent, then
+select **Refresh access**. The launch link appears in the same tab. Compare
+**Disabled and hidden** and **Denied and hidden**; neither shows the assignment
+hint.
 
 ## Return navigation
 
@@ -115,11 +119,10 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 a separate credential action. Its initial state is not a Stop request; OCC
 generation is simulated.
 
-Choose a Preset, fill its variables, review seeded workspace files, and create
-a Codex-harness Agent: the Console submits inline Configuration and Secret
-references, then follows simulated provisioning. Another flow uses the default
-Preset with OpenAI Codex, a new or existing model Secret, and a model, editing
-IDENTITY.md and clearing USER.md first.
+Choose a Preset, fill variables, review seeded files, and create a Codex Agent.
+The Console submits Configuration and Secret references, then simulates
+provisioning. The default-Preset flow uses OpenAI Codex, a model Secret and model;
+edit IDENTITY.md and clear USER.md before creation.
 OpenClaw and unsupported-runtime stories keep the draft workflow: provision
 credentials and deploy from Agent detail.
 
@@ -130,8 +133,7 @@ harness settings. Preset Secret stories cover existing, pending, denied, and emp
 results while keeping new-token entry.
 
 The [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
-gives presenter actions, expected visible states, and fallbacks for creating an
-Agent from the SWE Agent Preset and opening the deployed `oceclaw` Agent's
+covers creating an Agent from the SWE Agent Preset and opening `oceclaw`'s
 simulated Admin UI, connected to no gateway, Slack, credential, or model.
 
 **Choose provider, harness, and authentication** covers the supported
@@ -141,11 +143,10 @@ harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
 the runtime-build warning; Embedded OpenClaw does not.
 
 In **Enter another model ID**, switch to **Choose a model from the list** and
-back: listed models survive both switches, focus moves to the active input, and
-other settings persist. Edit the manual ID to another listed model; returning
-selects it. A custom ID outside the list requires a new selection. After a provider
-change through Configuration JSON, the list must match and drop the old
-provider's model.
+back. Listed models and other settings should survive; focus moves to the active
+input. Enter another listed model ID, return, and check its selection. A custom
+ID requires a new selection. Change the provider through Configuration JSON;
+the list must match without retaining the old provider's model.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no dedicated console
@@ -162,11 +163,18 @@ Configuration and needs a current nonempty repository selection to retry.
 The fixture does not verify operator prerequisites: GitHub App setup, Namespace
 approvals, runtime images, and credential-service networking.
 
+### Sharing
+
+Use **Share before first deployment**, **Share while stopped**, **Configured and
+deployed role permissions**, **Change OpenClaw role** and **OpenClaw roles
+unavailable**. Inspect permissions, share a Principal, change its role and remove
+the assignment. Self-assignment is explained above.
+
 ### Return to loaded pages
 
-In **Return to loaded pages**, Tab to Namespaces and press Enter: its heading
-receives focus, then Tab reaches Refresh. Check retained editors through
-Back/Forward, Refresh, refocus, and Namespace switches.
+In **Return to loaded pages**, Tab to Namespaces and press Enter: focus reaches
+its heading, then Refresh. Check editor retention through Back/Forward, Refresh,
+refocus, and Namespace switches.
 
 **Return Backend access denied** checks Installation-wide denial.
 **Return access denied** and **Return session expired** must remove retained
@@ -223,9 +231,8 @@ during failed or pending reads.
 
 ### Discover and configure plugins
 
-Plugin stories simulate catalogs, Secret metadata, and policy capabilities; they
-do not prove installation, invocation access, runtime enforcement, or live Agent
-turns.
+Plugin fixtures simulate catalogs, Secret metadata and policy capabilities;
+installation, invocation access, runtime enforcement and Agent turns remain unverified.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844
@@ -248,10 +255,9 @@ permission failure. Preset PAT Secrets enable discovery; API keys do not.
 dismissal, compact rows, help links, detail guidance, and disabled **Add**.
 
 In **Components/Plugins**, expand a tool to inspect inherited enablement and
-approval. Where per-tool review is unsupported (Codex), the reviewer shortcut
-opens the plugin default. New plugins omit tool defaults; an omitted reviewer
-inherits the Harness reviewer. **Unsupported saved tool reviewer** stays visible
-and can be cleared to inherit. Tool IDs match the JSON keys.
+approval. Unsupported per-tool review opens the plugin default. New plugins omit
+tool defaults; omitted reviewers inherit the Harness reviewer. **Unsupported
+saved tool reviewer** can be cleared to inherit. Tool IDs match JSON keys.
 
 **Create Agent / Edit existing plugin policies** exercises the policy form.
 
@@ -299,25 +305,23 @@ stories; they do not prove credential delivery or login.
 
 ### Stop
 
-Open **Stop Agent**, inspect or cancel the confirmation, then confirm. The
-fixture records the requested stopped state; **Refresh stop status** rereads it
-without proving live shutdown.
+Open **Stop Agent**, inspect or cancel, then confirm. **Refresh stop status**
+rereads the fixture's requested stopped state without proving live shutdown.
 
 Resume by deploying a new version; disabling Slack does not stop an Agent. See
 [Stop and resume](../reference/agents/deployment.md#stop-and-resume).
 
 ### Delete
 
-Open **Delete Agent**; inspect, cancel, or confirm permanent deletion. The UI
-enters cleanup state without editing/deployment controls.
+Open **Delete Agent**, inspect or cancel, then confirm permanent deletion.
+Cleanup state removes editing/deployment controls.
 **Refresh deletion status** completes the fixture and returns to the Agent list.
-The console has no detailed cleanup-progress view. Namespace-owned Configurations
+Detailed cleanup progress is unavailable. Namespace-owned Configurations
 and Secrets remain; manage them separately. See
 [Agent deletion](../reference/agents.md#deletion).
 
-Serving health, routing cutover, real shutdown, channel delivery, and model
-responses require runtime verification outside Storybook. The console shows
-persisted deployment status, not live serving health.
+Serving health, routing cutover, shutdown, channel delivery and model responses
+require runtime verification. The console shows persisted deployment status.
 
 ## Maintain coverage
 

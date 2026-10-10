@@ -48,7 +48,7 @@ On mobile, **Open navigation** opens a drawer; widening to desktop closes it
 and releases page controls.
 
 When available, a retained view stays mounted and inert while a full-page return
-is revalidated: matching data reactivates it, changed data rebuilds it, and
+is revalidated: matching outcomes reactivate it, recovery or changed data rebuilds it, and
 Refresh always rebuilds. Agent-detail refocus revalidates access without
 rebuilding, preserving editors, form input, open Slack searches, and the enabled
 header selector. Retained views are scoped to account, session, route, and
@@ -294,9 +294,9 @@ unavailable gateways, follow the
 
 ## Open the native admin UI
 
-When [Agent native admin UI access](agent-native-admin.md) is enabled, all Agent
-detail tabs, including Configuration and Workspace files, show a **Native admin
-UI** panel to callers with exact Agent `administer`.
+When [Agent native admin UI access](agent-native-admin.md) is enabled, the
+Agent detail tabs, including Configuration and Workspace files, include a
+**OpenClaw** panel for people with Agent `use` and a runtime assignment.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check
@@ -305,7 +305,7 @@ revision, and reports when native admin is unsupported. Installation
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open native admin UI** opens the Agent's active revision in a new tab, even
+**Open OpenClaw** opens the Agent's active revision in a new tab, even
 from a draft or older revision. Its visible warning is part of the operator
 contract: native UI changes to the gateway bypass OCE and are not recorded in
 AgentRevisions. Use OCE for durable configuration. The tab shares

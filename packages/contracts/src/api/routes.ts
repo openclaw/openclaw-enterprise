@@ -3,6 +3,8 @@ import { Type } from "typebox";
 import {
   AgentParams,
   AgentId,
+  AgentRuntimeRoleSchema,
+  RuntimeRoleConfiguration,
   NamespaceId,
   SecretId,
   AgentProvisioningParams,
@@ -12,6 +14,7 @@ import {
   AgentRuntimeCredentialsBody,
   ConfigurationParams,
   CreateIAMAccessBindingBody,
+  UpdateIAMRuntimeRoleBody,
   CreateIAMRoleBody,
   CreateAgentBody,
   DiscoverAgentModelsBody,
@@ -40,6 +43,7 @@ import {
   NamedResourceBody,
   NamespaceParams,
   RevisionParams,
+  RevisionId,
   SecretParams,
   ServiceAccountDeleteQuery,
   ServiceAccountParams,
@@ -609,6 +613,61 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: IAMAccessBindingParams,
       response: { 200: IAMAccessBindingResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "updateIAMRuntimeRole",
+    method: "PATCH",
+    path: "/namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role",
+    action: "openclaw.iam.access_bindings.runtime_role.update",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "namespace_iam",
+    summary: "Change the runtime role on an exact human Agent access grant",
+    tags: ["IAM"],
+    schema: {
+      querystring: EmptyQuery,
+      params: IAMAccessBindingParams,
+      body: UpdateIAMRuntimeRoleBody,
+      response: { 200: IAMAccessBindingResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listAgentRuntimeRoles",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/runtime-roles",
+    action: "openclaw.agents.runtime_roles.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "namespace_iam",
+    summary: "List configured runtime roles and deployed permission summaries for an Agent",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Object(
+            {
+              configuration: RuntimeRoleConfiguration,
+              roles: Type.Array(AgentRuntimeRoleSchema),
+              desiredRuntimeState: Type.Union([Type.Literal("running"), Type.Literal("stopped")]),
+              activeRevision: Type.Optional(
+                Type.Object(
+                  {
+                    id: RevisionId,
+                    roles: Type.Array(AgentRuntimeRoleSchema),
+                  },
+                  { additionalProperties: false },
+                ),
+              ),
+            },
+            { additionalProperties: false },
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
     },
   },
   {

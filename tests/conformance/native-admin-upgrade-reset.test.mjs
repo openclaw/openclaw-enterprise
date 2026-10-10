@@ -103,7 +103,7 @@ test("a client reset during a pending native-admin denial still records the deni
         async resolveAgentReference(predicate) {
           return predicate(agent) ? agent : undefined;
         },
-        getAdministerableActiveAgentRevision() {
+        getUsableActiveAgentRevision() {
           admissionEntered = true;
           return admissionGate;
         },
@@ -242,7 +242,7 @@ for (const phase of ["admission", "gateway key"]) {
         },
       },
     };
-    const selection = { agent, revision };
+    const selection = { agent, revision, runtimeRole: "platform-administrator" };
     const crashes = [];
     const onUncaught = (error) => {
       crashes.push(error);
@@ -263,11 +263,16 @@ for (const phase of ["admission", "gateway key"]) {
           async resolveAgentReference(predicate) {
             return predicate(agent) ? agent : undefined;
           },
-          getAdministerableActiveAgentRevision() {
+          getUsableActiveAgentRevision() {
             return phase === "admission" ? gated("admission", selection) : selection;
           },
           selectedDriver() {
-            return { getGatewayEndpoint: () => `wss://127.0.0.1:${gateway.address().port}/` };
+            return {
+              getAgentRuntimeAccess: () => ({
+                endpoint: `wss://127.0.0.1:${gateway.address().port}/`,
+                headers: {},
+              }),
+            };
           },
         };
       },

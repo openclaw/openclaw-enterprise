@@ -129,7 +129,10 @@ export async function expectNoText(page, pattern) {
 }
 
 export async function revealNativeConfiguration(page, label) {
-  await page.getByText(label).click();
+  const summary = page.getByText(label, { exact: true });
+  if ((await summary.locator("..").getAttribute("open")) === null) {
+    await summary.click();
+  }
 }
 
 export function detailUrl(fixture, namespaceId, agentId, revision, tab) {

@@ -2,6 +2,7 @@ import type { AuditEventFactory, AuditSink } from "@openclaw-enterprise/audit";
 import type {
   Agent,
   AgentRevision,
+  AgentRuntimeAccessUnavailableReason,
   AuthorizationEvidence,
   ComputeDriver,
   IAMDriver,
@@ -76,6 +77,8 @@ interface NativeAdminProxyResolution {
   readonly revisionId: string;
   readonly target: NativeAdminTarget;
   readonly gatewayBase: string;
+  readonly runtimeRole: string;
+  readonly runtimeHeaders: Readonly<Record<string, string>>;
 }
 
 interface NativeAdminProxyDenial {
@@ -101,10 +104,10 @@ export const nativeAdminStatusOperation = {
   method: "GET",
   path: "/namespaces/:namespaceId/agents/:agentId/native-admin",
   action: "openclaw.agents.native_admin.read",
-  iamAction: "administer",
+  iamAction: "use",
   resourceKind: "agent",
   authorizationTarget: "agent",
-  summary: "Resolve native admin UI launch availability for one Agent",
+  summary: "Resolve OpenClaw launch availability with an assigned runtime role",
   tags: ["Agents"],
   schema: {},
 } as unknown as OccApiRoute;
@@ -133,6 +136,15 @@ const nativeAdminStatusDataSchema = {
       type: "string",
       enum: ["available", "disabled", "stopped", "unavailable", "unsupported"],
     },
+    reason: {
+      type: "string",
+      enum: [
+        "ui_configuration",
+        "role_unavailable",
+        "device_approval_required",
+        "transport_unsupported",
+      ],
+    },
     host: { type: "string" },
     origin: { type: "string", format: "uri" },
     activeRevisionId: { type: "string" },
@@ -143,10 +155,10 @@ export const nativeAdminStatusSchema = {
   operationId: nativeAdminStatusOperation.operationId,
   summary: nativeAdminStatusOperation.summary,
   description:
-    "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+    "Requires a human session, exact Agent use permission and one configured runtime role assignment. Service API keys cannot launch or inspect OpenClaw access.",
   tags: [...nativeAdminStatusOperation.tags],
   security: [{ sessionCookie: [] }],
-  "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+  "x-openclaw-permissions": [{ action: "use", resourceKind: "agent", scope: "requested" }],
   params: nativeAdminParamsSchema,
   response: {
     200: {
@@ -214,7 +226,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(
         403,
         "FORBIDDEN",
-        "Native admin UI requires a signed-in console session; service API keys cannot open it.",
+        "OpenClaw requires a signed-in console session; service API keys cannot open it.",
       );
     }
     const session = admitted.session;
@@ -246,7 +258,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         iamDriverId: selectedIAMDriver().id,
         authorization: {
           principalId: resolution.actorId,
-          action: "administer",
+          action: "use",
           resource: {
             kind: "agent",
             id: resolution.agentId,
@@ -269,6 +281,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
               : { closeReason: socketEvent.closeReason }),
             parentSessionId: resolution.parentSessionId,
             revisionId: resolution.revisionId,
+            runtimeRole: resolution.runtimeRole,
             host: resolution.target.host,
           },
         },
@@ -470,6 +483,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         gatewayBase: resolution.gatewayBase,
         agentOrigin: resolution.target.origin,
         apiKey,
+        runtimeHeaders: resolution.runtimeHeaders,
       };
     } catch {
       return undefined;
@@ -483,8 +497,17 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   };
   type NativeAdminAvailability =
     | { readonly status: "disabled" | "stopped" | "unavailable" }
-    | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
-    | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
+    | ({ readonly status: "stopped" } & NativeAdminTargetStatus)
+    | ({
+        readonly status: "unsupported";
+        readonly reason: AgentRuntimeAccessUnavailableReason | "ui_configuration";
+      } & NativeAdminTargetStatus)
+    | ({
+        readonly status: "available";
+        readonly gatewayBase: string;
+        readonly runtimeRole: string;
+        readonly runtimeHeaders: Readonly<Record<string, string>>;
+      } & NativeAdminTargetStatus);
 
   // An exclusive Compute Driver stops the active revision's workload before a newer
   // revision starts, so nothing serves until that revision activates. If it fails, the
@@ -522,13 +545,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     let selection;
     try {
-      selection = await controller.getAdministerableActiveAgentRevision(
+      selection = await controller.getUsableActiveAgentRevision(
         input.actorId,
         input.namespaceId,
         input.agentId,
       );
     } catch (error) {
-      // This administering lookup conflicts only when the authorized Agent is stopped without an active revision.
+      // This lookup conflicts only when the authorized Agent is stopped without an active revision.
       if (error instanceof ResourceConflictError) {
         return { status: "stopped" };
       }
@@ -554,7 +577,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      return { status: "unsupported", agent, revision, target };
+      return { status: "unsupported", reason: "ui_configuration", agent, revision, target };
     }
     let compute: ComputeDriver;
     try {
@@ -562,11 +585,23 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     } catch {
       throw dependencyUnavailable();
     }
-    const gatewayBase = nativeAdminGatewayHttpBase(compute.getGatewayEndpoint?.(revision) ?? "");
-    if (gatewayBase === undefined) {
-      return { status: "unsupported", agent, revision, target };
+    const access = compute.getAgentRuntimeAccess?.(revision, input.actorId, selection.runtimeRole);
+    if (access !== undefined && "reason" in access) {
+      return { status: "unsupported", reason: access.reason, agent, revision, target };
     }
-    return { status: "available", agent, revision, target, gatewayBase };
+    const gatewayBase = nativeAdminGatewayHttpBase(access?.endpoint ?? "");
+    if (gatewayBase === undefined) {
+      return { status: "unsupported", reason: "transport_unsupported", agent, revision, target };
+    }
+    return {
+      status: "available",
+      agent,
+      revision,
+      target,
+      gatewayBase,
+      runtimeRole: selection.runtimeRole,
+      runtimeHeaders: access!.headers,
+    };
   }
 
   async function resolveNativeAdminAgentHost(
@@ -588,6 +623,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     return {
       status: availability.status,
+      ...(availability.status === "unsupported" ? { reason: availability.reason } : {}),
       host: availability.target.host,
       origin: availability.target.origin,
       activeRevisionId: availability.revision.id,
@@ -778,6 +814,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         revisionId: resolved.revision.id,
         target: resolved.target,
         gatewayBase: resolved.gatewayBase,
+        runtimeRole: resolved.runtimeRole,
+        runtimeHeaders: resolved.runtimeHeaders,
       };
     } catch (error) {
       // A dependency outage (IAM or State) is not a denial, though its error class extends
@@ -907,6 +945,18 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
             return "dependency_failure";
           }
           return renewed.reason;
+        }
+        if (
+          renewed.parentSessionId !== admission.parentSessionId ||
+          renewed.actorId !== admission.actorId
+        ) {
+          return "session_invalid";
+        }
+        if (
+          renewed.runtimeRole !== admission.runtimeRole ||
+          JSON.stringify(renewed.runtimeHeaders) !== JSON.stringify(admission.runtimeHeaders)
+        ) {
+          return "role_changed";
         }
         return undefined;
       },

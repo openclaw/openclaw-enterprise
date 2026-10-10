@@ -94,6 +94,10 @@ supported resource actions and Restrictions.
 - Operator-installed IAM packages use the same shared methods and controller-owned
   state; see [selection and package requirements](selection.md).
 
+## Runtime entry assignment
+
+`authorizeRuntimeAccess` resolves Agent `use` and the exact human runtime-role assignment from one current policy snapshot. It returns ordinary decision evidence plus an opaque `runtimeRole`. Restrictions still override grants; absent or ambiguous assignments deny entry. The managed policy contract adds `updateNamespaceRuntimeRole` for changing only the runtime assignment on an existing binding. Native permission definitions belong to the runtime.
+
 ## Related
 
 - [Authorization policy](../authorization.md) and [authentication](../authentication.md)

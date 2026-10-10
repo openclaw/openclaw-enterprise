@@ -149,12 +149,11 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets (the list requires Namespace read), then reads the
-selected resource once. The **Start with default Preset** button uses the listed
-`default-codex` ID through that same exact-resource read. It applies
-variable-free templates immediately; customized variable definitions retain the
-ordinary chooser. If that chooser is
-restored, it preserves the shortcut origin for the eventual form. Missing defaults or
+lists readable Presets with Namespace read, then reads the selected resource once
+with `revalidate: false` for an independent draft.
+**Start with default Preset** reads the listed `default-codex`, applying
+variable-free templates immediately. Variables use the chooser; restoration
+retains the shortcut origin. Missing defaults or
 failed list/read requests cannot open a hidden hardcoded starter. Other readable
 Presets remain selectable. The separate **Start without Preset** action opens
 the ordinary form without reading a Namespace Preset; it does not automatically
@@ -309,6 +308,8 @@ or an immutable admitted revision.
 - 2026-10-04 22:00: Refresh superseded copies only when `includeDefaults` seeded them; a `presets.files` copy of a bundled file stays.
 - 2026-10-04 14:00: Refresh untouched copies of superseded bundled defaults at startup, and let any shipped version pass the Namespace deletion check.
 - 2026-10-03 20:30: Seed default Presets with the next Installation administrator when one cannot create them, so an upgrade that adds a default no longer stops API startup.
+- 2026-10-03 09:53: Exclude the selected Preset snapshot from replay after its values become an independent draft. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
+
 - 2026-09-28 10:36: Restore explicit creation without a Preset. (authoring-run/c140c47a-799b-48c8-929a-5d1a37eb31d1 - 9f7ae3cfb749a58394f8446f3a429db6ffa6f129)
 
 - 2026-09-27 01:09: Preserve exit discard for the default Preset shortcut and retain explicitly selected Preset drafts. (authoring-run/048d8546-acd0-4d1a-8231-61c9d9ccb9dc - 7d0da53a8f092b0e2533464424dcb9c7fe15b139)

@@ -411,7 +411,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       });
       await page.getByRole("button", { name: "Save authentication source" }).click();
       await page
-        .getByText("Access denied. You do not have permission for this operation.")
+        .locator('.agent-version-detail form.agent-card > [role="status"]')
+        .filter({ hasText: "Access denied. You do not have permission for this operation." })
         .waitFor();
       assert.equal(await deploy.isEnabled(), true);
       fixture.policy.restrictions.pop();

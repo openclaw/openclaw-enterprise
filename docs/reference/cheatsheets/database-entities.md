@@ -265,6 +265,7 @@ Grants a native IAM role to an identity or group, optionally for a specific reso
 - `role_id`
 - `resource_kind`
 - `resource_id`
+- `runtime_role`: optional exact human/Agent runtime assignment; unique per person and Agent.
 
 ### `iam_restrictions`
 

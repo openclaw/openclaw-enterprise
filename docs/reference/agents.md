@@ -289,7 +289,7 @@ for schemas, and the [execution flow](../flows/workspace-files.md) for implement
 
 Trusted operators can open the selected Agent gateway's stock native admin UI
 when the Installation enables [Agent native admin UI access](agent-native-admin.md).
-The availability route requires exact Agent `administer`; `read` and `operate`
+The availability route requires exact Agent `use` and runtime assignment; `read` and `operate`
 are insufficient. The Agent must be desired running, have an active revision,
 and expose a private gateway endpoint through the selected Compute Driver.
 

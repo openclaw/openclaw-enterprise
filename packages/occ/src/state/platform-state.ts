@@ -2701,7 +2701,66 @@ function repositories(
           "The server generated an existing IAM AccessBinding identity.",
         );
       }
+      if (binding.runtimeRole !== undefined) {
+        const human =
+          iamSubjects.resolve?.(binding.subjectId)?.kind === "principal" ||
+          iamSubjects.identities.some(
+            (identity) => identity.id === binding.subjectId && identity.kind === "principal",
+          );
+        if (
+          !human ||
+          binding.resourceKind !== "agent" ||
+          binding.runtimeRole !== binding.runtimeRole.trim() ||
+          binding.runtimeRole.length < 1 ||
+          binding.runtimeRole.length > 128 ||
+          Array.from(binding.runtimeRole).some(
+            (char) => char.codePointAt(0)! < 32 || char.codePointAt(0) === 127,
+          ) ||
+          !role.permissions.some(
+            (permission) => permission.action === "use" && permission.resourceKind === "agent",
+          )
+        ) {
+          throw new ScopeViolationError(
+            "A runtime assignment requires a human, exact Agent and entry Role.",
+          );
+        }
+        if (
+          Array.from(snapshot.bindings.values()).some(
+            (candidate) =>
+              candidate.namespaceId === namespace.id &&
+              candidate.subjectKind === "identity" &&
+              candidate.subjectId === binding.subjectId &&
+              candidate.resourceKind === "agent" &&
+              candidate.resourceId === binding.resourceId &&
+              candidate.runtimeRole !== undefined,
+          )
+        ) {
+          throw new ResourceConflictError(
+            "The person already has a runtime assignment on this Agent.",
+          );
+        }
+      }
       const saved = immutableCopy(binding);
+      snapshot.bindings.set(key, saved);
+      return immutableCopy(saved);
+    },
+    updateRuntimeRole: async (namespaceId, bindingId, runtimeRole) => {
+      const key = iamPolicyKey(namespaceId, bindingId);
+      const binding = snapshot.bindings.get(key);
+      if (binding?.runtimeRole === undefined) {
+        return undefined;
+      }
+      if (
+        runtimeRole !== runtimeRole.trim() ||
+        runtimeRole.length < 1 ||
+        runtimeRole.length > 128 ||
+        Array.from(runtimeRole).some(
+          (char) => char.codePointAt(0)! < 32 || char.codePointAt(0) === 127,
+        )
+      ) {
+        throw new ScopeViolationError("The runtime role is invalid.");
+      }
+      const saved = immutableCopy({ ...binding, runtimeRole });
       snapshot.bindings.set(key, saved);
       return immutableCopy(saved);
     },

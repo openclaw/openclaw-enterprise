@@ -36,11 +36,13 @@
         "PostgreSQL native admin shared session and HTTP proxy work across two OCC API replicas",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after parent logout",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after parent session expiry",
-        "PostgreSQL native admin WebSocket lease closes at the next renewal after IAM administer restriction",
+        "PostgreSQL native admin WebSocket lease closes at the next renewal after IAM use restriction",
         "PostgreSQL native admin WebSocket lease closes as a dependency failure during an IAM outage",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
-        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse"
+        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
+        "PostgreSQL role changes and revocation close existing proxy leases across replicas",
+        "PostgreSQL persists only one exact human assignment and limits updates to the runtime role"
       ]
     },
     {

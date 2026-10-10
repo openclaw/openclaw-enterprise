@@ -6,6 +6,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -84,8 +85,11 @@ export async function waitForCreateFormReads(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
-  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("heading", { name: "OpenClaw", exact: true }).isVisible(),
+    false,
+  );
+  assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 }
 
 export function assertRevisionUrl(page, revisionId) {
@@ -272,27 +276,5 @@ function repositoryPolicyDriver(repositories) {
 }
 
 export function nativeAdminValues(marker, origin) {
-  const values = nativeValues(marker);
-  return {
-    ...values,
-    gateway: {
-      ...(values.gateway ?? {}),
-      controlUi: {
-        ...(values.gateway?.controlUi ?? {}),
-        enabled: true,
-        allowedOrigins: [origin],
-      },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: {
-          "occ-workspace-files": ["operator.admin"],
-        },
-      },
-    },
-  };
+  return nativeRolesGateway(nativeValues(marker), origin);
 }

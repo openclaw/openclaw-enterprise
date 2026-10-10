@@ -900,8 +900,8 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
-  // The real Gateway loads its plugins during the first model request.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
+  // The real Gateway was OOMKilled at 2Gi during a model turn; 4Gi passed the rerun.
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
   const pluginStatusProxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
   if (pluginStatusProxyCidrs !== undefined && pluginStatusProxyCidrs.trim().length > 0) {
     configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
@@ -920,7 +920,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "requests.memory": "2Gi",
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
-    "limits.memory": "6Gi",
+    "limits.memory": "12Gi",
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -2309,7 +2309,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     assert.ok(gatewayVersion.includes(process.env.OCC_TEST_KUBERNETES_OPENCLAW_VERSION));
   }
   context.diagnostic(`${mode}: ${gatewayVersion}`);
-  await assertGatewayEffectiveDefaultModel(
+  await assertGatewayConfiguredDefaultModel(
     context,
     { mode, placement, gatewayPlacement, gatewayPod },
     `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`,
@@ -3259,7 +3259,7 @@ async function assertDedicatedSkillSources(topology) {
   }
 }
 
-async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
+async function assertGatewayConfiguredDefaultModel(context, topology, expectedModel) {
   // Read through the shipped CLI instead of a removed plugin SDK export.
   const model = JSON.parse(
     await kubectl(
@@ -3279,14 +3279,14 @@ async function assertGatewayEffectiveDefaultModel(context, topology, expectedMod
   const actualModel = typeof model === "string" ? model : model?.primary;
   assert.ok(
     typeof actualModel === "string" && actualModel.trim(),
-    "Effective runtime config did not expose agents.defaults.model",
+    "Gateway configuration did not expose agents.defaults.model",
   );
   assert.equal(
     actualModel,
     expectedModel,
-    `gateway effective default model changed before live model calls: ${actualModel}`,
+    `gateway configured default model changed before live model calls: ${actualModel}`,
   );
-  context.diagnostic(`${topology.mode}: effective default model ${actualModel}`);
+  context.diagnostic(`${topology.mode}: configured default model ${actualModel}`);
 }
 
 function messageText(message) {

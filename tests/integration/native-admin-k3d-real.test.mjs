@@ -1,4 +1,8 @@
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "../helpers/native-ui-chat.mjs";
+import {
+  submitChatTurnWithAssistantProof,
+  textFromFrame,
+  waitForStockUi,
+} from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
@@ -23,6 +27,8 @@ import {
   waitFor,
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
+import { ADMINISTRATOR_RUNTIME_ROLE } from "../../packages/contracts/src/index.ts";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 
 const executeFile = promisify(execFile);
 
@@ -247,29 +253,28 @@ async function readOceControlState(topology) {
   };
 }
 
-async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomain) {
+async function redeployWithNativeAdminAccess(
+  topology,
+  publicOrigin,
+  nativeDomain,
+  { configuredRoles = true } = {},
+) {
   const targetForStableOrigin = expectedNativeAdminTarget(topology, publicOrigin, nativeDomain);
   const current = await topology.request(
     "GET",
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
   );
   assert.equal(current.status, 200, JSON.stringify(current.error));
-  const values = structuredClone(current.data.values);
-  values.gateway = {
-    ...values.gateway,
-    controlUi: {
-      ...(values.gateway?.controlUi ?? {}),
-      enabled: true,
-      allowedOrigins: [targetForStableOrigin.origin],
-    },
-    auth: {
-      ...(values.gateway?.auth ?? {}),
-      trustedProxy: {
-        ...(values.gateway?.auth?.trustedProxy ?? {}),
-        deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-      },
-    },
-  };
+  const values = nativeRolesGateway(current.data.values, targetForStableOrigin.origin);
+  if (!configuredRoles) {
+    delete values.gateway.roles;
+    const proxy = values.gateway.auth.trustedProxy;
+    delete proxy.roleHeader;
+    delete proxy.rolePolicyHashHeader;
+    delete proxy.managedIdentityPrefixes;
+    delete proxy.managedIdentities;
+    proxy.allowUsers = ["occ-workspace-files"];
+  }
   const patched = await topology.request(
     "PATCH",
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
@@ -281,6 +286,44 @@ async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomai
     },
   );
   assert.equal(patched.status, 200, JSON.stringify(patched.error));
+  const identity = await topology.observerPool.query(
+    `SELECT identity.id FROM occ.iam_identities identity
+    JOIN occ."user" account ON identity.subject = account.id
+    WHERE identity.kind = 'principal' AND account.email = $1`,
+    [topology.credentials.email],
+  );
+  assert.equal(identity.rowCount, 1);
+  const policyPath = `/namespaces/${topology.agent.namespaceId}/iam`;
+  const bindings = await topology.adminRequest("GET", `${policyPath}/access-bindings`);
+  assert.equal(bindings.status, 200);
+  if (
+    !bindings.data.some(
+      (binding) =>
+        binding.subjectId === identity.rows[0].id &&
+        binding.resourceId === topology.agent.id &&
+        binding.runtimeRole !== undefined,
+    )
+  ) {
+    const role = await topology.adminRequest("POST", `${policyPath}/roles`, {
+      permissions: [{ action: "use", resourceKind: "agent" }],
+    });
+    assert.equal(role.status, 201);
+    const assignment = await topology.adminRequest("POST", `${policyPath}/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: identity.rows[0].id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: topology.agent.id,
+      runtimeRole: ADMINISTRATOR_RUNTIME_ROLE,
+      runtimeRoleConfiguration: (
+        await topology.adminRequest(
+          "GET",
+          `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/runtime-roles`,
+        )
+      ).data.configuration,
+    });
+    assert.equal(assignment.status, 201, JSON.stringify(assignment.error));
+  }
   const previousGatewayUid = topology.gatewayPod.metadata.uid;
   const deployed = await topology.request(
     "POST",
@@ -325,6 +368,39 @@ async function assertNoNativeCredentialLeak(page, protectedValues) {
   for (const value of protectedValues.filter(Boolean)) {
     assert.equal(html.includes(value), false, "native browser output must not expose credentials");
   }
+}
+
+async function nativeRequest(page, method, params = {}) {
+  // Use the shipped UI's current Gateway client, including its real device handshake.
+  // No replacement transport or alternate credential may bypass the person's role.
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector("openclaw-app-shell")?.context?.gateway.snapshot.phase ===
+      "connected",
+    undefined,
+    { timeout: 60_000 },
+  );
+  return page.evaluate(
+    async ({ method, params }) => {
+      const client =
+        globalThis.document.querySelector("openclaw-app-shell").context.gateway.snapshot.client;
+      try {
+        return { ok: true, payload: await client.request(method, params) };
+      } catch (error) {
+        return {
+          ok: false,
+          error: { code: error.gatewayCode, message: error.message, details: error.details },
+        };
+      }
+    },
+    { method, params },
+  );
+}
+
+function assertMissingNativeScope(result, scope) {
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.error.code, "FORBIDDEN");
+  assert.equal(result.error.details?.missingScope, scope);
 }
 
 async function assertServiceWorkerRegistrationBlockedByCsp(page) {
@@ -514,6 +590,29 @@ async function assertStopRedeployPreservesWorkspaceFile(
   assert.equal(stoppedAgent.data.desiredRuntimeState, "stopped");
   topology.agent = { ...topology.agent, ...stoppedAgent.data };
 
+  // A real worker has cleared the active revision; role editing must not need a live runtime.
+  const catalog = await topology.adminRequest("GET", agentPath(topology, "/runtime-roles"));
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.error));
+  assert.equal(catalog.data.activeRevision, undefined);
+  const policyPath = `/namespaces/${topology.agent.namespaceId}/iam/access-bindings`;
+  const bindings = await topology.adminRequest("GET", policyPath);
+  const assignment = bindings.data.find(
+    (binding) =>
+      binding.resourceId === topology.agent.id &&
+      binding.runtimeRole === ADMINISTRATOR_RUNTIME_ROLE,
+  );
+  assert.ok(assignment);
+  const changed = await topology.adminRequest(
+    "PATCH",
+    `${policyPath}/${assignment.id}/runtime-role`,
+    {
+      runtimeRole: ADMINISTRATOR_RUNTIME_ROLE,
+      runtimeRoleConfiguration: catalog.data.configuration,
+    },
+  );
+  assert.equal(changed.status, 200, JSON.stringify(changed.error));
+  assert.equal(changed.data.id, assignment.id);
+
   const stoppedRead = await topology.workspaceRequest("GET", workspacePath);
   assert.notEqual(
     stoppedRead.status,
@@ -622,10 +721,10 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   for (const [name, permissions] of [
     ["Namespace discovery", [{ action: "read", resourceKind: "namespace" }]],
     [
-      "Shared native administration",
+      "Shared native entry",
       [
         { action: "read", resourceKind: "agent" },
-        { action: "administer", resourceKind: "agent" },
+        { action: "use", resourceKind: "agent" },
       ],
     ],
   ]) {
@@ -638,6 +737,12 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     configurationId: topology.agent.configurationId,
   });
   assert.equal(sibling.status, 201);
+  const workspacePath = `${namespacePath}/agents/${topology.agent.id}/workspace/files/USER.md`;
+  const workspaceContent = `Native role isolation proof ${randomUUID()}.\n`;
+  const written = await topology.workspaceRequest("PUT", workspacePath, {
+    content: workspaceContent,
+  });
+  assert.equal(written.status, 200, JSON.stringify(written.error));
   const people = [];
   for (const label of ["withdrawn", "unaffected"]) {
     const credentials = {
@@ -661,6 +766,17 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
         resourceKind,
         resourceId,
         roleId,
+        ...(resourceKind === "agent"
+          ? {
+              runtimeRole: label === "withdrawn" ? "researcher" : "administrator",
+              runtimeRoleConfiguration: (
+                await topology.adminRequest(
+                  "GET",
+                  `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/runtime-roles`,
+                )
+              ).data.configuration,
+            }
+          : {}),
       });
       assert.equal(binding.status, 201);
       if (resourceKind === "agent") {
@@ -670,9 +786,11 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     const personContext = await browser.newContext();
     context.after(() => personContext.close());
     const frames = [];
+    const sockets = [];
     personContext.on("page", (observedPage) =>
       observedPage.on("websocket", (socket) => {
         if (new URL(socket.url()).origin === status.origin.replace(/^http/, "ws")) {
+          sockets.push(socket);
           socket.on("framereceived", (frame) => frames.push({ ...frame, socket }));
         }
       }),
@@ -700,10 +818,10 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     ]) {
       assert.equal((await request(path)).status, 403);
     }
-    // Configuration remains denied, but exact Agent administer must still launch
+    // Configuration remains denied, but the exact Agent-use assignment must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
     const popup = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open OpenClaw" }).click();
     const nativePage = await popup;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
     const terminalFrame = await submitChatTurnWithAssistantProof(
@@ -716,16 +834,156 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     // Records from previous page navigations do not establish a current stream.
     const socket = terminalFrame.socket;
     assert.ok(socket && !socket.isClosed(), "recipient has a confirmed active native stream");
+    const sessionKey = JSON.parse(textFromFrame(terminalFrame)).payload.sessionKey;
+    assert.equal(typeof sessionKey, "string");
+    assert.match(sessionKey, /^agent:main:/);
+    const self = await nativeRequest(nativePage, "users.self");
+    assert.equal(self.ok, true, JSON.stringify(self));
+    assert.ok(self.payload.profile.id, "native entry resolves a canonical person profile");
     people.push({
       request,
       nativePage,
       frames,
       socket,
+      sockets,
+      sessionKey,
+      profileId: self.payload.profile.id,
       agentBinding,
       principalId: account.data.principalId,
     });
   }
   const [withdrawn, unaffected] = people;
+  assert.notEqual(withdrawn.profileId, unaffected.profileId);
+  const ownLabel = `researcher-owned-${randomUUID()}`;
+  const patched = await nativeRequest(withdrawn.nativePage, "sessions.patch", {
+    key: withdrawn.sessionKey,
+    label: ownLabel,
+  });
+  assert.equal(patched.ok, true, JSON.stringify(patched));
+  const ownSession = await nativeRequest(withdrawn.nativePage, "sessions.describe", {
+    key: withdrawn.sessionKey,
+  });
+  assert.equal(ownSession.ok, true, JSON.stringify(ownSession));
+  assert.equal(ownSession.payload.session.label, ownLabel);
+  const adminApprovals = await nativeRequest(unaffected.nativePage, "exec.approvals.get");
+  assert.equal(adminApprovals.ok, true, JSON.stringify(adminApprovals));
+  assertMissingNativeScope(
+    await nativeRequest(withdrawn.nativePage, "exec.approvals.get"),
+    "operator.admin",
+  );
+  const otherSession = await nativeRequest(unaffected.nativePage, "sessions.describe", {
+    key: unaffected.sessionKey,
+  });
+  assert.equal(otherSession.ok, true, JSON.stringify(otherSession));
+  assert.equal(otherSession.payload.session.key, unaffected.sessionKey);
+  const hiddenSession = await nativeRequest(withdrawn.nativePage, "sessions.describe", {
+    key: unaffected.sessionKey,
+  });
+  assert.equal(hiddenSession.ok, false, JSON.stringify(hiddenSession));
+  assert.equal(hiddenSession.error.code, "INVALID_REQUEST");
+  assert.equal(
+    hiddenSession.error.message,
+    `Session "${unaffected.sessionKey}" was not found.`,
+    "researcher cannot read another person's session",
+  );
+
+  // Downgrade the connection that performed the real write, then reconnect with the same profile.
+  assert.equal(withdrawn.socket.isClosed(), false);
+  const downgradeStarted = performance.now();
+  await Promise.all([
+    withdrawn.socket.waitForEvent("close", { timeout: 30_000 }),
+    (async () => {
+      const changed = await topology.adminRequest(
+        "PATCH",
+        `${policyPath}/access-bindings/${withdrawn.agentBinding.id}/runtime-role`,
+        {
+          runtimeRole: "reviewer",
+          runtimeRoleConfiguration: (
+            await topology.adminRequest(
+              "GET",
+              `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/runtime-roles`,
+            )
+          ).data.configuration,
+        },
+      );
+      assert.equal(changed.status, 200, JSON.stringify(changed.error));
+      assert.equal(changed.data.runtimeRole, "reviewer");
+    })(),
+  ]);
+  const downgradeMs = performance.now() - downgradeStarted;
+  assert.ok(downgradeMs <= 30_000, `role downgrade closed the old stream in ${downgradeMs} ms`);
+  assert.equal(
+    unaffected.socket.isClosed(),
+    false,
+    "another person's stream survives the downgrade",
+  );
+  await waitFor("the downgraded connection's role_changed audit", async () => {
+    const audit = await topology.observerPool.query(
+      `SELECT id FROM occ.audit_events WHERE actor_id = $1 AND resource_id = $2
+       AND action = 'openclaw.agents.native_admin.websocket.close'
+       AND details->'nativeAdmin'->>'closeReason' = 'role_changed'`,
+      [withdrawn.principalId, topology.agent.id],
+    );
+    return audit.rowCount > 0 ? true : undefined;
+  });
+  await withdrawn.nativePage.reload();
+  await waitForStockUi(withdrawn.nativePage);
+  const reconnected = await nativeRequest(withdrawn.nativePage, "users.self");
+  assert.equal(reconnected.ok, true, JSON.stringify(reconnected));
+  assert.equal(
+    reconnected.payload.profile.id,
+    withdrawn.profileId,
+    "role changes retain the native profile",
+  );
+  const reviewerScopes = await withdrawn.nativePage.evaluate(
+    () =>
+      globalThis.document.querySelector("openclaw-app-shell").context.gateway.snapshot.hello.auth
+        .scopes,
+  );
+  assert.deepEqual(reviewerScopes, ["operator.read"]);
+  assertMissingNativeScope(
+    await nativeRequest(withdrawn.nativePage, "exec.approvals.get"),
+    "operator.admin",
+  );
+  assertMissingNativeScope(
+    await nativeRequest(withdrawn.nativePage, "sessions.patch", {
+      key: withdrawn.sessionKey,
+      label: `forbidden-${randomUUID()}`,
+    }),
+    "operator.write",
+  );
+  const unchanged = await nativeRequest(withdrawn.nativePage, "sessions.describe", {
+    key: withdrawn.sessionKey,
+  });
+  assert.equal(unchanged.ok, true, JSON.stringify(unchanged));
+  assert.equal(
+    unchanged.payload.session.label,
+    ownLabel,
+    "denied mutation retains the session label",
+  );
+  const reviewerOther = await nativeRequest(withdrawn.nativePage, "sessions.describe", {
+    key: unaffected.sessionKey,
+  });
+  assert.equal(reviewerOther.ok, true, JSON.stringify(reviewerOther));
+  assert.equal(
+    reviewerOther.payload.session.key,
+    unaffected.sessionKey,
+    "reviewer gains view of other sessions",
+  );
+  const retainedWorkspace = await topology.workspaceRequest("GET", workspacePath);
+  assert.equal(retainedWorkspace.status, 200, JSON.stringify(retainedWorkspace.error));
+  assert.equal(
+    retainedWorkspace.data.content,
+    workspaceContent,
+    "human downgrade retains the workspace Backend path",
+  );
+  const nextSocket = withdrawn.sockets.at(-1);
+  assert.notEqual(
+    nextSocket,
+    withdrawn.socket,
+    "revocation must observe the new native connection",
+  );
+  withdrawn.socket = nextSocket;
   assert.equal(withdrawn.socket.isClosed(), false);
   assert.equal(unaffected.socket.isClosed(), false);
   // Observe real existing sockets before policy mutation. No artificial abort,
@@ -775,6 +1033,13 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     200,
   );
   assert.equal((await withdrawn.request(namespacePath)).status, 200, "discovery grant remains");
+  const retainedWrite = await topology.workspaceRequest("PUT", workspacePath, {
+    content: `${workspaceContent}After revocation.\n`,
+  });
+  assert.equal(retainedWrite.status, 200, JSON.stringify(retainedWrite.error));
+  const retainedRead = await topology.workspaceRequest("GET", workspacePath);
+  assert.equal(retainedRead.status, 200, JSON.stringify(retainedRead.error));
+  assert.equal(retainedRead.data.content, `${workspaceContent}After revocation.\n`);
   await submitChatTurnWithAssistantProof(
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
@@ -810,17 +1075,18 @@ test(
 
     const unadmittedTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
     assert.match(unadmittedTarget.host, hostSuffixPattern(nativeDomain));
-    const initialStatus = await nativeAdminStatus(topology);
-    assert.notEqual(
+    const initialStatus = await topology.adminRequest("GET", agentPath(topology, "/native-admin"));
+    assert.equal(
       initialStatus.status,
-      "available",
-      "native admin must fail closed before the active runtime admits the exact browser origin and device approval policy",
+      403,
+      "Installation administration alone must not admit native entry",
     );
 
     const expectedTarget = await redeployWithNativeAdminAccess(
       topology,
       ingress.origin,
       nativeDomain,
+      { configuredRoles: false },
     );
     const status = await nativeAdminStatus(topology);
     assert.equal(status.status, "available");
@@ -880,9 +1146,11 @@ test(
     const page = await browserContext.newPage();
     await login(page, ingress.origin, topology.credentials, agentDetailPath(topology));
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
-    await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
+    await page
+      .getByText("OpenClaw uses your assigned role to control conversations, tools and settings.")
+      .waitFor();
     const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open OpenClaw" }).click();
     const nativePage = await popupPromise;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
 

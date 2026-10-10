@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -27,7 +28,10 @@ import {
   SETUP_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  ADMINISTRATOR_RUNTIME_ROLE,
+  admitLoggingConfiguration,
+} from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
   harnessStateRemovalScript,
@@ -3627,6 +3631,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       requestHeaderModifier: {
         set: [
           { name: "x-occ-identity", value: "occ-workspace-files" },
+          { name: "x-occ-role", value: "oce-service" },
+          {
+            name: "x-occ-role-policy",
+            value: "251a4173dcbf68d2945df11ddf0871a93ae357269ae7bf2b00846fd4173d7677",
+          },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
         remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
@@ -3642,6 +3651,201 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     },
     route.spec.rules[0].filters[1],
   ]);
+
+  // Explicit administrator assignments retain the old transport without roles or
+  // a role-admission patch. A configured restricted role never takes this route.
+  const administratorRevision = structuredClone(revision);
+  administratorRevision.configuration.gateway = {
+    auth: { trustedProxy: { deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] } } },
+  };
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      administratorRevision,
+      "prn_00000000-0000-4000-8000-000000000003",
+      ADMINISTRATOR_RUNTIME_ROLE,
+    ),
+    {
+      endpoint: driver.getGatewayEndpoint(revision),
+      headers: { "x-occ-identity": "occ-workspace-files", "x-openclaw-scopes": "operator.admin" },
+    },
+  );
+  // A malformed declaration is not a role-free Gateway and must not grant legacy administrator entry.
+  for (const roles of [null, [], false, "administrator"]) {
+    const malformedRevision = structuredClone(administratorRevision);
+    malformedRevision.configuration.gateway.roles = roles;
+    assert.deepEqual(
+      driver.getAgentRuntimeAccess(
+        malformedRevision,
+        "prn_00000000-0000-4000-8000-000000000003",
+        ADMINISTRATOR_RUNTIME_ROLE,
+      ),
+      { reason: "transport_unsupported" },
+    );
+  }
+  assert.ok(
+    driver
+      .listAgentRuntimeRoles(revision.configuration)
+      .some((role) => role.id === ADMINISTRATOR_RUNTIME_ROLE),
+  );
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(revision, "prn_00000000-0000-4000-8000-000000000003", "reviewer"),
+    { reason: "role_unavailable" },
+  );
+
+  // Human ingress preserves only OCC's verified role descriptor; service ingress overwrites it.
+  const humanRevision = {
+    ...revision,
+    configuration: nativeRolesGateway(revision.configuration, "https://native.example.test"),
+  };
+  const human = driver.getAgentRuntimeAccess(
+    humanRevision,
+    "prn_00000000-0000-4000-8000-000000000003",
+    "researcher",
+  );
+  assert.ok(human);
+  // With no human route installed, neither its root nor any suffix can match
+  // the service route and acquire the privileged service identity.
+  const admittedHumanPath = new URL(human.endpoint).pathname;
+  for (const rule of route.spec.rules) {
+    for (const { path } of rule.matches) {
+      const servicePath = path.value.replace(/\/$/u, "");
+      assert.notEqual(admittedHumanPath, servicePath);
+      assert.deepEqual(`${admittedHumanPath}/`.startsWith(`${servicePath}/`), false);
+    }
+  }
+  const humanPath = `/people/namespaces/${tenant.id}/agents/${revision.agentId}`;
+  assert.deepEqual(human.endpoint, `wss://${gatewayRouting.hostname}${humanPath}`);
+  assert.deepEqual(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
+  assert.deepEqual(human.headers["x-occ-role"], "researcher");
+  const managedConfiguration = driver.kubernetesGatewayConfigurationDocument(
+    humanRevision.configuration,
+  );
+  assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentityPrefixes, [
+    "oce:",
+  ]);
+  assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentities, [
+    "occ-workspace-files",
+  ]);
+  // An empty allow-list is safe only with role/digest enforcement and a bounded
+  // managed identity scope. Start without proxy fields so the Driver must supply them.
+  const generatedProxy = driver.kubernetesGatewayConfigurationDocument({
+    gateway: { roles: humanRevision.configuration.gateway.roles },
+  }).gateway.auth.trustedProxy;
+  assert.deepEqual(
+    {
+      allowUsers: generatedProxy.allowUsers,
+      roleHeader: generatedProxy.roleHeader,
+      rolePolicyHashHeader: generatedProxy.rolePolicyHashHeader,
+      managedIdentityPrefixes: generatedProxy.managedIdentityPrefixes,
+      managedIdentities: generatedProxy.managedIdentities,
+    },
+    {
+      allowUsers: [],
+      roleHeader: "x-occ-role",
+      rolePolicyHashHeader: "x-occ-role-policy",
+      managedIdentityPrefixes: ["oce:"],
+      managedIdentities: ["occ-workspace-files"],
+    },
+  );
+
+  // The Driver supplies omitted selectors but rejects a conflicting identity boundary.
+  const implicitScope = structuredClone(humanRevision.configuration);
+  delete implicitScope.gateway.auth.trustedProxy.managedIdentityPrefixes;
+  delete implicitScope.gateway.auth.trustedProxy.managedIdentities;
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      { ...humanRevision, configuration: implicitScope },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "researcher",
+    ),
+    human,
+  );
+  for (const scope of [
+    { managedIdentityPrefixes: [] },
+    { managedIdentityPrefixes: ["other:"] },
+    { managedIdentities: ["other-service"] },
+  ]) {
+    const configuration = structuredClone(humanRevision.configuration);
+    Object.assign(configuration.gateway.auth.trustedProxy, scope);
+    assert.throws(
+      () =>
+        driver.getAgentRuntimeAccess(
+          { ...humanRevision, configuration },
+          "prn_00000000-0000-4000-8000-000000000003",
+          "researcher",
+        ),
+      /must match the Driver's managed identities/u,
+    );
+  }
+  // Native device pairing intersects these scope names literally. An admin-only
+  // approval cap cannot admit a fresh browser with the researcher's read/write cap.
+  for (const approval of [
+    undefined,
+    { enabled: false, scopes: ["operator.read", "operator.write", "operator.admin"] },
+    { enabled: true },
+    { enabled: true, scopes: ["operator.admin"] },
+    { enabled: true, scopes: ["operator.read"] },
+  ]) {
+    const configuration = structuredClone(humanRevision.configuration);
+    configuration.gateway.auth.trustedProxy.deviceAutoApprove = approval;
+    assert.deepEqual(
+      driver.getAgentRuntimeAccess(
+        { ...humanRevision, configuration },
+        "prn_00000000-0000-4000-8000-000000000003",
+        "researcher",
+      ),
+      { reason: "device_approval_required" },
+    );
+  }
+  const administratorOnly = structuredClone(humanRevision.configuration);
+  administratorOnly.gateway.auth.trustedProxy.deviceAutoApprove.scopes = ["operator.admin"];
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      { ...humanRevision, configuration: administratorOnly },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "administrator",
+    ).headers["x-openclaw-scopes"],
+    "operator.admin",
+  );
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      humanRevision,
+      "prn_00000000-0000-4000-8000-000000000003",
+      "oce-service",
+    ),
+    { reason: "role_unavailable" },
+  );
+  const humanRoute = driver.gatewayRoute(
+    humanRevision,
+    ownership,
+    { name: namespace, plane: "execution" },
+    service,
+    "people",
+  );
+  assert.equal(humanRoute.metadata.name, `${name}-people`);
+  assert.deepEqual(humanRoute.spec.rules[0].matches, [
+    { path: { type: "Exact", value: humanPath } },
+  ]);
+  assert.deepEqual(humanRoute.spec.rules[1].matches, [
+    { path: { type: "PathPrefix", value: `${humanPath}/` } },
+  ]);
+  assert.equal(
+    alternateEndpointDriver.getAgentRuntimeAccess(
+      { ...humanRevision, compute: alternateEndpointRevision.compute },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "researcher",
+    ).endpoint,
+    `wss://${gatewayRouting.hostname}:18443${humanPath}`,
+  );
+  const humanFilter = humanRoute.spec.rules[0].filters[1].requestHeaderModifier;
+  assert.equal(
+    humanFilter.set.some(
+      (header) => header.name === "x-occ-identity" || header.name === "x-occ-role",
+    ),
+    false,
+  );
+  assert.equal(humanFilter.remove.includes("cookie"), true);
+  assert.equal(humanFilter.remove.includes("x-openclaw-scopes"), false);
 
   // Node enrollment and worker admission authenticate inside OpenClaw, while
   // worker bundles use their own one-time bearer token instead of the administrative API key.
@@ -13270,6 +13474,7 @@ test("retirement preserves active storage and node routing and deletes exact own
   route.metadata.resourceVersion = "route-version-2";
   let observedRoute = route;
   const nodeResources = new Map();
+  const peopleResources = new Map();
   const claims = [
     driver.gatewayPrivateStateClaim(agentId, ownership, { name: namespace, plane: "execution" }),
     driver.harnessWorkspaceClaim(agentId, ownership, {
@@ -13349,6 +13554,9 @@ test("retirement preserves active storage and node routing and deletes exact own
     },
     objects: {
       async read({ kind, metadata }) {
+        if (metadata.name === `${gatewayName}-people`) {
+          return peopleResources.has(kind) ? structuredClone(peopleResources.get(kind)) : missing();
+        }
         if (metadata.name === `${gatewayName}-node`) {
           const resource = nodeResources.get(kind);
           if (resource === undefined) {
@@ -13369,6 +13577,13 @@ test("retirement preserves active storage and node routing and deletes exact own
         return structuredClone(observedRoute);
       },
       async patch(body) {
+        if (body.metadata.name === `${gatewayName}-people`) {
+          peopleResources.set(body.kind, {
+            ...structuredClone(body),
+            metadata: { ...body.metadata, uid: "people-route-uid", resourceVersion: "1" },
+          });
+          return;
+        }
         if (body.metadata.name === gatewayName) {
           observedRoute = {
             ...structuredClone(body),
@@ -13392,6 +13607,9 @@ test("retirement preserves active storage and node routing and deletes exact own
         body,
       ) {
         deletions.push([spec.kind, { spec, body }]);
+        if (spec.metadata.name === `${gatewayName}-people`) {
+          peopleResources.delete(spec.kind);
+        }
       },
     },
   });
@@ -13604,6 +13822,68 @@ test("retirement preserves active storage and node routing and deletes exact own
       ["HTTPRoute", `${gatewayName}-node`, "HTTPRoute-node-uid"],
       ["SecurityPolicy", `${gatewayName}-node`, "SecurityPolicy-node-uid"],
     ],
+  );
+  // A role-free successor does not acquire the predecessor's human route.
+  // Retirement must remove it before preserving the replacement's Gateway.
+  deletions.length = 0;
+  observedGateway = structuredClone(gateway);
+  observedService = gatewayService;
+  observedServiceAccount = gatewayAccount;
+  observedGateway.metadata.annotations["openclaw.dev/agent-revision"] = String(active.revision);
+  const administratorConfiguration = nativeRolesGateway(
+    active.configuration,
+    "https://native.example.test",
+  );
+  administratorConfiguration.gateway.roles = {
+    default: ADMINISTRATOR_RUNTIME_ROLE,
+    definitions: {
+      [ADMINISTRATOR_RUNTIME_ROLE]: {
+        sessions: { others: "write" },
+        agents: "*",
+        scopes: ["operator.admin"],
+      },
+    },
+  };
+  const roleful = {
+    ...active,
+    configuration: nativeRolesGateway(active.configuration, "https://native.example.test"),
+  };
+  await driver.reconcileGatewayRoute(roleful, ownership, { name: namespace, plane: "execution" });
+  assert.equal(
+    peopleResources.get("HTTPRoute").metadata.annotations["openclaw.dev/agent-revision-id"],
+    active.id,
+  );
+  const rolefulCandidate = { ...candidate, configuration: roleful.configuration };
+  await driver.reconcileGatewayRoute(rolefulCandidate, ownership, {
+    name: namespace,
+    plane: "execution",
+  });
+  assert.equal(
+    peopleResources.get("HTTPRoute").metadata.annotations["openclaw.dev/agent-revision-id"],
+    active.id,
+  );
+  await driver.removeRetiredGateway(rolefulCandidate, {
+    name: harnessNamespace,
+    plane: "execution",
+  });
+  assert.equal(
+    peopleResources.size,
+    1,
+    "a failed candidate must not withdraw the serving revision's human route",
+  );
+  assert.deepEqual(deletions, []);
+  observedGateway.metadata.annotations["openclaw.dev/agent-revision-id"] = candidate.id;
+  observedGateway.metadata.annotations["openclaw.dev/agent-revision"] = String(candidate.revision);
+  await driver.reconcileGatewayRoute(candidate, ownership, { name: namespace, plane: "execution" });
+  assert.equal(
+    peopleResources.get("HTTPRoute").metadata.annotations["openclaw.dev/agent-revision-id"],
+    active.id,
+  );
+  await driver.removeRetiredGateway(roleful, { name: harnessNamespace, plane: "execution" });
+  assert.equal(peopleResources.size, 0);
+  assert.deepEqual(
+    deletions.map(([kind, { spec, body }]) => [kind, spec.metadata.name, body.preconditions.uid]),
+    [["HTTPRoute", `${gatewayName}-people`, "people-route-uid"]],
   );
 });
 

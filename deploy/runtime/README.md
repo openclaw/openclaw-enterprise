@@ -37,6 +37,7 @@ after enrollment cannot reconnect. The patch lets that path decode an expired
 code and hands the expiry to the node host. The node host then reconnects with
 the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
+The build also applies `openclaw-trusted-proxy-role.patch`. It adds paired role and policy-digest headers and explicit managed identity selectors to trusted-proxy configuration, then commits the proxy-selected role through native profile writes before WebSocket or HTTP operator admission. It retains native role enforcement, closes existing profile connections when the assignment changes, and rejects missing or mismatched assignments, undeclared identities and ambiguous profile links. The Kubernetes Driver supplies OCE's identity names; the bridge has no built-in OCE identity namespace. See [native authority and drift](../../docs/reference/agent-native-admin.md#native-authority-and-drift) for ownership and digest rules. The patch includes actual Gateway/SQLite integration cases in `server.auth.identity-scopes.test.ts` and `server.plugin-http-role-scopes.test.ts`, plus configuration validation in `zod-schema.gateway-auth.test.ts`. Remove it when upstream supports verified proxy role assignment with the same admission and role-publication guarantees.
 The source archive and patch hashes identify the resulting custom build.
 
 Dedicated native OpenClaw requires both required worker placement

@@ -7,6 +7,7 @@ import {
   type AuthorizationDecision,
   type AuthorizationEvidence,
   type AuthorizationRequest,
+  type RuntimeAccessDecision,
   type Group,
   type GroupMembership,
   type IAMDriver,
@@ -360,15 +361,11 @@ function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBindin
   assertCondition(
     typeof input === "object" &&
       input !== null &&
-      exactKeys(input, [
-        "id",
-        "namespaceId",
-        "subjectKind",
-        "subjectId",
-        "roleId",
-        "resourceKind",
-        "resourceId",
-      ]),
+      exactOptionalKeys(
+        input,
+        ["id", "namespaceId", "subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"],
+        ["runtimeRole"],
+      ),
     "managed AccessBinding input contains unsupported fields",
   );
   assertCondition(isNonEmptyString(input.id), "managed AccessBinding identity is invalid");
@@ -393,6 +390,7 @@ function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBindin
     subjectKind: "identity",
     subjectId: input.subjectId,
     roleId: input.roleId,
+    ...(input.runtimeRole === undefined ? {} : { runtimeRole: input.runtimeRole }),
     resourceKind: input.resourceKind,
     resourceId: input.resourceId,
   });
@@ -598,6 +596,20 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): ReadonlyMap<stri
       subject !== undefined,
       `AccessBinding ${binding.id} references an unknown subject`,
     );
+    if (binding.runtimeRole !== undefined) {
+      assertCondition(
+        binding.subjectKind === "identity" &&
+          "kind" in subject &&
+          subject.kind === "principal" &&
+          isNonEmptyString(binding.namespaceId) &&
+          binding.resourceKind === "agent" &&
+          validRuntimeRole(binding.runtimeRole) &&
+          role.permissions.some(
+            (permission) => permission.action === "use" && permission.resourceKind === "agent",
+          ),
+        `AccessBinding ${binding.id} has an invalid runtime assignment`,
+      );
+    }
     if (binding.subjectKind === "group") {
       assertCondition(
         subject.namespaceId === binding.namespaceId,
@@ -981,6 +993,15 @@ export function evaluateAuthorization(
   }
 }
 
+function validRuntimeRole(value: string): boolean {
+  return (
+    isNonEmptyString(value) &&
+    value === value.trim() &&
+    value.length <= 128 &&
+    Array.from(value).every((char) => char.codePointAt(0)! >= 32 && char.codePointAt(0) !== 127)
+  );
+}
+
 export class NativeIAMDriver implements IAMDriver {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
@@ -1074,6 +1095,47 @@ export class NativeIAMDriver implements IAMDriver {
     return evaluateValidatedAuthorization(request, state, roles, this.id);
   }
 
+  async authorizeRuntimeAccess(request: AuthorizationRequest): Promise<RuntimeAccessDecision> {
+    const state = await this.state.loadNativeIAMState();
+    let roles: ReadonlyMap<string, Role>;
+    try {
+      roles = validateAndIndexNativeIAMState(state);
+    } catch {
+      return decision(this.id, false, "The native IAM policy is invalid.");
+    }
+    const entry = evaluateValidatedAuthorization(request, state, roles, this.id);
+    if (!entry.allowed) {
+      return entry;
+    }
+    const human = state.identities.some(
+      (identity) => identity.id === request.principalId && identity.kind === "principal",
+    );
+    const assignments = state.bindings.filter(
+      (binding) =>
+        entry.evidence.bindingIds.includes(binding.id) &&
+        binding.subjectKind === "identity" &&
+        binding.subjectId === request.principalId &&
+        binding.namespaceId === request.resource.namespaceId &&
+        binding.resourceKind === "agent" &&
+        binding.resourceId === request.resource.id &&
+        binding.runtimeRole !== undefined,
+    );
+    if (
+      !human ||
+      request.action !== "use" ||
+      request.resource.kind !== "agent" ||
+      assignments.length !== 1
+    ) {
+      return decision(
+        this.id,
+        false,
+        "Runtime entry requires one exact human Agent role assignment.",
+        entry.evidence,
+      );
+    }
+    return Object.freeze({ ...entry, runtimeRole: assignments[0]!.runtimeRole! });
+  }
+
   async coversIdentityAccess(request: IdentityAccessCoverageRequest): Promise<boolean> {
     const state = await this.state.loadNativeIAMState();
     let roles: ReadonlyMap<string, Role>;
@@ -1152,6 +1214,20 @@ export class NativeIAMDriver implements IAMDriver {
   ): Promise<Readonly<AccessBinding>> {
     const repository = this.policyRepository(context, ["createAccessBinding"]);
     return immutableBinding(await repository.createAccessBinding(managedAccessBinding(input)));
+  }
+
+  async updateNamespaceRuntimeRole(
+    context: IAMPolicyManagementContext,
+    namespaceId: string,
+    bindingId: string,
+    runtimeRole: string,
+  ): Promise<Readonly<AccessBinding> | undefined> {
+    const repository = this.policyRepository(context, ["updateRuntimeRole"]);
+    this.assertNamespace(namespaceId);
+    this.assertIdentifier(bindingId, "AccessBinding");
+    assertCondition(validRuntimeRole(runtimeRole), "Runtime role is invalid");
+    const binding = await repository.updateRuntimeRole(namespaceId, bindingId, runtimeRole);
+    return binding === undefined ? undefined : immutableBinding(binding);
   }
 
   async deleteNamespaceAccessBinding(

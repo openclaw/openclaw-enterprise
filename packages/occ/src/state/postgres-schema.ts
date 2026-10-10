@@ -968,8 +968,16 @@ export const iamAccessBindings = occSchema.table(
       .references(() => iamRoles.id, { onDelete: "restrict", onUpdate: "restrict" }),
     resourceKind: text("resource_kind"),
     resourceId: text("resource_id"),
+    runtimeRole: text("runtime_role"),
   },
   (table) => [
+    check(
+      "iam_access_bindings_runtime_role",
+      sql`${table.runtimeRole} IS NULL OR (${table.namespaceId} IS NOT NULL AND ${table.identitySubjectId} IS NOT NULL AND ${table.resourceKind} = 'agent' AND ${table.resourceId} IS NOT NULL AND ${table.runtimeRole} = btrim(${table.runtimeRole}) AND char_length(${table.runtimeRole}) BETWEEN 1 AND 128 AND ${table.runtimeRole} !~ '[[:cntrl:]]')`,
+    ),
+    uniqueIndex("iam_access_bindings_runtime_assignment")
+      .on(table.namespaceId, table.identitySubjectId, table.resourceId)
+      .where(sql`${table.runtimeRole} IS NOT NULL`),
     check(
       "iam_access_bindings_one_subject",
       sql`num_nonnulls(${table.identitySubjectId}, ${table.groupSubjectId}) = 1`,
@@ -997,7 +1005,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'use')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",

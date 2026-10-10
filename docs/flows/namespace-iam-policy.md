@@ -17,7 +17,7 @@ together in the platform state transaction.
 
 ## Entry Points
 
-- Trigger: `GET`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
+- Trigger: `GET`, `POST`, `PATCH`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/index.ts:requiredPermissions`
 - Source: `apps/controller/src/http/iam.ts:iamHandlers`
@@ -32,7 +32,7 @@ graph TD
   A["Caller invokes Namespace IAM route"] --> B["OCC admits identity and required permissions"]
   B --> C{"Read or mutation?"}
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
-  C -->|create/delete| E["Controller validates Role, subject, and exact target"]
+  C -->|create/change/delete| E["Controller validates Role, subject, and exact target"]
   E --> F["Selected IAM Driver mutates platform IAM policy"]
   F --> G["Controller appends audit event in the same transaction"]
   D --> H["API returns policy metadata"]
@@ -61,9 +61,9 @@ and return policy metadata. Create and delete operations run inside
 `controller.transact`, append an attributable mutation audit event, and return
 only after the transaction commits. The event's authorization records the
 Installation `administer` check. Role events carry the Namespace as resource and
-`roleId` plus `permissions` in details. AccessBinding create and delete events
+`roleId` plus `permissions` in details. AccessBinding create, runtime-role change and delete events
 carry the bound target as resource (the Namespace for a Namespace binding) and
-`bindingId`, `subjectKind`, `subjectId`, and `roleId` in details. Deletion reads
+`bindingId`, `subjectKind`, `subjectId`, `roleId` and the optional `runtimeRole` in details. Deletion reads
 the removed Role or AccessBinding in the same transaction to record it.
 ServicePrincipal creation takes an empty body; its event carries the Namespace
 as resource and `servicePrincipalId` in details. The new non-Agent identity is
@@ -87,6 +87,8 @@ the caller can read it before asking the IAM Driver to create the binding.
 `assertAccessBindingRoleApplies` then refuses, with `400`, a Role that has no
 Permission for the target's kind, or a `create` Permission stored before Role
 creation refused them, because evaluation would drop those grants.
+
+Runtime assignment creation and changes use the saved Agent Configuration through the Compute catalog, independent of deployment. `runtimeRoleConfiguration` supplies its reviewed ID and generation. After holding IAM authority and the Namespace lock, OCC reads that Configuration through its Driver and rejects a changed ID or generation with `409`, or an unknown role with `400`. The lock serializes this check and binding write against Configuration changes and Agent Configuration replacement. Only `runtimeRole` is persisted on the existing exact human/Agent binding. Native definitions and profile admission are traced in [OpenClaw access](agent-native-admin.md).
 
 ### 4. The IAM Driver persists or reads policy
 
@@ -117,7 +119,7 @@ fence against concurrent policy invalidation.
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 
 The PostgreSQL state implementation writes Roles and AccessBindings through the
-same unit of work used by the API audit append. If commit outcome is unknown,
+same unit of work used by the API audit append. A duplicate person/Agent runtime assignment becomes the existing `ResourceConflictError` before the IAM wrapper handles unknown failures. The transaction rolls back without a success audit, and the API returns `409`. If commit outcome is unknown,
 State discards the connection without another query. OCC reports dependency
 failure; a caller must not infer rollback or replay the mutation from that
 result. Later authorization requests read the current policy through the IAM
@@ -168,6 +170,10 @@ selected account, session, and policy writers join the same protocol.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 13:58: Trace saved Configuration role selection, stale-selection rejection and deployed permission previews. (authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10 - 76f9307b61ccb1c544257081d95b15a0ee893b92)
+
+- 2026-10-02 11:55: Trace atomic runtime-role updates, assignment audit fields and duplicate-assignment conflicts. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)

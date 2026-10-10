@@ -118,19 +118,21 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` advances the request generation and requests `GET /api/auth/session`.
-First loads show loading. Return navigation and Refresh can restore one of at most
-16 document-local views keyed by route, Namespace, and session owner while reads
-run. Password fields and their derived discovery state clear before retention.
-Controls stay inert until admission succeeds; navigation remains available.
+`loadPage` advances request generation and requests `GET /api/auth/session`.
+First loads show loading. Return navigation/Refresh can restore up to 16 views
+keyed by route, Namespace and session owner during reads. Passwords and
+discovery state clear first. Controls stay inert until admission;
+navigation remains available.
 
-Completed views retain their DOM, handlers, and draft capture callbacks. On return,
-`loadPage` rereads their GET dependencies and compares data and user identity.
-Unchanged views reactivate without rebuilding panels; changed data rebuilds them,
-as does a first readable Namespace for a view retained without a selection.
-Pending reads, read failures, password input, or mutations prevent reuse. Read-only
-catalog and diagnostic POSTs do not invalidate views. Refresh always rebuilds.
-Debug runtime disclosures follow the same validation and retain expanded state.
+Retained views keep DOM, handlers and draft callbacks. Returning rereads GET
+dependencies and compares outcomes/user identity. `readSuccess` records data;
+`readFailure` records HTTP status/code without request IDs. Unchanged outcomes
+reactivate; recovery, changed failures or a newly readable Namespace rebuild.
+A cached tab-local `403` avoids another audited request until Retry. Session/page
+admission precedes reuse. Pending reads, transport/malformed failures, expiry,
+password input and mutations prevent reuse. `revalidate: false` GETs skip replay.
+Successful read-only catalog/diagnostic POSTs preserve views. Refresh rebuilds.
+Debug disclosures retain expanded state after this validation.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
@@ -155,9 +157,9 @@ owns the server side.
 before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
 CLI requests remain supported. The browser stores no credentials.
 
-After authentication, `loadPage` reads `GET /namespaces`, preserving URL
-selection or choosing the first ready/readable Namespace. Unreadable IDs stay
-unavailable; selection never becomes an API query selector.
+Authenticated `loadPage` reads `GET /namespaces`, retaining URL selection or the
+first ready/readable Namespace. Unreadable IDs stay unavailable; selection never
+selects API query scope.
 
 `shell.mjs:namespaceSelector` disables and hides choices through session and
 Namespace checks for loads, Refresh, and admission-starting navigation;
@@ -380,6 +382,8 @@ refresh and inspection.
 - 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
 - 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
+- 2026-10-03 09:42: Track completed GET failures centrally and revalidate their outcomes before restoring a view. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
+
 - 2026-09-30 19:00: Remember denied Agent detail snapshot reads per tab so reloads do not add an audited denial per view.
 - 2026-09-29 20:00: Trace repository descriptions and inherited access. (public-pr/374)
 

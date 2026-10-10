@@ -239,18 +239,22 @@ native Configuration or an AgentRevision.
 
 `getGatewayEndpoint` derives
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
-API access. During preparation and activation, Compute reconciles an owned
-`HTTPRoute` in the Gateway's physical namespace (control plane for dedicated,
-data plane for embedded), attached to the configured Gateway's
-`https` listener. Both rules match the configured private hostname and target
-the existing same-namespace gateway Service:
+API access. Preparation and activation reconcile an owned `HTTPRoute` in the
+Gateway's namespace (control plane for dedicated, data plane for embedded).
+Both rules use the private hostname, configured Gateway's `https` listener and
+same-namespace gateway Service:
 
 - The exact Agent path rewrites to `/`, preserving workspace-file WSS access.
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
-  the suffix for native UI assets, deep links, and WebSocket paths.
+  the suffix for service HTTP and WebSocket requests.
 
-OCC bounds proxy requests to the selected Agent base. Public native UI browser
-traffic enters through OCC; Envoy and gateway Services remain private. See
+Human access uses `wss://<hostname>/people/namespaces/<namespaceId>/agents/<agentId>`
+and a `-people` HTTPRoute preserving verified identity, role, policy digest and
+scopes. Absent or unaccepted human routes cannot match the service prefix. Native
+device auto-approval must explicitly cap every selected-role scope.
+
+Browser requests stay within that human base; Envoy and gateway Services remain
+private. See
 [Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 Runtime-enabled dedicated revisions also receive a `/node` route and a
@@ -258,15 +262,15 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and route stay stable across revision cutover and are repaired only
-during revision reconciliation; see
+Stable Services/routes are repaired only during revision reconciliation; see
 [endpoint and route](../../gateway-routing.md#endpoint-and-route). Missing CRDs
 or denied worker permissions fail reconciliation rather than disabling routing
 silently.
 
-Envoy authenticates the OCC service key and the route rewrites identity headers
+Envoy authenticates the OCC service key and the service route rewrites identity headers
 ([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).
-Native `allowRealIpFallback` accepts Envoy's direct downstream address when OCC
+The service route overwrites identity and real-IP headers and removes forwarding
+and scope headers. Native `allowRealIpFallback` accepts Envoy's downstream address when OCC
 and Envoy share a Pod CIDR. That address must be nonloopback; a loopback
 port-forward alone is not a working native attribution path.
 
