@@ -584,6 +584,7 @@ function assertManagedRevision(revision, record, expected) {
   const frozen = structuredClone(expected);
   if (record.sandboxDriver === "openshell" && record.harness === "codex") {
     frozen.values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+    frozen.values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
   }
   const { logging, diagnostics, ...values } = revision.configuration ?? {};
   const level = logging?.level;

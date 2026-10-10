@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-05
-last_updated_session: authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19
+updated: 2026-10-10
+last_updated_session: authoring-run/d40976ed-123a-43e8-9a7b-a10b618aa496
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -168,6 +168,10 @@ updates the Secret and asks the Credential Gateway to reread it before deploying
 a new revision. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
 
+`scripts/first-agent.mjs:assertManagedRevision` accepts OpenShell's server-pinned
+`danger-full-access` sandbox and `user` approvals reviewer when comparing the
+deployed revision. Other configuration changes still fail the ownership check.
+
 The tool provisions initial runtime credentials and requests deployment through
 OCC. Once the revision is active,
 [`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
@@ -298,6 +302,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 09:53: Match OpenShell's admitted approvals reviewer. (authoring-run/d40976ed-123a-43e8-9a7b-a10b618aa496 - 012abc478eea53daa4ab7f1c2f207e60ec994698)
 
 - 2026-10-09 13:00: A failed Secret create deletes the exact object it may have stored. (fix-916)
 - 2026-10-05 13:27: Keep first-Agent container-engine calls on the recorded Unix socket without inherited Docker TLS settings. (authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19 - 469d2fef447ecdf2565d3991db1e1ce5c95d880e)
