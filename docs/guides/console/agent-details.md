@@ -287,7 +287,12 @@ model credential Secret: both are kept even when Create Agent made them, and the
 console cannot list or delete them. Exact Agent
 `delete` permission is required. Accepted deletion starts asynchronous cleanup;
 the page checks it every few seconds and returns to Agents once the Agent is gone.
-**Refresh deletion status** checks it immediately.
+**Refresh deletion status** checks it immediately. **Request deletion again**
+opens a new confirmation for an already deleting Agent. Use it after fixing a
+cleanup failure that exhausted its retries; cleanup still queued or running
+continues unchanged. Another uncertain request stays blocked until a successful
+status refresh confirms that the Agent is deleting. The browser never repeats
+DELETE automatically. Existing delete permissions and retry ownership apply.
 
 An API error may show a request ID for support. **Outcome unknown** does not
 prove failure: refresh before retrying any write. An expired session clears

@@ -4028,7 +4028,36 @@ export const scenarios = {
     path: draft,
     deleting: true,
     description:
-      "Pending cleanup removes editing and deployment controls. Refresh deletion status checks completion.",
+      "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
+  },
+  deletionRetryConfirm: {
+    group: "Components/Deletion",
+    name: "Repeat cleanup confirmation",
+    path: draft,
+    deleting: true,
+    actions: [click("Request deletion again")],
+    description:
+      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged.",
+  },
+  deletionRetryUnknown: {
+    group: "Components/Deletion",
+    name: "Repeat cleanup outcome unknown",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 503,
+        once: true,
+      },
+    ],
+    actions: [
+      click("Request deletion again"),
+      { selector: ".agent-delete-dialog button.danger", click: "Request deletion again" },
+    ],
+    description:
+      "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",
   },
   deletionDenied: {
     group: "Components/Deletion",
@@ -4407,7 +4436,7 @@ export const scenarios = {
     steps: [
       "Scroll to Delete Agent and open its confirmation dialog.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
-      "The page enters Deletion in progress and removes edit/deploy controls.",
+      "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
     ],
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",

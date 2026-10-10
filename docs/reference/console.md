@@ -237,7 +237,13 @@ Configurations and Secrets remain; see
 An accepted request starts asynchronous cleanup, and the detail page shows the
 Agent as deleting; **Refresh deletion status** checks progress. Once the API
 confirms the Agent is gone, the console returns to Agents in the same Namespace.
-An access denial stays on the detail page and says deletion requires permission.
+An already deleting Agent keeps **Request deletion again**, with a new confirmation.
+After repairing failed cleanup, the existing API can replenish exhausted retries;
+queued or running cleanup stays unchanged. An uncertain repeat stays disabled until
+a successful status read confirms deletion. Retry ownership and current exact-Agent
+permission remain enforced by the API.
+
+An access denial stays visible. A repeat refusal preserves the API’s retry-ownership explanation.
 An unconfirmed outcome may have succeeded; refresh before retrying. The console
 never resends a delete request automatically.
 

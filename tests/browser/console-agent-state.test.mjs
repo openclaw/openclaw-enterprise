@@ -313,7 +313,7 @@ test("Agent detail returns to the Agents list once background deletion finishes"
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Finish Candidate?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
-  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
   // The background cleanup finishes; no reader action follows.
   gone = true;
   await page.waitForURL((current) => current.pathname === "/console/agents", { timeout: 10_000 });
