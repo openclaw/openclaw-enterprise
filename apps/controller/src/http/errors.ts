@@ -11,6 +11,7 @@ import {
   ChannelCredentialError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
@@ -718,6 +719,11 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (error instanceof IAMRoleInUseError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);
+  }
+  if (error instanceof CredentialSourceConfigError) {
+    return failure(400, "INVALID_REQUEST", error.message, [
+      { path: `/config/${error.field}`, code: "INVALID_VALUE" },
+    ]);
   }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);

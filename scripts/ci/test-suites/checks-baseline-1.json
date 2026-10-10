@@ -280,6 +280,9 @@
       "path": "tests/integration/secret-api.test.mjs"
     },
     {
+      "path": "tests/integration/credential-source-api.test.mjs"
+    },
+    {
       "path": "tests/integration/plugin-discovery-api.test.mjs"
     },
     {

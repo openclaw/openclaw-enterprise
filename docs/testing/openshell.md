@@ -312,6 +312,7 @@ scoped environment file for this suite.
 | `OPENAI_API_KEY`                          | Existing authorized provider credential, registered as a credential source for the required real model turn.                                        |
 | `OCC_TEST_OPENSHELL_HARNESS`              | `codex` (default) selects the app-server proof; `openclaw` selects the dedicated native worker without an inbound Harness exposure.                 |
 | `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                               |
+| `OCC_TEST_OPENSHELL_MODEL_BASE_URL`       | Optional HTTPS `/v1` endpoint for the Codex credential source; requires Responses API compatibility.                                                |
 | `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                  |
 | `OCC_TEST_KUBERNETES_CONTEXT`             | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                        |
 | `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`       | Imported immutable real OpenClaw gateway image; `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` is accepted as a fallback.                                      |

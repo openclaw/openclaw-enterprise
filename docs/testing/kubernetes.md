@@ -122,9 +122,23 @@ The helper prepares disposable k3d, isolated PostgreSQL, and gateway/Codex image
 Start Docker or Podman's API socket (Podman Machine on macOS), then run:
 
 ```sh
-export OCC_TEST_OPENAI_MODEL=gpt-6-astra
-./scripts/k3d
+./scripts/k3d --model-id gpt-6-astra
 ```
+
+For a custom Codex Responses endpoint, use `--base-url` and the native
+`--model-id` on either `test` or the default demo command:
+
+```sh
+./scripts/k3d test --harness codex \
+  --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
+./scripts/k3d --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
+```
+
+Set `OPENAI_API_KEY` privately. Flags override `OCC_TEST_CODEX_OPENAI_BASE_URL` and
+`OCC_TEST_OPENAI_MODEL`, including prepared records; environment-only input and
+complete model namespaces remain supported. These flags require Codex without
+OpenShell, not inspection/cleanup commands. Use fresh state after source changes
+to rebuild both images.
 
 When `OPENAI_API_KEY` is unset, the interactive `demo` command prompts for it
 without echoing the value; `test` requires the variable and `reset` does not. A
@@ -135,16 +149,13 @@ The helper requires k3d, `kubectl`, Helm, OpenSSL, and Docker Compose or
 `podman-compose`. It prefers a running Podman API socket unless `DOCKER_HOST`
 selects an engine. Set `OCC_K3D_CONTAINER_ENGINE=podman` or `docker` to override detection.
 
-Preparation state is private to the selected engine under
-`${XDG_STATE_HOME:-$HOME/.local/state}/openclaw-enterprise/k3d-<engine>-codex`.
-Set `OCC_K3D_STATE_DIR` to an absolute path to override it. Later runs reuse
-the prepared cluster, database, images, Envoy Gateway, cert-manager, and the
-disposable private-routing CA. The helper has no image upgrade command; for a
-persistent Helm installation, see
-[local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md). The
-helper builds the current checkout and ignores Kubernetes image selectors
-inherited from an earlier test shell.
-Run `./scripts/k3d down` before reusing state prepared without workspace routing.
+Engine-private state lives under
+`${XDG_STATE_HOME:-$HOME/.local/state}/openclaw-enterprise/k3d-<engine>-codex`;
+`OCC_K3D_STATE_DIR` overrides it with an absolute path. Reuse retains the cluster,
+database, images, Envoy, cert-manager, and disposable routing CA. Initial builds
+use the current checkout, ignoring inherited Kubernetes image selectors.
+There is no helper image-upgrade command; see [Helm image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
+Run `./scripts/k3d down` before reusing state lacking workspace routing.
 
 To clear an interrupted test or rerun against a fresh database while preserving
 the PostgreSQL service, cluster, and imported images:
@@ -157,11 +168,10 @@ Reset deletes only helper test Namespaces, such as `oce-production-*`,
 `oce-openshell-*`, and `oce-ns-*`, from the helper-owned cluster. It drops and
 recreates only the database recorded in the helper's private state.
 
-The default command starts the OCC API in Kubernetes, creates a dedicated Codex
-Agent, and completes a model turn. It serves the OpenClaw Control UI at
-`http://127.0.0.1:18888` and the OCC console at `http://127.0.0.1:18889`.
-It prints the temporary OCC username and a command to copy its password from
-the mode-`0600` `demo.json` file; it never prints passwords.
+The default command starts Kubernetes OCC and a dedicated Codex Agent, completes
+a model turn, and serves Control UI at `http://127.0.0.1:18888` and OCC at
+`http://127.0.0.1:18889`. It prints the temporary username and a password-copy
+command for mode-`0600` `demo.json`, never the password.
 
 Pass `--harness openclaw` for the verification-only
 [native OpenClaw Harness](openshell.md#native-openclaw-with-k3d).
@@ -289,6 +299,11 @@ recovery. Unsupported images fail.
 
 ### Transcript persistence
 
+With `OCC_TEST_CODEX_OPENAI_BASE_URL`, Gateway model turns and retained threads
+after Gateway replacement verify Codex's native provider and complete model ID:
+new-thread, resume, and subsequent-turn resolution. Use a namespaced
+`OCC_TEST_OPENAI_MODEL`. Pod-loopback turns do not prove Gateway translation.
+
 Both Harness topologies require SQLite transcripts. Persistence cases query
 `session_nodes` and `transcript_events`, then verify conversation history and media
 after gateway Pod replacement. Images with JSONL transcripts cannot exercise
@@ -359,6 +374,7 @@ For dedicated Codex coverage, a model override must support Codex custom tools.
 | `OCC_TEST_DATABASE_URL`                     | Migrated disposable loopback database named `openclaw_k8s_*`; the ordinary development database fails.                                                                                                     |
 | `OPENAI_API_KEY`                            | Existing authorized provider credential for real embedded and dedicated model turns.                                                                                                                       |
 | `OCC_TEST_OPENAI_MODEL`                     | Authorized provider model; defaults to `gpt-6-astra`.                                                                                                                                                      |
+| `OCC_TEST_CODEX_OPENAI_BASE_URL`            | Optional HTTPS Responses endpoint for dedicated Codex API-key tests; applied through `runtime.codexModelBaseUrl`. Keep the native Codex provider at its fail-closed loopback URL.                          |
 
 The separate
 [`harness-topology-k3d-routing-real.test.mjs`](../../tests/integration/harness-topology-k3d-routing-real.test.mjs)

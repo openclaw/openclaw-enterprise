@@ -1,10 +1,11 @@
 # Use a credential source on the local OpenShell profile
 
-Use this procedure to register an OpenAI API key with the OpenShell Credential
+Use this procedure to register an OpenAI-compatible API key with the OpenShell Credential
 Gateway and bind it to a dedicated Codex Agent on the
 [local OpenShell profile](local-kubernetes-development.md#start-the-openshell-fail-closed-profile).
-OpenShell keeps its own copy of the key and substitutes it on requests to
-`api.openai.com`; the Harness receives only a placeholder. The
+OpenShell keeps its own copy of the key and substitutes it only on requests to
+the source endpoint; the Harness receives only a placeholder. By default the
+endpoint is `https://api.openai.com/v1`. The
 [credential source reference](../../reference/credential-sources.md) defines the
 API behavior.
 
@@ -35,8 +36,11 @@ export OCC_NAMESPACE="$(./bin/occ namespace list -o json |
   jq -r '.[] | select(.name == "default") | .id')"
 ```
 
-You need an existing OpenAI API key in a private file, `jq`, and a model name
-that key can use.
+You need an existing provider API key in a private file, `jq`, and a model name
+that key can use. Register the complete native model ID under
+`models.providers.codex`, including any namespace. OCE's generated Gateway
+configuration supplies the native provider explicitly; do not add it to the
+model ID yourself.
 
 ## Register the key
 
@@ -52,9 +56,17 @@ rm model-secret.json
 
 Register the Secret as an `openai` credential source:
 
+For an OpenAI-compatible service, set `OPENAI_BASE_URL` to its HTTPS `/v1`
+endpoint before creating the source. Codex requires Responses API compatibility,
+including streaming. The credential source selects Codex's endpoint; keep
+`models.providers.codex.baseUrl` at the fail-closed `http://127.0.0.1:9` shown
+below. The Gateway must not make direct model requests.
+The current source profile uses Bearer authorization; an endpoint requiring
+`x-api-key` is not supported by this profile.
+
 ```bash
-jq -n --argjson ref "$SECRET_REF" \
-  '{name: "openai", type: "openai", secrets: {api_key: $ref}}' > credential-source.json
+jq -n --argjson ref "$SECRET_REF" --arg base_url "${OPENAI_BASE_URL:-}" \
+  '{name: "openai", type: "openai", config: (if $base_url == "" then {} else {base_url: $base_url} end), secrets: {api_key: $ref}}' > credential-source.json
 SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o json |
   jq -r .id)"
 ./bin/occ credential-source get "$SOURCE_ID"
@@ -66,7 +78,8 @@ gateway's copy.
 
 ## Create the Agent and grant the source
 
-Write a dedicated Codex Configuration. Replace `<model>` in both places:
+Write a dedicated Codex Configuration. Replace each `<model>` with the native
+model ID, such as `gpt-5.6-luna`:
 
 ```bash
 cat > configuration.json <<'JSON'

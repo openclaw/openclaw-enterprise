@@ -1265,6 +1265,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
     id: "credential-gateway-api",
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [
         {
@@ -1407,6 +1408,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     id: "credential-gateway-refresh-api",
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [
         {

@@ -54,6 +54,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "credential_gateway") {
     return [
       "listSourceTypes",
+      "validateSourceConfig",
       "registerSource",
       "updateSource",
       "sourceStatus",

@@ -283,6 +283,7 @@ export {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
@@ -4036,6 +4037,7 @@ export class OpenClawController {
       const type = await this.credentialSourceType(selected, input.type);
       credentialSourceFieldsMatch("config", type.config, config);
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      selected.validateSourceConfig({ type: type.type, config });
       const refreshDriver =
         type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);

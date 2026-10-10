@@ -62,6 +62,7 @@ function withCredentialGateway(drivers) {
     id: CREDENTIAL_GATEWAY_FIXTURE_ID,
     capability: "credential_gateway",
     implementation: "credential-gateway-worker-fixture",
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [];
     },

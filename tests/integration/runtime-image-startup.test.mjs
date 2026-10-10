@@ -34,6 +34,10 @@ import {
   REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
+import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 import {
@@ -2437,6 +2441,119 @@ http.createServer((req, res) => {
       );
       await runDocker(["rm", "-f", containerName]);
     }
+  },
+);
+
+test(
+  "runtime image spawns custom-provider subagents with intact native model IDs",
+  imageTestOptions,
+  async (t) => {
+    const nativeIds = {
+      parent: "vendor/organization/parent",
+      main: "vendor/organization/default-child",
+      string: "vendor/organization/string-child",
+      object: "vendor/organization/object-child",
+      fallback: "codex/child-fallback",
+    };
+    const ref = (name) => `codex/${nativeIds[name]}`;
+    const source = createHarnessConfiguration("codex", nativeIds.parent);
+    source.agents.ownership = "explicit";
+    source.agents.defaults.systemAgent = { agentId: "main" };
+    source.agents.defaults.models = Object.fromEntries(
+      Object.keys(nativeIds).map((name) => [
+        ref(name),
+        {
+          agentRuntime: { id: "codex" },
+          ...(name === "parent" ? { alias: "codex" } : {}),
+        },
+      ]),
+    );
+    source.agents.defaults.subagents = { model: ref("main") };
+    source.agents.entries = {
+      main: {},
+      string: { subagents: { model: ref("string") } },
+      object: { subagents: { model: { primary: ref("object"), fallbacks: [ref("fallback")] } } },
+      alias: { subagents: { model: "codex" } },
+    };
+    for (const [id, entry] of Object.entries(source.agents.entries)) {
+      entry.workspace = `/home/node/workspace/${id}`;
+    }
+    source.gateway.tools = { allow: ["sessions_spawn"] };
+    source.tools = {
+      codeMode: false,
+      toolSearch: false,
+      allow: ["sessions_spawn"],
+    };
+    const admitted = admitLoggingConfiguration(source, "info");
+    assert.equal(resolveConfiguredHarnessId(admitted), "codex");
+    const before = structuredClone(admitted);
+    const configuration = codexGatewayModelConfiguration(admitted, {
+      baseUrl: "https://models.example.test/v1",
+      modelProvider: "openai-compatible",
+    });
+    assert.deepEqual(admitted, before);
+
+    // Keep the real packaged Gateway and Codex plugin; replace only the native peer
+    // at its authenticated WebSocket boundary. The network-none container cannot
+    // call a provider, and the peer deliberately refuses before any model turn.
+    const { containerName } = await runGatewaySmoke(t, "codex", {
+      configuration,
+      collectPlugins: false,
+      waitUntilReady: false,
+      extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500", "OPENCLAW_DEBUG=1"],
+    });
+    const fixture = await readFile(
+      new URL("../fixtures/runtime-codex-subagent-model.mjs", import.meta.url),
+      "utf8",
+    );
+    const dockerfile = await readFile(
+      new URL("../../deploy/runtime/Dockerfile", import.meta.url),
+      "utf8",
+    );
+    const commit = dockerfile.match(/^ARG OPENCLAW_COMMIT=([0-9a-f]{40})$/m)?.[1];
+    assert.ok(commit, "The image source pin must be explicit.");
+    const cases = ["main", "string", "object", "alias"].map((agentId) => ({
+      agentId,
+      model: nativeIds[agentId === "alias" ? "parent" : agentId],
+    }));
+    let stdout;
+    try {
+      ({ stdout } = await runDocker(
+        [
+          "exec",
+          "-e",
+          `OCC_TEST_SUBAGENT_CASES=${JSON.stringify(cases)}`,
+          "-e",
+          `OCC_TEST_SUBAGENT_MODELS=${JSON.stringify(Object.values(nativeIds))}`,
+          "-e",
+          `OCC_TEST_OPENCLAW_COMMIT=${commit}`,
+          containerName,
+          "node",
+          "--input-type=module",
+          "-e",
+          fixture,
+        ],
+        { timeout: 480_000 * imageSmokeTimeoutMultiplier },
+      ));
+    } catch (error) {
+      const logs = await runDocker(["logs", containerName]).catch((cause) => cause);
+      t.diagnostic(commandOutput(logs));
+      throw error;
+    }
+    const result = JSON.parse(stdout.trim().split("\n").at(-1));
+    t.diagnostic(JSON.stringify(result));
+    assert.equal(result.commit, commit);
+    assert.deepEqual(
+      result.observed.map(({ agentId, modelProvider, model }) => ({
+        agentId,
+        modelProvider,
+        model,
+      })),
+      cases.map((scenario) => ({ ...scenario, modelProvider: "openai-compatible" })),
+    );
+    assert.ok(
+      result.observed.every(({ childSessionKey }) => childSessionKey.includes(":subagent:")),
+    );
   },
 );
 

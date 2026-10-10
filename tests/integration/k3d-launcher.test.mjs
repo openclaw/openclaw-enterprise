@@ -58,6 +58,10 @@ async function runLauncher(
     preparedHarness,
     ambiguousDemo = false,
     missingBaseImages = false,
+    inheritedModel = "",
+    inheritedBaseUrl = "",
+    preparedModel,
+    preparedBaseUrl,
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), `oce-k3d-${engine}-launcher-`));
@@ -167,12 +171,21 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   if [ -n "$OCC_K3D_OPENCLAW_COMMIT" ]; then
     printf 'OCC_K3D_OPENCLAW_COMMIT=%s\n' "$OCC_K3D_OPENCLAW_COMMIT" >> '${join(state, "env")}'
   fi
+  printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `OCC_TEST_CODEX_OPENAI_BASE_URL=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
 if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then exit 0; fi
 if printf '%s' "$*" | grep -q 'scripts/ci/cleanup.mjs'; then rm -f '${join(state, "state.json")}'; exit 0; fi
 node_args="$*"
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' NODE_ARGS="$node_args" DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" PODMAN_COMPOSE_PROVIDER="\${PODMAN_COMPOSE_PROVIDER:-}" OCC_K3D_DEMO_STATE="\${OCC_K3D_DEMO_STATE:-}" OCC_K3D_HARNESS="\${OCC_K3D_HARNESS:-}" OPENSHELL_HARNESS="\${OCC_TEST_OPENSHELL_HARNESS:-}" /bin/sh -c 'printf "{\\"args\\":\\"%s\\",\\"dockerHost\\":\\"%s\\",\\"containerBin\\":\\"%s\\",\\"composeProvider\\":\\"%s\\",\\"demoState\\":\\"%s\\",\\"harness\\":\\"%s\\",\\"openShellHarness\\":\\"%s\\"}\\n" "$NODE_ARGS" "$DOCKER_HOST" "$OCC_DOCKER_BIN" "$PODMAN_COMPOSE_PROVIDER" "$OCC_K3D_DEMO_STATE" "$OCC_K3D_HARNESS" "$OPENSHELL_HARNESS" > "$INVOCATION"'
+INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${OCC_TEST_CODEX_OPENAI_BASE_URL:-}" KEY_PRESENT="$(test -n "$OPENAI_API_KEY" && printf true || printf false)" '${process.execPath}' -e '
+  const fs = require("node:fs");
+  const record = JSON.parse(fs.readFileSync(process.env.INVOCATION, "utf8"));
+  record.model = process.env.MODEL;
+  record.baseUrl = process.env.BASE_URL;
+  record.apiKeySet = process.env.KEY_PRESENT === "true";
+  fs.writeFileSync(process.env.INVOCATION, JSON.stringify(record));
+'
 `,
   );
 
@@ -253,6 +266,9 @@ node_args="$*"
       ...process.env,
       DOCKER_HOST: "",
       OPENAI_API_KEY: apiKey,
+      OCC_TEST_OPENAI_MODEL: inheritedModel,
+      OCC_TEST_CODEX_OPENAI_BASE_URL: inheritedBaseUrl,
+      OCC_K3D_STATE_DIR: "",
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "localhost/stale-gateway@sha256:" + "a".repeat(64),
       OCC_TEST_KUBERNETES_AGENT_IMAGE: "localhost/stale-agent@sha256:" + "b".repeat(64),
       OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "localhost/stale-runtime@sha256:" + "c".repeat(64),
@@ -336,10 +352,74 @@ node_args="$*"
   if (missingBaseImages) {
     return (await readFile(imagePulls, "utf8")).trim().split("\n");
   }
+  return recorded;
 }
 
 test("k3d defaults to the foreground OpenClaw and OCC console demo", (context) =>
   runLauncher(context, "docker"));
+
+test("k3d Codex model flags override inherited and prepared settings for test and default demo", async (context) => {
+  for (const command of [["test"], []]) {
+    const recorded = await runLauncher(
+      context,
+      "podman",
+      [
+        ...command,
+        "--base-url",
+        "https://models.example.test/api/v1",
+        "--model-id",
+        "codex/vendor/model",
+      ],
+      {
+        inheritedModel: "inherited-model",
+        inheritedBaseUrl: "https://inherited.example.test/v1",
+        preparedModel: "prepared-model",
+        preparedBaseUrl: "https://prepared.example.test/v1",
+      },
+    );
+    // The explicit outer provider protects a native ID whose namespace itself
+    // is codex/ from the consumer's existing provider-ref normalization.
+    assert.equal(recorded.model, "codex/codex/vendor/model");
+    assert.equal(recorded.baseUrl, "https://models.example.test/api/v1");
+    assert.equal(recorded.apiKeySet, true);
+    assert.doesNotMatch(recorded.args, /test-only-value/);
+  }
+});
+
+test("k3d model options retain environment-only use and accept equals syntax", async (context) => {
+  const inherited = await runLauncher(context, "podman", ["test"], {
+    inheritedModel: "vendor/model",
+    inheritedBaseUrl: "https://models.example.test/v1",
+  });
+  assert.equal(inherited.model, "vendor/model");
+  assert.equal(inherited.baseUrl, "https://models.example.test/v1");
+  const flagged = await runLauncher(context, "podman", [
+    "demo",
+    "--model-id=vendor/model",
+    "--base-url=https://models.example.test/v1",
+  ]);
+  assert.equal(flagged.model, "codex/vendor/model");
+  assert.equal(flagged.baseUrl, "https://models.example.test/v1");
+});
+
+test("k3d rejects missing model option values and unsupported actions before preparation", async (context) => {
+  for (const args of [
+    ["test", "--base-url"],
+    ["--model-id="],
+    ["--model-id", "--base-url", "https://models.example.test/v1"],
+  ]) {
+    await assert.rejects(runLauncher(context, "podman", args), /requires a nonempty/);
+  }
+  for (const args of [
+    ["info", "--model-id", "vendor/model"],
+    ["test", "--harness", "openclaw", "--base-url", "https://models.example.test/v1"],
+  ]) {
+    await assert.rejects(
+      runLauncher(context, "podman", args),
+      /supported only for Codex demo and test/,
+    );
+  }
+});
 
 test("k3d demo selects native OpenClaw through OpenShell", (context) =>
   runLauncher(context, "docker", ["demo", "--harness", "openclaw"]));

@@ -40,11 +40,23 @@ history.
 
 ## Native runtime selection
 
-The selected native model uses a `provider/model` name. Its supported
+The selected native model uses a `provider/model` name. The first slash separates
+the provider; the complete remaining model ID may contain slashes, as in
+`openai/vendor/model`. Provider catalog IDs may use that complete model ID
+or the full provider-prefixed name. Its supported
 `agentRuntime.id` is `openclaw` or `codex`; OCC considers model-specific,
 Agent-entry, and provider policy, and rejects conflicting explicit policies
 rather than choosing one. All configured Agent entries must resolve to the same
 primary model and Harness.
+
+For dedicated Codex with a custom endpoint, OCE compiles the private Gateway
+configuration using an explicit native provider. For example, the admitted
+`codex/vendor/organization/model` becomes
+`codex/openai-compatible/vendor/organization/model` in the generated Gateway
+configuration. OpenClaw resolves that to provider `openai-compatible` and
+the complete native ID `vendor/organization/model`. Primary and fallback order,
+catalog metadata, and runtime policies are preserved. The stored Configuration,
+AgentRevision, and Harness probe model remain unchanged.
 
 The resolver selects OpenClaw when there is no model candidate, or when an
 unambiguous built-in provider without custom provider or plugin routing has no
@@ -120,14 +132,12 @@ outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
-Before its app server starts, Codex rejects missing or conflicting runtime
-inputs and, after login, requires a bounded native model turn to succeed; local
-credential storage alone does not prove provider acceptance.
-API-key and PAT login state stays in its bounded ephemeral home. Gateway
-transport and workload identity credentials remain separate; a dedicated
-gateway receives no model credential. Model auth
-cannot be supplied through Configuration `secretBindings` or the initial runtime
-credential API; those own gateway credentials and transport/channel setup.
+Before app-server startup, Codex rejects missing/conflicting runtime inputs and
+requires a successful bounded native model turn after login; stored credentials
+do not prove provider acceptance. API-key/PAT state stays in its bounded ephemeral
+home, separate from transport/workload identity. Dedicated Gateways get no model
+credentials. Configuration `secretBindings` and the initial runtime credential API
+own Gateway transport/channel setup, not model auth.
 
 For initial and replacement deployments, Kubernetes OpenClaw runs one native
 model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
@@ -145,10 +155,14 @@ a tool event cannot satisfy its success check. The Codex probe runs with a minim
 environment that keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
 `SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Dedicated Codex
 reaches its model over Responses WebSocket by default (embedded OpenClaw uses
-HTTP streaming), so an egress proxy or firewall in front of the model host must
-allow the WebSocket upgrade. Dedicated Codex retries a confirmed
-subprocess timeout once after one second, capping each attempt at 30 seconds
-within one 61-second budget that includes the delay. Authentication rejection, malformed
+HTTP streaming), so an egress proxy or firewall in front of that model host must
+allow the WebSocket upgrade. An explicitly configured compatible endpoint uses
+HTTPS Responses streaming, including during the probe that ignores user config.
+For Secret-backed dedicated Codex, select the endpoint through the Kubernetes
+Compute Driver's [runtime configuration](drivers/kubernetes-compute.md#configuration);
+an OpenShell credential source supplies its own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
+subprocess timeout once after one second. Each attempt has a 30-second cap within
+one 61-second budget, including the delay. Authentication rejection, malformed
 output, tool events, and external signals without timeout evidence do not retry.
 Wrappers run under `tini`, so termination during a probe, its delay, or a held
 failure exits at once without another probe. Exhausted or nonretryable failure
@@ -173,13 +187,11 @@ and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
 `LOGIN_FAILED`. The worker fails deployment at once on each held
 [code](drivers/compute.md#startup-failure-evidence); after a timeout, redeploy.
 
-Gateway and Harness startup wrappers also emit one `runtime.startup_phase` log
-per phase (login, model probe, peer plugin status, plugin install, state
-migration, workspace setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
-duration, and time since wrapper start. A gateway also logs
-`peer-status-changed` when its Harness is replaced, then `gateway-respawn` once
-the OpenClaw process it restarts in place serves again. These
-logs carry no provider, model, credential, or path values.
+Startup wrappers emit `runtime.startup_phase` for login, model probe, peer status,
+plugin install, state migration, workspace setup and process spawn, recording container, phase,
+outcome, duration and elapsed startup time. Gateways log `peer-status-changed` on
+Harness replacement and `gateway-respawn` when the restarted process serves again.
+These logs omit provider, model, credential and path values.
 
 On a first dedicated Codex deploy the controller creates the gateway alongside
 its Harness, which the Agent Service selects from the start but lists only once

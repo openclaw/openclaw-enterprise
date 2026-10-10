@@ -33,6 +33,7 @@
         "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
         "runtime image validates the configuration dedicated native OpenClaw renders",
+        "runtime image spawns custom-provider subagents with intact native model IDs",
         "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
         "runtime image Kubernetes admission refuses healthy native listeners that cannot serve Pod-IP traffic"
       ]

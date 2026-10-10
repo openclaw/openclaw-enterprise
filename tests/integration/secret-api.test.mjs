@@ -1334,6 +1334,7 @@ function createRecordingCredentialGateway() {
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
     stored,
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [
         {

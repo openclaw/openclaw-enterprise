@@ -48,6 +48,7 @@ import {
   DependencyUnavailableError,
   ResourceStateConflictError,
   ServiceAccountCredentialSecretExistsError,
+  resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import {
   currentComputeAbortSignal,
@@ -990,7 +991,7 @@ test("activation refuses a missing or foreign workspace node before changing the
 // With `clock` ({ now }), enrollment waits are simulated on that fake clock: an
 // observation advances it by its whole wait, or to `state.pairAtMs` if the node
 // pairs within the wait, and never sleeps.
-function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
+function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint } = {}) {
   const state = {
     setupCalls: 0,
     connected: false,
@@ -1013,7 +1014,11 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
   };
   const driver = new KubernetesComputeDriver(
     routedOptions({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        ...(modelEndpoint === undefined ? {} : { codexModelBaseUrl: modelEndpoint }),
+      },
       // The API server proxy can reach private status, so activation reads the
       // node OpenClaw applied.
       ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
@@ -1361,6 +1366,143 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
     markReady,
   };
 }
+
+test("custom Codex endpoints compile explicit providers without changing the admitted model IDs", async () => {
+  for (const sourceProvider of ["codex", "openai"]) {
+    const fixture = dedicatedFirstDeployFixture({
+      modelEndpoint: "https://MODELS.example.test:443/api/v1/",
+    });
+    const primary = `${sourceProvider}/vendor/organization/model`;
+    const fallback = `${sourceProvider}/codex/native`;
+    const plain = `${sourceProvider}/plain-model`;
+    const child = `${sourceProvider}/vendor/organization/child`;
+    const childFallback = `${sourceProvider}/codex/child-fallback`;
+    const childSelection = { primary: child, fallbacks: [childFallback, "primary"] };
+    const settings = {
+      model: { primary, fallbacks: [fallback, plain] },
+      models: {
+        [primary]: { agentRuntime: { id: "codex" }, alias: "primary" },
+        [fallback]: { agentRuntime: { id: "codex" }, alias: sourceProvider },
+        [plain]: { agentRuntime: { id: "codex" } },
+        [`${sourceProvider}/*`]: { agentRuntime: { id: "codex" } },
+      },
+    };
+    fixture.revision.configuration = admitLoggingConfiguration(
+      {
+        ...fixture.revision.configuration,
+        // OpenAI-prefixed native selections require the explicit Codex WebSocket bridge.
+        plugins: createHarnessConfiguration("codex", "vendor/organization/model").plugins,
+        agents: {
+          ownership: "explicit",
+          defaults: {
+            ...structuredClone(settings),
+            model: sourceProvider === "openai" ? primary : structuredClone(settings.model),
+            subagents: {
+              model: sourceProvider === "codex" ? child : structuredClone(childSelection),
+            },
+          },
+          entries: {
+            main: {
+              ...structuredClone(settings),
+              subagents: {
+                model: sourceProvider === "codex" ? structuredClone(childSelection) : child,
+              },
+            },
+            alias: { subagents: { model: "primary" } },
+            providerAlias: { subagents: { model: sourceProvider } },
+            inherited: {},
+          },
+        },
+        models: {
+          providers: {
+            [sourceProvider]: {
+              agentRuntime: { id: "codex" },
+              api: "openai-responses",
+              baseUrl: "http://127.0.0.1:9",
+              models: [
+                { id: "vendor/organization/model", name: "Primary model", contextWindow: 32000 },
+                // Full OCE catalog refs must not strip the native "codex/" namespace.
+                { id: fallback, name: "Fallback model" },
+                { id: "plain-model", name: "Plain model" },
+              ],
+            },
+          },
+        },
+      },
+      "info",
+    );
+    const admitted = structuredClone(fixture.revision.configuration);
+    assert.equal(resolveConfiguredHarnessId(admitted), "codex");
+    await fixture.prepare();
+    const snapshot = [...fixture.objects.values()].find(
+      (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
+    );
+    assert.ok(snapshot);
+    const rendered = JSON.parse(snapshot.data["openclaw.json"]);
+    const qualified = "codex/openai-compatible/";
+    const expectedSelection = {
+      primary: `${qualified}vendor/organization/model`,
+      fallbacks: [`${qualified}codex/native`, `${qualified}plain-model`],
+    };
+    assert.deepEqual(
+      rendered.agents.defaults.model,
+      sourceProvider === "openai" ? expectedSelection.primary : expectedSelection,
+    );
+    assert.deepEqual(rendered.agents.entries.main.model, expectedSelection);
+    const expectedChild = `${qualified}vendor/organization/child`;
+    const expectedChildSelection = {
+      primary: expectedChild,
+      fallbacks: [`${qualified}codex/child-fallback`, "primary"],
+    };
+    assert.deepEqual(
+      rendered.agents.defaults.subagents.model,
+      sourceProvider === "codex" ? expectedChild : expectedChildSelection,
+    );
+    assert.deepEqual(
+      rendered.agents.entries.main.subagents.model,
+      sourceProvider === "codex" ? expectedChildSelection : expectedChild,
+    );
+    assert.equal(rendered.agents.entries.alias.subagents.model, "primary");
+    assert.equal(rendered.agents.entries.providerAlias.subagents.model, sourceProvider);
+    assert.equal(rendered.agents.entries.inherited.subagents, undefined);
+    for (const actual of [rendered.agents.defaults, rendered.agents.entries.main]) {
+      assert.deepEqual(Object.keys(actual.models), [
+        `${qualified}vendor/organization/model`,
+        `${qualified}codex/native`,
+        `${qualified}plain-model`,
+        `${qualified}*`,
+      ]);
+      assert.equal(actual.models[`${qualified}vendor/organization/model`].alias, "primary");
+    }
+    const byModelId = (left, right) => left.id.localeCompare(right.id);
+    assert.deepEqual(
+      rendered.models.providers.codex.models.toSorted(byModelId),
+      [
+        {
+          id: "openai-compatible/vendor/organization/model",
+          name: "Primary model",
+          contextWindow: 32000,
+        },
+        { id: "openai-compatible/codex/native", name: "Fallback model" },
+        { id: "openai-compatible/plain-model", name: "Plain model" },
+        {
+          id: "openai-compatible/vendor/organization/child",
+          name: "vendor/organization/child",
+        },
+        { id: "openai-compatible/codex/child-fallback", name: "codex/child-fallback" },
+      ].toSorted(byModelId),
+    );
+    assert.deepEqual(fixture.revision.configuration, admitted);
+    const runtime = [...fixture.objects.values()].find(
+      (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+    );
+    assert.ok(runtime);
+    assert.deepEqual(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, {
+      baseUrl: "https://models.example.test/api/v1",
+      modelProvider: "openai-compatible",
+    });
+  }
+});
 
 // The node wiring a Deployment-backed Codex Harness renders from its first start.
 function harnessNodeSetup(template) {
@@ -4311,8 +4453,31 @@ test("Kubernetes renders an all-interfaces native listener when gateway.bind is 
 });
 
 test("Kubernetes keeps a revision's gateway document rendered before the lan bind", async () => {
-  for (const bind of [undefined, "auto", "lan"]) {
-    const { driver, revision, objects, records, state, context } = workspaceSetupFixture(false);
+  const endpoint = "https://models.example.test/api/v1";
+  for (const [bind, modelEndpoint] of [
+    [undefined, undefined],
+    ["auto", undefined],
+    ["lan", undefined],
+    [undefined, endpoint],
+    ["auto", endpoint],
+    ["lan", endpoint],
+  ]) {
+    const computeOptions =
+      modelEndpoint === undefined
+        ? {}
+        : {
+            runtime: {
+              transportSecretPrefix: "transport",
+              gatewayStorageClassName: "local-path",
+              codexModelBaseUrl: modelEndpoint,
+            },
+          };
+    const { driver, revision, objects, records, state, context } = workspaceSetupFixture(
+      false,
+      true,
+      undefined,
+      computeOptions,
+    );
     revision.configuration = structuredClone(revision.configuration);
     if (bind !== undefined) {
       revision.configuration.gateway.bind = bind;
@@ -4325,6 +4490,10 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     const current = structuredClone(objects.get(documentKey));
     const rendered = JSON.parse(current.data["openclaw.json"]);
     assert.equal(rendered.gateway.bind, "lan");
+    if (modelEndpoint !== undefined) {
+      assert.equal(rendered.agents.defaults.model, "codex/openai-compatible/gpt-5");
+      assert.equal(revision.configuration.agents.defaults.model, "codex/gpt-5");
+    }
     // Earlier controllers wrote an omitted or auto bind as submitted; that rendering differed
     // from the current one only in this key. Kubernetes refuses edits to an immutable
     // ConfigMap, so re-preparing a revision prepared then (as maintenance and recovery do)
@@ -4356,6 +4525,20 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
       false,
       "an immutable gateway document is never rewritten",
     );
+    if (modelEndpoint !== undefined && bind !== "lan") {
+      // The earlier-document allowance changes only bind. It cannot erase the
+      // source endpoint projection while adopting an immutable revision.
+      const unprojected = structuredClone(earlier);
+      unprojected.agents.defaults.model = "codex/gpt-5";
+      objects.set(documentKey, {
+        ...structuredClone(current),
+        data: { ...current.data, "openclaw.json": JSON.stringify(unprojected) },
+      });
+      await assert.rejects(
+        driver.prepareRevision(revision, context),
+        /Refusing invalid immutable Kubernetes ConfigMap gateway-/,
+      );
+    }
     // Any other difference, such as a loopback bind, is still refused.
     const tampered = structuredClone(rendered);
     tampered.gateway.bind = "loopback";
@@ -4782,6 +4965,55 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
       /Managed channel proxy/i,
+    );
+  }
+});
+
+test("the canonical Kubernetes runtime validates the dedicated Codex model endpoint", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  for (const codexModelBaseUrl of [
+    "https://models.example.test/v1",
+    "https://models.example.test/api/v1/",
+    "https://API.OpenAI.com:443/v1/",
+    "https://models.example.test:8443/v1",
+    "https://bücher.example.test/v1",
+    "https://192.0.2.1/v1",
+    // These concrete URL forms remain valid here; this does not prove provider
+    // support or reachability through a deployment's network policy.
+    "https://[2001:db8::1]/v1",
+    "https://[::1]/v1",
+    "https://models.example.test./v1",
+  ]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+    );
+  }
+  for (const codexModelBaseUrl of [
+    "not-a-url",
+    "http://models.example.test/v1",
+    syntheticCredentialUrl({
+      username: "user",
+      password: "password",
+      host: "models.example.test",
+      pathname: "/v1",
+    }),
+    "https://models.example.test/v2",
+    "https://models.example.test/*/v1",
+    "https://**/v1",
+    "https://*.example.test/v1",
+    "https://ex*ample.test/v1",
+    "https://%2a%2A/v1",
+    "https://%2A.example.test/v1",
+    "https://ex%2aample.test/v1",
+    "https://＊.example.test/v1",
+    "https://models.example.test:0/v1",
+    "https://models.example.test:000/v1",
+    "https://models.example.test/v1?key=fixture",
+    "https://models.example.test/v1#fragment",
+  ]) {
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      /Codex model endpoint/,
     );
   }
 });

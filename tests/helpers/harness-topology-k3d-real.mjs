@@ -899,6 +899,10 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
+  if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+    configuration.drivers.compute.configuration.runtime.codexModelBaseUrl =
+      process.env.OCC_TEST_CODEX_OPENAI_BASE_URL;
+  }
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
   configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
@@ -2309,10 +2313,21 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     assert.ok(gatewayVersion.includes(process.env.OCC_TEST_KUBERNETES_OPENCLAW_VERSION));
   }
   context.diagnostic(`${mode}: ${gatewayVersion}`);
+  assert.equal(
+    deployed.data.configuration.agents.defaults.model,
+    modelReference,
+    "the admitted revision must retain its original model reference",
+  );
+  const expectedGatewayModel =
+    mode === "dedicated" &&
+    harnessId === "codex" &&
+    process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined
+      ? `codex/openai-compatible/${providerModel}`
+      : modelReference;
   await assertGatewayEffectiveDefaultModel(
     context,
     { mode, placement, gatewayPlacement, gatewayPod },
-    `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`,
+    expectedGatewayModel,
   );
 
   if (legacyTransport !== undefined) {
@@ -2495,6 +2510,7 @@ async function assertUnauthorizedCodexSocket(topology) {
 
 async function assertActualModelTurn(topology) {
   topology.gatewayUrl = await topology.refreshGatewayUrl();
+  const nonce = `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`;
   try {
     if (topology.mode === "dedicated" && topology.harnessId === "openclaw") {
       await assertNativeWorkerTurn(topology);
@@ -2503,9 +2519,18 @@ async function assertActualModelTurn(topology) {
     await assertGatewayModelTurn({
       gatewayUrl: topology.gatewayUrl,
       gatewayPassword: topology.gatewayPassword,
-      nonce: `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`,
+      nonce,
       secrets: [process.env.OPENAI_API_KEY],
     });
+    if (topology.mode === "dedicated" && process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+      // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
+      // model resolver. Native records must retain the endpoint provider and full ID.
+      const rollouts = (await codexRollouts(topology)).filter(({ text }) => text.includes(nonce));
+      assert.ok(rollouts.length > 0, "the real Gateway turn must reach the native Codex thread");
+      for (const rollout of rollouts) {
+        assertCustomCodexModelSelection(rollout);
+      }
+    }
   } catch (error) {
     const projectedSecrets = new Map();
     for (const pod of [topology.gatewayPod, topology.harnessPod].filter(Boolean)) {
@@ -3284,7 +3309,7 @@ async function assertGatewayEffectiveDefaultModel(context, topology, expectedMod
   assert.equal(
     actualModel,
     expectedModel,
-    `gateway effective default model changed before live model calls: ${actualModel}`,
+    `gateway effective default model does not match its runtime projection: ${actualModel}`,
   );
   context.diagnostic(`${topology.mode}: effective default model ${actualModel}`);
 }
@@ -3752,6 +3777,13 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
       rolloutsAfter[0].text.includes(afterNonce),
       "the resumed Codex thread must record the post-restart turn",
     );
+    if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+      // Resume and subsequent turn construction re-resolve the selection; the
+      // original provider/model tuple must survive both boundaries.
+      for (const rollout of rolloutsAfter) {
+        assertCustomCodexModelSelection(rollout);
+      }
+    }
   }
   context.diagnostic(
     `Gateway transcript, PNG ${artifactId}, and SQLite integrity survived Pod UID ${previousUid} -> ${topology.gatewayPod.metadata.uid}.`,
@@ -3773,6 +3805,15 @@ const gatewayLocalCodexTools = Object.freeze([
   "openclaw",
 ]);
 
+function assertCustomCodexModelSelection(rollout) {
+  assert.equal(rollout.modelProvider, "openai-compatible");
+  assert.ok(rollout.turnModels.length > 0, "the native thread must record its selected turn model");
+  assert.ok(
+    rollout.turnModels.every((model) => model === providerModel),
+    "native Codex turns must preserve the complete selected model ID without a provider prefix",
+  );
+}
+
 // Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.
 async function codexRollouts(topology) {
   const output = await execNode(
@@ -3792,11 +3833,14 @@ async function codexRollouts(topology) {
     walk("/home/node/.codex/sessions");
     process.stdout.write(JSON.stringify(files.sort().map((file) => {
       const text = fs.readFileSync(file, "utf8");
-      const meta = JSON.parse(text.split("\\n")[0]).payload;
+      const records = text.split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const meta = records[0].payload;
       const names = (meta.dynamic_tools ?? []).flatMap((tool) =>
         tool.type === "namespace" ? tool.tools.map(({ name }) => name) : [tool.name],
       );
-      return { file, threadId: meta.id, dynamicTools: names, text };
+      const turnModels = records.filter((record) => record.type === "turn_context")
+        .map((record) => record.payload.model);
+      return { file, threadId: meta.id, modelProvider: meta.model_provider, turnModels, dynamicTools: names, text };
     })));
   `,
   );

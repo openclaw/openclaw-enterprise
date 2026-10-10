@@ -103,13 +103,15 @@ reach the gateway.
 
 | Type                        | Secret fields                               | Config fields                                                                   | Rotation  | Harness authentication |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ---------------------- |
-| `openai`                    | `api_key` (required)                        | None                                                                            | `none`    | `openai` / `api_key`   |
+| `openai`                    | `api_key` (required)                        | `base_url` (optional)                                                           | `none`    | `openai` / `api_key`   |
 | `bearer-token`              | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential) |
 | `oauth2-client-credentials` | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 | `oauth2-refresh-token`      | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 
-Config for `bearer-token` and the OAuth2 types is checked before any gateway
-call:
+`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints may have a prefix such as `/api/v1` and must support Responses. Hostname and path wildcards, port `0`, URL credentials, queries, and fragments are rejected before Secret reads or persistence with `400 INVALID_REQUEST`. The Driver also rejects bracketed IPv6 hosts, which OpenShell treats as patterns. The endpoint is immutable; register a new source to change it.
+
+Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
+reads or persistence:
 
 - `host` is an exact lowercase DNS name, not an IP address or wildcard.
 - `port` is 1 to 65535 and defaults to `443`.
@@ -129,8 +131,7 @@ source's endpoint. Never put a placeholder, or its `openshell:resolve:env:` pref
 OpenShell refuses a model request whose body carries one, so the Agent's turns
 fail until that history is gone.
 
-Other OpenShell provider types are not in the catalog, so registration rejects
-them.
+Registration rejects provider types outside this catalog.
 
 ## OAuth2 refresh sources
 
@@ -159,11 +160,9 @@ registers:
 - **Request IDs.** Configure and rotate calls carry a UUID that OpenShell
   replays for 24 hours, so a retried call is not applied twice.
 
-Each Sandbox receives a stable placeholder for the token. The Sandbox
-supervisor picks up a re-minted token on its provider poll, every 10 seconds by
-default, and running processes then present it. Reconfiguring refresh material
-starts a new OpenShell authorization epoch, which revokes the placeholders of
-running Sandboxes.
+The supervisor picks up re-minted tokens on its provider poll (every 10 seconds
+by default); running processes then present them. Reconfiguring refresh material
+starts a new OpenShell authorization epoch, revoking running Sandboxes’ placeholders.
 
 ## How sources map to OpenShell
 
@@ -171,16 +170,8 @@ Each OCC Namespace maps to one operator-mode OpenShell Workspace with the same
 name as its Kubernetes namespace. The Driver manages two objects in that
 Workspace:
 
-- **Provider profile `oce-openai`.** Registration imports this profile when
-  missing. It exposes the credential as `OPENAI_API_KEY`, inserts it as a bearer
-  `authorization` header, and binds it to `api.openai.com:443` with `rest`
-  protocol and path `/v1/**`, for the configured binaries only. A digest
-  annotation records the profile content; a configuration change updates the
-  profile on the next registration, update, or deployment.
-- **Provider profile per `bearer-token` source.** Its ID equals the source's
-  provider name. It exposes the token as the source's `env_var` and binds it to
-  the source's `host`, `port`, and `path` with `rest` protocol, for
-  `toolBinaries` only. `removeSource` deletes it with the provider.
+- **Endpoint-specific `openai` profile.** Registration imports `oce-openai` for the default endpoint or a profile ID derived from a custom normalized URL. It inserts the key as a bearer `authorization` header only for the configured binaries and endpoint host, port, and base path followed by `/**`. A digest annotation records profile content; configuration changes update it on registration, update, or deployment.
+- **Profile per `bearer-token` source.** Its ID equals the provider name. It exposes the token through its `env_var` and binds it to the configured host, port, and path for `toolBinaries`. Removal deletes the profile with its provider.
 - **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
   characters of the SHA-256 digest of the source ID. Labels record OCC
   ownership, the source ID, and the Namespace ID. The provider's
@@ -202,8 +193,10 @@ the new value only to processes started after the update, so a running Harness
 keeps the previous value until it restarts.
 
 `removeSource` deletes the owned provider and confirms that it is gone. When no
-provider of the profile's type remains, it also deletes the profile, because
+provider using that endpoint profile remains, it also deletes the profile, because
 OpenShell cannot delete a Workspace that still holds profiles.
+
+An invalid persisted OpenAI endpoint cannot identify an owned profile. If the gateway confirms that the source's provider is absent, deletion leaves profiles alone and removes the OCC record. If a provider exists, status is `failed` and deletion refuses to guess ownership. Unknown types and gateway errors also remain failures.
 
 For a revision, `attachForRevision` brings each source's profile up to date and
 returns its provider name. It fails when two of the revision's sources would use
@@ -223,7 +216,10 @@ calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
 the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
 and only a listed provider is detached again.
 
-In the running Sandbox, the Harness environment holds only an
+For Codex, Compute selects a named compatible provider with the source endpoint
+and HTTPS Responses transport. Other existing Harness consumers retain their
+default OpenAI endpoint limit. In the running
+Sandbox, the Harness environment holds only an
 `openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
 --with-api-key` stores that placeholder, and the supervisor proxy substitutes the
 real key on matching requests.
@@ -240,11 +236,11 @@ real key on matching requests.
 - **Network enforcement.** The guarantee depends on OpenShell's NetworkPolicy,
   which denies workload-initiated connections. The cluster network plugin must
   enforce NetworkPolicy.
-- **TLS inspection.** The proxy terminates TLS for the profile endpoint, so Codex
-  must trust the Sandbox CA that OpenShell provides through `SSL_CERT_FILE`. The
+- **TLS inspection.** The proxy terminates TLS for the selected profile endpoint,
+  so Codex must trust the Sandbox CA that OpenShell provides through `SSL_CERT_FILE`. The
   Codex startup probe keeps `SSL_CERT_FILE` and `SSL_CERT_DIR` in its otherwise
   minimal environment for this reason. Do not add an uninspected `tls: skip` policy
-  for `api.openai.com` in the Sandbox's `policy.networkPolicies`; it conflicts
+  for the selected model endpoint in the Sandbox's `policy.networkPolicies`; it conflicts
   with the profile.
 - **Namespaces.** Sources never cross OCC Namespaces.
 
@@ -259,11 +255,11 @@ revision:
   OpenShell withholds a static key that has no credential binding. A Sandbox
   policy cannot add a `credential_binding` for a profile that defines endpoints,
   so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
-  `api.openai.com`.
+  the endpoint selected by the source.
 - **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
   any Workspace. A Workspace admin, which includes OCC's gateway principal, can
-  update the `oce-openai` profile to add hosts or binaries while Sandboxes use
-  it, so anyone holding the Backend credential can redirect the key. With
+  update a profile's endpoints or binaries while Sandboxes use it, so anyone
+  holding the Backend credential can redirect the key. With
   `allow_unauthenticated_users` enabled, every caller that reaches the gateway
   is a Platform Admin; never enable it outside disposable development. The OCC
   worker can read the source's Kubernetes Secret directly.

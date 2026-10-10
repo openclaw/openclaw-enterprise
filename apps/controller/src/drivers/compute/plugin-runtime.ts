@@ -41,6 +41,11 @@ export interface CodexRepositoryBrokerNetworkPolicy {
   readonly domains: Readonly<Record<string, "allow" | "deny">>;
 }
 
+export interface CodexModelEndpoint {
+  readonly baseUrl: string;
+  readonly modelProvider: "openai-compatible";
+}
+
 export type PluginRuntimeSpec =
   | {
       readonly kind: "openclaw";
@@ -53,6 +58,7 @@ export type PluginRuntimeSpec =
       readonly approvalPolicy?: string | undefined;
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
       readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+      readonly modelEndpoint?: CodexModelEndpoint;
     };
 
 function validateDriverMatchesRuntime(
@@ -87,6 +93,7 @@ function validateDriverMatchesRuntime(
 function pluginFreeRuntimeForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  openaiBaseUrl?: string,
 ): PluginRuntimeSpec | undefined {
   if (!validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin approvers are invalid.");
@@ -99,6 +106,9 @@ function pluginFreeRuntimeForRevision(
       ...(revision.pluginApprovers === undefined
         ? {}
         : { pluginApprovers: revision.pluginApprovers }),
+      ...(openaiBaseUrl === undefined
+        ? {}
+        : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
       ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
     };
   }
@@ -118,10 +128,11 @@ function pluginFreeRuntimeForRevision(
 export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  openaiBaseUrl?: string,
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
   if (state === undefined) {
-    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy);
+    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy, openaiBaseUrl);
   }
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
@@ -139,6 +150,9 @@ export function pluginRuntimeSpecForRevision(
           selections: state.plugins,
           approvalPolicy: codexSessionApprovalPolicy(revision),
           pluginApprovers: revision.pluginApprovers,
+          ...(openaiBaseUrl === undefined
+            ? {}
+            : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
         }
       : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
@@ -179,9 +193,14 @@ function codexToml(
       ? CODEX_NO_PLUGIN_FEATURES_TOML
       : CODEX_SELECTED_PLUGIN_FEATURES_TOML
   }${pluginDefaults ? CODEX_PLUGIN_DEFAULTS_TOML : ""}`;
-  return approvalPolicy === undefined
-    ? plugins
-    : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`;
+  const configuration =
+    approvalPolicy === undefined
+      ? plugins
+      : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`;
+  const endpoint = runtime.modelEndpoint;
+  return endpoint === undefined
+    ? configuration
+    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`;
 }
 
 /**
@@ -262,6 +281,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
   return {
     kind: runtime.kind,
     selections: runtime.selections,
+    ...(runtime.kind === "codex" && runtime.modelEndpoint !== undefined
+      ? { modelEndpoint: runtime.modelEndpoint }
+      : {}),
     ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
     ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined
       ? { repositoryBrokerNetworkPolicy: runtime.repositoryBrokerNetworkPolicy }

@@ -813,6 +813,17 @@ export class CredentialGatewayNotConfiguredError extends Error {
   }
 }
 
+/** A Driver rejected nonsecret source configuration before registration. */
+export class CredentialSourceConfigError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CredentialSourceConfigError";
+    this.field = field;
+  }
+}
+
 /**
  * The selected Credential Gateway's catalog lacks a source type: registration names one it does
  * not offer, or a configuration change dropped an existing source's type (OpenShell offers

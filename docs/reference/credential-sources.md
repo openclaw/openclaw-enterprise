@@ -50,14 +50,19 @@ The request fields are:
 - `type`: required; a type from the gateway catalog. A type the selected gateway
   does not offer fails with `409 RESOURCE_CONFLICT` and a message naming the
   fix, before any gateway call.
-- `config`: optional nonsecret strings keyed by catalog field name.
+- `config`: optional nonsecret strings keyed by catalog field name. For the
+  OpenShell `openai` type, `base_url` selects an HTTPS OpenAI-compatible `/v1`
+  endpoint and defaults to `https://api.openai.com/v1`. Codex requires the
+  OpenAI Responses API. The endpoint is immutable source configuration; register
+  a new source to change it. Invalid endpoint values return `400 INVALID_REQUEST`
+  before OCC reads Secrets or stores a source record.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace: a reference to another Namespace fails with
   `400 INVALID_REQUEST` before any Secret is read, and a reference to a Secret
   the Namespace does not hold fails with `404`.
 
-OCC rejects unknown fields and missing required fields before it reads any
-Secret. It reads each value through the Secret Driver, sends the values to the
+OCC rejects unknown fields, missing required fields, and Driver-invalid configuration
+before it reads any Secret. It reads each value through the Secret Driver, sends the values to the
 gateway, and stores only the Secret references. OCC records the source as
 `registering` before the gateway call. If the gateway rejects the registration,
 OCC deletes any copy and the record. If the call fails without an answer, such as
@@ -257,7 +262,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 | Status                                  | Meaning                                                                                                                                                                                                                                                |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                                                 |
+| `400 INVALID_REQUEST`                   | The body, field name, or configuration value is invalid, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                               |
 | `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                      |
 | `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                                                                 |
 | `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                          |
