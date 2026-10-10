@@ -4222,6 +4222,12 @@ async function startCodexGatewaySupervisor(
             return fixture.files.get(path);
           },
           writeFileSync(path, data) {
+            // A write that stops half-way, as a crash would leave the file.
+            if (fixture.tearWrite?.(path)) {
+              fixture.tearWrite = undefined;
+              fixture.files.set(path, String(data).slice(0, -5));
+              throw new Error("Interrupted write");
+            }
             fixture.files.set(path, String(data));
           },
           renameSync(from, to) {
@@ -4356,12 +4362,47 @@ for (const after of [false, true]) {
   });
 }
 
+test("Codex gateway supervisor keeps its peer bridge record usable after an interrupted record write", async (t) => {
+  const previous = await startCodexGatewaySupervisor(t, { writableConfig: true });
+  const [first] = previous.children;
+  const record = "/home/node/.openclaw/openclaw.json.oce-peer-bridge.json";
+  const kept = previous.files.get(record);
+  previous.peerStatus = {
+    ...previous.peerStatus,
+    startupId: "agent-startup-2",
+    podUid: "agent-pod-2",
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+    failures: [],
+  };
+  // The record is replaced through a pending file, so a crash mid-write leaves the old one.
+  previous.tearWrite = (path) => path.startsWith(record);
+  const respawn = previous.pollPeer();
+  await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+  first.exit(null, "SIGTERM");
+  await respawn;
+  assert.deepEqual(previous.exits, [1]);
+  assert.equal(previous.tearWrite, undefined, "the record write should have been interrupted");
+  assert.equal(previous.files.get(record), kept);
+  assert.equal(previous.files.has(`${record}.pending`), false);
+  const gateway = await startCodexGatewaySupervisor(t, {
+    writableConfig: true,
+    savedFiles: previous.files,
+    initialPeerStatus: previous.peerStatus,
+  });
+  assert.equal(
+    gateway.children[0].config.plugins.entries.codex.config.codexPlugins.plugins.linear.enabled,
+    true,
+  );
+  assert.equal(gateway.status().phase, "ready");
+  assert.deepEqual(gateway.exits, []);
+});
+
 // The Pod-local bridge record survives container restarts, so an unusable one
 // would fail every restart the same way until the Pod is replaced. The wrapper
 // holds unready instead, names the file and the remedy, reports the failure on
 // the runtime status port and keeps the record (removing it could overwrite
 // native edits with a rebuilt bridge).
-for (const [name, record, problem] of [
+for (const [name, record, problem, snapshot = (text) => text] of [
   ["empty", () => "", "is unreadable"],
   ["truncated", (saved) => saved.slice(0, -5), "is unreadable"],
   ["null", () => "null", "does not match the admitted revision"],
@@ -4376,12 +4417,41 @@ for (const [name, record, problem] of [
     (saved) => JSON.stringify({ ...JSON.parse(saved), sourceHash: "0".repeat(64) }),
     "does not match the admitted revision",
   ],
+  [
+    "another record version",
+    (saved) => JSON.stringify({ ...JSON.parse(saved), version: 2 }),
+    "does not match the admitted revision",
+  ],
+  [
+    "missing its bridges",
+    (saved) => JSON.stringify({ ...JSON.parse(saved), bridges: undefined }),
+    "does not match the admitted revision",
+  ],
+  [
+    "holding three bridges",
+    (saved) => JSON.stringify({ ...JSON.parse(saved), bridges: [{}, {}, {}] }),
+    "does not match the admitted revision",
+  ],
+  [
+    "holding a bridge that is not an object",
+    (saved) => JSON.stringify({ ...JSON.parse(saved), bridges: ["bridge"] }),
+    "does not match the admitted revision",
+  ],
+  [
+    // The record is intact, but the managed snapshot it was written for changed.
+    "written for an earlier managed snapshot",
+    (saved) => saved,
+    "does not match the admitted revision",
+    (snapshot) => JSON.stringify({ ...JSON.parse(snapshot), tools: { alsoAllow: [] } }),
+  ],
 ]) {
   test(`Codex gateway supervisor holds with a named remedy for a peer bridge record that is ${name}`, async (t) => {
     const previous = await startCodexGatewaySupervisor(t, { writableConfig: true });
     const path = "/home/node/.openclaw/openclaw.json.oce-peer-bridge.json";
     let savedFiles = new Map(previous.files);
     savedFiles.set(path, record(savedFiles.get(path)));
+    const managed = "/etc/openclaw-managed/openclaw.json";
+    savedFiles.set(managed, snapshot(savedFiles.get(managed)));
     const saved = savedFiles.get(path);
     // A container restart in the same Pod starts again from the files the last one left.
     for (let restart = 0; restart < 2; restart++) {
@@ -4529,6 +4599,12 @@ test("Codex gateway supervisor retains refusal of a native-edited managed bridge
     "Native edit",
   );
   assert.deepEqual(gateway.exits, [1]);
+  // The record lists only bridges the wrapper generated. Were the operator's bridge in it, the
+  // container restart that follows would treat the edit as generated and overwrite it.
+  const { bridges } = JSON.parse(gateway.files.get(`${path}.oce-peer-bridge.json`));
+  assert.equal(bridges.length, 1);
+  assert.equal(bridges[0].plugins.linear.enabled, true, "the bridge generated for the new peer");
+  assert.notEqual(bridges[0].plugins.linear.name, "Native edit");
 });
 
 test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness peer", async (t) => {

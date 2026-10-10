@@ -157,7 +157,7 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Gateway readiness timed out.${lastReadinessOutput}`);
+  throw new Error(`Gateway readiness timed out.\n${lastReadinessOutput}`);
 }
 
 export async function listGatewayPlugins(containerName) {

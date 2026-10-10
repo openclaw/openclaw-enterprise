@@ -3250,7 +3250,14 @@ test("Channel directory lookup checks the exact edit target and Secret before an
 });
 
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
-  const controller = await configuredController();
+  const configurationDriver = createTestConfigurationDriver();
+  const readConfiguration = configurationDriver.read.bind(configurationDriver);
+  let configurationReads = 0;
+  configurationDriver.read = (reference) => {
+    configurationReads += 1;
+    return readConfiguration(reference);
+  };
+  const controller = await configuredController({ configurationDriver });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "plugin-api");
   const configuration = await createConfiguration(controller, namespace.id);
@@ -3288,6 +3295,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     }),
   };
 
+  const readsBeforeSave = configurationReads;
   const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "plugin-agent",
@@ -3300,6 +3308,9 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
+  // This Plugin Driver has no Configuration check, so the save does not read the values: an
+  // unavailable or slow Configuration Driver must not block saves that have nothing to check.
+  assert.equal(configurationReads, readsBeforeSave);
 
   const saved = await controller.request(
     "GET",
@@ -3558,6 +3569,22 @@ test("the Codex Plugin Driver refuses an automatic reviewer without an on-reques
     });
     assertRefused(refused, fix, `create with ${fix}`);
   }
+  // One automatic reviewer among human ones is enough to need the policy.
+  const mixed = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "approval-policy-agent",
+      executionMode: "dedicated",
+      configurationId: omitted.id,
+      plugins: {
+        "codex-plugin:github@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { reviewer: "human" },
+        },
+        ...automatic,
+      },
+    },
+  });
+  assertRefused(mixed, "set it explicitly", "create with mixed reviewers");
   assert.deepEqual(
     (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
     [],
@@ -3585,6 +3612,25 @@ test("the Codex Plugin Driver refuses an automatic reviewer without an on-reques
   const unchanged = await controller.request("GET", agentPath);
   assert.equal(unchanged.data.configurationId, configuration.id);
   assert.deepEqual(unchanged.data.plugins, automatic);
+  // Any other Plugin Driver refusal gets fixed text: its message may describe Configuration
+  // values the caller does not own.
+  pluginDriver.validateAgentConfiguration = () => {
+    throw new Error("synthetic Driver detail");
+  };
+  let conflict;
+  try {
+    conflict = await controller.request("PATCH", agentPath, {
+      body: { configurationId: configuration.id },
+    });
+  } finally {
+    delete pluginDriver.validateAgentConfiguration;
+  }
+  assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
+  assert.equal(conflict.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    conflict.body.error.message,
+    "The selected Plugin Driver cannot run these plugin selections with this Configuration.",
+  );
   // Clearing the plugins leaves nothing to check against that Configuration.
   const cleared = await controller.request("PATCH", agentPath, {
     body: { configurationId: omitted.id, plugins: {} },
