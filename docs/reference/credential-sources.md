@@ -53,8 +53,10 @@ The request fields are:
 - `config`: optional nonsecret strings keyed by catalog field name. For the
   OpenShell `openai` type, `base_url` selects an HTTPS OpenAI-compatible `/v1`
   endpoint and defaults to `https://api.openai.com/v1`. Codex requires the
-  OpenAI Responses API. The endpoint is immutable source configuration; register
-  a new source to change it. Invalid endpoint values return `400 INVALID_REQUEST`
+  OpenAI Responses API. Its optional `auth_header` selects `authorization`
+  (Bearer, default) or `x-api-key` (raw key, dedicated Codex only). Endpoint
+  and header selection are immutable; register a new source to change them.
+  Invalid endpoint or header values return `400 INVALID_REQUEST`
   before OCC reads Secrets or stores a source record.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace: a reference to another Namespace fails with

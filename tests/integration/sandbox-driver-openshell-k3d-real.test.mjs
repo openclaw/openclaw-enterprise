@@ -67,6 +67,7 @@ const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).r
   "",
 );
 const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
+const openShellModelAuthHeader = process.env.OCC_TEST_OPENSHELL_MODEL_AUTH_HEADER;
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
   [
@@ -78,6 +79,7 @@ const selected =
     openShellGatewayImage,
     openShellSandboxImage,
     openShellSupervisorImage,
+    openShellModelAuthHeader,
     openShellHelmPath,
     openShellHelmChart,
     openShellWorkspaceHelmChart,
@@ -2266,7 +2268,10 @@ async function prepareProductionInstallation(
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
     type: "openai",
-    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    config: {
+      ...(openShellModelBaseUrl === undefined ? {} : { base_url: openShellModelBaseUrl }),
+      ...(openShellModelAuthHeader === undefined ? {} : { auth_header: openShellModelAuthHeader }),
+    },
     secrets: { api_key: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
@@ -3902,6 +3907,16 @@ assert.match(
   /^(?:codex|openclaw)$/,
   "OCC_TEST_OPENSHELL_HARNESS must be codex or openclaw.",
 );
+if (openShellModelAuthHeader !== undefined) {
+  assert.ok(
+    ["authorization", "x-api-key"].includes(openShellModelAuthHeader),
+    "OCC_TEST_OPENSHELL_MODEL_AUTH_HEADER must be authorization or x-api-key.",
+  );
+  if (openShellModelAuthHeader === "x-api-key") {
+    assert.equal(selectedHarness, "codex", "raw-header proof requires dedicated Codex.");
+    assert.ok(openShellModelBaseUrl, "raw-header proof requires its authorized model endpoint.");
+  }
+}
 if (demoStatePath !== undefined) {
   assert.equal(selectedHarness, "openclaw", "the OpenShell browser demo requires openclaw.");
 }

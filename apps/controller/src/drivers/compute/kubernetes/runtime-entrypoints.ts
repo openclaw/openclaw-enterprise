@@ -1205,6 +1205,10 @@ function assertCodexPluginRuntime(runtime) {
   if (!isPlainObject(runtime.manifest.selections ?? {})) {
     throw new Error("Codex plugin selections are invalid.");
   }
+  const authHeader = runtime.manifest.modelEndpoint?.authHeader;
+  if (authHeader !== undefined && authHeader !== "x-api-key") {
+    throw new Error("Codex model authentication header is unsupported.");
+  }
 }
 
 function requireNonEmptyString(value, description) {
@@ -3354,6 +3358,10 @@ if (pluginRuntime !== undefined) {
   assertCodexPluginRuntime(pluginRuntime);
   writeCodexConfigToml(pluginRuntime);
 }
+const headerAuthentication = pluginRuntime?.manifest.modelEndpoint?.authHeader === "x-api-key";
+if (headerAuthentication && loginMode !== "api_key") {
+  throw new Error("Custom model authentication headers require API-key authentication.");
+}
 const loginArguments = loginMode === "api_key"
   ? ["-c", "cli_auth_credentials_store=file", "login", "--with-api-key"]
   : [
@@ -3366,6 +3374,8 @@ function codexChildEnvironment() {
   const environment = { ...process.env };
   delete environment.APP_SERVER_TOKEN;
   delete environment.APP_TOKEN_SHA;
+  // Only the model placeholder is carried into native Codex, never the transport token.
+  if (headerAuthentication) environment.OPENAI_API_KEY = apiKey;
   return environment;
 }
 // Codex reports provider HTTP rejections as "status 401 Unauthorized" or
@@ -3375,7 +3385,10 @@ function codexAuthenticationRejected(message) {
 }
 const loginStartedAt = Date.now();
 let login;
-if (loginMode === "oauth") {
+if (headerAuthentication) {
+  // The custom provider reads its header from the environment, not auth.json.
+  login = { status: 0 };
+} else if (loginMode === "oauth") {
   try {
     const fs = require("node:fs");
     const receipt = JSON.parse(fs.readFileSync(process.env.CODEX_HOME + "/.oce-oauth.json", "utf8"));
@@ -3469,7 +3482,10 @@ function probeCodexAuthentication(timeout) {
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + '.name="OpenAI-compatible"',
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".base_url=" + JSON.stringify(pluginRuntime.manifest.modelEndpoint.baseUrl),
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + '.wire_api="responses"',
-        "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".requires_openai_auth=true",
+        "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".requires_openai_auth=" + !headerAuthentication,
+        ...(headerAuthentication ? [
+          "-c", 'model_providers.' + pluginRuntime.manifest.modelEndpoint.modelProvider + '.env_http_headers={"x-api-key"="OPENAI_API_KEY"}',
+        ] : []),
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".supports_websockets=false",
       ]),
       ...(loginMode === "chatgpt_service_account" ? [
@@ -3484,6 +3500,7 @@ function probeCodexAuthentication(timeout) {
         HOME: directory,
         CODEX_HOME: process.env.CODEX_HOME,
         RUST_LOG: "error",
+        ...(headerAuthentication ? { OPENAI_API_KEY: apiKey } : {}),
         ...Object.fromEntries(
           ["SSL_CERT_FILE", "SSL_CERT_DIR"]
             .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)

@@ -103,12 +103,20 @@ reach the gateway.
 
 | Type                        | Secret fields                               | Config fields                                                                   | Rotation  | Harness authentication |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ---------------------- |
-| `openai`                    | `api_key` (required)                        | `base_url` (optional)                                                           | `none`    | `openai` / `api_key`   |
+| `openai`                    | `api_key` (required)                        | `base_url`, `auth_header` (optional)                                            | `none`    | `openai` / `api_key`   |
 | `bearer-token`              | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential) |
 | `oauth2-client-credentials` | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 | `oauth2-refresh-token`      | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 
 `openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints may have a prefix such as `/api/v1` and must support Responses. Hostname and path wildcards, port `0`, URL credentials, queries, and fragments are rejected before Secret reads or persistence with `400 INVALID_REQUEST`. The Driver also rejects bracketed IPv6 hosts, which OpenShell treats as patterns. The endpoint is immutable; register a new source to change it.
+
+For dedicated Codex, set `auth_header: x-api-key` when the endpoint requires a
+raw key in that header. Omit it, or use `authorization`, for Bearer authentication.
+This is a closed selector, not a header-value map: keep the key in the source’s
+`api_key` Secret reference. Invalid selectors return `400 INVALID_REQUEST` at
+`/config/auth_header` before Secret reads or gateway effects. The selector is
+immutable too. Dedicated native OpenClaw still requires the default endpoint
+and Bearer authentication.
 
 Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
 reads or persistence:
@@ -170,7 +178,13 @@ Each OCC Namespace maps to one operator-mode OpenShell Workspace with the same
 name as its Kubernetes namespace. The Driver manages two objects in that
 Workspace:
 
-- **Endpoint-specific `openai` profile.** Registration imports `oce-openai` for the default endpoint or a profile ID derived from a custom normalized URL. It inserts the key as a bearer `authorization` header only for the configured binaries and endpoint host, port, and base path followed by `/**`. A digest annotation records profile content; configuration changes update it on registration, update, or deployment.
+- **Endpoint-and-auth-specific `openai` profile.** Default Bearer sources use
+  `oce-openai`; custom endpoint or raw-header sources use a derived ID. Equal
+  normalized endpoint/header selections share a profile, but Bearer and
+  `x-api-key` sources never overwrite each other’s profile. It declares the
+  selected credential placement, configured binaries, exact host and port, and
+  base path followed by `/**`. A digest tracks repairs on registration, update,
+  or deployment.
 - **Profile per `bearer-token` source.** Its ID equals the provider name. It exposes the token through its `env_var` and binds it to the configured host, port, and path for `toolBinaries`. Removal deletes the profile with its provider.
 - **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
   characters of the SHA-256 digest of the source ID. Labels record OCC
@@ -181,48 +195,45 @@ Workspace:
 - **Workspace.** OCC resolves the Namespace's workspace from Compute's runtime
   placement, so registration uses the same workspace as the paired Sandbox.
 
-`sourceStatus` reports `ready` for an owned provider, `absent` when it is
-missing, and `failed` when a provider with that name is not owned by the source.
+`sourceStatus` reports `ready` for an owned provider, `absent` when missing, and
+`failed` for ownership conflicts. An invalid persisted endpoint or header cannot
+identify an owned profile: deletion removes the OCC record only if the provider
+is absent, without touching profiles. Existing providers, unknown types, and
+gateway errors fail closed.
 
-`updateSource` requires the existing provider to be OCC-owned for the exact
-source, rewrites the source's profile when the configured binaries changed,
-then calls `UpdateProvider` with the new credential values.
-`UpdateProvider` merges non-empty values into the provider, so the driver
-rejects an empty value rather than silently keep the old one. OpenShell gives
-the new value only to processes started after the update, so a running Harness
-keeps the previous value until it restarts.
+`updateSource` verifies ownership, repairs changed binary restrictions, then
+calls `UpdateProvider`. Empty values are rejected because OpenShell merges
+nonempty values rather than clearing credentials. Only subsequently started
+processes receive the new static key.
 
-`removeSource` deletes the owned provider and confirms that it is gone. When no
-provider using that endpoint profile remains, it also deletes the profile, because
-OpenShell cannot delete a Workspace that still holds profiles.
+`removeSource` deletes the owned provider and confirms absence. It deletes the
+endpoint-and-auth profile only after its last provider disappears; remaining
+profiles block OpenShell Workspace deletion.
 
-An invalid persisted OpenAI endpoint cannot identify an owned profile. If the gateway confirms that the source's provider is absent, deletion leaves profiles alone and removes the OCC record. If a provider exists, status is `failed` and deletion refuses to guess ownership. Unknown types and gateway errors also remain failures.
+`attachForRevision` repairs profiles and returns names for `SandboxSpec.providers`.
+Duplicate environment variables fail deployment permanently with
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. `attachmentStatus` maps
+`GetSandboxProviderStatus` to `ready`, `withheld`, `revoked`, `failed`, or `pending`.
 
-For a revision, `attachForRevision` brings each source's profile up to date and
-returns its provider name. It fails when two of the revision's sources would use
-the same environment variable, and the worker then fails the deployment with
-`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
-OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
-`attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
-OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
-`pending`. `withdraw` calls `DetachSandboxProvider` for the revision's Sandbox,
-then reads the status of that detach receipt. Only `REVOKED` reports `revoked`:
-the Sandbox's placeholders then stop resolving, even in running processes.
-OpenShell reports `REVOKED` only after the Sandbox supervisor reports a running
-process with the provider removed. A Sandbox with no running process, for
-example one still provisioning or crash-looping, reports `WaitingForProcess`,
-which stays `pending`. A missing Sandbox reports `absent`. A `recheck` first
-calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
-the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
-and only a listed provider is detached again.
+`withdraw` calls `DetachSandboxProvider` and reads its receipt. Only `REVOKED`
+confirms that placeholders stopped resolving, including in running processes.
+That state requires supervisor evidence of a process with the provider removed;
+provisioning or crash-looping Sandboxes report `WaitingForProcess` (`pending`).
+Missing Sandboxes report `absent`. On `recheck`, `GetSandbox` reports absence,
+or `revoked` without mutation if the provider is unlisted; listed providers are
+detached again.
 
 For Codex, Compute selects a named compatible provider with the source endpoint
-and HTTPS Responses transport. Other existing Harness consumers retain their
-default OpenAI endpoint limit. In the running
-Sandbox, the Harness environment holds only an
-`openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
---with-api-key` stores that placeholder, and the supervisor proxy substitutes the
-real key on matching requests.
+and HTTPS Responses transport. In the running Sandbox, `OPENAI_API_KEY` holds
+only an `openshell:resolve:env:` placeholder. Bearer mode stores it with
+`codex login --with-api-key`. Raw-header mode skips that login and uses Codex’s
+`env_http_headers` to send the placeholder as `x-api-key`, with
+`requires_openai_auth = false`. The startup probe uses the same selector and
+placeholder environment as the app-server; neither receives the real key.
+
+OpenShell replaces the placeholder in the incoming header value; it does not
+rename an `Authorization` header or remove a `Bearer ` prefix based on profile
+metadata. Both the profile and the native Codex request configuration are needed.
 
 ## Trust requirements
 

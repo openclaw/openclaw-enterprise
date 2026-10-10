@@ -44,6 +44,8 @@ export interface CodexRepositoryBrokerNetworkPolicy {
 export interface CodexModelEndpoint {
   readonly baseUrl: string;
   readonly modelProvider: "openai-compatible";
+  /** A source-selected raw header; omitted retains native Bearer authentication. */
+  readonly authHeader?: "x-api-key";
 }
 
 export type PluginRuntimeSpec =
@@ -94,6 +96,7 @@ function pluginFreeRuntimeForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   openaiBaseUrl?: string,
+  authHeader?: "x-api-key",
 ): PluginRuntimeSpec | undefined {
   if (!validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin approvers are invalid.");
@@ -108,7 +111,13 @@ function pluginFreeRuntimeForRevision(
         : { pluginApprovers: revision.pluginApprovers }),
       ...(openaiBaseUrl === undefined
         ? {}
-        : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
+        : {
+            modelEndpoint: {
+              baseUrl: openaiBaseUrl,
+              modelProvider: "openai-compatible",
+              ...(authHeader === undefined ? {} : { authHeader }),
+            },
+          }),
       ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
     };
   }
@@ -129,10 +138,16 @@ export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   openaiBaseUrl?: string,
+  authHeader?: "x-api-key",
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
   if (state === undefined) {
-    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy, openaiBaseUrl);
+    return pluginFreeRuntimeForRevision(
+      revision,
+      repositoryBrokerNetworkPolicy,
+      openaiBaseUrl,
+      authHeader,
+    );
   }
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
@@ -152,7 +167,13 @@ export function pluginRuntimeSpecForRevision(
           pluginApprovers: revision.pluginApprovers,
           ...(openaiBaseUrl === undefined
             ? {}
-            : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
+            : {
+                modelEndpoint: {
+                  baseUrl: openaiBaseUrl,
+                  modelProvider: "openai-compatible",
+                  ...(authHeader === undefined ? {} : { authHeader }),
+                },
+              }),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
         }
       : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
@@ -198,9 +219,14 @@ function codexToml(
       ? plugins
       : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`;
   const endpoint = runtime.modelEndpoint;
-  return endpoint === undefined
-    ? configuration
-    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`;
+  if (endpoint === undefined) {
+    return configuration;
+  }
+  const authentication =
+    endpoint.authHeader === "x-api-key"
+      ? 'requires_openai_auth = false\nenv_http_headers = { "x-api-key" = "OPENAI_API_KEY" }'
+      : "requires_openai_auth = true";
+  return `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\n${authentication}\nsupports_websockets = false\n`;
 }
 
 /**

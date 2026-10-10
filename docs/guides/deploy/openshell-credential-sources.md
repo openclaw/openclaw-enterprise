@@ -61,12 +61,14 @@ endpoint before creating the source. Codex requires Responses API compatibility,
 including streaming. The credential source selects Codex's endpoint; keep
 `models.providers.codex.baseUrl` at the fail-closed `http://127.0.0.1:9` shown
 below. The Gateway must not make direct model requests.
-The current source profile uses Bearer authorization; an endpoint requiring
-`x-api-key` is not supported by this profile.
+For an endpoint requiring a raw `x-api-key` header, also set
+`OPENAI_AUTH_HEADER=x-api-key`. Otherwise omit it for Bearer authentication.
+Only the selector belongs in source configuration; the key remains in the Secret.
 
 ```bash
 jq -n --argjson ref "$SECRET_REF" --arg base_url "${OPENAI_BASE_URL:-}" \
-  '{name: "openai", type: "openai", config: (if $base_url == "" then {} else {base_url: $base_url} end), secrets: {api_key: $ref}}' > credential-source.json
+  --arg auth_header "${OPENAI_AUTH_HEADER:-authorization}" \
+  '{name: "openai", type: "openai", config: ({auth_header: $auth_header} + (if $base_url == "" then {} else {base_url: $base_url} end)), secrets: {api_key: $ref}}' > credential-source.json
 SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o json |
   jq -r .id)"
 ./bin/occ credential-source get "$SOURCE_ID"
