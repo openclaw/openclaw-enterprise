@@ -274,11 +274,15 @@ With that capability, Compute replaces the fail-closed Gateway target and omits
 the direct Agent Service and Compute-owned Harness route. Drivers without it
 retain the Kubernetes transport.
 
-Native OpenClaw does not accept inbound Harness traffic. Its enrolled node host
-opens the connection to the Agent Gateway, so the Driver sends an empty service
-exposure list and rejects any unexpected service URL returned by OpenShell.
-It does not require Compute's `network.providerHarness` route; that route is for
-the inbound Codex transport.
+Native OpenClaw connects outbound without service exposure or
+`network.providerHarness`; unexpected service URLs fail closed.
+
+**Temporary:** With `userNamespaces: false`, a revision-owned Deployment prepares
+PVC subpaths automatically, preserving contents. It uses existing
+Deployment permissions, without root, added capabilities, or an API token, and
+terminates before Sandbox creation. Leave gateway `sandbox_uid`/`sandbox_gid`
+overrides unset: preparation matches the namespace UID/GID or `10001:10001`.
+Remove if OCE adopts OpenShell support for preparing private subpaths.
 
 ## Kubernetes and admission requirements
 

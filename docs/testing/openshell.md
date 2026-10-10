@@ -245,7 +245,11 @@ path. It disables projected workload identity and passes the original Harness
 requirements directly to the Driver, without a bootstrap Job or PVC credential
 copies. The Driver supplies node setup and public CA through the native runtime
 profile. The test verifies that no `openshell-cred-*` Job was created and no
-Agent identity token was projected. Workspace access and successive native
+Agent identity token was projected. A temporary production-owned preparation
+Deployment fixes native PVC ownership before Sandbox creation; it carries no
+credentials, uses existing Deployment permissions, and terminates before the
+Sandbox starts. Remove that workaround if OpenShell adds private subpath preparation and OCE
+adopts it. Workspace access and successive native
 model turns still run through the real Agent Gateway and worker. The model key
 must remain a provider placeholder in every Harness process.
 

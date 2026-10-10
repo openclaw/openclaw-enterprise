@@ -9,23 +9,21 @@ last_updated_session: authoring-run/90c959b9-f6b9-4948-bbb2-f73c6f174258
 ## Overview
 
 Kubernetes Compute delegates dedicated Codex and native OpenClaw Harnesses to
-the OpenShell Sandbox Driver. Operator mode owns a Workspace for each OCC
-Namespace; managed mode fails before mutation. Model access uses a
-[credential source](credential-source-lifecycle.md), without granting the Agent
-Secret permission. Dedicated Codex receives revision-owned provider files and
-authenticates Gateway requests through OpenShell's bearer-passthrough exposure.
-Compute uses that advertised endpoint instead of the direct Harness Service.
+OpenShell. Operator mode reconciles each tenant namespace and workspace chart,
+then creates or adopts its same-named Workspace. Managed mode fails before mutation.
 
-The development Driver puts the expiring workspace-node setup envelope in a
-revision-owned provider file. The Harness signs the bootstrap token that the
-Gateway receives, while network policy limits its use to the node executable
-and Agent Gateway endpoint. This exposes the token to the Sandbox and is not a
-production credential-delivery contract.
+Model credentials use a [credential source](credential-source-lifecycle.md),
+without Agent Secret permission. Codex receives its verifier and runtime files;
+Compute uses the advertised bearer-passthrough exposure instead of the direct
+Agent Service. Drivers without endpoint support retain Kubernetes transport.
 
-The local Kubernetes development profile installs the pinned Gateway and
-renders the workspace chart into the Installation configuration, in either a
-Kubernetes-only or Compose control plane. Neither uses the verification-only
-compatibility projection.
+Development delivery projects expiring node setup through a revision-owned
+provider file. The Harness signs its token; network policy limits enrollment
+to the node executable and Agent Gateway. The Sandbox can read this token;
+this is not a production credential-delivery contract.
+
+Both development profiles install the pinned Gateway and workspace chart,
+without compatibility projection.
 
 ## Entry Points
 
@@ -56,7 +54,10 @@ graph TD
   Q --> G{"<b>Harness inputs valid?</b><br/>Kind and delivery"}
   G -- "no" --> R["<b>Reject provisioning</b><br/>Candidate stays inactive"]
   G -- "yes" --> W["<b>Reconcile runtime provider</b><br/>Files and literal setup"]
-  W --> H["<b>Create Sandbox</b><br/>Providers and exposure"]
+  W --> P{"<b>Native Harness?</b>"}
+  P -- "yes" --> P0["<b>Temporary PVC preparation</b><br/>Non-root Deployment; wait for deletion"]
+  P0 --> H["<b>Create Sandbox</b><br/>Providers and exposure"]
+  P -- "no" --> H
   H --> V{"<b>Harness</b>"}
   V -- "Codex" --> J["<b>Resolve exposure</b><br/>Advertised WebSocket origin"]
   J --> K["<b>Replace Gateway</b><br/>Provider route and bearer token"]
@@ -199,15 +200,13 @@ Other Secret-backed environment and projected workload identity fail closed.
 The Driver creates or adopts a revision-owned provider from
 `oce-codex-runtime` or `oce-openclaw-runtime`. Codex projects its runtime files;
 both project node setup and the public CA read-only. The Driver checks the setup
-Secret's Agent ownership and bounded, live envelope. Its bootstrap token remains
-visible inside the Sandbox, so this development path is not a production
-credential guarantee. Model credentials remain in the Credential Gateway;
+Secret's Agent ownership and bounded, live envelope. Model credentials remain
+in the Credential Gateway;
 attachments must use unique OCC `oce-cs-` provider names.
 
 A renewed setup changes only `node_setup_json` through a version-fenced update.
-The prior envelope must be expired, the new one live with a later expiry, and
-endpoint, TLS fingerprint, static config, and ownership unchanged. Drift fails
-before Sandbox creation. Binary-scoped policy admits enrollment only to the
+The expired prior envelope requires a later live expiry and unchanged endpoint,
+TLS fingerprint, static config, and ownership. Drift fails before Sandbox creation. Binary-scoped policy admits enrollment only to the
 Gateway endpoint from `/usr/local/bin/node`; model injection allows the native
 Codex executable or Node for native OpenClaw.
 
@@ -219,15 +218,18 @@ in-cluster routing hostname or two clusters. Chmod-sensitive paths such as
 `OPENCLAW_NODE_STATE_DIR` address process-created `state` children, avoiding
 symlink ancestors and root-owned mount roots.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
-reads projected setup and CA files and writes its private connect target.
-`sandboxCommand` gives the native process a writable temporary directory while
-retaining the supervisor's `/tmp`. Restarts reread setup and reuse device identity.
+reads setup and CA into its private connect target. `sandboxCommand` gives the
+native process writable temporary storage, preserving the supervisor's `/tmp`.
+Restarts reread setup and reuse device identity.
 
-Codex's optional post-create delay keeps Compute from consuming the route before
-its listener starts. Compute rolls the Gateway to that endpoint and waits for
-the exact Deployment before observing enrollment. Native OpenClaw requests no inbound service and returns no Harness endpoint;
-Compute skips transport observation and the Codex provider-route requirement for
-that revision, retaining the supervisor-to-Gateway enrollment policies.
+Codex's optional delay lets its listener start before Compute rolls the Gateway
+to that endpoint and waits for the exact Deployment. Native OpenClaw has no inbound service or Harness endpoint. Compute skips
+transport observation and provider routing, retaining supervisor-to-Gateway enrollment policies.
+
+`openshell.ts:prepareNativeWorkspace` temporarily prepares native PVC subpaths
+through a non-root Deployment. It rejects symlink ancestors and incomplete
+recovery, verifies UID ownership and `0700`, then waits for foreground deletion.
+Remove it if OpenShell adds private subpath preparation and OCE adopts it.
 
 ### 4. Call the versioned gateway contract
 
@@ -353,15 +355,18 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 ## Changelog
 
+- 2026-10-10 10:40: Preserve Codex CA delivery while rebasing native enrollment. (authoring-run/90c959b9-f6b9-4948-bbb2-f73c6f174258 - 279cf04fa)
+
 - 2026-10-10 12:40: Declare the Sandbox HOME for native hook credentials; hooks trust the file-delivered Gateway CA. (fix-1017)
 
 - 2026-10-09 19:45: Cover both runtime architectures in the development credential policy. (authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67 - bd540bcdef63cdc719e73192e4dbe99c365953c3)
+- 2026-10-10 08:45: Temporarily prepare native PVC subpaths with existing Deployment authority before Sandbox startup. (authoring-run/90c959b9-f6b9-4948-bbb2-f73c6f174258 - cdc92cdcf)
+
 - 2026-10-10 08:28: Keep native worker enrollment policies without requiring an inbound provider route. (authoring-run/90c959b9-f6b9-4948-bbb2-f73c6f174258 - aeb7d91ab)
 
 - 2026-10-09 17:56: Allow outbound-only Harnesses to return no endpoint and skip transport observation. (authoring-run/046d9ca4-c1af-4515-b4d1-62c314d84484 - 4926e2425)
 
 - 2026-10-09 17:10: Deliver native node setup through a revision-owned provider and remove the native test bridge. (authoring-run/046d9ca4-c1af-4515-b4d1-62c314d84484 - d156330a1)
-
 
 - 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 

@@ -933,6 +933,19 @@ function createIntegrationSandboxDriverFactory(
         serviceName: `openshell-${hash(namespaceName, 10)}`,
       };
       if (requirements !== undefined) {
+        // TEMPORARY: The production preparer reuses this gateway-configured identity;
+        // remove if OpenShell adds private subpath preparation and OCE adopts it.
+        options.gateway.operatorWorkspaceResources = [
+          {
+            apiVersion: "v1",
+            kind: "ServiceAccount",
+            metadata: {
+              name:
+                requirements.workloadIdentity?.serviceAccountName ??
+                openShellAgentName(requirements.labels["openclaw.dev/agent"]),
+            },
+          },
+        ];
         const workspace = requirements.workspaceMounts.find(
           ({ mountPath }) => mountPath === workspaceMountPath,
         );
