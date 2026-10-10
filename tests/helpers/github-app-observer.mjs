@@ -224,7 +224,7 @@ export async function createGitHubAppRepositoryObserver({
     const helper = fileURLToPath(
       new URL("../../scripts/ci/github-app-observer-credential-helper.mjs", import.meta.url),
     );
-    const credentialHelper = `!node ${shellQuote(helper)} ${shellQuote(inputDirectory)} ${shellQuote(repository)}`;
+    const credentialHelper = `!${shellQuote(process.execPath)} ${shellQuote(helper)} ${shellQuote(inputDirectory)} ${shellQuote(repository)}`;
     await run(
       "git",
       [
@@ -238,7 +238,7 @@ export async function createGitHubAppRepositoryObserver({
         `https://github.com/${repository}.git`,
         `:refs/heads/${branch}`,
       ],
-      { timeout: 60000, env: { GIT_TERMINAL_PROMPT: "0" } },
+      { timeout: 60000, env: { GIT_TERMINAL_PROMPT: "0" }, privateFailureOutput: true },
     );
   };
   return observe;

@@ -12,6 +12,7 @@ import {
   validateEnvironmentPolicy,
   validateFullIntegrationPreflight,
 } from "../../scripts/ci/full-integration-preflight.mjs";
+import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
 test("full integration workflow carries QA job outcomes into targeted aggregation only", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "qa-aggregate-"));
@@ -172,8 +173,32 @@ test("QA credential materializer validates isolated repository fixture target", 
   const exported = await readFile(success.githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
   assert.match(exported, /OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=/);
+  assert.match(exported, /QA_REPOSITORY_FIXTURE=isolated/);
   assert.doesNotMatch(exported, /OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE=/);
   assert.doesNotMatch(exported, /synthetic-observer-token/);
+  const runnerEnv = Object.fromEntries(
+    exported
+      .trim()
+      .split("\n")
+      .map((line) => line.split(/=(.*)/s).slice(0, 2)),
+  );
+  const runnerSelection = selectQaMatrix({
+    ...runnerEnv,
+    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
+    OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/static-token",
+  });
+  assert.ok(
+    runnerSelection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY"),
+  );
+  assert.ok(!runnerSelection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_BINARY"));
+  assert.ok(!runnerSelection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
+  assert.doesNotThrow(() =>
+    validateQaInputs(runnerSelection, {
+      ...runnerEnv,
+      OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
+    }),
+  );
 
   const missingTarget = await runQaCredentialMaterializer(t, {
     QA_REPOSITORY_FIXTURE: "isolated",

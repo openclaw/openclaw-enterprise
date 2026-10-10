@@ -10,5 +10,7 @@ if (!inputDirectory || !repository) {
 }
 
 const input = await loadGitHubAppObserverInput(inputDirectory, repository);
-const { token } = await mintGitHubAppObserverToken(input);
+const { token } = await mintGitHubAppObserverToken(input, {
+  githubApiOrigin: process.env.OCC_TEST_QA_GITHUB_API_ORIGIN,
+});
 process.stdout.write(`username=x-access-token\npassword=${token}\n`);

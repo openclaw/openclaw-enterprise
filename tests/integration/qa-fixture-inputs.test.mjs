@@ -136,6 +136,25 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
+  const isolated = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "git-full",
+    QA_REPOSITORY_FIXTURE: "isolated",
+    OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
+    OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/token",
+  });
+  assert.ok(isolated.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY"));
+  assert.ok(!isolated.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_BINARY"));
+  assert.ok(!isolated.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
+  assert.throws(
+    () =>
+      validateQaInputs(isolated, {
+        OCC_TEST_QA_OPENAI_KEY_FILE: "/private/openai",
+        OCC_TEST_QA_CODEX_TOKEN_FILE: "/private/codex",
+        OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
+        OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY: "/private/repository",
+      }),
+    /GITHUB_OBSERVER_APP_INPUT_DIRECTORY is required/,
+  );
   assert.throws(
     () =>
       validateQaInputs(full, Object.fromEntries(full.requiredEnv.map((name) => [name, "fixture"]))),
@@ -174,7 +193,11 @@ test("hosted QA materializes only selected credentials and rejects missing selec
   );
   const exported = await readFile(githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_QA_CODEX_TOKEN_FILE=/);
-  assert.doesNotMatch(exported, /synthetic-|unselected-secret|SLACK|REPOSITORY/);
+  assert.doesNotMatch(
+    exported,
+    /synthetic-|unselected-secret|SLACK|REPOSITORY_(?:APP|OBSERVER|REGISTRY)/,
+  );
+  assert.doesNotMatch(exported, /QA_REPOSITORY_FIXTURE/);
   await rm(privateDirectory, { recursive: true });
   await rm(githubEnv);
   const missing = spawnSync(process.execPath, [script.pathname], {

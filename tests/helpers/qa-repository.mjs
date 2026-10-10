@@ -294,18 +294,21 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   );
   const entry = f.repositoryEntry;
   const repository = entry.repository;
-  const observerToken = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE
-    ? await protectedText(
-        process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE,
-        "independent GitHub observer credential",
-      )
-    : undefined;
+  const observerTokenPath = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE;
   const observerAppInput = process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY;
-  const selectedObservers = [
-    observerToken,
-    observerAppInput,
-    process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY,
-  ].filter(Boolean);
+  const observerBinary = process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY;
+  if (process.env.QA_REPOSITORY_FIXTURE === "isolated") {
+    assert.ok(observerAppInput, "isolated repository fixture requires App-backed observer input");
+    assert.ok(
+      !observerTokenPath,
+      "isolated repository fixture must not use a static observer token",
+    );
+    assert.ok(!observerBinary, "isolated repository fixture must not use a managed gh wrapper");
+  }
+  const observerToken = observerTokenPath
+    ? await protectedText(observerTokenPath, "independent GitHub observer credential")
+    : undefined;
+  const selectedObservers = [observerToken, observerAppInput, observerBinary].filter(Boolean);
   assert.equal(
     selectedObservers.length,
     1,
@@ -339,7 +342,7 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
       })
     : createRepositoryObserver({
         repository,
-        binary: process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY ?? "gh",
+        binary: observerBinary ?? "gh",
         run: runObserverCommand,
       });
   const { data: remote } = await observe("GET");

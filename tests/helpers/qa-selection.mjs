@@ -59,12 +59,11 @@ export function selectQaMatrix(env = process.env) {
   }
   if (repository) {
     requiredEnv.push("OCC_TEST_QA_REPOSITORY_AUTHORIZED", "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY");
-    if (env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY) {
+    if (env.QA_REPOSITORY_FIXTURE === "isolated") {
+      requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY");
+    } else if (env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY) {
       requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_BINARY");
-    } else if (
-      env.QA_REPOSITORY_FIXTURE === "isolated" ||
-      env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY
-    ) {
+    } else if (env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY) {
       requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY");
     } else {
       requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE");
