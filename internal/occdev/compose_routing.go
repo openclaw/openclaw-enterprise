@@ -14,13 +14,15 @@ import (
 func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developmentState) error {
 	// Create without starting either reader, and inspect their actual images and
 	// Compose user overrides rather than assuming the image's default UID.
-	if err := r.compose(ctx, state, "create", "--build", "--no-deps", "controller", "worker-kubernetes"); err != nil {
+	if err := r.compose(ctx, state, "up", "--no-start", "--build", "--no-deps", "controller", "worker-kubernetes"); err != nil {
 		return err
 	}
 	var owner [2]int
 	var readerImage string
 	for index, service := range []string{"controller", "worker-kubernetes"} {
-		id, err := r.composeOutput(ctx, state, "ps", "--all", "-q", service)
+		id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
+			"--filter", "label=com.docker.compose.project="+state.ComposeProject,
+			"--filter", "label=com.docker.compose.service="+service)
 		if err != nil {
 			return err
 		}
