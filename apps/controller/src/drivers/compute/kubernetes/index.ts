@@ -6159,6 +6159,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         });
         // Preparation saw the Harness serving; activate only while it still is.
         if (
+          providerEndpoint !== undefined &&
           sandboxDriver.harnessStatus !== undefined &&
           (
             await sandboxDriver.harnessStatus({
@@ -12331,6 +12332,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                       ],
               }),
             ];
+      if (revision.harness.id === "openclaw") {
+        return [...workspaceNodePolicies, ...statusPolicies];
+      }
       return [
         policy("allow-gateway-agent", {
           podSelector: gateway,

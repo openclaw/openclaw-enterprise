@@ -14,6 +14,7 @@ import {
 } from "../../scripts/ci/openshell.mjs";
 import {
   createOpenShellInstallationConfiguration,
+  createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
@@ -105,6 +106,37 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
   assert.equal(response.statusCode, 200);
   assert.equal(Buffer.concat(body).toString("utf8"), "routed");
   assert.equal(observedHost, `${serviceHostname}:${address.port}`);
+});
+
+test("OpenShell privilege checks distinguish native workers from Codex transport", () => {
+  const { assertApprovedOpenShellPrivileges: check } = createOpenShellKubernetesFixture({});
+  const pod = {
+    spec: {
+      runtimeClassName: "openshell-sandbox",
+      securityContext: { runAsUser: 10001, runAsGroup: 10001 },
+      containers: [
+        {
+          name: "agent",
+          env: [],
+          securityContext: {
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ["ALL"] },
+          },
+        },
+      ],
+    },
+  };
+  // A native worker connects outbound without Codex's app-server transport.
+  assert.doesNotThrow(() => check(pod, "openclaw"));
+  assert.throws(() => check(pod, "codex"), /requires only its app-server token verifier/);
+  pod.spec.containers[0].env = [{ name: "APP_TOKEN_SHA", value: "a".repeat(64) }];
+  assert.doesNotThrow(() => check(pod, "codex"));
+  assert.throws(() => check(pod, "openclaw"), /must not receive a Codex verifier/);
+  // Removing the Codex-only requirement must not weaken the shared secret boundary.
+  pod.spec.containers[0].env = [{ name: "APP_SERVER_TOKEN", value: "synthetic-token" }];
+  for (const harness of ["codex", "openclaw"]) {
+    assert.throws(() => check(pod, harness), /raw app-server token must stay outside/);
+  }
 });
 
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {
