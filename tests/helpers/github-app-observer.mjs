@@ -8,6 +8,7 @@ import { registerQaSecret } from "./qa-secrets.mjs";
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const numericIdPattern = /^[1-9][0-9]{0,15}$/;
 const refreshSkewMs = 5 * 60 * 1000;
+const githubFetchTimeoutMs = 30_000;
 
 function assertNumericId(value, label) {
   assert.equal(typeof value, "string", `${label} must be a string`);
@@ -121,6 +122,10 @@ function validatePermissions(permissions) {
   }
 }
 
+async function githubFetch(url, init = {}, timeoutMs = githubFetchTimeoutMs) {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 function validateRepositoryScope(data, input) {
   assert.ok(Array.isArray(data.repositories), "observer token response must include repositories");
   assert.equal(data.repositories.length, 1, "observer token must be scoped to one repository");
@@ -141,7 +146,7 @@ function validateRepositoryScope(data, input) {
 export async function mintGitHubAppObserverToken(input, options = {}) {
   const now = options.now?.() ?? Date.now();
   const origin = options.githubApiOrigin ?? "https://api.github.com";
-  const response = await fetch(
+  const response = await githubFetch(
     `${origin}/app/installations/${input.installationId}/access_tokens`,
     {
       method: "POST",
@@ -157,6 +162,7 @@ export async function mintGitHubAppObserverToken(input, options = {}) {
         permissions: { contents: "write", pull_requests: "write" },
       }),
     },
+    options.fetchTimeoutMs,
   );
   const data = await readJsonResponse(response);
   assert.equal(response.status, 201, `GitHub observer token mint returned ${response.status}`);
@@ -180,6 +186,7 @@ export async function createGitHubAppRepositoryObserver({
   run,
   githubApiOrigin,
   now = () => Date.now(),
+  fetchTimeoutMs = githubFetchTimeoutMs,
 }) {
   const input = await loadGitHubAppObserverInput(inputDirectory, repository);
   const prefix = `repos/${repository}`;
@@ -189,7 +196,11 @@ export async function createGitHubAppRepositoryObserver({
     if (current && current.expiresAt > now() + refreshSkewMs) {
       return current.token;
     }
-    refreshing ??= mintGitHubAppObserverToken(input, { githubApiOrigin, now }).finally(() => {
+    refreshing ??= mintGitHubAppObserverToken(input, {
+      fetchTimeoutMs,
+      githubApiOrigin,
+      now,
+    }).finally(() => {
       refreshing = undefined;
     });
     current = await refreshing;
@@ -198,7 +209,7 @@ export async function createGitHubAppRepositoryObserver({
   const observe = async (method, suffix = "", body, expected = 200) => {
     assert.ok(!suffix.includes("..") && !suffix.startsWith("/"));
     const token = await currentToken();
-    const response = await fetch(
+    const response = await githubFetch(
       `${githubApiOrigin ?? "https://api.github.com"}/${prefix}${suffix ? `/${suffix}` : ""}`,
       {
         method,
@@ -211,6 +222,7 @@ export async function createGitHubAppRepositoryObserver({
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
+      fetchTimeoutMs,
     );
     assert.ok(
       [].concat(expected).includes(response.status),
@@ -230,6 +242,8 @@ export async function createGitHubAppRepositoryObserver({
       [
         "-c",
         "credential.helper=",
+        "-c",
+        "credential.useHttpPath=true",
         "-c",
         `credential.helper=${credentialHelper}`,
         "push",

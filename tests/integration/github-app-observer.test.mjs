@@ -34,6 +34,8 @@ async function fixture(
     tokenRepositories,
     token = ({ index }) => `ghs_observer_secret_token_${index}`,
     expiresAt = () => new Date(Date.now() + 3600_000).toISOString(),
+    stallTokenBody = false,
+    stallGetBody = false,
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "github-app-observer-"));
@@ -67,6 +69,7 @@ async function fixture(
   await chmod(directory, 0o700);
   const seen = [];
   const issuedTokens = [];
+  const sockets = new Set();
   const server = createServer(async (request, response) => {
     try {
       seen.push({
@@ -86,6 +89,10 @@ async function fixture(
         const value = token({ index: issuedTokens.length + 1 });
         issuedTokens.push(value);
         response.writeHead(201, { "content-type": "application/json" });
+        if (stallTokenBody) {
+          response.write("{");
+          return;
+        }
         response.end(
           JSON.stringify({
             token: value,
@@ -99,6 +106,10 @@ async function fixture(
       if (request.method === "GET" && request.url === `/repos/${repository}`) {
         assert.ok(issuedTokens.includes(request.headers.authorization?.replace(/^Bearer /, "")));
         response.writeHead(200, { "content-type": "application/json" });
+        if (stallGetBody) {
+          response.write("{");
+          return;
+        }
         response.end(
           JSON.stringify({
             id: repositoryId,
@@ -122,7 +133,16 @@ async function fixture(
       response.end(JSON.stringify({ message: error.message }));
     }
   });
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  t.after(() => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    return new Promise((resolve) => server.close(resolve));
+  });
   const origin = await listen(server);
   return { directory, origin, seen, issuedTokens };
 }
@@ -211,6 +231,7 @@ test("GitHub App observer deleteBranch uses a credential helper and leased Git p
   assert.ok(push.args.includes(`--force-with-lease=refs/heads/qa/test-branch:${"a".repeat(40)}`));
   assert.ok(push.args.includes(`https://github.com/${repository}.git`));
   assert.ok(push.args.includes(":refs/heads/qa/test-branch"));
+  assert.ok(push.args.includes("credential.useHttpPath=true"));
   const helper = push.args.find((arg) => arg.includes("github-app-observer-credential-helper.mjs"));
   assert.match(helper, /credential\.helper=.*github-app-observer-credential-helper\.mjs/);
   assert.match(helper, new RegExp(process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -219,19 +240,13 @@ test("GitHub App observer deleteBranch uses a credential helper and leased Git p
   assert.equal(push.options.privateFailureOutput, true);
 });
 
-test("GitHub App observer credential helper mints through the fixture App key", async (t) => {
-  const f = await fixture(t);
+async function runCredentialHelper(f, operation, request, env = {}) {
   const helper = fileURLToPath(
     new URL("../../scripts/ci/github-app-observer-credential-helper.mjs", import.meta.url),
   );
-  const child = spawn(process.execPath, [helper, f.directory, repository], {
-    env: { ...process.env, OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  t.after(() => {
-    if (child.exitCode === null) {
-      child.kill("SIGKILL");
-    }
+  const child = spawn(process.execPath, [helper, f.directory, repository, operation], {
+    env: { ...process.env, ...env },
+    stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
@@ -243,15 +258,118 @@ test("GitHub App observer credential helper mints through the fixture App key", 
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
+  child.stdin.end(request);
   const status = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", resolve);
   });
+  return { status, stdout, stderr };
+}
 
-  assert.equal(status, 0, stderr);
-  assert.equal(stderr, "");
-  assert.match(stdout, /^username=x-access-token\npassword=ghs_observer_secret_token_1\n$/);
+function credentialRequest({ protocol = "https", host = "github.com", path = repository } = {}) {
+  return `protocol=${protocol}\nhost=${host}\npath=${path}.git\n\n`;
+}
+
+test("GitHub App observer credential helper mints only for valid get operations", async (t) => {
+  const f = await fixture(t);
+  const result = await runCredentialHelper(f, "get", credentialRequest(), {
+    NODE_ENV: "test",
+    OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /^username=x-access-token\npassword=ghs_observer_secret_token_1\n$/);
+  assert.equal(
+    f.seen.filter((request) => request.url === "/app/installations/456/access_tokens").length,
+    1,
+  );
 });
+
+test("GitHub App observer credential helper does not mint for store or erase", async (t) => {
+  const f = await fixture(t);
+  for (const operation of ["store", "erase"]) {
+    const result = await runCredentialHelper(f, operation, credentialRequest(), {
+      NODE_ENV: "test",
+      OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  }
+  assert.equal(f.seen.length, 0);
+});
+
+test("GitHub App observer credential helper rejects unsupported operations and wrong targets", async (t) => {
+  const f = await fixture(t);
+  const env = { NODE_ENV: "test", OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin };
+  const unsupported = await runCredentialHelper(f, "approve", credentialRequest(), env);
+  assert.notEqual(unsupported.status, 0);
+  assert.match(unsupported.stderr, /unsupported Git credential helper operation/);
+
+  const wrongHost = await runCredentialHelper(
+    f,
+    "get",
+    credentialRequest({ host: "example.com" }),
+    env,
+  );
+  assert.notEqual(wrongHost.status, 0);
+  assert.match(wrongHost.stderr, /requires github\.com/);
+
+  const wrongPath = await runCredentialHelper(
+    f,
+    "get",
+    credentialRequest({ path: "fixture-owner/other-repo" }),
+    env,
+  );
+  assert.notEqual(wrongPath.status, 0);
+  assert.match(wrongPath.stderr, /request path must match/);
+  assert.equal(f.seen.length, 0);
+});
+
+test("GitHub App observer credential helper keeps API origin override test-only and loopback", async (t) => {
+  const f = await fixture(t);
+  const notTest = await runCredentialHelper(f, "get", credentialRequest(), {
+    OCC_TEST_QA_GITHUB_API_ORIGIN: f.origin,
+  });
+  assert.notEqual(notTest.status, 0);
+  assert.match(notTest.stderr, /allowed only in tests/);
+
+  const nonLoopback = await runCredentialHelper(f, "get", credentialRequest(), {
+    NODE_ENV: "test",
+    OCC_TEST_QA_GITHUB_API_ORIGIN: "https://api.example.com",
+  });
+  assert.notEqual(nonLoopback.status, 0);
+  assert.match(nonLoopback.stderr, /must use http/);
+  assert.equal(f.seen.length, 0);
+});
+
+test("GitHub App observer token mint times out while reading a stalled response body", async (t) => {
+  const f = await fixture(t, { stallTokenBody: true });
+  const observe = await createGitHubAppRepositoryObserver({
+    inputDirectory: f.directory,
+    repository,
+    run: async () => "",
+    githubApiOrigin: f.origin,
+    fetchTimeoutMs: 50,
+  });
+
+  await assert.rejects(observe("GET"), /aborted|AbortError|timeout/i);
+});
+
+test("GitHub App observer REST calls time out while reading a stalled response body", async (t) => {
+  const f = await fixture(t, { stallGetBody: true });
+  const observe = await createGitHubAppRepositoryObserver({
+    inputDirectory: f.directory,
+    repository,
+    run: async () => "",
+    githubApiOrigin: f.origin,
+    fetchTimeoutMs: 50,
+  });
+
+  await assert.rejects(observe("GET"), /aborted|AbortError|timeout/i);
+});
+
 test("GitHub App observer fails closed when GitHub cannot prove exact repository scope", async (t) => {
   const f = await fixture(t, {
     tokenRepositories: [
