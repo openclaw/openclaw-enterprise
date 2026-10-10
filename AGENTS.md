@@ -322,10 +322,21 @@ outside preserved sections; do not treat recorded spec statuses as release evide
 
 ## Production and compatibility boundary
 
-This platform has no production consumers yet. Use one canonical current-state
-implementation; do not preserve older development helpers, persisted formats,
-fixture shapes, migration shims, or silent fallbacks solely for backward
-compatibility. Fail explicitly on unsupported state instead.
+OpenClaw Enterprise is pre-alpha with no stable release, so breaking changes to
+persisted state, layouts and APIs are allowed. A change that can break an
+existing Installation's upgrade ships, in the same PR, an entry in the
+breaking-change notices (`docs/guides/deploy/breaking-changes.md`): what breaks,
+who is affected, how to tell, and the exact steps. The steps should take
+minutes, not hours.
+
+- Smooth the upgrade where it is cheap. Small, low-risk repair shims (an
+  idempotent init step, a preflight check that names the fix) are welcome.
+- Do not build heavy compatibility layers: no dual read or write paths,
+  parallel persisted formats or silent fallbacks kept only for old state. When
+  automating a repair would add real complexity, fail explicitly on the
+  unsupported state and document the manual steps in the notice instead.
+- Keep one canonical current-state implementation. Development helpers and
+  fixture shapes are not kept for backward compatibility.
 
 ## Validation boundary
 
