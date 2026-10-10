@@ -17,13 +17,14 @@ const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
-// Kubernetes DNS-subdomain object names cap the whole name, not each segment.
-function isDnsSubdomainName(value) {
-  return value.length <= 253 && dnsSubdomain.test(value);
-}
 // Kubernetes Service names are DNS-1035 labels. The chart refuses any other
 // repositoryCredentials.serviceName.
 const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
+// The rule for a Kubernetes resource name field, such as a GatewayClass or Secret name.
+const resourceNameRule = {
+  validate: isKubernetesResourceName,
+  description: "a Kubernetes resource name of at most 253 characters",
+};
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 // The controller reference also feeds prepare-bootstrap-volume and the chart.
 const controllerDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
@@ -482,7 +483,7 @@ function labelSyntax(labels, path, diagnostics, isPrefix) {
 // label values, as in `node-role.kubernetes.io/infra: ""`.
 function nodeSelector(source, path, diagnostics) {
   const labels = labelMap(source, path, diagnostics);
-  return labelSyntax(labels, path, diagnostics, isDnsSubdomainName);
+  return labelSyntax(labels, path, diagnostics, isKubernetesResourceName);
 }
 
 // NetworkPolicy peer selectors (DNS, API clients, metrics scrapers). Compute's validatePeer
@@ -1424,7 +1425,7 @@ function buildRendered(profile, parsed, diagnostics) {
           ["controlPlane", "bootstrapPasswordClaimName"],
           diagnostics,
           {
-            validate: isDnsSubdomainName,
+            validate: isKubernetesResourceName,
             description: "a PVC name: a DNS subdomain of at most 253 characters",
           },
         ),
@@ -1442,6 +1443,7 @@ function buildRendered(profile, parsed, diagnostics) {
               databaseCa,
               ["controlPlane", "databaseCa", "secretName"],
               diagnostics,
+              resourceNameRule,
             ),
             caKey:
               optionalString(databaseCa, ["controlPlane", "databaseCa", "key"], diagnostics, {
@@ -1502,18 +1504,17 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     gatewayRouting: {
       enabled: true,
-      gatewayClassName: asString(controlPlane, ["controlPlane", "gatewayClassName"], diagnostics, {
-        validate: isKubernetesResourceName,
-        description: "a Kubernetes resource name of at most 253 characters",
-      }),
+      gatewayClassName: asString(
+        controlPlane,
+        ["controlPlane", "gatewayClassName"],
+        diagnostics,
+        resourceNameRule,
+      ),
       apiKeySecretName: asString(
         controlPlane,
         ["controlPlane", "gatewayApiKeySecretName"],
         diagnostics,
-        {
-          validate: isKubernetesResourceName,
-          description: "a Kubernetes resource name of at most 253 characters",
-        },
+        resourceNameRule,
       ),
       envoyNamespace,
     },
