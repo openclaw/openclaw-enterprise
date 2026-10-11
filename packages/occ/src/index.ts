@@ -390,6 +390,7 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { isCredentialHeaderName, isHttpFieldName } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
@@ -4120,9 +4121,11 @@ export class OpenClawController {
           "The selected Configuration Driver cannot validate Preset values.",
         );
       }
+      // The Compute rules first, as on Configuration create and update, so a value both
+      // refuse gets the same message wherever it is written.
+      this.validateComputeConfiguration(values);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values);
-      this.validateComputeConfiguration(values);
     }
     return template;
   }

@@ -783,6 +783,8 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     await configurationDriver.update({ ...stored, values });
   };
   const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader =
+    "must not set a credential header (authorization, API key, token, secret, password or cookie)";
   const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
 
   for (const [values, message] of [
@@ -814,10 +816,45 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
           providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
         },
       },
+      setting("models.providers.openai.headers", `${credentialHeader}: ${binding}`),
+    ],
+    // OpenClaw's request transport overrides carry credentials too (finding 1142).
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { headers: { Authorization: "Bearer ${MODEL_TOKEN}" } } },
+          },
+        },
+      },
+      setting("models.providers.openai.request.headers", `${credentialHeader}: ${binding}`),
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: {
+              request: { auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" } },
+            },
+          },
+        },
+      },
       setting(
-        "models.providers.openai.headers",
-        `must not set an authorization header: ${binding}`,
+        "models.providers.openai.request.auth",
+        `must be unset or {mode: "provider-default"}: ${binding}`,
       ),
+    ],
+    // A provider the primary model does not select is still reachable (imageModel, /model).
+    [
+      {
+        ...valid,
+        models: {
+          providers: { google: { headers: { "x-goog-api-key": "${GOOGLE_API_KEY}" } } },
+        },
+      },
+      setting("models.providers.google.headers", `${credentialHeader}: ${binding}`),
     ],
   ]) {
     const label = JSON.stringify(values);
@@ -840,6 +877,12 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
     assert.equal(deployed.body.error.message, message, label);
+    // Agent save checks the same rule on the stored row.
+    const agentSaved = await request(context.app, "PATCH", agentPath, {
+      body: { configurationId },
+    });
+    assert.equal(agentSaved.status, 400, `${label}: ${JSON.stringify(agentSaved.body)}`);
+    assert.equal(agentSaved.body.error.message, message, label);
     await storeAsOlderRelease(valid);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);

@@ -1,5 +1,5 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
-import { ModelCredentialValueError } from "@openclaw-enterprise/occ";
+import { isCredentialHeaderName, ModelCredentialValueError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 export class ConfigurationValidationError extends Error {}
@@ -37,15 +37,34 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
     const config = asRecord(provider);
-    validateReference(config?.apiKey, pointer("models", "providers", providerName, "apiKey"));
-    for (const [name, value] of Object.entries(asRecord(config?.headers) ?? {})) {
-      if (/^(?:authorization|api-key|x-api-key)$/i.test(name)) {
-        validateReference(
-          value,
-          pointer("models", "providers", providerName, "headers", name),
-          name.toLowerCase() === "authorization",
-        );
+    const providerPath = ["models", "providers", providerName] as const;
+    validateReference(config?.apiKey, pointer(...providerPath, "apiKey"));
+    const rows: [readonly string[], Record<string, unknown> | undefined][] = [
+      [providerPath, config],
+      ...(Array.isArray(config?.models) ? config.models : []).map(
+        (model, index): [readonly string[], Record<string, unknown> | undefined] => [
+          [...providerPath, "models", String(index)],
+          asRecord(model),
+        ],
+      ),
+    ];
+    for (const [path, row] of rows) {
+      const request = asRecord(row?.request);
+      for (const [headersPath, headers] of [
+        [[...path, "headers"], row?.headers],
+        [[...path, "request", "headers"], request?.headers],
+      ] as const) {
+        for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
+          if (isCredentialHeaderName(name)) {
+            validateReference(value, pointer(...headersPath, name), /authorization$/i.test(name));
+          }
+        }
       }
+      // OpenClaw's request.auth credential slots: the authorization-bearer token and the
+      // header mode's value.
+      const auth = asRecord(request?.auth);
+      validateReference(auth?.token, pointer(...path, "request", "auth", "token"));
+      validateReference(auth?.value, pointer(...path, "request", "auth", "value"));
     }
   }
   const env = asRecord(values.env);

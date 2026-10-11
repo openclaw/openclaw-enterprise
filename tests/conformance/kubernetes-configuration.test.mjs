@@ -419,6 +419,37 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { models: { providers: { openai: { apiKey: sentinel } } } },
     { models: { providers: { codex: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
     { models: { providers: { openai: { headers: { "x-api-key": sentinel } } } } },
+    // Other credential header names, model rows and OpenClaw's request transport overrides
+    // (findings 1142 and 1143).
+    { models: { providers: { google: { headers: { "x-goog-api-key": sentinel } } } } },
+    { models: { providers: { openai: { headers: { "Proxy-Authorization": sentinel } } } } },
+    { models: { providers: { openai: { headers: { Cookie: `session=${sentinel}` } } } } },
+    {
+      models: {
+        providers: { openai: { models: [{ id: "m", headers: { "x-auth-token": sentinel } }] } },
+      },
+    },
+    {
+      models: {
+        providers: { openai: { request: { headers: { Authorization: `Bearer ${sentinel}` } } } },
+      },
+    },
+    {
+      models: {
+        providers: {
+          openai: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
+        },
+      },
+    },
+    {
+      models: {
+        providers: {
+          openai: {
+            request: { auth: { mode: "header", headerName: "x-api-key", value: sentinel } },
+          },
+        },
+      },
+    },
     { env: { OPENAI_API_KEY: sentinel } },
     { env: { ANTHROPIC_API_KEY: sentinel } },
     { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
@@ -453,7 +484,21 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
         providers: {
           openai: {
             apiKey: "${OPENAI_API_KEY}",
-            headers: { Authorization: "Bearer ${MODEL_TOKEN}" },
+            headers: { Authorization: "Bearer ${MODEL_TOKEN}", "x-goog-api-key": "${GOOGLE_KEY}" },
+            request: {
+              headers: { "Proxy-Authorization": "Bearer ${PROXY_TOKEN}" },
+              auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" },
+            },
+            models: [{ id: "m", headers: { "x-auth-token": "${MODEL_TOKEN}" } }],
+          },
+          google: {
+            request: {
+              auth: {
+                mode: "header",
+                headerName: "x-goog-api-key",
+                value: { source: "env", provider: "default", id: "GOOGLE_KEY" },
+              },
+            },
           },
         },
       },
