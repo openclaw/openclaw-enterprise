@@ -11,6 +11,30 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: Sandbox workspace files and provisioning repository refusals
+
+**What breaks.**
+
+- With a Sandbox Driver selected (OpenShell), Agent create and provisioning with
+  `initialWorkspaceFiles`, and Agent update and deployment while those files
+  are pending, answer `409` naming the Sandbox. Before, dedicated Codex saved
+  and its first deployment failed, and dedicated OpenClaw got a `400` naming
+  `agents.defaults.workspace`, which the Sandbox had set.
+- The Agent provisioning request answers `409` for `repositoryBindings` that
+  the Compute topology cannot deliver, as Agent create does. Before, it
+  answered `202` and the work failed.
+- Newly accepted: an `agents.entries` roster key of `Main` (any letter case)
+  with initial workspace files.
+
+**Who is affected.** OpenShell Installations that create Agents with initial
+workspace files, and provisioning clients that send repository bindings on a
+topology without repository credential delivery.
+
+**How to tell.** The `409` message names the Sandbox or repository credentials.
+
+**Steps.** Create the Agent without `initialWorkspaceFiles`, or without
+`repositoryBindings`.
+
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 
 **What breaks.**

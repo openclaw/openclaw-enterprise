@@ -2473,6 +2473,19 @@ export class OpenClawController {
         createdAt: this.timestamp(),
       });
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
+      // Agent create refuses repository bindings on a topology that cannot deliver them; the
+      // request does too, before queueing work the worker's admission would refuse (finding 1145).
+      if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
+        validateRepositoryTopology(
+          compute,
+          {
+            id: resolveConfiguredHarnessId(configurationInput.values),
+            version: "provisioning",
+            mode: executionMode,
+          },
+          this.sandboxDriver()?.id,
+        );
+      }
       const record = await state.provisioning.create({
         workId,
         namespaceId: namespace.id,
