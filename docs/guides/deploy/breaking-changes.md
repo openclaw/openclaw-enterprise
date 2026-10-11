@@ -11,6 +11,35 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: model credentials in provider headers and request auth
+
+**What breaks.** On Kubernetes Compute, Configuration create and update,
+provisioning, Preset saves, Agent create and update, and deployment answer
+`400` naming the setting for any `models.providers.<provider>`, or one of its
+`models`, even one no model setting selects:
+
+- a credential header in `headers` or `request.headers`: a name ending in
+  `auth`, `authorization`, `apikey`, `api-key`, `subscription-key`, `token`,
+  `secret`, `password` or `cookie`, such as `Proxy-Authorization`,
+  `x-goog-api-key`, `x-auth-token` or `Cookie`;
+- a header name that is not a valid HTTP field name (spaces, zero-width or
+  non-ASCII characters);
+- a `request.auth` other than `{mode: "provider-default"}`.
+
+Every Configuration Driver also requires a reference, not a literal, for
+those headers, on models too, and for `request.auth.token` and
+`request.auth.value`. Preset saves run the Kubernetes rules before the
+Configuration Driver's, so a literal gets the Kubernetes message.
+
+**Who is affected.** Configurations that carry such headers or `request.auth`.
+Stored Configurations still read; deployment refuses them.
+
+**How to tell.** The `400` names `models.providers.<provider>.headers`,
+`.request.headers` or `.request.auth`.
+
+**Steps.** Remove the setting and select the credential as the Agent's Harness
+authentication, then save the Configuration again.
+
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 
 **What breaks.**
@@ -40,8 +69,9 @@ again.
 **What breaks.** On Kubernetes Compute, Configuration create and update,
 provisioning and Preset saves answer `400` for an enabled unsupported
 `channels.<provider>`, a non-empty `auth`, an `env` or `env.vars` name starting
-`OPENAI_` or `ANTHROPIC_` (or a Codex login variable), and an authorization
-header on a selected model provider. Agent create and update refuse what
+`OPENAI_` or `ANTHROPIC_` in any case (or a Codex login variable), and an
+authorization header on a selected model provider. Agent create and update
+answer `503` when the Configuration Driver cannot be read, and refuse what
 deployment refused for the same Agent and Configuration: an Agent that is not
 `dedicated` (including an omitted `executionMode`) when a Sandbox Driver is
 selected (`400`; deployment answered `404`), a Harness the Configuration
@@ -55,9 +85,9 @@ settings too, instead of answering with fixed Harness authentication text:
   bindings and `cloudWorkers.requiredProfile`.
 - Deployment refuses a pending initial workspace setup the Configuration
   cannot deliver with `400`, where the first deployment's preparation failed.
-- Switching an embedded OpenClaw Agent to `dedicated` needs the Configuration
-  to carry the dedicated model catalog first: save the Configuration, then
-  the Agent.
+- Creating a dedicated OpenClaw Agent, or switching an embedded one to
+  `dedicated`, needs the Configuration to carry the dedicated model catalog
+  first: save the Configuration, then the Agent.
 
 **Who is affected.** Clients that saved such values and fixed them before
 deploying. Stored Configurations and Agents still read.
