@@ -3069,7 +3069,7 @@ Resolve OpenClaw launch availability with an assigned runtime role
 
 **Operation ID:** `getAgentNativeAdmin`
 
-**Permissions:** Requires a human session, exact Agent use permission and one configured runtime role assignment. Service API keys cannot launch or inspect OpenClaw access.
+**Permissions:** Requires a human session. When native admin UI is disabled, requires exact Agent administer permission without a runtime assignment; when enabled, requires exact Agent use permission and one explicit runtime assignment. Service API keys cannot launch or inspect OpenClaw access.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
