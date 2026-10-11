@@ -109,9 +109,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
+  // The API names the Agent's own principal and the grant it lacks; the console shows that.
   await page
     .getByRole("alert")
-    .filter({ hasText: /Deployment denied.*selected Secrets/ })
+    .filter({
+      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+    })
     .waitFor();
   assert.equal(await deploy.isEnabled(), true);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
