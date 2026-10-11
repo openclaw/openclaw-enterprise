@@ -1192,20 +1192,24 @@ function validateRepositoryTopology(
 }
 
 // Preparation of the first deployment applies the same rule; a Configuration setting keeps
-// the Driver's message, which names it.
+// the Driver's message, which names it. With a Sandbox Driver selected every Agent runs in its
+// Sandbox, and a Compute Driver that cannot deliver the files there says so (finding 1144).
 function validateWorkspaceSetupTopology(
   compute: ComputeDriver,
   harness: RevisionHarnessDescriptor,
   configuration: Readonly<OpenClawConfigurationDocument>,
+  sandboxDriverId: string | undefined,
 ): void {
   try {
-    compute.validateWorkspaceSetup?.(harness, configuration);
+    compute.validateWorkspaceSetup?.(harness, configuration, sandboxDriverId);
   } catch (error) {
     if (error instanceof ConfigurationHarnessError) {
       throw error;
     }
     throw new ResourceStateConflictError(
-      "The selected Compute Driver cannot deliver initial workspace files to this Agent.",
+      sandboxDriverId === undefined
+        ? "The selected Compute Driver cannot deliver initial workspace files to this Agent."
+        : "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Create the Agent without initialWorkspaceFiles.",
     );
   }
 }
@@ -6745,7 +6749,12 @@ export class OpenClawController {
       // same message instead of failing in preparation.
       const pendingSetup = await state.workspaceSetups.find(namespace.id, lockedAgent.id);
       if (pendingSetup !== undefined && !pendingSetup.completed) {
-        validateWorkspaceSetupTopology(compute, revisionHarness, admittedConfiguration);
+        validateWorkspaceSetupTopology(
+          compute,
+          revisionHarness,
+          admittedConfiguration,
+          sandbox?.id,
+        );
       }
       const pluginState =
         lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0
@@ -8392,7 +8401,7 @@ export class OpenClawController {
         );
       }
       if (asRecord(record.plan)?.initialWorkspaceFiles !== undefined) {
-        validateWorkspaceSetupTopology(compute, harness, configuration);
+        validateWorkspaceSetupTopology(compute, harness, configuration, sandbox?.id);
       }
     }
     // Plugin policy is admission for writes (replay, retry, the worker). A status read reports
@@ -10186,7 +10195,7 @@ export class OpenClawController {
       validateRepositoryTopology(compute, harness, sandbox?.id);
     }
     if (agent.workspaceSetup) {
-      validateWorkspaceSetupTopology(compute, harness, values);
+      validateWorkspaceSetupTopology(compute, harness, values, sandbox?.id);
     }
   }
 

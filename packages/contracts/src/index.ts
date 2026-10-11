@@ -1788,12 +1788,15 @@ export interface ComputeDriver extends Driver {
   /**
    * Side-effect-free check that the first deployment of an Agent with initial workspace files
    * can deliver them on this Harness topology, at Agent create and update while the setup is
-   * pending, and at provisioning. Throws ConfigurationHarnessError, naming the setting, for
-   * Configuration content preparation would refuse; any other error is an Installation refusal.
+   * pending, at deployment and at provisioning. `sandboxDriverId` names the Sandbox Driver the
+   * revision would be pinned to, if any. Throws ConfigurationHarnessError, naming the setting,
+   * for Configuration content preparation would refuse; any other error is an Installation
+   * refusal.
    */
   validateWorkspaceSetup?(
     harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
+    sandboxDriverId?: string,
   ): void;
   validateHarnessAuth?(
     harness: RevisionHarnessDescriptor,

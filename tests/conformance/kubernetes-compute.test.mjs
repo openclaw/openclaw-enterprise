@@ -15244,6 +15244,39 @@ function stageReadyOAuthSource(objects, revision, context) {
   return sourceKey;
 }
 
+// Finding 1144: a Sandbox Harness carries no workspace initializer, so admission and
+// preparation refuse initial workspace files for it before the workspace-path rule, which
+// would otherwise name the Sandbox-forced path the caller never wrote.
+test("Kubernetes refuses initial workspace files for a Sandbox Harness before the path rule", () => {
+  const { driver, revision, context } = workspaceSetupFixture(false);
+  const forced = {
+    ...revision.configuration,
+    agents: { ...revision.configuration.agents, defaults: { workspace: "/sandbox/data" } },
+  };
+  const sandboxed = /cannot be delivered to a Harness a SandboxDriver provisions/;
+  for (const configuration of [revision.configuration, forced]) {
+    assert.throws(
+      () => driver.validateWorkspaceSetup(revision.harness, configuration, "sandbox-provider"),
+      // Not a Configuration setting: OCC answers it as an Installation refusal (409).
+      (error) => !(error instanceof ConfigurationHarnessError) && sandboxed.test(error.message),
+    );
+  }
+  driver.validateWorkspaceSetup(revision.harness, revision.configuration);
+  assert.throws(
+    () => driver.validateWorkspaceSetup(revision.harness, forced),
+    /agents\.defaults\.workspace must be/,
+  );
+  assert.throws(
+    () =>
+      driver.workspaceSetupForRevision(
+        { ...revision, configuration: forced, sandboxDriverId: "sandbox-provider" },
+        context,
+      ),
+    sandboxed,
+  );
+  assert.equal(driver.workspaceSetupForRevision(revision, context), context.workspaceSetup);
+});
+
 test("Kubernetes OAuth source consumed by one Agent cannot start a second Agent", async () => {
   const { driver, revision, objects, records, state, context } = workspaceSetupFixture(false, true);
   const sourceKey = stageReadyOAuthSource(objects, revision, context);
