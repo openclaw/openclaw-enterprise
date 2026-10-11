@@ -102,6 +102,9 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 			if err != nil {
 				failures = append(failures, err)
 			} else if exists {
+				if s.SignIn == developmentSignInKeycloak {
+					r.removeDevelopmentKeycloak(ctx, s)
+				}
 				if err := r.run(ctx, "k3d", "cluster", "delete", s.Cluster); err != nil {
 					failures = append(failures, err)
 				}

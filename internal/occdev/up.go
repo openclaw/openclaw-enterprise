@@ -32,6 +32,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
+	if _, err := developmentSignIn(r.env); err != nil {
+		return err
+	}
 	if controlPlane == "kubernetes" {
 		return upK3d(ctx, opts, sandboxDriver)
 	}

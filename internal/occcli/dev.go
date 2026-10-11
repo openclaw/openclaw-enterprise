@@ -47,6 +47,9 @@ func developmentCommand() *cobra.Command {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
 				case "", "docker":
+					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
+						return err
+					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
 					arguments := []string{filepath.Join(repository, "scripts", "dev-up")}
