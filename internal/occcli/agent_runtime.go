@@ -189,7 +189,7 @@ func (app *application) agentLogsCommand() *cobra.Command {
 	flags.StringVar(&options.pod, "pod", "", "Pod name (default: the source's first Pod)")
 	flags.BoolVar(&options.previous, "previous", false, "Read the previous container instance")
 	flags.IntVar(&options.tail, "tail", 200, "Lines from the end of the stream, 1 to 1000")
-	flags.DurationVar(&options.since, "since", 0, "Only lines newer than this duration, up to 24h")
+	flags.DurationVar(&options.since, "since", 0, "Only lines newer than this duration, at least 1s, up to 24h")
 	flags.BoolVar(&options.follow, "follow", false, "Poll for new lines every 2 seconds")
 	flags.StringVar(&options.level, "level", "", "Minimum level: error, warn, info or debug (default: every level; lines of unknown level are always shown)")
 	_ = command.MarkFlagRequired("source")
@@ -210,6 +210,9 @@ func (options runtimeLogOptions) query() (url.Values, error) {
 		return nil, fmt.Errorf("--tail must be between 1 and 1000")
 	}
 	if options.since < 0 || options.since > 24*time.Hour {
+		return nil, fmt.Errorf("--since must be between 1s and 24h")
+	}
+	if options.since > 0 && options.since < time.Second {
 		return nil, fmt.Errorf("--since must be between 1s and 24h")
 	}
 	if options.follow && options.previous {
