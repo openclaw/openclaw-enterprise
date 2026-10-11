@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const execute = promisify(execFile);
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -85,7 +86,7 @@ async function runLauncher(
 
   let expectedDockerHost = "";
   if (engine === "podman") {
-    const socket = join(root, "podman.sock");
+    const socket = join(await socketDirectory(context, "oce-k3d-podman-socket-"), "podman.sock");
     const server = createServer();
     await new Promise((resolvePromise, reject) => {
       server.once("error", reject);

@@ -42,6 +42,7 @@ import {
   createGitHubServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 // Session opens need an admission id; a fresh one per call unless the test names it.
 const control = (socketPath, method, path, value, extra = {}) =>
@@ -53,7 +54,7 @@ const control = (socketPath, method, path, value, extra = {}) =>
 // The relay consumes the real listener's response but disconnects its caller,
 // reproducing ambiguous loss after admission without replacing control behavior.
 async function dropControlResponse(t, target) {
-  const directory = await temporaryDirectory(t, "rcs-loss-");
+  const directory = await socketDirectory(t, "rcs-loss-");
   const socketPath = join(directory, "relay.sock");
   const sockets = new Set();
   let admitted;
@@ -490,7 +491,7 @@ test(
     const clock = createSystemClock();
     const tls = await createTlsMaterial(t);
     const base = await createServiceConfiguration(t);
-    const directory = await temporaryDirectory(t);
+    const directory = await socketDirectory(t, "rcs-control-");
     const target = join(directory, "control.sock");
     const config = {
       ...base,
@@ -904,7 +905,7 @@ test("control refuses loose requests before acting on them", { timeout: 15000 },
 });
 
 async function holdControlRequest(t, target) {
-  const directory = await temporaryDirectory(t, "rcs-held-");
+  const directory = await socketDirectory(t, "rcs-held-");
   const socketPath = join(directory, "relay.sock");
   const sockets = new Set();
   let captured;

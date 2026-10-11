@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -24,6 +22,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -362,8 +361,7 @@ test("Repository options expose only Namespace-approved display choices behind A
 
 test("Denied Agent discovery cannot start repository metadata lookups", async (t) => {
   const f = await fixture(t);
-  const directory = await mkdtemp(join(tmpdir(), "repository-options-auth-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t, "repository-options-auth-");
   const socket = join(directory, "control.sock");
   let lookups = 0;
   // The independent socket peer observes actual metadata requests; IAM and Driver policy are real.

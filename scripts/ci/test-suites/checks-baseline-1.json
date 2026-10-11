@@ -40,6 +40,7 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/conformance/test-files.test.mjs",
+    "tests/conformance/socket-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
@@ -207,6 +208,9 @@
     },
     {
       "path": "tests/conformance/test-files.test.mjs"
+    },
+    {
+      "path": "tests/conformance/socket-directory.test.mjs"
     },
     {
       "path": "tests/conformance/utils.test.mjs"

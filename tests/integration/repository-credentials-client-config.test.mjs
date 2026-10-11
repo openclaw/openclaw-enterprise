@@ -35,6 +35,7 @@ import {
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   cleanEnvironment,
   listen,
@@ -591,7 +592,7 @@ test("encoded session files support the actual client without the operator write
 test("operator rejects unsafe or conflicting bound request files before admission", async (t) => {
   const parent = await temporaryDirectory(t);
   const requestPath = join(parent, "request.json");
-  const socket = join(parent, "control.sock");
+  const socket = join(await socketDirectory(t, "operator-control-"), "control.sock");
   const requests = [];
   // Observe the actual operator's HTTP boundary; this does not emulate admission.
   const server = createHttpServer(async (incoming, response) => {

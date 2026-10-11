@@ -4,10 +4,11 @@ import { chmod } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request } from "node:https";
 import { createControlledClock } from "./clock.mjs";
-import { createTlsMaterial, temporaryDirectory } from "./process.mjs";
+import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope } from "./resources.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
 import {
   createGitHubServiceFactory,
@@ -27,7 +28,7 @@ export {
 
 export async function createServiceConfiguration(t, limits = {}) {
   const { validateServiceConfig } = await appModule("drivers/repo/credentials/configuration");
-  const directory = await temporaryDirectory(t, "rcs-");
+  const directory = await socketDirectory(t, "rcs-");
   await chmod(directory, 0o700);
   return validateServiceConfig(
     serviceConfigurationData({

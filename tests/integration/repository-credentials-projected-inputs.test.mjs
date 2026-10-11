@@ -21,6 +21,7 @@ import {
   createTlsMaterial,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 async function project(directory, generation, values) {
   const path = join(directory, generation);
@@ -43,12 +44,16 @@ async function project(directory, generation, values) {
 }
 
 async function fixture(t) {
-  // Canonicalize macOS's /var alias and leave room for the 104-character socket limit.
+  // Canonicalize macOS's /var alias.
   const directory = await realpath(await temporaryDirectory(t, "rp-"));
   const inputsDirectory = join(directory, "inputs");
   const registryDirectory = join(directory, "registry");
   const privateVolume = join(directory, "private-volume");
-  const controlVolume = join(directory, "control");
+  // The control socket needs a short path, so its volume lives apart from the inputs.
+  const controlVolume = join(
+    await socketDirectory(t, "rp-control-", { longest: "control/private/control.sock" }),
+    "control",
+  );
   for (const path of [inputsDirectory, registryDirectory, privateVolume, controlVolume]) {
     await mkdir(path, { mode: 0o755 });
   }

@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProtectedFile } from "../../apps/controller/src/composition/repository-credentials/protected-file.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 test("protected startup accepts RSA/TLS files without provider calls and rejects unsafe material", async (t) => {
   const { checkConfiguration } =
@@ -25,6 +26,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
   const directory = await mkdtemp(join(tmpdir(), "repository-configuration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const tls = await createTlsMaterial(t);
+  const controlDirectory = await socketDirectory(t, "rcs-config-");
   const key = join(directory, "app.pem");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -40,7 +42,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
       listen: "127.0.0.1:8443",
       tlsCertFile: cert,
       tlsKeyFile: tlsKey,
-      controlSocket: join(directory, "control.sock"),
+      controlSocket: join(controlDirectory, "control.sock"),
     },
     sessionPolicy: {
       maximumDurationSeconds: 172800,
@@ -206,6 +208,7 @@ test("development token authority loads only with both opt-ins and never reaches
   const directory = await mkdtemp(join(tmpdir(), "repository-token-configuration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const tls = await createTlsMaterial(t);
+  const controlDirectory = await socketDirectory(t, "rcs-config-");
   const tokenFile = join(directory, "token");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -221,7 +224,7 @@ test("development token authority loads only with both opt-ins and never reaches
       listen: "127.0.0.1:8443",
       tlsCertFile: cert,
       tlsKeyFile: tlsKey,
-      controlSocket: join(directory, "control.sock"),
+      controlSocket: join(controlDirectory, "control.sock"),
     },
     sessionPolicy: {
       maximumDurationSeconds: 28800,

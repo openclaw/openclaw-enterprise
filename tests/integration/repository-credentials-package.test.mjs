@@ -19,6 +19,7 @@ import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const root = resolve(".");
 
@@ -28,6 +29,9 @@ test(
   async (t) => {
     const temporary = await mkdtemp(join(tmpdir(), "credential-package-"));
     t.after(() => rm(temporary, { recursive: true, force: true }));
+    const sockets = await socketDirectory(t, "credential-package-", {
+      longest: "token-control.sock",
+    });
     const build = join(temporary, "build");
     await mkdir(join(build, "scripts"), { recursive: true });
     await mkdir(join(build, "apps/controller/dist"), { recursive: true });
@@ -135,7 +139,7 @@ test(
           listen: `127.0.0.1:${serviceReservation.port}`,
           tlsCertFile: certificate,
           tlsKeyFile: key,
-          controlSocket: join(temporary, "control.sock"),
+          controlSocket: join(sockets, "control.sock"),
         },
         sessionPolicy: {
           maximumDurationSeconds: 172800,
@@ -179,7 +183,7 @@ test(
         gateway: {
           ...appConfiguration.gateway,
           listen: `127.0.0.1:${developmentReservation.port}`,
-          controlSocket: join(temporary, "token-control.sock"),
+          controlSocket: join(sockets, "token-control.sock"),
         },
         sessionPolicy: {
           maximumDurationSeconds: 28800,
@@ -313,7 +317,7 @@ test(
       service.once("close", (code, signal) => resolve({ code, signal }));
     });
     try {
-      const socket = join(temporary, "control.sock");
+      const socket = join(sockets, "control.sock");
       const deadline = Date.now() + 5000;
       while (
         !(await lstat(socket).catch(() => undefined)) &&
