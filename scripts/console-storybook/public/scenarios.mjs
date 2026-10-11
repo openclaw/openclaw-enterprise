@@ -4361,7 +4361,40 @@ export const scenarios = {
     deployed: true,
     stopped: true,
     description:
-      "The requested state is stopped. Deployment resumes the Agent; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+  },
+  stopRepeatConfirm: {
+    group: "Components/Stop Agent",
+    name: "Repeat confirmation",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    actions: [click("Request Stop again")],
+    description:
+      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+  },
+  stopNoSelection: {
+    group: "Components/Stop Agent",
+    name: "No selected version",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    stopNoSelection: true,
+    description:
+      "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
+  },
+  stopRepeatUnknown: {
+    group: "Components/Stop Agent",
+    name: "Repeated Stop outcome unknown",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
+    actions: [
+      click("Request Stop again"),
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
   },
   stopDenied: {
     group: "Components/Stop Agent",
@@ -4393,6 +4426,7 @@ export const scenarios = {
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
+      "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Create new version and Deploy new version to request running again.",
     ],
     gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",

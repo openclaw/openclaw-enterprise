@@ -234,7 +234,7 @@ export function installFixture(scenario, evidence) {
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: selectedRevisionId,
+    activeRevisionId: scenario.stopNoSelection ? null : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),

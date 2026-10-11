@@ -2292,6 +2292,8 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   await page.getByRole("status").getByText("Stop requested.").waitFor();
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  // Readback permits an explicit new intent; it never resends the masked request.
+  assert.equal(await page.getByRole("button", { name: "Request Stop again" }).isEnabled(), true);
 });
 
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
@@ -5087,4 +5089,83 @@ test("Credentials saves an issued service account as a PAT source without granti
     `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
   );
   await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
+});
+
+test("Console can repeat Stop without treating the selected version as cleanup completion", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Repeat Stop");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repeat Stop",
+    nativeValues("repeat-stop"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const first = await fixture.request("POST", `${path}/stop`);
+  assert.equal(first.status, 202);
+  assert.equal(first.data.activeRevisionId, active.revision.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Repeat Stop", exact: true }).waitFor();
+  const repeat = page.getByRole("button", { name: "Request Stop again", exact: true });
+  assert.equal(await repeat.count(), 1, "the existing Stop API permits another authorized intent");
+  assert.equal(await repeat.isEnabled(), true);
+  await repeat.focus();
+  await repeat.press("Enter");
+  let dialog = page.getByRole("dialog", { name: "Stop Repeat Stop?" });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
+  assert.equal(await repeat.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await repeat.press("Enter");
+  await dialog.waitFor();
+  await page.keyboard.press("Escape");
+  await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
+  assert.equal(await repeat.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
+  await repeat.click();
+  dialog = page.getByRole("dialog", { name: "Stop Repeat Stop?" });
+  const result = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,
+  );
+  await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  assert.equal((await result).status(), 202);
+  await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Refresh stop status" })
+      .evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+  );
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  const after = await fixture.request("GET", path);
+  assert.equal(after.data.activeRevisionId, active.revision.id);
+  assert.equal(after.data.desiredRuntimeState, "stopped");
+  assert.equal(after.data.configurationId, agent.configurationId);
+  // No selected version does not prove candidate/history cleanup completed.
+  await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await page
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
+    .waitFor();
+  assert.equal(await repeat.isEnabled(), true);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  await repeat.click();
+  const noSelectionResult = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,
+  );
+  await page
+    .getByRole("dialog", { name: "Stop Repeat Stop?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  assert.equal((await noSelectionResult).status(), 202);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 2);
 });

@@ -219,7 +219,10 @@ retaining revision history, credentials, gateway state, and workspace files.
 An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
 Refresh before retrying an uncertain result. Permission denials remain visible,
-and the console never repeats a stop request automatically.
+and the console never repeats a stop request automatically. After Stop, **Request Stop again** opens
+confirmation for a new stop intent, including without a selected version: that
+absence does not prove history/candidate cleanup finished. It does not diagnose
+shutdown failure.
 
 To resume, open **Create new version** and select **Deploy new version**, which
 creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
