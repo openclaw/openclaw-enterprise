@@ -490,7 +490,11 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     );
   }
   // A proxy URL with a user name or password carries the proxy credential in the URL.
-  for (const url of [`http://user:${sentinel}@proxy.example:3128`, `http://${sentinel}@proxy`]) {
+  for (const url of [
+    `http://user:${sentinel}@proxy.example:3128`,
+    `http://${sentinel}@proxy`,
+    `http://:${sentinel}@proxy`,
+  ]) {
     const unsafe = {
       ...configuration,
       values: {

@@ -21,10 +21,9 @@ model setting selects, that has:
 - a credential header in `headers` (on the provider or one of its `models`)
   or `request.headers`: a name whose last hyphen- or underscore-separated
   word is `auth`, `authorization`, `token`, `secret`, `password` or
-  `cookie`, or a key word (`apikey`, `api-key`, `api_key`, `access-key`,
-  `functions-key`, `license-key`, `master-key`, `rapidapi-key`, `secret-key`,
-  `subscription-key`), such as `Proxy-Authorization`, `x-goog-api-key`,
-  `x-auth-token` or `Cookie`;
+  `cookie`, or `key` joined by `-`, `_` or nothing to `api`, `access`,
+  `functions`, `license`, `master`, `rapidapi`, `secret` or `subscription`,
+  such as `Proxy-Authorization`, `x-goog-api-key`, `x-auth-token` or `Cookie`;
 - a header name that is not a valid HTTP field name (spaces, zero-width or
   non-ASCII characters);
 - a `request.auth` other than exactly `{mode: "provider-default"}`.

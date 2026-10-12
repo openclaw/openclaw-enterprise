@@ -63,11 +63,13 @@ Agent that fails a check still reads; its next update must fix the pair.
   `subscription-key`; the
   [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
 
-These close the provider credential slots OpenClaw knows. The provider
-`apiKey` stays, checked against the Harness binding on selected providers
-only; the Configuration Driver accepts it, the TLS client keys and the
-credential headers only as references. A credential under a header name the
-rule does not match, or a literal in another `env` name that a reference
+These close the credential slots in a provider's `headers` and `request`.
+The provider `apiKey` stays, checked against the Harness binding on selected
+providers only. The Configuration Driver accepts the `apiKey`, the credential
+headers, `request.auth.token` and `.value` and the TLS client keys only as
+references, and refuses a `request.proxy.url` with a user name or password.
+A credential under a header name the rule does not match, in
+`localService.env`, or as a literal in another `env` name that a reference
 reads, still passes: the binding cannot see what a name means.
 
 `validateHarnessAuth` applies these first, then names the Agent's
