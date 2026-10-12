@@ -2075,16 +2075,18 @@ test(
     // Runtime retirement survives settled credentials but cannot inherit the
     // broader predecessor authority granted to session-only cleanup.
     assert.equal(await queue.enqueueRepositoryCleanup(claim, current), undefined);
-    for (const forbidden of [
-      previous,
-      later,
-      unrelated,
-      { ...current, namespaceId: `ns_${randomUUID()}` },
-    ]) {
-      await assert.rejects(
-        queue.enqueueRepositoryCleanup(claim, forbidden, "terminal-runtime"),
-        cleanupNotOwned,
-      );
+    for (const purpose of ["terminal-runtime", "failed-preparation"]) {
+      for (const forbidden of [
+        previous,
+        later,
+        unrelated,
+        { ...current, namespaceId: `ns_${randomUUID()}` },
+      ]) {
+        await assert.rejects(
+          queue.enqueueRepositoryCleanup(claim, forbidden, purpose),
+          cleanupNotOwned,
+        );
+      }
     }
     await assert.rejects(
       queue.enqueueRepositoryCleanup(
@@ -2108,6 +2110,15 @@ test(
       (await queue.enqueueRepositoryCleanup(claim, current, "terminal-runtime")).idempotencyKey,
       retirement.idempotencyKey,
     );
+    // Failed preparation coalesces with the same exact runtime retirement, never
+    // granting predecessor or caller-supplied actor authority.
+    const failedPreparation = await queue.enqueueRepositoryCleanup(
+      { ...claim, actorId: "principal-forged-caller", revisionId: previous.revisionId },
+      current,
+      "failed-preparation",
+    );
+    assert.equal(failedPreparation.idempotencyKey, retirement.idempotencyKey);
+    assert.equal(failedPreparation.actorId, "principal-retirement");
     assert.equal((await readRepositoryAttempts(pool, current.revisionId))[0].phase, "disposed");
     assert.equal(
       await readQueueRow(pool, repositoryCleanupKey(later.revisionId, sourceKey)),

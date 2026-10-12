@@ -1573,7 +1573,7 @@ const tenantNamespaces = ["oce-unbound", "oce-tenant"].map((name) => ({
 }));
 const rule = (attributes) =>
   [
-    attributes.group === "apps" ? "apps" : "core",
+    attributes.group || "core",
     attributes.verb,
     attributes.resource + (attributes.subresource ? `/${attributes.subresource}` : ""),
   ].join(" ");
@@ -1585,9 +1585,16 @@ const releaseTenantRules = [
   "core list pods",
   "core get pods/proxy",
 ];
+// Bootstrap Jobs use the batch API even when runtime log access is disabled.
+const currentWorkerRules = [
+  "core patch pods",
+  "batch get jobs",
+  "batch create jobs",
+  "batch delete jobs",
+];
 const currentTenantRules = [
   ...releaseTenantRules,
-  "core patch pods",
+  ...currentWorkerRules,
   "core get pods/log",
   "core get events",
   "core list events",
@@ -1613,7 +1620,7 @@ test("a two-cluster execution chart without the new tenant grants stops the star
   await assert.rejects(f.run(), (error) => {
     for (const [component, missing] of [
       ["api", "get pods/log, get events, list events"],
-      ["worker", "patch pods"],
+      ["worker", "patch pods, get jobs, create jobs, delete jobs"],
     ]) {
       assert.match(
         error.stderr,
@@ -1655,6 +1662,9 @@ test("a two-cluster execution chart with the new tenant grants passes the startu
       .sort(),
     [
       "apps list deployments",
+      "batch create jobs",
+      "batch delete jobs",
+      "batch get jobs",
       "core get events",
       "core get pods",
       "core get pods",
@@ -1713,7 +1723,7 @@ test("a two-cluster upgrade with runtime logs off needs no log grants in the exe
     },
     executionCluster: {
       namespaces: tenantNamespaces,
-      allows: tenantGrants([...releaseTenantRules, "core patch pods"]),
+      allows: tenantGrants([...releaseTenantRules, ...currentWorkerRules]),
     },
   });
   await f.run();
@@ -1725,6 +1735,9 @@ test("a two-cluster upgrade with runtime logs off needs no log grants in the exe
       .sort(),
     [
       "apps list deployments",
+      "batch create jobs",
+      "batch delete jobs",
+      "batch get jobs",
       "core get pods",
       "core get pods",
       "core get pods/proxy",

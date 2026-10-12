@@ -52,6 +52,104 @@ const defaultCodexPreset = JSON.parse(
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 
+test("Preset string variables preserve multiline defaults, edits and restored drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Multiline Preset strings", { ready: true });
+  const lf = "# Notes\n- First instruction\n- Second instruction\n";
+  const crlf = lf.replaceAll("\n", "\r\n");
+  const scenarios = [
+    { name: "LF default", value: lf, expected: lf },
+    { name: "CRLF default", value: crlf, expected: crlf },
+    {
+      name: "LF edit",
+      value: lf,
+      edit: "Edited first\nEdited second\n",
+      expected: "Edited first\nEdited second\n",
+    },
+    {
+      name: "CRLF edit",
+      value: crlf,
+      edit: "Edited first\r\nEdited second\r\n",
+      expected: "Edited first\nEdited second\n",
+    },
+    { name: "Empty override", value: lf, edit: "", expected: "" },
+    { name: "Single-line default", value: "One ordinary line", expected: "One ordinary line" },
+    { name: "Unedited restored default", value: crlf, restore: true, expected: crlf },
+    {
+      name: "Edited restored string",
+      value: lf,
+      edit: "Retained first\nRetained second\n",
+      restore: true,
+      expected: "Retained first\nRetained second\n",
+    },
+  ];
+  for (const scenario of scenarios) {
+    const template = {
+      variables: {
+        notes: { type: "string", default: scenario.value },
+        debounce: { type: "number", default: 0 },
+        controlUi: { type: "boolean", default: false },
+        unusedPassword: { type: "password" },
+      },
+      agent: { initialWorkspaceFiles: { "USER.md": "{{ vars.notes }}" } },
+      configuration: {
+        values: {
+          messages: { responsePrefix: "{{ vars.notes }}" },
+          gateway: {
+            reload: { debounceMs: "{{ vars.debounce }}" },
+            controlUi: { enabled: "{{ vars.controlUi }}" },
+          },
+        },
+      },
+    };
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: { name: scenario.name, template },
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+    const notes = page.getByLabel("Notes", { exact: true });
+    await notes.waitFor();
+    if (scenario.edit !== undefined) {
+      await notes.fill(scenario.edit);
+      await notes.press("Tab");
+    }
+    if (scenario.restore) {
+      await page.goBack();
+      await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+      await page.goForward();
+      await notes.waitFor();
+    }
+    // A permitted unreferenced password has no bound Secret selector or saved draft value.
+    // Use only a synthetic placeholder; applying the ordinary template creates no credential.
+    await page.getByLabel("Unused Password", { exact: true }).fill("synthetic-unused-placeholder");
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const values = JSON.parse(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    );
+    assert.equal(values.messages.responsePrefix, scenario.expected, scenario.name);
+    assert.equal(values.gateway.reload.debounceMs, 0, scenario.name);
+    assert.equal(values.gateway.controlUi.enabled, false, scenario.name);
+    // Workspace textarea edits follow the existing browser LF contract.
+    assert.equal(
+      await page.getByLabel("USER.md", { exact: true }).inputValue(),
+      scenario.expected.replaceAll("\r\n", "\n").replaceAll("\r", "\n"),
+      scenario.name,
+    );
+    assert.deepEqual(nonAuthWriteRequests(requests), [], scenario.name);
+    const stored = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/presets/${preset.data.id}`,
+    );
+    assert.equal(stored.data.template.variables.notes.default, scenario.value, scenario.name);
+  }
+});
+
 test("Selecting an existing fallback keeps the referenced model catalog deployable", async (t) => {
   for (const fullReferenceIds of [false, true]) {
     const fixture = await createConsoleAppFixture(t);

@@ -450,7 +450,7 @@ test(
 );
 
 test(
-  "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
+  "provisioning API retains the first deployment outcome with real Kubernetes fixture storage",
   { ...requiresKubernetesAndPostgres, timeout: 360_000 },
   async (context) => {
     await assertKubernetesFixtureAvailable();
@@ -516,7 +516,14 @@ test(
       },
       { nodeEnrollment },
     );
-    const fixture = await createProvisioningApiFixture(context, driver, controller.authentication);
+    let handoffWorkerStop;
+    const fixture = await createProvisioningApiFixture(context, driver, controller.authentication, {
+      emit: (event) => {
+        if (event.code === "PROVISIONING_DEPLOYMENT_PENDING" && handoffWorkerStop === undefined) {
+          handoffWorkerStop = fixture.stopWorker();
+        }
+      },
+    });
     context.after(async () => {
       await Promise.all(
         fixture.bootstrapNamespaceIds.map((namespaceId) =>
@@ -679,12 +686,17 @@ test(
     assert.equal(typeof admitted.data.provisioning.workId, "string");
     assert.match(admitted.data.provisioning.url, /^\/namespaces\//);
     await fixture.startWorker();
-    const provisioned = await waitFor("Kubernetes provisioning handoff to succeed", async () => {
-      const observed = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
-    });
+    const provisioned = await waitFor(
+      "Kubernetes provisioning to admit its first deployment",
+      async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.revisionId !== undefined ? observed.data : undefined;
+      },
+    );
+    await handoffWorkerStop;
     await fixture.stopWorker();
+    assert.equal(provisioned.status, "queued");
     assert.equal(typeof provisioned.agentId, "string");
     assert.equal(typeof provisioned.configurationId, "string");
     assert.equal(typeof provisioned.revisionId, "string");
@@ -858,6 +870,24 @@ test(
       new Set([`Refusing invalid PersistentVolumeClaim ${workspaceName}.`]),
     );
     assert.equal(failedDeployment.reason_code, "DEPENDENCY_UNAVAILABLE");
+    // Fixture images do not implement the model runtime. Its real deployment failure
+    // must close the original provisioning request without creating another Agent.
+    const initialFailure = await waitFor(
+      "first deployment failure on provisioning status",
+      async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.status === "failed" ? observed.data : undefined;
+      },
+    );
+    assert.equal(initialFailure.agentId, provisioned.agentId);
+    assert.equal(initialFailure.revisionId, provisioned.revisionId);
+    const initialDeployment = await fixture.request(
+      "GET",
+      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,
+    );
+    assert.equal(initialDeployment.data.status, "failed");
+    assert.equal(initialFailure.error.code, initialDeployment.data.error.code);
     const undeployed = await fixture.request("GET", legacyPath);
     assert.equal(undeployed.status, 200, JSON.stringify(undeployed.body));
     assert.equal(undeployed.data.activeRevisionId, undefined);

@@ -269,6 +269,7 @@ export {
 export type { RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 export {
   ActivationFailedError,
+  ComputePreparationFailedError,
   ActivationPendingError,
   agentEntryMessage,
   AgentCredentialSourceBindingError,
@@ -2625,6 +2626,9 @@ export class OpenClawController {
       return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_FAILED" });
     }
     try {
+      if (record.revisionId !== undefined) {
+        return await this.observeProvisioningDeployment(claim, record);
+      }
       // Inspect an external write that an earlier attempt left unsettled before this attempt's
       // first fence, so a permanent refusal fails the work instead of retrying it as an unknown
       // outcome (finding 815). reconcileProvisioningEffect says why that order is safe.
@@ -2701,12 +2705,16 @@ export class OpenClawController {
         );
         await this.commitProvisioningCheckpoint(state, claim, {
           completedPhase: "handoff",
-          status: "succeeded",
+          status: "running",
           revisionId: revision.id,
         });
         return revision;
       });
-      return Object.freeze({ outcome: "succeeded" as const, revisionId: revision.id });
+      return await this.observeProvisioningDeployment(claim, {
+        ...record,
+        completedPhase: "handoff",
+        revisionId: revision.id,
+      });
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         throw error;
@@ -3508,6 +3516,75 @@ export class OpenClawController {
     });
   }
 
+  private async observeProvisioningDeployment(
+    claim: ClaimedWork,
+    record: Readonly<AgentProvisioningRecord>,
+  ): Promise<Readonly<AgentProvisioningWorkerOutcome>> {
+    const revisionId = record.revisionId;
+    if (revisionId === undefined) {
+      throw new ScopeViolationError("The initial deployment revision is unavailable.");
+    }
+    return this.mutate(async (state) => {
+      const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
+      if (
+        work === undefined ||
+        work.namespaceId !== record.namespaceId ||
+        work.agentId !== record.agentId ||
+        work.revisionId !== revisionId
+      ) {
+        throw new DependencyUnavailableError("The initial deployment work is unavailable.");
+      }
+      const status = controllerWorkDeploymentStatus(work, this.clock());
+      if (status === "succeeded") {
+        await this.commitProvisioningCheckpoint(state, claim, {
+          completedPhase: "handoff",
+          status: "succeeded",
+          revisionId,
+          progress: {},
+        });
+        return Object.freeze({ outcome: "succeeded" as const, revisionId });
+      }
+      const error = deploymentErrorForWork(work);
+      const pending = status !== "failed";
+      const code = pending
+        ? "PROVISIONING_DEPLOYMENT_PENDING"
+        : (error?.code ?? "PROVISIONING_DEPLOYMENT_FAILED");
+      const message = pending
+        ? "Waiting for the initial deployment to complete."
+        : (error?.message ?? "The initial deployment failed.");
+      await state.provisioning.recordFailure(
+        claim,
+        {
+          completedPhase: "handoff",
+          revisionId,
+          progress: { ...record.progress, ...(error === null ? {} : { error }) },
+        },
+        pending
+          ? { disposition: "defer", code, message, delayMs: 1000 }
+          : { disposition: "permanent", code, message },
+      );
+      if (!pending) {
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
+          namespaceId: record.namespaceId,
+          occurredAt: this.timestamp(),
+          kind: "mutation",
+          actorId: record.actorId,
+          source: "occ",
+          action: "openclaw.agents.provision.failure",
+          resource: { kind: "agent", namespaceId: record.namespaceId, id: record.agentId! },
+          outcome: "failure",
+          details: { workId: record.workId, phase: "handoff", revisionId, code },
+        });
+      }
+      return Object.freeze({
+        outcome: pending ? ("pending" as const) : ("permanent" as const),
+        code,
+      });
+    });
+  }
+
   async getDeploymentStatus(
     principalId: string,
     namespaceId: string,
@@ -3533,6 +3610,7 @@ export class OpenClawController {
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
         status: controllerWorkDeploymentStatus(work, this.clock()),
+        cleanup: await this.deploymentCleanupStatus(state, revision),
         error: deploymentErrorForWork(work),
         warnings: deploymentWarningsForWork(work),
         progress: deploymentProgressForWork(
@@ -3542,6 +3620,31 @@ export class OpenClawController {
             : undefined,
         ),
       });
+    });
+  }
+
+  private async deploymentCleanupStatus(
+    state: PlatformReadView,
+    revision: Readonly<AgentRevision>,
+  ): Promise<DeploymentStatusResult["cleanup"]> {
+    const key = `agent_revision:${revision.id}:repository_cleanup:retire:${createHash("sha256").update(revision.id, "utf8").digest("hex")}`;
+    const cleanup = await state.operations.findWork(key);
+    if (cleanup === undefined) {
+      return null;
+    }
+    if (
+      cleanup.namespaceId !== revision.namespaceId ||
+      cleanup.agentId !== revision.agentId ||
+      cleanup.revisionId !== revision.id
+    ) {
+      throw new ScopeViolationError("Deployment cleanup does not match its revision.");
+    }
+    return Object.freeze({
+      status:
+        cleanup.state === "succeeded"
+          ? "succeeded"
+          : controllerWorkDeploymentStatus(cleanup, this.clock()),
+      nextAttemptAt: cleanup.state === "queued" ? cleanup.availableAt.toISOString() : null,
     });
   }
 
@@ -8448,7 +8551,7 @@ export class OpenClawController {
     handoff = false,
   ): Promise<void> {
     const record = await state.provisioning.findByAgent(namespaceId, agentId);
-    if (record === undefined) {
+    if (record === undefined || record.revisionId !== undefined) {
       return;
     }
     const claim = handoff ? this.provisioningContext.getStore() : undefined;
@@ -8477,6 +8580,7 @@ export class OpenClawController {
     const record = await state.provisioning.findByConfiguration(namespaceId, configurationId);
     if (
       record !== undefined &&
+      record.revisionId === undefined &&
       (readOnly
         ? this.provisioningBefore(record, "configuration")
         : this.provisioningBefore(record, "configuration") ||

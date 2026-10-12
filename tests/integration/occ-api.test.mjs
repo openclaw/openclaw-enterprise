@@ -2782,6 +2782,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     namespaceId: namespace.id,
     agentId: agent.id,
     status: "queued",
+    cleanup: null,
     error: null,
     warnings: [],
     progress: { lastAttempt: null, nextAttemptAt: new Date(0).toISOString() },
@@ -2814,6 +2815,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     namespaceId: namespace.id,
     agentId: agent.id,
     status: "failed",
+    cleanup: null,
     error: {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message: "Deployment convergence deadline exceeded.",

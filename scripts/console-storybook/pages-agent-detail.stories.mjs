@@ -63,6 +63,14 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+export const DeployRefusedSetting = {
+  ...story("deployRefusedSetting"),
+  name: "Deployment refused by a Configuration setting",
+};
+export const DeployAgentPrincipalDenied = {
+  ...story("deployAgentPrincipalDenied"),
+  name: "Deployment denied for the Agent's service principal",
+};
 
 export const RepositoryEditor = story("repositoryEditor");
 export const ConfigurationNavigation = story("configurationNavigation");
@@ -81,3 +89,6 @@ export const SharingGranted = { ...story("agentSharingGranted") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
+
+export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
+export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
