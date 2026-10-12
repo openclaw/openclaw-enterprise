@@ -10,6 +10,11 @@ import { delimiter, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { availablePort } from "../helpers/available-port.mjs";
+import {
+  devUpTestError,
+  provisionDevUpSandboxAgent,
+  withDevUpModelKey,
+} from "../helpers/dev-up-test-auth.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -191,7 +196,7 @@ test(
     skip: selected ? false : "Set OCC_TEST_DEV_UP_K3D_REAL=1 to run the real development profile.",
     timeout: 1_200_000,
   },
-  async (t) => {
+  withDevUpModelKey(process.env.OCC_TEST_DEV_UP_MODEL_KEY_FILE, async (t, modelKey) => {
     const root = await mkdtemp(join(tmpdir(), "oce-dev-up-k3d-real-"));
     const stateDirectory = join(root, "state");
     const cluster = `occ-dev-k3d-${randomUUID().slice(0, 8)}`;
@@ -229,11 +234,9 @@ test(
             timeout: 300_000,
           });
         } catch (error) {
-          throw new Error(
+          throw devUpTestError(
+            error,
             `Development cleanup failed; recovery state preserved at ${stateDirectory}.`,
-            {
-              cause: error,
-            },
           );
         }
       }
@@ -256,6 +259,53 @@ test(
     assert.equal(existsSync(join(stateDirectory, "compose.yaml")), false);
     for (const file of ["initial-admin-password", "initial-admin-service-key.json"]) {
       assert.equal((await stat(join(stateDirectory, file))).mode & 0o077, 0);
+    }
+
+    // Compare the admitted image with real containerd metadata. Readiness alone
+    // cannot establish that the native engine archive preserved image identity.
+    const installation = loadYaml(
+      await readFile(join(stateDirectory, "installation.yaml"), "utf8"),
+    );
+    const runtimeReference = installation.drivers.compute.configuration.images.agent;
+    assert.match(runtimeReference, /@sha256:[a-f0-9]{64}$/);
+    const [runtimeRepository, runtimeDigest] = runtimeReference.split("@");
+    const importedImages = (
+      await execute(
+        state.containerEngine,
+        ["exec", `k3d-${cluster}-server-0`, "ctr", "-n", "k8s.io", "images", "list"],
+        { cwd: repository, env: environment },
+      )
+    ).stdout;
+    assert.ok(
+      importedImages.split("\n").some((line) => {
+        const [reference, , digest] = line.trim().split(/\s+/);
+        return (
+          digest === runtimeDigest &&
+          (reference === runtimeReference || reference.startsWith(`${runtimeRepository}:`))
+        );
+      }),
+      "the installed runtime digest must resolve in the real owned node",
+    );
+    assert.equal(existsSync(join(stateDirectory, "development-import.tar")), false);
+    if (state.containerEngine === "podman") {
+      // Default tagged builds exercise native export of Podman-recorded names.
+      // The exporter must retain both original source tags.
+      for (const [selection, image] of [
+        ["OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart"],
+        [
+          "OCC_DEVELOPMENT_CONTROLLER_IMAGE",
+          "openclaw-enterprise-controller:kubernetes-quickstart",
+        ],
+      ]) {
+        if (!environment[selection]) {
+          const inspected = await execute(
+            "podman",
+            ["image", "inspect", "--format", "{{json .RepoTags}}", image],
+            { cwd: repository, env: environment },
+          );
+          assert.ok(JSON.parse(inspected.stdout).includes(`localhost/${image}`));
+        }
+      }
     }
 
     // The browser endpoint terminates TLS for this installation only. Verify
@@ -356,16 +406,8 @@ test(
     assert.ok(
       catalog.data.plugins.some(({ id }) => id === "codex-plugin:linear@openai-curated-remote"),
     );
-    // Provision the shipped dedicated Codex Preset through the same API used by
-    // the console. The synthetic Secret permits startup but cannot run a model.
-    const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+    // Use the operator-provided Secret through normal dedicated Harness authentication.
     const preset = presets.data.find(({ name }) => name === "Standard Codex");
-    const rendered = renderPresetTemplate(preset.template, {
-      name: "Local sandbox proof",
-      model: "gpt-6-astra",
-      modelSecret: "synthetic-local-sandbox-key",
-    });
-    rendered.configuration.values.gateway.controlUi.enabled = false;
     const post = async (path, body, expected) => {
       const response = await fetch(`http://127.0.0.1:${apiPort}${path}`, {
         method: "POST",
@@ -376,24 +418,13 @@ test(
       assert.equal(response.status, expected, `Unexpected status for ${path}`);
       return response.json();
     };
-    const secret = await post(
-      `/namespaces/${namespace.id}/secrets`,
-      {
-        name: "Local sandbox proof",
-        value: "synthetic-local-sandbox-key",
-      },
-      201,
-    );
-    const admitted = await post(
-      `/namespaces/${namespace.id}/agents/provision`,
-      {
-        requestId: `req_${randomUUID()}`,
-        ...rendered.agent,
-        harnessAuth: { method: "api_key", source: secret.data.ref },
-        configuration: { kind: "agent", ...rendered.configuration },
-      },
-      202,
-    );
+    const admitted = await provisionDevUpSandboxAgent({
+      post,
+      namespaceId: namespace.id,
+      preset,
+      modelKey,
+      requestId: `req_${randomUUID()}`,
+    });
     const deadline = Date.now() + 300_000;
     let provisioned;
     while (Date.now() < deadline) {
@@ -450,6 +481,7 @@ test(
     const agentPod = agentPods[0];
     const container = agentPod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container);
+    assert.equal(container.image, runtimeReference);
     const provenancePath = join(stateDirectory, "codex-seccomp-provenance.json");
     if (existsSync(provenancePath)) {
       const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
@@ -546,7 +578,7 @@ test(
       pods.items.some(({ metadata }) => metadata.name.includes("openshell")),
       false,
     );
-  },
+  }),
 );
 
 test(

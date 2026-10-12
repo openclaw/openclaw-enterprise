@@ -5,20 +5,38 @@ Kubernetes HTTP fixtures or real-runtime gateway, Codex, model, and Secret tests
 
 ## Local Kubernetes installation
 
-Build the CLI and run the selected real test to create and clean up a separate
-k3d cluster:
+Build the CLI and prepare a private (0600), single-token API-key file outside the
+checkout. The successful-install case validates it before setup and contacts the
+provider during native startup. Refusal and Compose cases need no key:
 
 ```sh
 pnpm cli:build
+OCC_TEST_DEV_UP_MODEL_KEY_FILE=/absolute/private/model-key \
 OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
 ```
 
 The Kubernetes-only case checks authenticated readiness, presets, plugin discovery,
-and a dedicated Codex Agent’s sandbox using a synthetic credential. The Compose
+and a dedicated Codex Agent’s sandbox using an authorized model key. The Compose
 case checks the launcher’s generated image and seccomp profile in a real Pod. Both
-verify workspace writes succeed and outside writes fail; neither proves model
-execution, and the Compose case does not prove Agent routing. Failed cleanup
+verify workspace writes and denied outside writes; neither checks an Agent task.
+The Compose case does not prove Agent routing. Failed cleanup
 preserves state for `occ dev down`.
+
+For rootful Podman (the Compose case requires Docker):
+
+```sh
+OCC_TEST_DEV_UP_MODEL_KEY_FILE=/absolute/private/model-key \
+OCC_TEST_DEV_UP_K3D_REAL=1 OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
+  node --test --test-concurrency=1 --test-name-pattern='dev-up (refuses|installs)' \
+  tests/integration/dev-up-k3d-real.test.mjs
+```
+
+Select the engine's Unix socket where its loopback ports are reachable. Leave
+runtime/controller image selectors unset to test tagged imports; prebuilt immutable
+selections exercise digest staging. The case checks containerd/runtime Pod image
+identity, source-tag retention and archive cleanup. The test sends the key only to
+the Secret API, not Configuration or subprocess arguments/environment. The input
+file stays untouched. Record and restore rebuilt quickstart tag identities.
 
 See [two-cluster validation](two-cluster-local.md).
 
