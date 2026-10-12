@@ -168,7 +168,7 @@ export function selectedModelProviders(
  * credential header (in `headers` or `request.headers`) and no `request.auth` credential.
  * Header names must be valid HTTP field names, so a lookalike cannot slip past the match.
  * (The provider apiKey rule depends on the Harness, so it stays in Harness authentication
- * admission.)
+ * admission, on selected providers only.)
  */
 export function requireHarnessCredentialBinding(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -216,7 +216,11 @@ export function requireHarnessCredentialBinding(
       }
       // OpenClaw's request.auth modes authorization-bearer and header carry a credential;
       // provider-default keeps the provider's own authentication, which the binding supplies.
-      if (request?.auth !== undefined && asRecord(request.auth)?.mode !== "provider-default") {
+      const auth = asRecord(request?.auth);
+      if (
+        request?.auth !== undefined &&
+        !(auth?.mode === "provider-default" && Object.keys(auth).length === 1)
+      ) {
         throw createError(
           `${setting}.request.auth`,
           `must be unset or {mode: "provider-default"}: ${HARNESS_BINDING}`,

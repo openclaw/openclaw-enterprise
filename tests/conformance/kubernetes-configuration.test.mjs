@@ -450,6 +450,18 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
         },
       },
     },
+    { models: { providers: { openai: { headers: { x_api_key: sentinel } } } } },
+    { models: { providers: { openai: { headers: { "x-functions-key": sentinel } } } } },
+    // The client certificate, key and passphrase for the model endpoint and its proxy.
+    { models: { providers: { openai: { request: { tls: { key: sentinel } } } } } },
+    { models: { providers: { openai: { request: { tls: { passphrase: sentinel } } } } } },
+    {
+      models: {
+        providers: {
+          openai: { request: { proxy: { mode: "env-proxy", tls: { cert: sentinel } } } },
+        },
+      },
+    },
     { env: { OPENAI_API_KEY: sentinel } },
     { env: { ANTHROPIC_API_KEY: sentinel } },
     { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
@@ -477,11 +489,41 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
       },
     );
   }
+  // A proxy URL with a user name or password carries the proxy credential in the URL.
+  for (const url of [`http://user:${sentinel}@proxy.example:3128`, `http://${sentinel}@proxy`]) {
+    const unsafe = {
+      ...configuration,
+      values: {
+        models: { providers: { openai: { request: { proxy: { mode: "explicit-proxy", url } } } } },
+      },
+    };
+    for (const operation of ["create", "update"]) {
+      await assert.rejects(driver[operation](unsafe), (error) => {
+        assert.equal(
+          error.message,
+          "Configuration field /models/providers/openai/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+        );
+        return true;
+      });
+    }
+  }
   const referenceOnly = {
     ...configuration,
     values: {
       models: {
         providers: {
+          anthropic: {
+            headers: { "anthropic-version": "2023-06-01", "idempotency-key": "k" },
+            request: {
+              tls: { ca: "-----BEGIN CERTIFICATE-----", cert: "${TLS_CERT}", key: "${TLS_KEY}" },
+              proxy: {
+                mode: "explicit-proxy",
+                url: "http://proxy.example:3128",
+                tls: { passphrase: "${PROXY_TLS_PASSPHRASE}" },
+              },
+            },
+          },
+          groq: { request: { proxy: { mode: "explicit-proxy", url: "${PROXY_URL}" } } },
           openai: {
             apiKey: "${OPENAI_API_KEY}",
             headers: { Authorization: "Bearer ${MODEL_TOKEN}", "x-goog-api-key": "${GOOGLE_KEY}" },

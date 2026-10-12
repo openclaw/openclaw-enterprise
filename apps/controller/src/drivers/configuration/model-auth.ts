@@ -7,6 +7,19 @@ export class ConfigurationValidationError extends Error {}
 const pointer = (...segments: readonly string[]): string =>
   segments.map((segment) => `/${segment.replaceAll("~", "~0").replaceAll("/", "~1")}`).join("");
 
+const proxyCredentialMessage = (path: string): string =>
+  `Configuration field ${path} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+
+// A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization). A whole
+// ${NAME} reference or an unparsable URL is left to the runtime.
+function hasUrlCredentials(value: string): boolean {
+  if (!URL.canParse(value)) {
+    return false;
+  }
+  const url = new URL(value);
+  return url.username !== "" || url.password !== "";
+}
+
 /** Known native model credential slots must store unresolved references, never values. */
 export function validateModelCredentialReferences(values: OpenClawConfigurationDocument): void {
   const validateReference = (value: unknown, path: string, authorizationHeader = false): void => {
@@ -65,6 +78,22 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
       const auth = asRecord(request?.auth);
       validateReference(auth?.token, pointer(...path, "request", "auth", "token"));
       validateReference(auth?.value, pointer(...path, "request", "auth", "value"));
+      // The client certificate, key and passphrase for the model endpoint and for its proxy.
+      const proxy = asRecord(request?.proxy);
+      for (const [tlsPath, tls] of [
+        [[...path, "request", "tls"], asRecord(request?.tls)],
+        [[...path, "request", "proxy", "tls"], asRecord(proxy?.tls)],
+      ] as const) {
+        for (const field of ["cert", "key", "passphrase"]) {
+          validateReference(tls?.[field], pointer(...tlsPath, field));
+        }
+      }
+      if (typeof proxy?.url === "string" && hasUrlCredentials(proxy.url)) {
+        throw new ModelCredentialValueError(
+          pointer(...path, "request", "proxy", "url"),
+          proxyCredentialMessage,
+        );
+      }
     }
   }
   const env = asRecord(values.env);

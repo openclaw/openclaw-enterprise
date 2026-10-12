@@ -98,13 +98,14 @@ export function isHttpFieldName(name: string): boolean {
   return HTTP_FIELD_NAME.test(name);
 }
 
-// A header whose last hyphen-separated word names a credential: Authorization,
-// Proxy-Authorization, api-key, x-goog-api-key, x-auth-token, cookie and the like. Vendors and
-// gateways each pick their own credential header, so a fixed list would miss the next one;
-// matching the last word keeps names such as x-api-key-id or x-auth-mode, which carry no
-// credential, out.
+// A header whose last hyphen- or underscore-separated word names a credential: Authorization,
+// Proxy-Authorization, api-key, x_api_key, x-goog-api-key, x-functions-key, x-auth-token,
+// cookie and the like. Vendors and gateways each pick their own credential header, so a fixed
+// list would miss the next one; matching the last word keeps names such as x-api-key-id or
+// x-auth-mode, which carry no credential, out. A bare `key` is not a credential word, so
+// idempotency-key and x-cache-key stay accepted.
 const CREDENTIAL_HEADER =
-  /(?:^|-)(?:auth|authorization|api-?key|subscription-key|token|secret|password|cookie)$/i;
+  /(?:^|[-_])(?:auth|authorization|(?:api|access|functions|license|master|rapidapi|secret|subscription)[-_]?key|token|secret|password|cookie)$/i;
 
 /** Whether a model provider header with this name carries a credential. */
 export function isCredentialHeaderName(name: string): boolean {

@@ -8937,6 +8937,11 @@ test("model provider credential headers and request auth are refused on every pr
       requestAuth,
     ],
     [provider("p", { request: { auth: null } }), "models.providers.p.request.auth", requestAuth],
+    [
+      provider("p", { request: { auth: { mode: "provider-default", token: "${K}" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
     ...[
       "Proxy-Authorization",
       "x-goog-api-key",
@@ -8949,6 +8954,12 @@ test("model provider credential headers and request auth are refused on every pr
       "x-amz-security-token",
       "x-client-secret",
       "x-password",
+      "x_api_key",
+      "api_key",
+      "x-rapidapi-key",
+      "x-functions-key",
+      "x-aws-secret-access-key",
+      "x-master-key",
     ].map((name) => [
       provider("p", { headers: { [name]: "${K}" } }),
       "models.providers.p.headers",
@@ -9013,7 +9024,15 @@ test("model provider credential headers and request auth are refused on every pr
   // Transport headers without a credential, and the provider's own authentication, still save.
   for (const values of [
     provider("p", {
-      headers: { "X-Custom-Transport": "route", "x-api-key-id": "a", "x-auth-mode": "b" },
+      headers: {
+        "X-Custom-Transport": "route",
+        "x-api-key-id": "a",
+        "x-auth-mode": "b",
+        "anthropic-version": "2023-06-01",
+        "idempotency-key": "c",
+        "x-cache-key": "d",
+        "x-stainless-retry-count": "0",
+      },
     }),
     provider("p", {
       request: { headers: { "OpenAI-Organization": "org" }, auth: { mode: "provider-default" } },
