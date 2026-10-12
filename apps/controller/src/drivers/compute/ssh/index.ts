@@ -468,10 +468,10 @@ export class SshComputeDriver implements ComputeDriver {
         "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
       );
     }
-    if (auth === undefined) {
+    if (auth == null) {
       throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
     }
-    // An Agent setting the caller owns: Agent save, provisioning and deployment answer 400.
+    // An Agent setting the caller owns: Agent save and deployment answer 400.
     requireHarnessAuthMethod(SSH_HARNESS_AUTH_METHODS, auth.method);
     if (Object.keys(auth).length !== 1) {
       throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");

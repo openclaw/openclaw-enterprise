@@ -67,6 +67,11 @@ no Sandbox Driver; a credential source needs its paired Sandbox) stays a fixed
 The channel runtime rule stays at deployment: it depends on the execution mode
 and the Installation's `runtime.channels`.
 
+[SSH Compute](ssh-compute.md) runs only embedded OpenClaw (other topologies get
+a fixed `409`) and names `harnessAuth.method` for any method but `runtime`,
+through the same
+[shared rule](../../../apps/controller/src/drivers/compute/harness-auth-method.ts).
+
 `validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone (or
 none) and the managed workspace path (or `/home/node/workspace` on a dedicated
 Harness); preparation also needs runtime storage, an Installation setting.

@@ -13,10 +13,10 @@ real Installation.
 
 ## 2026-10-12: SSH Compute names its Harness authentication rule
 
-**What breaks.** On SSH Compute, an Agent whose `harnessAuth.method` is not
-`runtime` gets `400` naming `harnessAuth.method`, where it got a fixed `409`:
-at provisioning and deployment, and at Agent create and update when they check
-the binding. Nothing new is refused.
+**What breaks.** On SSH Compute, an embedded OpenClaw Agent whose
+`harnessAuth.method` is not `runtime` gets `400` naming `harnessAuth.method`,
+where it got a fixed `409`: at deployment, and at Agent create and update when
+they check the binding. Nothing new is refused.
 
 **Who is affected.** Clients that branch on the `409`.
 
