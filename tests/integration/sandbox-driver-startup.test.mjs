@@ -251,29 +251,36 @@ function namespaceContext(name = "oce-123456789012345") {
 function nativePreparationClient(context) {
   const client = Object.create(KubernetesObjectApi.prototype);
   const prepared = [];
+  let deployment;
   const read = context.kubernetes.read?.bind(context.kubernetes);
   client.read = async (resource) => {
     if (resource.kind === "Namespace") {
       return { ...resource };
     }
     if (resource.kind === "Deployment") {
-      throw { code: 404 };
+      if (deployment === undefined) {
+        throw { code: 404 };
+      }
+      return structuredClone(deployment);
     }
     return read(resource);
   };
   client.create = async (resource) => {
     prepared.push(structuredClone(resource));
-    return {
+    deployment = {
       ...resource,
       metadata: { ...resource.metadata, uid: "preparation-uid", generation: 1 },
       status: { availableReplicas: 1, observedGeneration: 1 },
     };
+    return structuredClone(deployment);
   };
   client.delete = async (resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
     assert.equal(resource.kind, "Deployment");
     assert.equal(propagation, "Foreground");
     assert.equal(body.preconditions.uid, "preparation-uid");
+    deployment = undefined;
   };
+  client.list = async () => ({ items: [] });
   context.kubernetes = client;
   return prepared;
 }
@@ -2947,6 +2954,278 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     const configuration = sandboxInstallation();
     configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
     await loadInstallationFile(t, configuration);
+  }
+});
+
+// These cases invoke the production Driver over controlled Kubernetes/Gateway
+// transports. They prove cleanup selection, fencing and completion ordering, not
+// Kubernetes garbage collection, filesystem isolation, or live Pod termination.
+async function orphanedNativePreparation() {
+  const gateway = workspaceGatewayClient();
+  gateway.deleteSandbox = async () => gateway.calls.push(["deleteSandbox"]);
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.kubernetes.userNamespaces = false;
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gateway),
+  });
+  const fixture = codexSandboxFixture(driver);
+  const revision = {
+    ...fixture.revision,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+  };
+  const requirements = {
+    ...fixture.requirements,
+    files: [],
+    environment: fixture.requirements.environment.filter(
+      ({ name }) => !["APP_SERVER_PORT", "APP_TOKEN_SHA", "CODEX_HOME"].includes(name),
+    ),
+  };
+  const prepared = nativePreparationClient(fixture.context);
+  const api = fixture.context.kubernetes;
+  const create = api.create;
+  // The API stored the real manifest, but the response never reached the Driver.
+  api.create = async (resource) => {
+    await create(resource);
+    throw new Error("preparation create response lost");
+  };
+  await assert.rejects(
+    driver.provisionHarness({ ...fixture.context, revision, requirements }),
+    /preparation create response lost/,
+  );
+  assert.equal(gateway.providers.size, 1);
+  assert.equal(
+    gateway.calls.some(([method]) => method === "deleteSandbox"),
+    false,
+  );
+  const resource = prepared[0];
+  const deployment = await api.read(resource);
+  const context = { ...fixture.context, revision };
+  return { driver, gateway, api, resource, deployment, context };
+}
+
+test("OpenShell revision cleanup removes an orphaned preparer before its provider and replays safely", async () => {
+  const { driver, gateway, api, resource, context } = await orphanedNativePreparation();
+  const remove = api.delete;
+  let deletions = 0;
+  api.delete = async (...args) => {
+    assert.equal(gateway.providers.size, 1, "runtime provider must survive until the writer stops");
+    assert.equal(
+      gateway.calls.some(([method]) => method === "deleteSandbox"),
+      false,
+    );
+    assert.equal(args[0].metadata.name, resource.metadata.name);
+    assert.equal(args[0].metadata.namespace, context.namespace.name);
+    deletions++;
+    await remove(...args);
+  };
+  await driver.cleanup(context);
+  await assert.rejects(api.read(resource), (error) => error.code === 404);
+  assert.equal(gateway.providers.size, 0);
+  await driver.cleanup(context);
+  assert.equal(deletions, 1, "a replay must not delete another resource");
+});
+
+test("OpenShell preparer cleanup retries after a delete response is lost", async () => {
+  const { driver, gateway, api, resource, context } = await orphanedNativePreparation();
+  const remove = api.delete;
+  const failure = new Error("preparation delete response lost");
+  api.delete = async (...args) => {
+    await remove(...args);
+    throw failure;
+  };
+  await assert.rejects(driver.cleanup(context), (error) => error === failure);
+  await assert.rejects(api.read(resource), (error) => error.code === 404);
+  assert.equal(gateway.providers.size, 1);
+  // The next pass must finish without requiring a Deployment or a create receipt.
+  api.delete = async () => assert.fail("deleted preparation must not be deleted again");
+  await driver.cleanup(context);
+  assert.equal(gateway.providers.size, 0);
+});
+
+test("OpenShell preparer cleanup rejects foreign ownership and missing UIDs before deletion", async (t) => {
+  const changes = [
+    ...[
+      "app.kubernetes.io/managed-by",
+      "openclaw.dev/namespace",
+      "openclaw.dev/agent",
+      "openclaw.dev/revision",
+      "openclaw.dev/workload-role",
+    ].map((label) => ({
+      name: label,
+      change: (metadata) => {
+        metadata.labels[label] = "foreign";
+      },
+      error: /foreign workspace preparation/,
+    })),
+    {
+      name: "namespace",
+      change: (metadata) => {
+        metadata.namespace = "foreign";
+      },
+      error: /foreign workspace preparation/,
+    },
+    {
+      name: "name",
+      change: (metadata) => {
+        metadata.name = "foreign";
+      },
+      error: /foreign workspace preparation/,
+    },
+    {
+      name: "missing UID",
+      change: (metadata) => {
+        delete metadata.uid;
+      },
+      error: /Deployment UID/,
+    },
+  ];
+  for (const scenario of changes) {
+    await t.test(scenario.name, async () => {
+      const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+      scenario.change(deployment.metadata);
+      api.read = async () => structuredClone(deployment);
+      api.delete = async () => assert.fail("foreign or unfenced Deployment must not be deleted");
+      await assert.rejects(driver.cleanup(context), scenario.error);
+      assert.equal(gateway.providers.size, 1);
+      assert.equal(
+        gateway.calls.some(([method]) => method === "deleteSandbox"),
+        false,
+      );
+    });
+  }
+});
+
+test("OpenShell preparer cleanup preserves a same-name UID replacement", async () => {
+  const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+  const conflict = Object.assign(new Error("UID precondition failed"), { code: 409 });
+  api.delete = async (_resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
+    assert.equal(propagation, "Foreground");
+    assert.equal(body.preconditions.uid, deployment.metadata.uid);
+    // Kubernetes refuses deletion after the resource is replaced between GET and DELETE.
+    deployment.metadata.uid = "replacement-uid";
+    throw conflict;
+  };
+  await assert.rejects(driver.cleanup(context), (error) => error === conflict);
+  assert.equal(deployment.metadata.uid, "replacement-uid");
+  assert.equal(gateway.providers.size, 1);
+});
+
+test("OpenShell preparer cleanup rejects a replacement observed while waiting for deletion", async () => {
+  const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+  api.delete = async () => {
+    deployment.metadata.uid = "replacement-uid";
+  };
+  api.read = async () => structuredClone(deployment);
+  await assert.rejects(driver.cleanup(context), /Deployment changed/);
+  assert.equal(gateway.providers.size, 1);
+});
+
+test("OpenShell preparer cleanup tolerates a concurrent delete but waits for lingering Pods", async (t) => {
+  for (const missingDeployment of [false, true]) {
+    await t.test(
+      missingDeployment ? "Deployment already absent" : "foreground deletion",
+      async () => {
+        const { driver, gateway, api, resource, deployment, context } =
+          await orphanedNativePreparation();
+        const remove = api.delete;
+        if (missingDeployment) {
+          await remove(resource, undefined, undefined, undefined, undefined, "Foreground", {
+            preconditions: { uid: deployment.metadata.uid },
+          });
+          api.delete = async () => assert.fail("an absent Deployment must not be deleted");
+        } else {
+          api.delete = async (...args) => {
+            await remove(...args);
+            throw { code: 404 };
+          };
+        }
+        let observations = 0;
+        api.list = async (version, kind, namespace, _pretty, _exact, _export, _field, selector) => {
+          assert.equal(version, "v1");
+          assert.equal(kind, "Pod");
+          assert.equal(namespace, context.namespace.name);
+          assert.deepEqual(
+            Object.fromEntries(selector.split(",").map((entry) => entry.split("="))),
+            deployment.metadata.labels,
+          );
+          assert.equal(gateway.providers.size, 1);
+          assert.equal(
+            gateway.calls.some(([method]) => method === "deleteSandbox"),
+            false,
+          );
+          observations++;
+          // A Pod carrying deletionTimestamp can still write; readiness is irrelevant.
+          return {
+            items:
+              observations === 1
+                ? [{ metadata: { deletionTimestamp: "2026-10-12T00:00:00Z" } }]
+                : [],
+          };
+        };
+        await driver.cleanup(context);
+        assert.equal(observations, 2);
+        assert.equal(gateway.providers.size, 0);
+      },
+    );
+  }
+});
+
+test("OpenShell preparer cleanup waits for the Deployment even when no Pods are listed", async () => {
+  const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+  let reads = 0;
+  api.read = async () => {
+    if (++reads <= 2) {
+      return structuredClone(deployment);
+    }
+    throw { code: 404 };
+  };
+  api.delete = async () => {
+    deployment.metadata.deletionTimestamp = "2026-10-12T00:00:00Z";
+  };
+  api.list = async () => {
+    assert.equal(gateway.providers.size, 1);
+    return { items: [] };
+  };
+  await driver.cleanup(context);
+  assert.equal(reads, 3);
+  assert.equal(gateway.providers.size, 0);
+});
+
+test("OpenShell preparer cleanup preserves retryable work on cancellation and transport errors", async (t) => {
+  for (const stage of [
+    "cancelled before cleanup",
+    "cancelled while waiting",
+    "read",
+    "delete",
+    "list",
+  ]) {
+    await t.test(stage, async () => {
+      const { driver, gateway, api, context } = await orphanedNativePreparation();
+      const abort = new AbortController();
+      context.signal = abort.signal;
+      const failure = new Error("cleanup interrupted");
+      if (stage === "cancelled before cleanup") {
+        abort.abort(failure);
+        api.delete = async () => assert.fail("cancellation must prevent mutation");
+      } else if (stage === "cancelled while waiting") {
+        api.list = async () => {
+          abort.abort(failure);
+          return { items: [{}] };
+        };
+      } else {
+        api[stage] = async () => {
+          throw failure;
+        };
+      }
+      await assert.rejects(driver.cleanup(context), (error) => error === failure);
+      assert.equal(gateway.providers.size, 1);
+      assert.equal(
+        gateway.calls.some(([method]) => method === "deleteSandbox"),
+        false,
+      );
+    });
   }
 });
 

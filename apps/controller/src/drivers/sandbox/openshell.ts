@@ -1275,6 +1275,96 @@ function workspaceVolumeMounts(
   };
 }
 
+function workspacePreparationLabels(revision: Readonly<AgentRevision>): Record<string, string> {
+  return {
+    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+    "openclaw.dev/namespace": revision.namespaceId,
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/revision": revision.id,
+    "openclaw.dev/workload-role": "workspace-preparation",
+  };
+}
+
+async function cleanupNativeWorkspace(
+  context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  sandbox: SandboxResourceRef,
+  expectedUid?: string,
+): Promise<void> {
+  const api = kubernetes(context);
+  const labels = workspacePreparationLabels(context.revision);
+  const resource = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: `${sandbox.resourceName}-workspace`, namespace: sandbox.namespaceName },
+  };
+  const readOwned = async () => {
+    context.signal.throwIfAborted();
+    let existing: V1Deployment;
+    try {
+      existing = await api.read<V1Deployment>(resource);
+    } catch (error) {
+      if (missingResource(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+    context.signal.throwIfAborted();
+    if (
+      existing.metadata?.name !== resource.metadata.name ||
+      existing.metadata.namespace !== resource.metadata.namespace ||
+      Object.entries(labels).some(([key, value]) => existing.metadata?.labels?.[key] !== value)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing to delete a foreign workspace preparation Deployment.",
+      );
+    }
+    const uid = nonempty(existing.metadata.uid, "Workspace preparation Deployment UID");
+    if (expectedUid !== undefined && uid !== expectedUid) {
+      throw new OpenShellSandboxConfigurationFailure("Workspace preparation Deployment changed.");
+    }
+    return uid;
+  };
+  const deadline = Date.now() + 120_000;
+  const owned = await readOwned();
+  if (owned !== undefined) {
+    expectedUid = owned;
+    context.signal.throwIfAborted();
+    try {
+      await api.delete(resource, undefined, undefined, undefined, undefined, "Foreground", {
+        preconditions: { uid: owned },
+      });
+    } catch (error) {
+      // Another cleanup may already have removed this exact Deployment.
+      if (!missingResource(error)) {
+        throw error;
+      }
+    }
+  }
+  for (;;) {
+    const remaining = await readOwned();
+    const pods = await api.list(
+      "v1",
+      "Pod",
+      sandbox.namespaceName,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector(labels),
+    );
+    context.signal.throwIfAborted();
+    // A missing Deployment is not enough: orphaned or terminating Pods can still
+    // write the PVC. Never delete Pods directly or accept a same-name replacement.
+    if (remaining === undefined && pods.items.length === 0) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new OpenShellSandboxConfigurationFailure("Workspace preparation did not stop.");
+    }
+    await delay(1_000, undefined, { signal: context.signal });
+  }
+}
+
 // TEMPORARY: Remove if OpenShell adds support for preparing private subpaths
 // and OCE adopts that support.
 // Use existing Deployment permissions; never grant OCC direct Pod creation for this.
@@ -1328,13 +1418,7 @@ async function prepareNativeWorkspace(
     .filter((mount) => !mount.read_only)
     .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
   const name = `${sandbox.resourceName}-workspace`;
-  const labels = {
-    "app.kubernetes.io/managed-by": "openclaw-enterprise",
-    "openclaw.dev/namespace": context.revision.namespaceId,
-    "openclaw.dev/agent": context.revision.agentId,
-    "openclaw.dev/revision": context.revision.id,
-    "openclaw.dev/workload-role": "workspace-preparation",
-  };
+  const labels = workspacePreparationLabels(context.revision);
   const program = `{
     const fs = require("node:fs");
     for (const path of ${JSON.stringify(paths)}) {
@@ -1497,26 +1581,7 @@ async function prepareNativeWorkspace(
   } catch (error) {
     preparationFailure = error;
   }
-  const deletionDeadline = Date.now() + 120_000;
-  await api.delete(resource, undefined, undefined, undefined, undefined, "Foreground", {
-    preconditions: { uid: preparationUid },
-  });
-  // Foreground deletion holds the Deployment until its preparation Pod stops;
-  // wait for it so no preparation writer overlaps Sandbox startup.
-  for (;;) {
-    try {
-      await api.read(resource);
-    } catch (error) {
-      if (missingResource(error)) {
-        break;
-      }
-      throw error;
-    }
-    if (Date.now() >= deletionDeadline) {
-      throw new OpenShellSandboxConfigurationFailure("Workspace preparation did not stop.");
-    }
-    await delay(1000, undefined, { signal: context.signal });
-  }
+  await cleanupNativeWorkspace(context, sandbox, preparationUid);
   if (preparationFailure !== undefined) {
     throw preparationFailure;
   }
@@ -2613,6 +2678,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       }
       const sandbox = this.sandboxRef({ namespace: context.namespace, revision: context.revision });
+      if (
+        context.revision.harness.mode === "dedicated" &&
+        context.revision.harness.id === "openclaw"
+      ) {
+        // Creation can succeed remotely without returning a receipt or creating a Sandbox.
+        await cleanupNativeWorkspace({ ...context, revision: context.revision }, sandbox);
+      }
       const client = this.gatewayClientForNamespace(sandbox.namespaceName);
       const workspace = workspaceName(context.namespace);
       await client.deleteSandbox(

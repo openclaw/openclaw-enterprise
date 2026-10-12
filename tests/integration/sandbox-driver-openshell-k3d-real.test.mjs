@@ -33,6 +33,12 @@ import {
 } from "../helpers/envoy-workspace-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import {
+  connectNativeGateway,
+  createProbeDeviceIdentity,
+  decodeNativeSetup,
+  expectNativeAuthorityDenied,
+} from "../helpers/native-gateway-authority.mjs";
+import {
   defaultKeycloakImage,
   keycloakServiceClient,
   keycloakUserClient,
@@ -1247,7 +1253,9 @@ async function prepareProductionInstallation(
     configuration.drivers.compute.configuration.resources.agent.limits.memory = "6Gi";
     configuration.drivers.sandbox.configuration.kubernetes.agentResources.limits.memory =
       configuration.drivers.compute.configuration.resources.agent.limits.memory;
-    configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
+    // Authority checks keep two Agents in this namespace: 2 * (4Gi Gateway + 6Gi Harness).
+    // Leave another 12Gi for OpenShell provider workloads and transient preparation Pods.
+    configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "32Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
   }
   // A disposable Keycloak issues OAuth2 tokens over HTTPS signed by a private CA. The Namespace
@@ -1832,6 +1840,13 @@ async function prepareProductionInstallation(
     request,
     placement,
     namespaceId,
+    nativeProof: {
+      configurationId: agentConfiguration.data.id,
+      modelSourceId: modelSource.data.id,
+      sourceRoleId: sourceRole.data.id,
+      gatewayRouting: workspaceGateway.routing,
+      gatewayApiKey: workspaceGateway.apiKey,
+    },
     agent: agent.data,
     revision: deployed.data,
     harnessPod,
@@ -3159,7 +3174,7 @@ async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
   return `\n${sections.join("\n")}`;
 }
 
-async function requestNativeOpenClawTurns(context, topology) {
+async function createNativeTurnRequester(context, topology) {
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -3171,55 +3186,339 @@ async function requestNativeOpenClawTurns(context, topology) {
     openShellGatewayName(topology.agent.id),
   );
   context.after(() => forwarding.stop());
-  const requestTurn = async () => {
-    const nonce = `OCC-OPENSHELL-NATIVE-${randomUUID()}`;
-    let response;
-    try {
-      response = await fetch(`${forwarding.url}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${gatewayPassword}`,
-          "content-type": "application/json",
-          "x-openclaw-session-key": `openshell-native-${randomUUID()}`,
-        },
-        body: JSON.stringify({
-          model: "openclaw/default",
-          stream: false,
-          messages: [{ role: "user", content: `Reply with exactly ${nonce}.` }],
-        }),
-        signal: AbortSignal.timeout(180_000),
-      });
-    } catch (error) {
-      const diagnostic = await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
-      assert.fail(
-        `Native OpenClaw turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
+  return {
+    nodeUrl: forwarding.url.replace("http:", "ws:") + "/node",
+    async turn(sessionKey) {
+      const nonce = "OCC-OPENSHELL-NATIVE-" + randomUUID();
+      let response;
+      try {
+        response = await fetch(forwarding.url + "/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + gatewayPassword,
+            "content-type": "application/json",
+            "x-openclaw-session-key": sessionKey,
+          },
+          body: JSON.stringify({
+            model: "openclaw/default",
+            stream: false,
+            messages: [{ role: "user", content: "Reply with exactly " + nonce + "." }],
+          }),
+          signal: AbortSignal.timeout(180_000),
+        });
+      } catch {
+        // A timeout/network error is not evidence that revocation rejected a model operation.
+        assert.fail(
+          "Native OpenClaw turn transport failed" +
+            (await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword)),
+        );
+      }
+      const body = await response.text();
+      assert.equal(
+        body.includes(process.env.OPENAI_API_KEY),
+        false,
+        "model key leaked in response",
       );
-    }
-    const body = await response.text();
-    assert.equal(body.includes(process.env.OPENAI_API_KEY), false);
-    assert.equal(body.includes(gatewayPassword), false);
-    const failureDiagnostic =
-      response.status === 200
-        ? ""
-        : await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
-    assert.equal(response.status, 200, `${body}${failureDiagnostic}`);
-    assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
+      assert.equal(body.includes(gatewayPassword), false, "Gateway password leaked in response");
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        assert.fail("Native Gateway returned non-JSON model response; HTTP " + response.status);
+      }
+      return { status: response.status, payload, nonce };
+    },
   };
+}
 
-  // The first session's retained worker keeps its slot after the turn. A second session therefore
-  // proves that the same AgentRevision Sandbox admits more than one session-owned worker.
-  await requestTurn();
-  await requestTurn();
+async function assertNativeTurn(requester, sessionKey) {
+  const result = await requester.turn(sessionKey);
+  assert.equal(result.status, 200, "native model turn must complete");
+  assert.ok(
+    result.payload.choices?.[0]?.message?.content?.includes(result.nonce),
+    "a real assistant completion must contain the fresh nonce",
+  );
+}
+
+async function requestNativeOpenClawTurns(context, topology) {
+  const requester = await createNativeTurnRequester(context, topology);
+  const sessions = ["openshell-native-" + randomUUID(), "openshell-native-" + randomUUID()];
+  // Retained session workers share the same revision. The second session needs its own slot.
+  await assertNativeTurn(requester, sessions[0]);
+  await assertNativeTurn(requester, sessions[1]);
+  // Continue an existing worker too, rather than proving only first-turn startup.
+  await assertNativeTurn(requester, sessions[0]);
+  return { requester, sessions };
 }
 
 async function assertNativeOpenClawWorkspaceFiles(topology) {
   const path = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/workspace/files/AGENTS.md`;
-  const content = "# Dedicated native OpenClaw\n";
+  const content = "# Dedicated native OpenClaw " + randomUUID() + "\n";
   const written = await topology.request("PUT", path, { content });
-  assert.equal(written.status, 200, JSON.stringify(written.error));
+  assert.equal(written.status, 200, "native workspace write must succeed");
   const read = await topology.request("GET", path);
-  assert.equal(read.status, 200, JSON.stringify(read.error));
+  assert.equal(read.status, 200, "native workspace read must succeed");
   assert.deepEqual(read.data, { name: "AGENTS.md", content });
+}
+
+async function createSecondNativeAgent(topology) {
+  const { request, namespaceId, nativeProof } = topology;
+  const created = await request("POST", "/namespaces/" + namespaceId + "/agents", {
+    name: "openshell-authority-peer-" + randomUUID(),
+    configurationId: nativeProof.configurationId,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: nativeProof.modelSourceId },
+    credentialSources: [{ sourceId: nativeProof.modelSourceId }],
+  });
+  assert.equal(created.status, 201, "create independent native Agent B through OCC");
+  const agent = created.data;
+  const base = "/namespaces/" + namespaceId + "/agents/" + agent.id;
+  const credentials = await request("POST", base + "/runtime-credentials", {});
+  assert.equal(credentials.status, 200);
+  const binding = await request("POST", "/namespaces/" + namespaceId + "/iam/access-bindings", {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: nativeProof.sourceRoleId,
+    resourceKind: "credential_source",
+    resourceId: nativeProof.modelSourceId,
+  });
+  assert.equal(binding.status, 201);
+  const deployed = await request("POST", base + "/deploy");
+  assert.equal(deployed.status, 202);
+  await waitFor("native Agent B activation", async () => {
+    const observed = await request("GET", base);
+    assert.equal(observed.status, 200);
+    return observed.data.activeRevisionId === deployed.data.id ? true : undefined;
+  });
+  const sandbox = await waitForSandbox(topology.placement, deployed.data);
+  const harnessPod = await waitForProviderHarnessPod(topology.placement, deployed.data);
+  await assertProviderOwnedHarness(topology.placement, deployed.data, sandbox, harnessPod);
+  const gatewayPod = (await resources("pods", topology.gatewayPlacement)).find(
+    (pod) =>
+      pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+      pod.metadata.labels?.["openclaw.dev/agent-id"] === agent.id,
+  );
+  assert.ok(gatewayPod, "Agent B must have its own live Gateway");
+  assert.notEqual(gatewayPod.metadata.uid, topology.gatewayPod.metadata.uid);
+  return { ...topology, agent, revision: deployed.data, harnessPod, sandbox, gatewayPod };
+}
+
+async function connectNativeAdministrator(context, topology) {
+  const { gatewayRouting, gatewayApiKey } = topology.nativeProof;
+  const port = gatewayRouting.endpointPort ?? 443;
+  const authority = gatewayRouting.hostname + (port === 443 ? "" : ":" + port);
+  const connected = await connectNativeGateway({
+    url:
+      "wss://" + authority + "/namespaces/" + topology.namespaceId + "/agents/" + topology.agent.id,
+    clientName: "gateway-client",
+    mode: "backend",
+    role: "operator",
+    scopes: [],
+    deviceIdentity: null,
+    edgeAuthHeaders: { "x-api-key": gatewayApiKey },
+  });
+  context.after(connected.close);
+  assert.equal(connected.hello.auth?.role, "operator");
+  assert.ok(connected.hello.auth.scopes.includes("operator.admin"));
+  // Never print raw RPC errors: setup/device authority can occur in their diagnostics.
+  return async (method, params) => {
+    try {
+      return await connected.client.request(method, params, { timeoutMs: 30_000 });
+    } catch (error) {
+      // A raw cause can make Node's test reporter print setup/device credentials.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Native administrative RPC " + method + " failed (" + error?.code + ")");
+    }
+  };
+}
+
+function nativeAuthorityTrace(context, stage, observations = {}) {
+  context.diagnostic("native-authority " + JSON.stringify({ stage, ...observations }));
+}
+
+async function assertNativeAuthorityChain(context, topology, positive) {
+  const adminA = await connectNativeAdministrator(context, topology);
+  const issueSetup = async () => {
+    const issued = await adminA("device.pair.setupCode", {
+      bootstrapProfile: "node",
+      includeQr: false,
+      publicUrl: positive.requester.nodeUrl,
+    });
+    return { issued, envelope: decodeNativeSetup(issued) };
+  };
+  // Keep an unredeemed, genuinely issued setup until its server-owned TTL elapses. No
+  // clock, database, envelope-expiry or provider configuration is changed for this case.
+  const expiry = await issueSetup();
+  assert.ok(
+    expiry.issued.expiresAtMs - Date.now() <= 11 * 60_000,
+    "unexpected upstream setup TTL: review the live lane timeout instead of shortening authority",
+  );
+  const peer = await createSecondNativeAgent(topology);
+  await assertNativeOpenClawWorkspaceFiles(peer);
+  const peerTurns = await requestNativeOpenClawTurns(context, peer);
+  const adminB = await connectNativeAdministrator(context, peer);
+  nativeAuthorityTrace(context, "positive-native-workspace-and-successive-turns", { agents: 2 });
+
+  const deviceIdentity = createProbeDeviceIdentity();
+  const probe = { clientName: "node-host", mode: "node", role: "node", scopes: [], deviceIdentity };
+  const setup = await issueSetup();
+  const setupDenial = await expectNativeAuthorityDenied(
+    { ...probe, url: peerTurns.requester.nodeUrl, bootstrapToken: setup.envelope.bootstrapToken },
+    "AUTH_BOOTSTRAP_TOKEN_INVALID",
+  );
+  // Reuse the identical token at A: B's refusal must not consume A's one-use authority.
+  const admitted = await connectNativeGateway({
+    ...probe,
+    url: positive.requester.nodeUrl,
+    bootstrapToken: setup.envelope.bootstrapToken,
+  });
+  let deviceToken;
+  try {
+    deviceToken = admitted.hello.auth?.deviceToken;
+    assert.equal(admitted.hello.auth?.role, "node");
+    assert.deepEqual(admitted.hello.auth.scopes, [], "node setup must grant no operator scopes");
+    assert.ok(
+      typeof deviceToken === "string" && deviceToken.length > 0,
+      "A must issue real signed-device authority",
+    );
+  } finally {
+    await admitted.close();
+  }
+  const connectedAgain = await connectNativeGateway({
+    ...probe,
+    url: positive.requester.nodeUrl,
+    deviceToken,
+  });
+  await connectedAgain.close();
+  const deviceDenial = await expectNativeAuthorityDenied(
+    { ...probe, url: peerTurns.requester.nodeUrl, deviceToken },
+    "AUTH_DEVICE_TOKEN_MISMATCH",
+  );
+  const peerSetupStatus = await adminB("device.pair.setupStatus", {
+    setupId: setup.issued.setupId,
+  });
+  assert.deepEqual(peerSetupStatus, {}, "B must not record A's enrollment");
+  const ownSetupStatus = await adminA("device.pair.setupStatus", { setupId: setup.issued.setupId });
+  assert.equal(
+    (ownSetupStatus.completion ?? ownSetupStatus.deliveryUncertain)?.deviceId,
+    deviceIdentity.deviceId,
+    "A must record the probe enrollment under its own setup",
+  );
+  nativeAuthorityTrace(context, "cross-agent-setup-and-signed-device-denied", {
+    setupDenial,
+    deviceDenial,
+  });
+  // Remove the auth-only probe before testing the real, provider-owned node. It never
+  // advertises workspace/worker commands or substitutes for actual runtime execution.
+  await adminA("device.pair.remove", { deviceId: deviceIdentity.deviceId });
+
+  const waitMs = Math.max(0, expiry.issued.expiresAtMs - Date.now() + 1_000);
+  nativeAuthorityTrace(context, "waiting-for-real-setup-expiry", { waitMs });
+  await delay(waitMs, undefined, { signal: context.signal });
+  const fresh = await issueSetup();
+  const expiryProbe = {
+    ...probe,
+    deviceIdentity: createProbeDeviceIdentity(),
+    url: positive.requester.nodeUrl,
+  };
+  const expiryDenial = await expectNativeAuthorityDenied(
+    { ...expiryProbe, bootstrapToken: expiry.envelope.bootstrapToken },
+    "AUTH_BOOTSTRAP_TOKEN_INVALID",
+  );
+  const freshConnection = await connectNativeGateway({
+    ...expiryProbe,
+    bootstrapToken: fresh.envelope.bootstrapToken,
+  });
+  await freshConnection.close();
+  await adminA("device.pair.remove", { deviceId: expiryProbe.deviceIdentity.deviceId });
+  assert.deepEqual(await adminA("device.pair.setupStatus", { setupId: expiry.issued.setupId }), {});
+  nativeAuthorityTrace(context, "expired-setup-denied-fresh-setup-admitted", { expiryDenial });
+
+  // Revoke the actual Compute-enrolled node, not the auth-only probe and not the
+  // shared model source. B remains an independent live control using that same source.
+  const nodeSecret = await resource(
+    "secret",
+    "workspace-node-" + hash(topology.agent.id) + "-" + hash("harness:openclaw"),
+    topology.placement,
+  );
+  const deviceId = Buffer.from(nodeSecret.data.deviceId, "base64").toString();
+  assert.ok(deviceId.length > 0);
+  assert.equal((await adminA("node.describe", { nodeId: deviceId })).connected, true);
+  await assertNativeOpenClawWorkspaceFiles(topology);
+  await assertNativeTurn(positive.requester, positive.sessions[0]);
+  const before = await resource("pod", topology.harnessPod.metadata.name, topology.placement);
+  const gatewayBefore = await resource(
+    "pod",
+    topology.gatewayPod.metadata.name,
+    topology.gatewayPlacement,
+  );
+  const revoked = await adminA("device.token.revoke", { deviceId, role: "node" });
+  assert.equal(revoked.deviceId, deviceId);
+  assert.equal(revoked.role, "node");
+  assert.ok(Number.isSafeInteger(revoked.revokedAtMs));
+  await waitFor("revoked native node disconnected", async () =>
+    (await adminA("node.describe", { nodeId: deviceId })).connected === false ? true : undefined,
+  );
+  nativeAuthorityTrace(context, "native-node-revoked", {
+    connected: false,
+    revokedAtMs: revoked.revokedAtMs,
+  });
+  const path = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/workspace/files/AGENTS.md`;
+  for (const method of ["GET", "PUT"]) {
+    const result = await topology.request(
+      method,
+      path,
+      method === "PUT" ? { content: "revoked-write-must-not-land-" + randomUUID() } : undefined,
+    );
+    assert.equal(result.status, 503, "revoked native workspace " + method + " must be unavailable");
+    nativeAuthorityTrace(context, "revoked-workspace-operation", { method, status: result.status });
+  }
+  // Reuse the worker that just completed a turn. A new session could fail because
+  // both worker slots are occupied, independently of revocation.
+  const revokedTurn = await positive.requester.turn(positive.sessions[0]);
+  assert.ok(
+    revokedTurn.status >= 500 && revokedTurn.status <= 599,
+    "revoked retained worker must fail instead of completing or rejecting operator auth",
+  );
+  assert.ok(revokedTurn.payload.error, "revoked turn must carry the native API error envelope");
+  // The HTTP adapter may redact placement errors. Pair this failure with the
+  // disconnected node, immediate same-session success, unchanged Pods, and B's
+  // successful model turn below; a generic server error alone proves nothing.
+  assert.equal(
+    /capacity|billing|quota|rate.limit/iu.test(revokedTurn.payload.error.message ?? ""),
+    false,
+    "an unrelated model/worker capacity failure cannot prove revocation",
+  );
+  assert.equal(JSON.stringify(revokedTurn.payload).includes(revokedTurn.nonce), false);
+  nativeAuthorityTrace(context, "revoked-retained-model-operation", { status: revokedTurn.status });
+  await assertNativeOpenClawWorkspaceFiles(peer);
+  await assertNativeTurn(peerTurns.requester, peerTurns.sessions[0]);
+  const after = await resource("pod", topology.harnessPod.metadata.name, topology.placement);
+  assert.equal(after.metadata.uid, before.metadata.uid, "revocation must not replace the Harness");
+  assert.deepEqual(
+    after.status.containerStatuses?.map(({ name, restartCount }) => ({ name, restartCount })),
+    before.status.containerStatuses?.map(({ name, restartCount }) => ({ name, restartCount })),
+    "the same running Harness must lose its authority",
+  );
+  const gatewayAfter = await resource(
+    "pod",
+    topology.gatewayPod.metadata.name,
+    topology.gatewayPlacement,
+  );
+  assert.equal(gatewayAfter.metadata.uid, gatewayBefore.metadata.uid);
+  assert.deepEqual(
+    gatewayAfter.status.containerStatuses?.map(({ name, restartCount }) => ({
+      name,
+      restartCount,
+    })),
+    gatewayBefore.status.containerStatuses?.map(({ name, restartCount }) => ({
+      name,
+      restartCount,
+    })),
+    "Gateway restarts cannot stand in for revocation enforcement",
+  );
+  assert.equal((await adminA("node.describe", { nodeId: deviceId })).connected, false);
+  nativeAuthorityTrace(context, "revocation-complete-peer-still-working");
 }
 
 async function holdNativeOpenClawDemo(context, topology) {
@@ -3580,7 +3879,9 @@ test(
   "OpenShell enforces provider delivery and authenticated Codex exposure",
   {
     ...requiresOpenShellK3d,
-    ...(demoStatePath === undefined ? { timeout: 1_500_000 } : {}),
+    ...(demoStatePath === undefined
+      ? { timeout: selectedHarness === "openclaw" ? 2_400_000 : 1_500_000 }
+      : {}),
   },
   async (context) => {
     if (demoStatePath !== undefined) {
@@ -3619,7 +3920,8 @@ test(
           process.stderr.write(
             "OpenShell integration: starting successive native worker sessions through Gateway.\n",
           );
-          await requestNativeOpenClawTurns(context, topology);
+          const positive = await requestNativeOpenClawTurns(context, topology);
+          await assertNativeAuthorityChain(context, topology, positive);
           await assertEmbeddedOpenShellFailsClosed(topology);
         }
         return;
