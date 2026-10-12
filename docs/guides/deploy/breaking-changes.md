@@ -11,6 +11,20 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-12: SSH Compute names its Harness authentication rule
+
+**What breaks.** On SSH Compute, an Agent whose `harnessAuth.method` is not
+`runtime` gets `400` naming `harnessAuth.method`, where it got a fixed `409`:
+at provisioning and deployment, and at Agent create and update when they check
+the binding. Nothing new is refused.
+
+**Who is affected.** Clients that branch on the `409`.
+
+**How to tell.** The `400` says the method must be `runtime` for embedded
+OpenClaw on SSH Compute.
+
+**Steps.** Set `harnessAuth` to `{ "method": "runtime" }`.
+
 ## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
 
 **What breaks.** `helm upgrade` of the observability demo fails when
