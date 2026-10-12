@@ -961,11 +961,16 @@ test(
             drivers: await productionDrivers(),
             logger: apiLog.logger,
           });
-          const bodyAdmissions = new Map();
+          let bodyAdmission;
           // Observe completed production admission without replacing it or pausing a
           // handler. A real HTTP request can still be uploading its body at this point.
           app.addHook("preParsing", async (request, _reply, payload) => {
-            bodyAdmissions.get(request.headers["x-test-admission"])?.(request.id);
+            if (
+              bodyAdmission !== undefined &&
+              bodyAdmission.marker === request.headers["x-test-admission"]
+            ) {
+              bodyAdmission.resolve(request.id);
+            }
             return payload;
           });
           endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
@@ -1062,7 +1067,7 @@ test(
               const assigning = await signInAdministrator();
               const marker = randomUUID();
               const admitted = Promise.withResolvers();
-              bodyAdmissions.set(marker, admitted.resolve);
+              bodyAdmission = { marker, resolve: admitted.resolve };
               const encoded = JSON.stringify(grant);
               const response = Promise.withResolvers();
               const upload = httpRequest(
@@ -1125,7 +1130,7 @@ test(
                   false,
                 );
               } finally {
-                bodyAdmissions.delete(marker);
+                bodyAdmission = undefined;
                 upload.destroy();
               }
             },
