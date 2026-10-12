@@ -589,6 +589,8 @@ describe("repository credential router", { concurrency: true }, () => {
     await native(["-C", source, "commit", "-m", "Initial contents"]);
     await native(["clone", "--no-hardlinks", source, target]);
     await native(["-C", target, "config", "receive.denyCurrentBranch", "updateInstead"]);
+    // The pushes' receive-pack does not inherit GIT_CONFIG_COUNT (see cleanEnvironment).
+    await native(["-C", target, "config", "maintenance.auto", "false"]);
     await writeFile(join(source, "tracked"), "second\n");
     await native(["-C", source, "commit", "-am", "Update contents"]);
     const head = (await native(["-C", source, "rev-parse", "HEAD"])).stdout.trim();

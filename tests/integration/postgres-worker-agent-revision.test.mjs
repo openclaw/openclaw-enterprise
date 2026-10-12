@@ -13,6 +13,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
+  ComputePreparationFailedError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   PostgresMetricsSnapshot,
@@ -4165,6 +4166,105 @@ test(
 );
 
 revisionTest(
+  "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("bootstrap-failure");
+    let preparations = 0;
+    let cleanupAllowed = false;
+    let cleanups = 0;
+    const preparation = {
+      workload: {
+        kind: "Job",
+        name: "oauth-bootstrap-fixture",
+        uid: randomUUID(),
+        namespace: "tenant-fixture",
+      },
+      reason: "retry_limit",
+      observedAt: "2026-10-12T12:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+      pods: [],
+    };
+    const compute = {
+      ...fixture.compute,
+      async prepareRevision() {
+        preparations += 1;
+        throw new ComputePreparationFailedError("HARNESS_CREDENTIAL_BOOTSTRAP_FAILED", preparation);
+      },
+      async stopRevision(revision) {
+        // Runtime retirement must start only after the deployment is terminal.
+        const failed = await fixture.workResult(candidate);
+        assert.equal(failed.rows[0].reason_code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+        assert.equal(revision.id, candidate.id);
+        cleanups += 1;
+        if (!cleanupAllowed) {
+          throw new DependencyUnavailableError("Temporary cleanup outage.");
+        }
+        await fixture.compute.stopRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    await assertFailedDeployment(
+      fixture,
+      { owner, candidate },
+      {
+        error: {
+          code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+          message: "Harness credential initialization failed. Correct the cause and deploy again.",
+          data: { preparation },
+        },
+        resultData: { preparation },
+      },
+    );
+    const cleanupRow = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state, reason_code FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows[0];
+    await waitFor("failed preparation to retain its cleanup obligation", async () => {
+      const row = await cleanupRow();
+      return cleanups > 0 && row?.state === "queued" ? row : undefined;
+    });
+    await fixture.stop();
+
+    const pendingStatus = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(pendingStatus.cleanup.status, "queued");
+    assert.equal(typeof pendingStatus.cleanup.nextAttemptAt, "string");
+    // The database must reject raw provider output even if a writer bypasses
+    // the controller's public evidence validator.
+    await assert.rejects(
+      fixture.observerPool.query(
+        "UPDATE occ.controller_work SET result_data = $2::jsonb WHERE idempotency_key = $1",
+        [
+          candidate.idempotencyKey,
+          JSON.stringify({ preparation: { ...preparation, rawOutput: "provider detail" } }),
+        ],
+      ),
+      (error) => error.code === "23514" && error.constraint === "controller_work_result_data_state",
+    );
+
+    // The new worker resumes cleanup from PostgreSQL, without invoking
+    // preparation again even though the Driver's bootstrap resources are gone.
+    cleanupAllowed = true;
+    await advanceCleanupRetries(fixture, candidate);
+    await fixture.start(compute);
+    await waitFor("failed preparation cleanup after restart", async () => {
+      const row = await cleanupRow();
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    assert.equal(preparations, 1);
+    assert.ok(cleanups >= 2);
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    const completedStatus = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(completedStatus.cleanup.status, "succeeded");
+    assert.deepEqual(completedStatus.error.data, { preparation });
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+  },
+);
+
+revisionTest(
   "an overdue Agent runtime fails closed without activating its incomplete revision",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("expired-runtime");
@@ -5147,6 +5247,7 @@ revisionTest(
       error: null,
       warnings,
       progress: null,
+      cleanup: null,
     });
   },
 );

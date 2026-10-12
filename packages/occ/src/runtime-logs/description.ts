@@ -163,7 +163,7 @@ function source(value: unknown, pods: readonly AgentRuntimePodStatus[]): AgentRu
     invalid();
   }
   const id = item.id as RuntimeLogContainerSourceId;
-  const sourcePods = list(item.pods, 16).map((entry) => {
+  const sourcePods = list(item.pods, 256).map((entry) => {
     const described = record(entry);
     const result = Object.freeze({
       name: name(described.name),

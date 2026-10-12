@@ -68,6 +68,54 @@ function configurationValues(scenario) {
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
 function candidateDeploymentError(scenario, checkedAt) {
+  if (scenario.bootstrapFailure) {
+    return {
+      code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+      message: "Harness credential initialization failed. Correct the cause and deploy again.",
+      data: {
+        preparation: {
+          workload: {
+            kind: "Job",
+            name: "oauth-bootstrap-demo",
+            uid: "job-demo-uid",
+            namespace: "oce-tenant-demo",
+          },
+          reason: "retry_limit",
+          observedAt: checkedAt,
+          startedAt: checkedAt,
+          finishedAt: checkedAt,
+          pods: [
+            {
+              name: "oauth-bootstrap-demo-pod",
+              uid: "bootstrap-demo-uid",
+              phase: "Failed",
+              scheduling: "scheduled",
+              containers: [
+                {
+                  name: "prepare-oauth-home",
+                  kind: "init",
+                  state: "terminated",
+                  reason: "Completed",
+                  exitCode: 0,
+                  startedAt: checkedAt,
+                  finishedAt: checkedAt,
+                },
+                {
+                  name: "oauth-bootstrap",
+                  kind: "main",
+                  state: "terminated",
+                  reason: "Error",
+                  exitCode: 1,
+                  startedAt: checkedAt,
+                  finishedAt: checkedAt,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+  }
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
@@ -234,7 +282,7 @@ export function installFixture(scenario, evidence) {
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: selectedRevisionId,
+    activeRevisionId: scenario.stopNoSelection ? null : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -330,6 +378,9 @@ export function installFixture(scenario, evidence) {
         namespaceId,
         agentId: agent.id,
         status: scenario.candidateDeploymentStatus,
+        cleanup: scenario.cleanupStatus
+          ? { status: scenario.cleanupStatus, nextAttemptAt: null }
+          : null,
         progress: ["queued", "running"].includes(scenario.candidateDeploymentStatus)
           ? {
               lastAttempt: scenario.deploymentLastAttempt ?? null,
@@ -463,6 +514,9 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
+  if (scenario.presetVariables) {
+    Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
+  }
   const presets = [
     preset,
     {
@@ -483,17 +537,22 @@ export function installFixture(scenario, evidence) {
       });
     }
   }
-  const response = (data, status = 200, errorCode, meta = {}) =>
+  const response = (data, status = 200, errorCode, meta = {}, errorMessage) =>
     new Response(
       JSON.stringify({
         ...(errorCode
-          ? { error: { code: errorCode, message: "The selected preview simulates this failure." } }
+          ? {
+              error: {
+                code: errorCode,
+                message: errorMessage ?? "The selected preview simulates this failure.",
+              },
+            }
           : { data }),
         meta: { requestId: "req_00000000-0000-4000-8000-000000000001", ...meta },
       }),
       { status, headers: { "content-type": "application/json" } },
     );
-  const error = (status, code) => response(null, status, code);
+  const error = (status, code, message) => response(null, status, code, {}, message);
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
@@ -545,8 +604,21 @@ export function installFixture(scenario, evidence) {
           }
         });
       }
+      if (rule.bodyError) {
+        // A simulated after-headers failure exercises the production body reader.
+        // Real socket interruption is proved separately by the transport tests.
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"data":'));
+              queueMicrotask(() => controller.error(new TypeError("Response body interrupted")));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
       if (rule.status) {
-        return error(rule.status, rule.code);
+        return error(rule.status, rule.code, rule.message);
       }
     }
     if (path === "/api/auth/providers" && method === "GET") {
@@ -933,25 +1005,38 @@ export function installFixture(scenario, evidence) {
         if (retrySuffix === undefined && method === "GET") {
           current.reads += 1;
           if (current.status !== "failed") {
-            current.status = current.reads > 1 ? "succeeded" : "running";
+            current.status =
+              scenario.provisionedDeploymentStatus === "running"
+                ? "running"
+                : current.reads > 1
+                  ? scenario.provisionedDeploymentStatus === "failed"
+                    ? "failed"
+                    : "succeeded"
+                  : "running";
           }
           return response({
             provisioning: {
               workId: current.workId,
               status: current.status,
-              phase: current.status === "succeeded" ? "handoff" : "configuration",
+              phase: current.reads > 1 ? "handoff" : "configuration",
               attemptCount: 1,
               updatedAt: createdAt,
               url: current.url,
               ...(current.status === "failed"
                 ? {
                     error: {
-                      code: "PROVISIONING_FAILED",
-                      message: "The worker could not finish provisioning.",
+                      code:
+                        scenario.provisionedDeploymentStatus === "failed"
+                          ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
+                          : "PROVISIONING_FAILED",
+                      message:
+                        scenario.provisionedDeploymentStatus === "failed"
+                          ? "Harness credential initialization failed. Correct the cause and deploy again."
+                          : "The worker could not finish provisioning.",
                     },
                   }
                 : {}),
-              ...(current.status === "succeeded"
+              ...(current.status === "succeeded" || current.reads > 1
                 ? {
                     configurationId: current.configurationId,
                     agentId: current.agentId,
@@ -1053,6 +1138,12 @@ export function installFixture(scenario, evidence) {
           return response(next, 202);
         }
         if (suffix === "/revisions" && method === "GET") {
+          if (scenario.latestDeploymentReadStatus) {
+            return error(scenario.latestDeploymentReadStatus);
+          }
+          if (scenario.latestDeploymentReadDelay) {
+            await new Promise((resolve) => setTimeout(resolve, scenario.latestDeploymentReadDelay));
+          }
           return response([...revisions.values()].filter((item) => item.agentId === id));
         }
         if (suffix.startsWith("/revisions/") && method === "GET") {
@@ -1064,6 +1155,50 @@ export function installFixture(scenario, evidence) {
           const revisionId = suffix.split("/")[2];
           if (!revisions.has(revisionId)) {
             return error(404);
+          }
+          if (scenario.bootstrapRuntime) {
+            const terminated = (name, reason, exitCode) => ({
+              name,
+              state: "terminated",
+              reason,
+              ready: false,
+              restartCount: 0,
+              startedAt: createdAt,
+              lastTermination: { reason, exitCode, finishedAt: createdAt },
+            });
+            const pod = {
+              role: "agent",
+              cluster: "control",
+              name: "oauth-bootstrap-demo-pod",
+              uid: "bootstrap-demo-uid",
+              phase: "Failed",
+              ready: false,
+              createdAt,
+              events: [],
+              containers: [
+                terminated("prepare-oauth-home", "Completed", 0),
+                terminated("oauth-bootstrap", "Error", 1),
+              ],
+            };
+            return response({
+              revisionId,
+              observedAt: createdAt,
+              pods: [pod],
+              sources: [
+                {
+                  id: "agent",
+                  kind: "container",
+                  available: true,
+                  retention: "Output disappears after cleanup.",
+                  pods: ["oauth-bootstrap", "prepare-oauth-home"].map((container) => ({
+                    name: pod.name,
+                    uid: pod.uid,
+                    container,
+                    restartCount: 0,
+                  })),
+                },
+              ],
+            });
           }
           const startup = scenario.runtimePod === "startupWarnings";
           const pod = {
@@ -1164,6 +1299,39 @@ export function installFixture(scenario, evidence) {
                 },
               },
             );
+          }
+          if (scenario.bootstrapRuntime) {
+            const container = url.searchParams.get("container") ?? "oauth-bootstrap";
+            const stream = {
+              source: "agent",
+              pod: "oauth-bootstrap-demo-pod",
+              podUid: "bootstrap-demo-uid",
+              container,
+              restartCount: 0,
+            };
+            return response({
+              revisionId,
+              source: "agent",
+              stream,
+              observedAt: createdAt,
+              withheld: 0,
+              truncated: false,
+              cursor: null,
+              records: [
+                {
+                  type: "line",
+                  time: createdAt,
+                  stream,
+                  contentClass: "operational",
+                  kind: "text",
+                  level: "unknown",
+                  message:
+                    container === "oauth-bootstrap"
+                      ? "Credential file initialization failed."
+                      : "Private directory initialization completed.",
+                },
+              ],
+            });
           }
           const stream = {
             source: "gateway",
@@ -1277,13 +1445,19 @@ export function installFixture(scenario, evidence) {
           if (!deployment) {
             return error(404);
           }
+          if (scenario.cleanupCompletes && deployment.cleanup) {
+            deployment.cleanupReads = (deployment.cleanupReads ?? 0) + 1;
+            if (deployment.cleanupReads >= 3) {
+              deployment.cleanup = { status: "succeeded", nextAttemptAt: null };
+            }
+          }
           if (deployment.reads !== undefined && ++deployment.reads > 1) {
             deployment.status = "succeeded";
             deployment.progress = null;
             saved.desiredRuntimeState = "running";
             saved.activeRevisionId = deployment.deploymentId;
           }
-          const { reads: _reads, ...status } = deployment;
+          const { reads: _reads, cleanupReads: _cleanupReads, ...status } = deployment;
           return response(status);
         }
         if (suffix.startsWith("/workspace/files/")) {

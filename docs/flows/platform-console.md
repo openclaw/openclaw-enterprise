@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-08
-last_updated_session: 01a11d68-d6e8-7033-ab93-03767bced2da
+updated: 2026-10-09
+last_updated_session: authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2
 ---
 
 # Platform console request flow
@@ -124,13 +124,19 @@ First loads show loading. Return navigation and Refresh can restore one of at mo
 run. Password fields and their derived discovery state clear before retention.
 Controls stay inert until admission succeeds; navigation remains available.
 
-Completed views retain their DOM, handlers, and draft capture callbacks. On return,
-`loadPage` rereads their GET dependencies and compares data and user identity.
-Unchanged views reactivate without rebuilding panels; changed data rebuilds them,
-as does a first readable Namespace for a view retained without a selection.
-Pending reads, read failures, password input, or mutations prevent reuse. Read-only
-catalog and diagnostic POSTs do not invalidate views. Refresh always rebuilds.
-Debug runtime disclosures follow the same validation and retain expanded state.
+`apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
+abort signal through JSON and text body consumption. After headers arrive,
+cancellation retains the signal's reason and socket failures reach the caller's
+interrupted-read recovery. Only JSON syntax failures become invalid-response
+errors; a failed body never causes an automatic replay.
+
+Completed views retain DOM, handlers, and draft capture callbacks. On return,
+`loadPage` rereads GET dependencies and compares data and user identity. Unchanged
+views reactivate; changed data or the first readable Namespace for a view without
+a selection rebuilds them.
+Pending or failed reads, password input, and mutations prevent reuse; read-only
+catalog and diagnostic POSTs do not. Refresh always rebuilds. Debug runtime
+disclosures retain expanded state under the same validation.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
@@ -203,20 +209,15 @@ Preset Secret takes precedence over an entered token. OCC reads the
 Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
-`create.mjs:MODEL_CHOICES` supplies unauthenticated static model lists and manual
-entry. In `renderAgentForm`, the model-entry button switches `manualModel` and
-calls `updateModelConfiguration` and `updateControls`. Entering manual mode
-keeps `model.value` and clears the hidden dropdown selection.
-Returning to the list uses `resetModelChoices` to rebuild the current provider's
-options, including after Configuration JSON changes the provider. It retains
-the model only if that provider's list contains it; otherwise it clears both
-inputs. Provider and authentication changes call the same reset without a model
-to retain. `model.value` supplies one Configuration model, and submission checks
-that its primary model matches that value.
-`updateControls` updates the button label, visibility, and required input; focus moves
-to that input. Switching back to the list preserves credentials and unrelated
-Configuration values. Saved Configuration and pending-request locks apply to
-both directions.
+`create.mjs:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
+`renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
+`updateControls`. Manual mode preserves `model.value` and clears the dropdown.
+`resetModelChoices` restores the current provider's list, including Configuration
+JSON changes, retaining only listed models; otherwise both inputs clear.
+Provider/authentication changes retain no model. Submission matches the primary
+Configuration model to `model.value`. `updateControls` sets the button label,
+visibility, and required input; the toggle moves focus. Returning preserves credentials and unrelated
+Configuration; saved-Configuration and pending-request locks govern both directions.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication; Presets replace the starter unchanged.
@@ -301,14 +302,13 @@ or displays its access or availability error;
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-After a full-page client navigation settles, `loadPage` focuses the destination
-heading if focus fell to the document body. It uses `preventScroll` to preserve
-return position; tab navigation and controls that already have focus keep it.
-Navigation, Namespace changes, and logout invalidate reads; generations reject
-late responses. Refocus coalesces events. Agent detail rechecks access in place,
-preserving controls, input, and saves; failures clear the view. Other pages
-revalidate before reuse; forms defer refocus. Drafts keep save baselines and Namespace
-scopes separate.
+After full-page navigation settles, `loadPage` focuses the destination heading if
+focus fell to the body, using `preventScroll` to preserve return position. Tabs and
+focused controls keep focus. Navigation, Namespace changes, and logout invalidate
+reads; generations reject late responses. Refocus coalesces events. Agent detail
+rechecks access in place, preserving controls, input, and saves; failures clear it.
+Other pages revalidate before reuse; forms defer refocus. Draft save baselines and
+Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
@@ -372,6 +372,8 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 
 - 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
 - 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)

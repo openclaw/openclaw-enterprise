@@ -23,7 +23,9 @@ export class AuthorizationDeniedError extends Error {
     super(message);
     this.name = "AuthorizationDeniedError";
     if (evidence !== undefined) {
-      this.evidence = evidence;
+      if (evidence !== undefined) {
+        this.evidence = evidence;
+      }
     }
     if (authorization !== undefined) {
       this.authorization = Object.freeze({
@@ -702,6 +704,28 @@ export class ActivationPendingError extends Error {
 
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+
+/**
+ * Compute preparation cannot complete for this revision. The worker records a
+ * terminal deployment failure and durable workload retirement in one transaction.
+ * Drivers own initialization and cleanup; status never exposes the error message.
+ */
+export class ComputePreparationFailedError extends Error {
+  readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+  readonly evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence;
+
+  constructor(
+    code: ComputePreparationFailedError["code"],
+    evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence,
+  ) {
+    super("Harness credential initialization could not complete.");
+    this.name = "ComputePreparationFailedError";
+    this.code = code;
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
+  }
+}
 
 /**
  * Activation found its workloads running but one of them can never complete

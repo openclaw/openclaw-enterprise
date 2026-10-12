@@ -4,15 +4,15 @@ An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
 identity, revision history, and deployed gateway. Its permissions do not grant
 access to another Namespace's resources.
 
-Use a [Preset](presets.md) to copy reusable launch settings into a new Agent draft.
+Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 
-To get one running, [deploy your first Agent](../guides/first-agent.md). For an
-existing Agent, see [Compute](../guides/topics/agent-compute.md) for execution
-choices, [Agent Revisions](../guides/topics/agent-revisions.md) for changes, or
-[Troubleshoot](../guides/topics/agent-troubleshoot.md) if a deployment stalls.
+[Deploy your first Agent](../guides/first-agent.md), choose
+[Compute](../guides/topics/agent-compute.md), manage
+[revisions](../guides/topics/agent-revisions.md), or
+[troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creating an Agent saves its identity and exact Namespace-owned Configuration
-reference with `active` status and `stopped` desired runtime state. No revision is
+Creation saves identity and exact Namespace-owned Configuration with `active`
+status and `stopped` desired runtime state. No revision is
 created and no workload or model starts until an authorized caller requests
 [deployment](#identity-and-deployment).
 
@@ -65,7 +65,7 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
 
 This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
-`error`, plugin `warnings`, and nullable `progress`.
+`error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
 - `queued`: no live claim, including after lease expiry.
 - `running`: a live worker claim.
@@ -79,6 +79,11 @@ Null means no bound evidence. Maintenance and cleanup
 results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; it is null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
+
+Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
+Deployment failure remains terminal. Bootstrap errors retain bounded
+`error.data.preparation` (identities, reasons, scheduling, exits, timestamps),
+excluding raw output and credentials; see [bootstrap limits](drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
