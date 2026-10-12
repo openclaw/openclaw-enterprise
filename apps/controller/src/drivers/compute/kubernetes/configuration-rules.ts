@@ -1,6 +1,7 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { keyedSettingPath } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
+import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
 
 /**
  * Kubernetes Compute rules on the caller's own Configuration that preparation or the Gateway
@@ -214,28 +215,15 @@ const HARNESS_AUTH_METHODS: Readonly<Record<KubernetesHarnessTopology, readonly 
   "Dedicated Codex": ["api_key", "codex_pat", "oauth", "credential_source"],
 };
 
-/**
- * The Agent's Harness authentication method must be one Kubernetes Compute delivers to the
- * Agent's Harness topology. The rule depends only on the Agent (its binding and execution mode)
- * and the Configuration's Harness, so Agent save, provisioning and deployment refuse it with
- * the same message. `createError` names an Agent setting, not a Configuration one.
- */
-export function requireHarnessAuthMethod(
+/** The `requireHarnessAuthMethod` rule for an Agent's topology on Kubernetes Compute. */
+export function kubernetesHarnessAuthMethods(
   topology: KubernetesHarnessTopology,
-  method: string,
-  createError: SettingError,
-): void {
-  const accepted = HARNESS_AUTH_METHODS[topology];
-  if (!accepted.includes(method)) {
-    const list =
-      accepted.length === 1
-        ? accepted[0]
-        : `${accepted.slice(0, -1).join(", ")} or ${accepted.at(-1)}`;
+): HarnessAuthMethodRule {
+  return {
+    compute: "Kubernetes Compute",
+    topology,
+    accepted: HARNESS_AUTH_METHODS[topology],
     // Codex runs only dedicated, so its execution mode is not a fix.
-    const fix = topology === "Dedicated Codex" ? "harnessAuth" : "harnessAuth or executionMode";
-    throw createError(
-      "harnessAuth.method",
-      `must be ${list} for ${topology} on Kubernetes Compute: change ${fix}`,
-    );
-  }
+    fix: topology === "Dedicated Codex" ? "harnessAuth" : "harnessAuth or executionMode",
+  };
 }

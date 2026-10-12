@@ -123,6 +123,7 @@ import {
   WORKSPACE_SETUP_RUNTIME,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
+import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
   validatePlaintextNativeGateway,
@@ -134,7 +135,7 @@ import {
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
   type KubernetesHarnessTopology,
-  requireHarnessAuthMethod,
+  kubernetesHarnessAuthMethods,
   requireHarnessCredentialBinding,
   requireWorkspaceNodePlugins,
   selectedModelProviders,
@@ -252,11 +253,6 @@ const callerSettingError = (setting: string, requirement: string) =>
 // The same rule refused in preparation, where the message reaches only diagnostics.
 const preparationSettingError = (setting: string, requirement: string) =>
   new ConfigurationFailure(configurationSettingMessage(setting, requirement));
-
-// An Agent setting the caller owns (its Harness authentication binding), refused at Agent save,
-// provisioning and deployment with the same message.
-const agentSettingError = (setting: string, requirement: string) =>
-  new ConfigurationHarnessError(`Agent setting ${setting} ${requirement}.`);
 
 // Initial workspace files land in the managed workspace; a dedicated Harness also mounts that
 // storage at its working directory.
@@ -3311,7 +3307,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       : native
         ? "Dedicated OpenClaw"
         : "Dedicated Codex";
-    requireHarnessAuthMethod(topology, auth.method, agentSettingError);
+    requireHarnessAuthMethod(kubernetesHarnessAuthMethods(topology), auth.method);
     // Reject here, before a deployment stops predecessors, not only during preparation. Only
     // Dedicated Codex reaches this with oauth.
     if (auth.method === "oauth" && this.sandboxDriver !== undefined) {
