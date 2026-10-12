@@ -102,7 +102,8 @@ in container arguments or environment values. Dedicated Harness startup must
 also verify completion before execution. Unsupported workspace placement fails
 rather than writing outside managed storage. Provider-owned Sandbox startup
 cannot carry this init container, so Agent save, provisioning and deployment
-refuse initial workspace files in a Sandbox with a `409` before staging
+refuse initial workspace files in a Sandbox with a `409` before staging them,
+or before deploying staged files
 ([Compute admission](../reference/drivers/compute-admission.md)); preparation
 keeps the same refusal instead of dropping initialization.
 

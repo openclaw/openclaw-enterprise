@@ -1207,6 +1207,8 @@ function validateWorkspaceSetupTopology(
     if (error instanceof ConfigurationHarnessError) {
       throw error;
     }
+    // Kubernetes Compute refuses any Harness in a Sandbox first; a Driver that can deliver
+    // into a Sandbox would need its own refusal text here.
     throw new ResourceStateConflictError(
       sandboxDriverId === undefined
         ? "The selected Compute Driver cannot deliver initial workspace files to this Agent."
@@ -2477,6 +2479,8 @@ export class OpenClawController {
       // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
       // queueing work the worker's admission would refuse (finding 1145). Unlike Agent save, a
       // Compute Driver without repository support is refused here too: deployment would be.
+      // authorizeProvisioningRecord repeats this check for the stored record, after the Harness
+      // authentication check; this copy also runs where no durable record can be stored.
       if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
         validateRepositoryTopology(
           compute,
