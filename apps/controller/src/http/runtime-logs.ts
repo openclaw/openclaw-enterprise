@@ -89,6 +89,7 @@ export function runtimeLogQuery(query: AgentRuntimeLogsQuery): RuntimeLogQuery {
   return {
     source: query.source,
     ...(query.pod === undefined ? {} : { pod: query.pod }),
+    ...(query.container === undefined ? {} : { container: query.container }),
     previous: query.previous === "true",
     tailLines: download
       ? RUNTIME_LOG_MAX_TAIL_LINES

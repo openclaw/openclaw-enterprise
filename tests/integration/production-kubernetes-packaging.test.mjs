@@ -1388,6 +1388,25 @@ test(
       ...runtimeLogRules,
     ]);
     assert.equal(hasLogRules(role(execution, "-execution-tenant-worker").rules), false);
+    // Bootstrap Jobs need worker-only creation and retirement, not mutation or TTL authority.
+    for (const workerRole of [
+      role(enabled, "-openclaw-tenant-worker"),
+      role(execution, "-execution-tenant-worker"),
+    ]) {
+      assert.deepEqual(
+        workerRole.rules.filter(({ resources = [] }) => resources.includes("jobs")),
+        [{ apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] }],
+      );
+    }
+    for (const apiRole of [
+      role(enabled, "-openclaw-tenant-api"),
+      role(execution, "-execution-tenant-api"),
+    ]) {
+      assert.equal(
+        apiRole.rules.some(({ resources = [] }) => resources.includes("jobs")),
+        false,
+      );
+    }
     const executionDisabled = await resources(
       (
         await execute(helm, [...executionArgs, "--set", "agentRuntimeLogs.enabled=false"], {

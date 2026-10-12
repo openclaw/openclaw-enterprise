@@ -127,9 +127,9 @@ function provisioningBody(namespaceId, secrets, overrides = {}) {
       method: "api_key",
       source: secretRef(namespaceId, secrets.modelKey.id),
     },
-    initialWorkspaceFiles: {
-      "AGENTS.md": "Use the inline workspace setup from provisioning.",
-    },
+    // The development Compute fixture has no workspace storage. Real file setup
+    // is covered by the Kubernetes provisioning integration.
+    initialWorkspaceFiles: {},
     ...overrides,
   };
 }
@@ -463,7 +463,7 @@ async function createFixture(context, options = {}) {
       emit: (event) => {
         options.onWorkerEvent?.(event);
         // This persistence case ends at durable handoff, before credential service dispatch.
-        if (options.stopAfterProvisioning && event.code === "PROVISIONING_HANDED_OFF") {
+        if (options.stopAfterProvisioning && event.code === "PROVISIONING_DEPLOYMENT_PENDING") {
           workerCompletion = worker.stop();
         }
       },
@@ -798,13 +798,21 @@ test(
     assert.equal(changed.status, 409, JSON.stringify(changed.body));
 
     await fixture.startWorker();
-    const status = await waitFor("Agent provisioning to succeed", async () => {
-      const observed = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
-    });
+    const status = await waitFor(
+      "Agent provisioning to queue its initial deployment wait",
+      async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        // Admission publishes revisionId before the worker queues its activation
+        // wait. Inspect the handoff only after that deferral has committed.
+        return observed.data.revisionId !== undefined && observed.data.status === "queued"
+          ? observed.data
+          : undefined;
+      },
+    );
     await fixture.stopWorker();
-    assert.equal(status.status, "succeeded");
+    assert.equal(status.status, "queued");
     assert.match(status.agentId, identifier("agt"));
     assert.match(status.configurationId, identifier("cfg"));
 
@@ -872,7 +880,7 @@ test(
       [namespace.id, admitted.data.provisioning.workId],
     );
     assert.equal(work.rowCount, 1);
-    assert.equal(work.rows[0].state, "succeeded");
+    assert.equal(work.rows[0].state, "queued");
   },
 );
 
@@ -881,7 +889,14 @@ for (const authMethod of ["api_key", "codex_pat"]) {
     `${authMethod} provisioning grants existing Secret access and hands off one revision`,
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
-      const fixture = await createFixture(context);
+      let deploymentReady = false;
+      const computeDriver = createRuntimeComputeDriver();
+      const prepareRevision = computeDriver.prepareRevision.bind(computeDriver);
+      computeDriver.prepareRevision = async (...args) => ({
+        ...(await prepareRevision(...args)),
+        ready: deploymentReady,
+      });
+      const fixture = await createFixture(context, { computeDriver });
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
       const secretCreateCallCount = fixture.secretDriver.calls.filter(
@@ -924,12 +939,30 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       ]);
 
       await fixture.startWorker();
+      // This suite proves the real API, worker and PostgreSQL lifecycle with its
+      // existing development Compute fixture, not Kubernetes or model execution.
+      const handoff = await waitFor("initial deployment to remain pending", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.revisionId !== undefined ? observed.data : undefined;
+      });
+      assert.notEqual(handoff.status, "succeeded");
+      deploymentReady = true;
       const status = await waitFor("Agent provisioning to succeed", async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        if (observed.data.revisionId !== undefined) {
+          const deployment = await fixture.request(
+            "GET",
+            `/namespaces/${namespace.id}/agents/${observed.data.agentId}/deployments/${observed.data.revisionId}`,
+          );
+          assert.notEqual(deployment.data.status, "failed", JSON.stringify(deployment.body));
+        }
         return observed.data.status === "succeeded" ? observed.data : undefined;
       });
       assert.equal(status.status, "succeeded");
+      assert.equal(status.agentId, handoff.agentId);
+      assert.equal(status.revisionId, handoff.revisionId);
       assert.match(status.agentId, identifier("agt"));
       assert.match(status.configurationId, identifier("cfg"));
       fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);

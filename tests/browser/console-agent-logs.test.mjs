@@ -524,6 +524,7 @@ test("level chips and the text filter narrow only the loaded window; download sa
   assert.deepEqual(Object.fromEntries(requested.searchParams), {
     source: "gateway",
     pod: computeDriver.podName({ id: revisionId }),
+    container: "gateway",
     minLevel: "info",
     download: "true",
   });

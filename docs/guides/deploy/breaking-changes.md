@@ -11,7 +11,7 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-11: repository credential images follow the control-plane image rule
+## 2026-10-12: repository credential images follow the control-plane image rule
 
 **What breaks.** The chart (since #2221) and now profile preflight refuse a
 `repositoryCredentials.image` or `repository.image` that does not start with a
@@ -25,6 +25,26 @@ reference. Registries do not serve such names.
 approved immutable SHA-256 image reference`; preflight names `repository.image`.
 
 **Steps.** Use the image's registry reference with its digest.
+
+## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
+
+**What breaks.** `helm upgrade` of the observability demo fails when
+`cluster.port` or `occ.metricsPort` is not a decimal integer from 1 through
+65535 with no leading zero. A saved string `"010"` used to install, and
+Kubernetes applied port 8. The upgrade now stops before it writes that policy.
+
+**Who is affected.** Demo releases whose saved values use a leading zero or a
+port outside that range. Defaults 443 and 9464, and an ordinary decimal such as
+6443, upgrade unchanged.
+
+**How to tell.** Helm stops in `prometheus.yaml` with
+`cluster.port must be an integer TCP port from 1 to 65535`, or the same
+sentence for `occ.metricsPort`.
+
+**Steps.** Set the field to the decimal Kubernetes already applied (`8` for a
+saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
+The [demo install](../observability/demo.md#install-private-backends) states the
+same contract.
 
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 

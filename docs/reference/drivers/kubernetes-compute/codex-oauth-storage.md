@@ -28,7 +28,7 @@ The bundle moves one way and exists in these places:
 | Stage        | Object                                           | Who can read it                                                                                                                               | Erased when                                                                                       |
 | ------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Staged login | Session Secret in the control plane              | Holders of `secret:operate` on that Secret, including through `secretBindings` projection                                                     | Cancelled, touched after expiry, or consumed by the first deployment                              |
-| Handoff      | Immutable seed Secret in the execution namespace | Kubernetes principals allowed to `get` Secrets there                                                                                          | The seed writer is ready, or the revision stops                                                   |
+| Handoff      | Immutable seed Secret in the execution namespace | Kubernetes principals allowed to `get` Secrets there                                                                                          | After successful handoff and writer termination, or revision cleanup                              |
 | Handoff      | Seed writer pod                                  | No network, because its template has no `openclaw.dev/network-profile` label and the namespace default-deny applies; no service-account token | Deleted with the seed Secret                                                                      |
 | Runtime      | `codex-home/auth.json` on the Agent claim        | The dedicated Codex workload, which refreshes it                                                                                              | A non-OAuth revision starts, or the claim is deleted (subject to the StorageClass reclaim policy) |
 
@@ -38,6 +38,41 @@ initial handoff, OCC retains a consumed source marker and never restores the
 original token pair. Restarts and revisions reopen the current disk bundle.
 Loss of the claim or credential file requires a new login and explicit deployment.
 This version has no broker-based backup, recovery, or shared refresh ownership.
+
+## Bounded bootstrap Job
+
+The seed writer runs in one revision-scoped Kubernetes Job, with one completion,
+parallelism one, `restartPolicy: Never`, `backoffLimit: 2`, and a five-minute
+`activeDeadlineSeconds`. Kubernetes may retry failed Pods twice; the deadline
+also bounds time spent waiting for scheduling or storage. Compute creates the
+Job once and observes its existing conditions on later passes. It does not patch
+or recreate a failed Job to reset either budget.
+Reobservation accepts equivalent API-canonicalized resource quantities while
+rejecting changed limits or requests. Before admitting a Job, Compute retires
+any exact owned bootstrap Deployment and waits for its writer Pods to disappear.
+The seed and private claim survive this cutover.
+
+The writer locks the private directory while it validates or installs the bundle
+and receipt, then exits. Kernel-owned locking serializes duplicate executions
+and releases the lock on process exit. A successful Job means the writer verified
+both files; it does not prove provider authentication or a model turn.
+
+After `Complete`, Compute consumes the source, deletes the Job with foreground
+propagation, waits for its exact Pods to disappear, and removes the seed Secret.
+Only then does it start Codex. Cleanup interrupted after consumption resumes
+from the consumed marker without copying the original tokens again.
+
+A `Failed` condition makes the OCC deployment terminal:
+`HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT` for `DeadlineExceeded`, otherwise
+`HARNESS_CREDENTIAL_BOOTSTRAP_FAILED`. OCC commits failure and a durable
+revision-retirement obligation together. Cleanup retries across worker restarts,
+removes the Job, Pods, and seed, and preserves the Agent's claim. No TTL controller
+owns cleanup. The failed deployment remains failed; correcting the cause and
+explicitly deploying creates a new revision and Job. The source stays claimed,
+not consumed, when the Job fails.
+
+The tenant worker roles in both Helm charts grant only `get`, `create`, and
+`delete` for `batch/jobs`; API identities receive no Job permissions.
 
 ## OAuth launch limits
 
@@ -49,7 +84,7 @@ recorded for follow-up:
   Admission rejects other topologies before any running workload stops.
 - Binding a new login to an Agent with existing storage empties `codex-home`
   before seeding, so previous sessions and history are removed. The seed writer
-  creates files exclusively, never follows links, and reports ready only after
+  creates files exclusively, never follows links, and exits successfully only after
   it re-reads a valid bundle and receipt.
 - A revision that does not use OAuth removes `codex-home`. Returning to OAuth
   needs a new login.
@@ -73,8 +108,10 @@ Driver. `tests/conformance/harness-device-auth.test.mjs` checks the native proto
 adapter. These cases do not prove live OAuth, token refresh, or runtime deployment.
 The bootstrap case in `tests/integration/runtime-image-startup.test.mjs` executes
 the actual script on local disk and simulates a rotated bundle. Kubernetes
-conformance substitutes API observations; neither proves native refresh or
-credential handoff on a real cluster.
+conformance substitutes API observations; neither proves native refresh.
+[Kubernetes fixture verification](../../../testing/kubernetes.md#kubernetes-http-fixture)
+also covers real Job completion and exhaustion through the API and PostgreSQL
+worker with synthetic credentials, not live provider acceptance.
 
 Live first-deploy proof remains outstanding: complete device login, search and
 select plugins, deploy a new Agent on the supported topology, and verify a real
