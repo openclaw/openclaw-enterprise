@@ -20,6 +20,12 @@
   ],
   "files": [
     {
+      "path": "tests/integration/kubernetes-oauth-bootstrap-real.test.mjs",
+      "expectedTests": [
+        "PostgreSQL API and worker complete OAuth bootstrap Jobs and retire exhausted Jobs on real Kubernetes"
+      ]
+    },
+    {
       "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
       "expectedTests": [
         "real Kubernetes Compute reads plugin runtime status from the exact gateway Pod",

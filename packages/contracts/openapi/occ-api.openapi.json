@@ -1174,7 +1174,7 @@
                         "required": ["name", "uid", "container", "restartCount"],
                         "type": "object"
                       },
-                      "maxItems": 16,
+                      "maxItems": 256,
                       "type": "array"
                     },
                     "retention": { "maxLength": 512, "type": "string" },
@@ -17623,6 +17623,37 @@
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "cleanup": {
+                          "anyOf": [
+                            { "type": "null" },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "nextAttemptAt": {
+                                  "anyOf": [
+                                    {
+                                      "format": "date-time",
+                                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                      "type": "string"
+                                    },
+                                    { "type": "null" }
+                                  ]
+                                },
+                                "status": {
+                                  "anyOf": [
+                                    { "const": "queued", "type": "string" },
+                                    { "const": "running", "type": "string" },
+                                    { "const": "succeeded", "type": "string" },
+                                    { "const": "failed", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": ["status", "nextAttemptAt"],
+                              "type": "object"
+                            }
+                          ],
+                          "description": "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed."
+                        },
                         "deploymentId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
@@ -17636,6 +17667,262 @@
                                 "code": { "maxLength": 64, "minLength": 1, "type": "string" },
                                 "data": {
                                   "anyOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "preparation": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "finishedAt": {
+                                              "anyOf": [
+                                                {
+                                                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?Z$",
+                                                  "type": "string"
+                                                },
+                                                { "type": "null" }
+                                              ]
+                                            },
+                                            "observedAt": {
+                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?Z$",
+                                              "type": "string"
+                                            },
+                                            "pods": {
+                                              "items": {
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "containers": {
+                                                    "items": {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "exitCode": {
+                                                          "anyOf": [
+                                                            {
+                                                              "maximum": 2147483647,
+                                                              "minimum": -2147483648,
+                                                              "type": "integer"
+                                                            },
+                                                            { "type": "null" }
+                                                          ]
+                                                        },
+                                                        "finishedAt": {
+                                                          "anyOf": [
+                                                            {
+                                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?Z$",
+                                                              "type": "string"
+                                                            },
+                                                            { "type": "null" }
+                                                          ]
+                                                        },
+                                                        "kind": {
+                                                          "anyOf": [
+                                                            { "const": "init", "type": "string" },
+                                                            { "const": "main", "type": "string" }
+                                                          ]
+                                                        },
+                                                        "name": {
+                                                          "maxLength": 253,
+                                                          "minLength": 1,
+                                                          "pattern": "^[A-Za-z0-9._-]+$",
+                                                          "type": "string"
+                                                        },
+                                                        "reason": {
+                                                          "anyOf": [
+                                                            { "type": "null" },
+                                                            {
+                                                              "const": "Completed",
+                                                              "type": "string"
+                                                            },
+                                                            { "const": "Error", "type": "string" },
+                                                            {
+                                                              "const": "OOMKilled",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "ContainerCannotRun",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "StartError",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "ImagePullBackOff",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "ErrImagePull",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "CreateContainerConfigError",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "CreateContainerError",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "RunContainerError",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "ContainerCreating",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "PodInitializing",
+                                                              "type": "string"
+                                                            }
+                                                          ]
+                                                        },
+                                                        "startedAt": {
+                                                          "anyOf": [
+                                                            {
+                                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?Z$",
+                                                              "type": "string"
+                                                            },
+                                                            { "type": "null" }
+                                                          ]
+                                                        },
+                                                        "state": {
+                                                          "anyOf": [
+                                                            {
+                                                              "const": "waiting",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "running",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "const": "terminated",
+                                                              "type": "string"
+                                                            },
+                                                            { "const": "unknown", "type": "string" }
+                                                          ]
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "name",
+                                                        "kind",
+                                                        "state",
+                                                        "reason",
+                                                        "exitCode",
+                                                        "startedAt",
+                                                        "finishedAt"
+                                                      ],
+                                                      "type": "object"
+                                                    },
+                                                    "maxItems": 16,
+                                                    "type": "array"
+                                                  },
+                                                  "name": {
+                                                    "maxLength": 253,
+                                                    "minLength": 1,
+                                                    "pattern": "^[A-Za-z0-9._-]+$",
+                                                    "type": "string"
+                                                  },
+                                                  "phase": {
+                                                    "anyOf": [
+                                                      { "const": "Pending", "type": "string" },
+                                                      { "const": "Running", "type": "string" },
+                                                      { "const": "Succeeded", "type": "string" },
+                                                      { "const": "Failed", "type": "string" },
+                                                      { "const": "Unknown", "type": "string" }
+                                                    ]
+                                                  },
+                                                  "scheduling": {
+                                                    "anyOf": [
+                                                      { "const": "pending", "type": "string" },
+                                                      { "const": "scheduled", "type": "string" },
+                                                      {
+                                                        "const": "unschedulable",
+                                                        "type": "string"
+                                                      },
+                                                      { "const": "unknown", "type": "string" }
+                                                    ]
+                                                  },
+                                                  "uid": {
+                                                    "maxLength": 253,
+                                                    "minLength": 1,
+                                                    "pattern": "^[A-Za-z0-9._-]+$",
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "name",
+                                                  "uid",
+                                                  "phase",
+                                                  "scheduling",
+                                                  "containers"
+                                                ],
+                                                "type": "object"
+                                              },
+                                              "maxItems": 4,
+                                              "type": "array"
+                                            },
+                                            "reason": {
+                                              "anyOf": [
+                                                { "const": "retry_limit", "type": "string" },
+                                                { "const": "deadline", "type": "string" },
+                                                { "const": "unknown", "type": "string" }
+                                              ]
+                                            },
+                                            "startedAt": {
+                                              "anyOf": [
+                                                {
+                                                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?Z$",
+                                                  "type": "string"
+                                                },
+                                                { "type": "null" }
+                                              ]
+                                            },
+                                            "workload": {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "kind": {
+                                                  "maxLength": 253,
+                                                  "minLength": 1,
+                                                  "pattern": "^[A-Za-z0-9._-]+$",
+                                                  "type": "string"
+                                                },
+                                                "name": {
+                                                  "maxLength": 253,
+                                                  "minLength": 1,
+                                                  "pattern": "^[A-Za-z0-9._-]+$",
+                                                  "type": "string"
+                                                },
+                                                "namespace": {
+                                                  "maxLength": 253,
+                                                  "minLength": 1,
+                                                  "pattern": "^[A-Za-z0-9._-]+$",
+                                                  "type": "string"
+                                                },
+                                                "uid": {
+                                                  "maxLength": 253,
+                                                  "minLength": 1,
+                                                  "pattern": "^[A-Za-z0-9._-]+$",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": ["kind", "name", "uid", "namespace"],
+                                              "type": "object"
+                                            }
+                                          },
+                                          "required": [
+                                            "workload",
+                                            "reason",
+                                            "observedAt",
+                                            "startedAt",
+                                            "finishedAt",
+                                            "pods"
+                                          ],
+                                          "type": "object"
+                                        }
+                                      },
+                                      "required": ["preparation"],
+                                      "type": "object"
+                                    },
                                     {
                                       "additionalProperties": false,
                                       "properties": {
@@ -17833,6 +18120,7 @@
                         "namespaceId",
                         "agentId",
                         "status",
+                        "cleanup",
                         "progress",
                         "error",
                         "warnings"
@@ -18398,7 +18686,7 @@
                                   "required": ["name", "uid", "container", "restartCount"],
                                   "type": "object"
                                 },
-                                "maxItems": 16,
+                                "maxItems": 256,
                                 "type": "array"
                               },
                               "retention": { "maxLength": 512, "type": "string" },
@@ -18517,6 +18805,18 @@
           {
             "in": "query",
             "name": "pod",
+            "required": false,
+            "schema": {
+              "maxLength": 253,
+              "minLength": 1,
+              "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Actual container in an owned Pod, including init containers. Defaults to the first advertised main container.",
+            "in": "query",
+            "name": "container",
             "required": false,
             "schema": {
               "maxLength": 253,

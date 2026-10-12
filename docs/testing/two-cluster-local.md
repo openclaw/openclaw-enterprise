@@ -265,12 +265,14 @@ only the corrected successor; earlier results do not establish this acceptance.
 ## Upgrade the execution chart
 
 The [image upgrade command](../guides/deploy/production-upgrade.md) upgrades only
-the control-plane `openclaw-enterprise` release. Releases after 2026-09-28
-also need newer `openclaw-execution` grants: Pod `patch` for the tenant worker
-role, and Pod, `pods/proxy`, `pods/log` and Event reads for the tenant API role.
-Without them, workspace node setup patches to running Harness Pods fail with a
-Kubernetes `403`, failing that reconciliation, and log reads return
-`503 RUNTIME_LOGS_CLUSTER_RBAC`.
+the control-plane `openclaw-enterprise` release. The current release also needs
+`openclaw-execution` grants: Pod `patch` and `batch` Job `get`,
+`create`, and `delete` for the tenant worker role, and Pod, `pods/proxy`,
+`pods/log` and Event reads for the tenant API role. Worker Job grants are
+required for OAuth bootstrap even when runtime logs are disabled.
+Missing Pod patch grants block workspace node setup on running Harness Pods with
+Kubernetes `403`; missing Job grants block OAuth bootstrap creation and cleanup.
+Missing API log grants return `503 RUNTIME_LOGS_CLUSTER_RBAC`.
 
 Upgrade the execution release first, from the candidate checkout, while the old
 controller still runs:

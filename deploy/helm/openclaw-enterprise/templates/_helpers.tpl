@@ -244,8 +244,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
 {{- end -}}
 {{- range $label, $fileName := dict "bootstrap.password.fileName" .Values.bootstrap.password.fileName "bootstrap.serviceKey.fileName" .Values.bootstrap.serviceKey.fileName -}}
-{{- if or (eq $fileName ".") (eq $fileName "..") (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
-{{- fail (printf "%s must be a simple basename" $label) -}}
+{{- if or (eq $fileName ".") (eq $fileName "..") (gt (len (toString $fileName)) 255) (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
+{{- fail (printf "%s must be a simple basename of at most 255 characters" $label) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
@@ -373,10 +373,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
 {{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
 {{- $credentials := .Values.repositoryCredentials -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $credentials.image) -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $credentials.image) -}}
 {{- fail "repositoryCredentials.image must be an approved immutable SHA-256 image reference" -}}
 {{- end -}}
 {{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}

@@ -21,6 +21,12 @@ app.kubernetes.io/component: {{ .component }}
 {{- if or (empty $client.namespace) (empty $client.podLabels) }}{{ fail "grafana.clients requires namespace and nonempty podLabels" }}{{ end -}}
 {{- include "demo.namespaceName" (dict "value" $client.namespace "path" (printf "grafana.clients[%d].namespace" $index)) -}}
 {{- end -}}
+{{- /* NetworkPolicy ports. Sprig int returns 0 past int64, so a longer digit string must fail before that conversion. */ -}}
+{{- range $path, $port := dict "cluster.port" .Values.cluster.port "occ.metricsPort" .Values.occ.metricsPort -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $port))) (gt (int $port) 65535) -}}
+{{- fail (printf "%s must be an integer TCP port from 1 to 65535" $path) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- define "demo.namespaceName" -}}
 {{- if or (gt (len (toString .value)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .value))) -}}

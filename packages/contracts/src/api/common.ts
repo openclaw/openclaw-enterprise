@@ -183,6 +183,15 @@ export const AgentRuntimeLogsQuery = Type.Object(
     pod: Type.Optional(
       Type.String({ minLength: 1, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }),
     ),
+    container: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 253,
+        pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+        description:
+          "Actual container in an owned Pod, including init containers. Defaults to the first advertised main container.",
+      }),
+    ),
     previous: Type.Optional(Type.Union([Type.Literal("true"), Type.Literal("false")])),
     tailLines: Type.Optional(
       Type.String({
