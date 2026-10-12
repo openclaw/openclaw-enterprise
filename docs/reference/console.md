@@ -124,7 +124,7 @@ binding, but API permissions and topology checks still apply. **Current version*
 **Deployment activity** shows the newest authorized outcome and the viewed version’s
 own result. The Agent list’s **Latest deployment** links failure details beside
 Current version. Unreadable results remain unavailable. Bootstrap failures keep
-safe evidence; **Revision cleanup** progress refreshes separately.
+safe evidence; revision cleanup progress refreshes separately.
 
 For a failed deployment, **Open vN Logs** opens that exact version and brings
 its Logs panel into view, including when starting from the draft or another
