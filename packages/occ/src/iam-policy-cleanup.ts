@@ -6,7 +6,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { PlatformReadView, PlatformUnitOfWork } from "./state/platform-state.ts";
 
-/** An AccessBinding removed as a side effect, as recorded in the audit of the removal. */
+/**
+ * An AccessBinding written or removed as a side effect of another operation, as recorded in
+ * that operation's audit event.
+ */
 export interface RemovedAccessBinding {
   readonly id: string;
   readonly subjectKind: AccessBinding["subjectKind"];
@@ -16,7 +19,7 @@ export interface RemovedAccessBinding {
   readonly resourceId?: string;
 }
 
-function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBinding {
+export function accessBindingAuditRecord(binding: Readonly<AccessBinding>): RemovedAccessBinding {
   return Object.freeze({
     id: binding.id,
     subjectKind: binding.subjectKind,
@@ -42,7 +45,7 @@ export async function accessBindingsTargeting(
       .filter(
         (binding) => binding.resourceKind === resourceKind && binding.resourceId === resourceId,
       )
-      .map(removedAccessBinding),
+      .map(accessBindingAuditRecord),
   );
 }
 
@@ -70,7 +73,7 @@ export async function accessBindingsRemovedWithAgent(
             binding.resourceId !== undefined &&
             revisionIds.has(binding.resourceId)),
       )
-      .map(removedAccessBinding),
+      .map(accessBindingAuditRecord),
   );
 }
 
@@ -120,7 +123,7 @@ export async function removeNamespacePolicy(
   const accessBindings: RemovedAccessBinding[] = [];
   for (const binding of await state.iamPolicy.listAccessBindings(namespaceId)) {
     if (await state.iamPolicy.deleteAccessBinding(namespaceId, binding.id)) {
-      accessBindings.push(removedAccessBinding(binding));
+      accessBindings.push(accessBindingAuditRecord(binding));
     }
   }
   const roleIds: string[] = [];
