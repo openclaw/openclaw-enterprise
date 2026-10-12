@@ -19,7 +19,7 @@ letter or digit or that holds a character other than letters, digits, `.`,
 `_`, `:`, `/` or `-` before the `@sha256:` digest, as for the controller image.
 
 **Who is affected.** Hand-written values or profile inputs with such a
-reference. Registries do not serve such names.
+reference. Registry references rarely use such names.
 
 **How to tell.** Rendering fails with `repositoryCredentials.image must be an
 approved immutable SHA-256 image reference`; preflight names `repository.image`.

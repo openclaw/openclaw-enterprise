@@ -94,11 +94,13 @@ same rule to `gatewayNamespace` and `envoyNamespace`, and the chart to
 `controlPlane.dns.namespace` follow the same rule, as the chart does for
 `api.clients` and `dns`: NetworkPolicies select those peers by
 `kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a
-slash, an uppercase letter, or a longer name fails preflight. `buildRendered` requires the literal `sha256` algorithm and 64 lowercase
+slash, an uppercase letter, or a longer name fails preflight.
+
+`buildRendered` requires the literal `sha256` algorithm and 64 lowercase
 hexadecimal characters for `controlPlane.controllerImage`, `runtime.image`, and
 enabled `repository.image`. The controller and repository images also follow
-the chart's control-plane rule, `controlPlaneDigestImage`: a letter or digit
-first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
+the chart's control-plane image rule (`controlPlaneDigestImage` here): a letter
+or digit first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
 
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.
