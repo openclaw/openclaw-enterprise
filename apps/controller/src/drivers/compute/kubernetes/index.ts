@@ -5193,6 +5193,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ))
       ) {
         // The worker retires the bootstrap (Job and seed Secret) if the deadline passes here.
+        // Not `incomplete()`: no runtime failure evidence may end this wait early.
         return { ...result, pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" };
       }
     }
