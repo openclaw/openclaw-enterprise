@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-12
-last_updated_session: authoring-run/78c0ea3f-c6ee-4d2e-8738-47b58af366b1
+last_updated_session: authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2
 ---
 
 # Installation Profile Rendering Flow
@@ -285,11 +285,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
-- 2026-10-12 11:45: Normalize omitted PluginDriver configuration for startup. (authoring-run/78c0ea3f-c6ee-4d2e-8738-47b58af366b1 - a361fada166f4274080199ec65cb829f48aee53e)
-
-- 2026-10-12 11:23: Document trusted profile validation and custom-only Preset seeding through startup. (authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1 - b195e54e9)
-
-- 2026-10-10 22:12: Added explicit profile-file selection, configurable bundled Preset seeding, and catalog-specific credential diagnostics. (authoring-run/f39c7c2c-32e4-4409-8333-c018f226985c - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-10-12 14:04: Document the validated profile and omitted-configuration contract. (authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
 

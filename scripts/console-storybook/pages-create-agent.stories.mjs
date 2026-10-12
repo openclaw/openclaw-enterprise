@@ -113,6 +113,7 @@ export const CreateCustomPresetStarter = {
   ...story("createCustomPresetStarter"),
   name: "Custom Preset quick-start",
 };
+export const CreatePresetNameTie = story("createPresetNameTie");
 export const CreateBoundCredentialPreset = {
   ...story("createBoundCredentialPreset"),
   name: "Preset with saved model credential",

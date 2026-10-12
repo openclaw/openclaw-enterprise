@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-10-12
-last_updated_session: authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1
+last_updated_session: authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2
 ---
 
 # Agent Presets flow
@@ -289,9 +289,7 @@ or an immutable admitted revision.
 
 ## Changelog
 
-- 2026-10-12 11:23: Document readable shortcut selection and exact-name tie-breaking. (authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1 - b195e54e9)
-
-- 2026-10-10 22:21: Choose a readable custom Preset when default-codex is absent; retain exact-resource authorization and independent manual setup. (authoring-run/3bda898e-2a6d-44ac-adf6-cd00cf0033c9 - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-10-12 14:04: Document readable starter selection and exact-name ties. (authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
 

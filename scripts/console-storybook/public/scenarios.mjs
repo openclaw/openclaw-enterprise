@@ -886,6 +886,19 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof; exact Preset authorization and draft creation have separate browser integration coverage.",
   },
+  createPresetNameTie: {
+    group: "Pages/Create Agent",
+    name: "Preset name tie-break",
+    path: create,
+    customPresetsOnly: true,
+    presetNameTie: true,
+    description: "Case-insensitive name ties use exact names, independently of API response order.",
+    steps: [
+      "Select Start with default Preset and confirm Research assistant is chosen ahead of research assistant.",
+      "Enter an Agent name, select Use Preset and inspect the editable draft.",
+    ],
+    gap: "Simulated UI proof; actor-readable filtering and actual Agent creation are covered by the Console browser suite.",
+  },
   createForm: {
     group: "Pages/Create Agent",
     name: "OpenAI with Codex harness",

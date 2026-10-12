@@ -2843,13 +2843,31 @@ test("The console quick-start prefers the readable installed default, then the f
     // Creation order differs from display order, and an installed default is not first by name.
     for (const [name, agentName] of [
       ["Zulu starter", "Zulu Agent"],
-      ["alpha starter", "Lowercase Alpha Agent"],
-      ["Alpha starter", "Alpha Agent"],
+      ["First tied starter", "Lowercase Alpha Agent"],
+      ["Second tied starter", "Alpha Agent"],
     ]) {
       const created = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
         body: { name, template: { agent: { name: agentName } } },
       });
       assert.equal(created.status, 201);
+    }
+    // OCC lists by generated ID, so use real updates to guarantee lowercase-first delivery.
+    // The shortcut must choose the uppercase name even when both names collate equally.
+    const seeded = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+    const tied = seeded.data.filter((preset) => preset.name.endsWith("tied starter"));
+    assert.equal(tied.length, 2);
+    for (const [index, preset] of tied.entries()) {
+      const renamed = await fixture.request(
+        "PATCH",
+        `/namespaces/${namespace.id}/presets/${preset.id}`,
+        {
+          body: {
+            name: index === 0 ? "alpha starter" : "Alpha starter",
+            template: { agent: { name: index === 0 ? "Lowercase Alpha Agent" : "Alpha Agent" } },
+          },
+        },
+      );
+      assert.equal(renamed.status, 200);
     }
     if (installedDefault === "denied") {
       const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
