@@ -172,6 +172,10 @@ const OPENSHELL_MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
 const OPENSHELL_NAMESPACE_LABEL = "openclaw.dev/namespace";
 const OPENSHELL_NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
 const OPENSHELL_MANAGED_BY = "openclaw-enterprise";
+/** OpenShell's supervisor Pod labels (pinned `sandbox_runtime.rs` `control_labels`). */
+const OPENSHELL_SANDBOX_ID_LABEL = "openshell.ai/sandbox-id";
+const OPENSHELL_BOUNDARY_ROLE_LABEL = "openshell.ai/boundary-role";
+const KUBERNETES_LABEL_VALUE = /^[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
 const OPENSHELL_RUNTIME_ROOT = "/sandbox/.openclaw-runtime";
 const OPENSHELL_HOME = `${OPENSHELL_RUNTIME_ROOT}/home`;
 const OPENSHELL_WORKSPACE_MOUNTS = "/sandbox/.openclaw-mounts";
@@ -399,7 +403,8 @@ function environment(
       );
     }
     result[nonempty(entry.name, "Environment variable name")] =
-      workspaceMountPaths.get(entry.value) ?? entry.value.replaceAll("/home/node", OPENSHELL_HOME);
+      workspaceMountPaths.get(entry.value) ??
+      entry.value.replaceAll(/\/home\/node(\/|$)/g, `${OPENSHELL_HOME}$1`);
   }
   result.HOME = OPENSHELL_HOME;
   result.TMPDIR = OPENSHELL_TEMPORARY;
@@ -2444,6 +2449,50 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     return harnessObservation(existing);
+  }
+
+  /**
+   * The revision's supervisor Pod opens its workspace-node connection. OpenShell labels that
+   * Pod with the Sandbox's gateway-minted ID (`sandbox_runtime.rs` `control_labels`), a UUID
+   * distinct from the Sandbox name, so the ID is read from the gateway's own record.
+   */
+  async workspaceNodePeerLabels(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined> {
+    this.requireOperatorWorkspaceMode("resolve a workspace-node peer");
+    if (
+      context.revision.namespaceId !== context.namespace.id ||
+      context.revision.sandboxDriverId !== this.id ||
+      context.revision.harness.mode !== "dedicated"
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing to resolve a workspace-node peer outside its selected dedicated AgentRevision and Namespace.",
+      );
+    }
+    const sandbox = this.sandboxRef(context);
+    const existing = await openShellSandboxObserver(
+      this.gatewayClientForNamespace(sandbox.namespaceName),
+    ).getSandbox(
+      { name: sandbox.resourceName, workspace: workspaceName(context.namespace) },
+      context.signal,
+    );
+    if (existing === undefined) {
+      return undefined;
+    }
+    if (existing.annotations["openclaw.dev/revision-id"] !== context.revision.id) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `Refusing OpenShell Sandbox ${sandbox.resourceName} without exact AgentRevision ownership.`,
+      );
+    }
+    if (existing.id === undefined || !KUBERNETES_LABEL_VALUE.test(existing.id)) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell Sandbox ${sandbox.resourceName} has no ID usable as a supervisor Pod label.`,
+      );
+    }
+    return Object.freeze({
+      [OPENSHELL_SANDBOX_ID_LABEL]: existing.id,
+      [OPENSHELL_BOUNDARY_ROLE_LABEL]: "supervisor",
+    });
   }
 
   close(): void {

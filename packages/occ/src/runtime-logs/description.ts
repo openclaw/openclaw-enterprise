@@ -8,6 +8,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { maskRuntimeEventText } from "./redact.ts";
 import { sanitizeRuntimeLogText } from "./sanitize.ts";
+import { validRuntimeLogFrontierTime } from "./cursor.ts";
 
 const KUBERNETES_NAME = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
 const KUBERNETES_UID = /^[A-Za-z0-9-]{1,64}$/;
@@ -56,7 +57,7 @@ function time(value: unknown): string | null {
   if (value === null || value === undefined) {
     return null;
   }
-  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+  if (!validRuntimeLogFrontierTime(value)) {
     return invalid();
   }
   return new Date(value).toISOString();

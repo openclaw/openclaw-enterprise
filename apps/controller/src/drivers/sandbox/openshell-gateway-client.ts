@@ -635,8 +635,12 @@ const MAX_SANDBOX_LOG_LINES = 2000;
 function timestampMessage(value: string): { seconds: string; nanos: number } {
   const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
   const seconds = match === null ? Number.NaN : Date.parse(`${match[1]}Z`);
-  if (match === null || Number.isNaN(seconds)) {
-    throw new OpenShellGatewayFailure("OpenShell log since time must be an RFC 3339 UTC time.");
+  if (
+    match === null ||
+    Number.isNaN(seconds) ||
+    new Date(seconds).toISOString().slice(0, 19) !== match[1]
+  ) {
+    throw new OpenShellGatewayFailure("OpenShell timestamp must be an RFC 3339 UTC time.");
   }
   return {
     seconds: String(Math.floor(seconds / 1000)),

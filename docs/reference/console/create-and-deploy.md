@@ -288,6 +288,11 @@ the draft loaded, refresh. These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.
 
+A refused deployment creates no revision. The console shows the API's reason when
+it names one, such as a Configuration setting Compute cannot serve or a grant the
+Agent's service principal lacks. Your own denial and unexplained conflicts keep
+the console's guidance.
+
 If a deployment response is lost, inspect **Versions** before retrying; the
 console does not repeat an uncertain request. **Deployment activity** follows
 the most recent visible deployment; use the

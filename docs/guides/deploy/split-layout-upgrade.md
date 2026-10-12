@@ -75,7 +75,7 @@ are passed through).
    not running yet, and check it. A Gateway from the 2026-09-28 release
    migrates its agent database at its first start, about 15 seconds longer.
    If one stops with `uses schema version 23`, see the
-   [notice](breaking-changes.md#2026-10-09-released-gateways-need-an-agent-database-migration).
+   [notice](breaking-changes-archive.md#2026-10-09-released-gateways-need-an-agent-database-migration).
 6. Delete the old namespaces. After this there is no way back:
 
    ```bash

@@ -14,7 +14,7 @@ but does not block merging. Making it required is a maintainer decision.
 two commands, run as separate workflow steps:
 
 1. `images` builds the controller and runtime images from the checkout, reading
-   the hosted image caches that the Images and Packaging lane writes. It adds a
+   the hosted image caches that main's cache workflow writes. It adds a
    private test CA to the runtime image's trust store, pushes both images to a
    loopback registry, and exports their digests as
    `OCC_DEVELOPMENT_CONTROLLER_IMAGE` and `OCC_KUBERNETES_RUNTIME_IMAGE`.

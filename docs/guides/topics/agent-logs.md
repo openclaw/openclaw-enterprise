@@ -188,7 +188,12 @@ A page never silently skips output; it labels each gap:
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
-line, 512 KiB per response, the newest 100 Events per Pod, 10 seconds overall. Each API
+line, 512 KiB per response (including JSON escaping, cursor and metadata),
+the newest 100 Events per Pod, 10 seconds overall. A cut response retains progress through
+its observed rows, including untimed ones. Changed windows warn of possible skipped lines; timed reads continue from delivered
+progress, ambiguous ones restart. Identical replacement remains unobservable.
+Continue with the returned cursor for
+lines beyond a page limit. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
@@ -228,12 +233,9 @@ RUNTIME_LOGS_POD_INVALID`).
   its gateway restarts; a follow poll whose last line is gone reports
   **Sandbox buffer lost** or **Lines skipped**. Lines the sandbox drops under
   load are not reported.
-- The sandbox stamps lines when it records them but sends them in batches, so
-  a line can arrive after a newer one was shown. A follow poll re-reads the
-  5 seconds before the newest line it showed and shows each line once, repeats
-  included. A line that arrives more than 5 seconds late, or behind more than
-  48 lines in those 5 seconds, can be missed. When more than 48 lines share one
-  millisecond, the poll shows **Lines skipped** at that time.
+- Follow polls re-read a 5-second overlap and count up to 48 delivered lines.
+  Later arrivals outside that history can be missed; over-capacity timestamp
+  groups show **Lines skipped**.
 - OCC reads through the read-only `GetSandboxLogs` call. Its OpenShell identity
   needs the `sandbox:read` scope (otherwise `503 RUNTIME_LOGS_CLUSTER_RBAC`)
   and Workspace role `user`. OpenShell hides sandboxes outside the identity's

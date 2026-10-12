@@ -22,6 +22,11 @@ export function link(label, target, context) {
 export const NAMESPACE_NOT_READY_MESSAGE =
   "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
 
+// The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
+// the caller can act on, so views keep their own guidance instead of showing them.
+export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+export const GENERIC_CONFLICT = "The requested platform resource already exists.";
+
 export function message(error, mutation = false) {
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const field = {

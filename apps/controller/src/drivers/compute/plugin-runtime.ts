@@ -4,6 +4,7 @@ import {
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
+import { codexApprovalPolicy } from "@openclaw-enterprise/occ";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -146,27 +147,12 @@ export function pluginRuntimeSpecForRevision(
   return runtime;
 }
 
+// The admission rule (codexApprovalPolicy), checked again on the revision being prepared.
 function codexSessionApprovalPolicy(revision: Readonly<AgentRevision>): string | undefined {
-  let value: unknown = revision.configuration;
-  for (const key of ["plugins", "entries", "codex", "config", "appServer", "approvalPolicy"]) {
-    if (value === undefined) {
-      return undefined;
-    }
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("Codex session approval configuration is invalid.");
-    }
-    value = (value as Record<string, unknown>)[key];
-  }
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    typeof value !== "string" ||
-    !["never", "on-request", "on-failure", "untrusted"].includes(value)
-  ) {
-    throw new Error("Codex session approval policy is invalid.");
-  }
-  return value;
+  return codexApprovalPolicy(
+    revision.configuration,
+    (setting, requirement) => new Error(`Configuration setting ${setting} ${requirement}.`),
+  );
 }
 
 function codexToml(

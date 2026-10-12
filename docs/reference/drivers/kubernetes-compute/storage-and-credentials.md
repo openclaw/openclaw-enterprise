@@ -33,8 +33,9 @@ Each real gateway, embedded or dedicated, receives one private `10Gi`
 `agent-hash` is the first 12 hexadecimal characters of `sha256(agentId)`.
 Claims live in the tenant namespace in a single cluster; dedicated Gateway claims
 use the control-cluster Gateway namespace only with the two-cluster profile. The required
-`runtime.gatewayStorageClassName` selects an operator-provisioned
-StorageClass for a local or cloud block disk mounted as a filesystem.
+Kubernetes DNS-subdomain `runtime.gatewayStorageClassName` selects an
+operator-provisioned StorageClass for a local or cloud block disk mounted as a
+filesystem.
 
 The filesystem must be SQLite-compatible: reliable file locking, durable writes
 through `fsync`, and support for SQLite's database and companion WAL/SHM files

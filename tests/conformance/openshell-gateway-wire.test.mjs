@@ -1415,6 +1415,18 @@ test("OpenShell client reads v0.1.3-pre.2 sandbox logs with nanosecond times", a
       ),
       /RFC 3339/,
     );
+    await assert.rejects(
+      client.getSandboxLogs(
+        {
+          workspace: "tenant-workspace",
+          sandbox: "sb-0123",
+          lines: 5,
+          sinceTime: "2026-02-30T11:59:00Z",
+        },
+        AbortSignal.timeout(2_000),
+      ),
+      /RFC 3339/,
+    );
     assert.equal(requests.length, 1);
   } finally {
     client.close();

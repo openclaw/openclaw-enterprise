@@ -97,8 +97,8 @@ implicitly; `namespaceId` remains their exact tenant boundary.
 The active runtime does not expose environment variables for these settings:
 
 - General HTTP request body limit: `64 KiB`. [Agent creation](../agents.md),
-  [workspace writes](../agents.md#workspace-files) and [Preset writes](../presets.md)
-  use their operation-specific budgets.
+  [workspace writes](../agents.md#workspace-files), [Configuration writes](../configuration.md)
+  and [Preset writes](../presets.md) use their operation-specific budgets.
 - Maximum nested JSON configuration depth: `24`; prototype-mutating property
   names are rejected.
 - Resource display names: `1` through `200` characters, without outer whitespace

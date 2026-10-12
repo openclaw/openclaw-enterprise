@@ -234,7 +234,7 @@ export function installFixture(scenario, evidence) {
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: selectedRevisionId,
+    activeRevisionId: scenario.stopNoSelection ? null : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -463,6 +463,9 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
+  if (scenario.presetVariables) {
+    Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
+  }
   const presets = [
     preset,
     ...(scenario.customPresetsOnly
@@ -490,17 +493,22 @@ export function installFixture(scenario, evidence) {
       });
     }
   }
-  const response = (data, status = 200, errorCode, meta = {}) =>
+  const response = (data, status = 200, errorCode, meta = {}, errorMessage) =>
     new Response(
       JSON.stringify({
         ...(errorCode
-          ? { error: { code: errorCode, message: "The selected preview simulates this failure." } }
+          ? {
+              error: {
+                code: errorCode,
+                message: errorMessage ?? "The selected preview simulates this failure.",
+              },
+            }
           : { data }),
         meta: { requestId: "req_00000000-0000-4000-8000-000000000001", ...meta },
       }),
       { status, headers: { "content-type": "application/json" } },
     );
-  const error = (status, code) => response(null, status, code);
+  const error = (status, code, message) => response(null, status, code, {}, message);
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
@@ -552,8 +560,21 @@ export function installFixture(scenario, evidence) {
           }
         });
       }
+      if (rule.bodyError) {
+        // A simulated after-headers failure exercises the production body reader.
+        // Real socket interruption is proved separately by the transport tests.
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"data":'));
+              queueMicrotask(() => controller.error(new TypeError("Response body interrupted")));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
       if (rule.status) {
-        return error(rule.status, rule.code);
+        return error(rule.status, rule.code, rule.message);
       }
     }
     if (path === "/api/auth/providers" && method === "GET") {

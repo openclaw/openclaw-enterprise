@@ -146,6 +146,10 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			previousTransport := http.DefaultTransport
 			http.DefaultTransport = transport
 			t.Cleanup(func() { http.DefaultTransport = previousTransport })
+			// One refused download ends the run; a retry would only wait.
+			previousRetry := developmentRoutingManifestRetry
+			developmentRoutingManifestRetry.attempts = 1
+			t.Cleanup(func() { developmentRoutingManifestRetry = previousRetry })
 			probe := "echo 'sandbox fixture refused' >&2; exit 42"
 			switch scenario {
 			case "accepted":

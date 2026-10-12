@@ -139,8 +139,8 @@ validation: the configured `appServer.approvalPolicy`, with `on-failure` as
 remain subject to reviewer checks. At Agent save, provisioning and deployment, the Codex
 PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 `on-failure`, because an omitted policy lets the Gateway pick one the startup
-check cannot see. Compute Drivers refuse `untrusted`, which the Gateway refuses
-at load, with their other gateway settings.
+check cannot see. Configuration save and Compute Drivers refuse policies the
+Gateway refuses at load, such as `untrusted`.
 
 The Kubernetes ConfigMap is immutable and per revision. A revision prepared
 by an earlier controller keeps its earlier `config.toml` (without

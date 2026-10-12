@@ -12,7 +12,7 @@ import {
   redactFailure,
   redactFailureDetail,
   redactLogLine,
-  redactOutputLine,
+  redactOutputLines,
 } from "./failure-redaction.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 
@@ -791,9 +791,7 @@ function failureDetails(events, absolutePath, secrets, root) {
     })),
     omittedTests: Math.max(0, failed.length - maxFailureDetailTests),
     output: {
-      lines: output.lines.map((line) =>
-        redactOutputLine(line, secrets, root, failureOutputLineChars),
-      ),
+      lines: redactOutputLines(output.lines, secrets, root, failureOutputLineChars),
       omittedLines: output.omitted,
     },
   };

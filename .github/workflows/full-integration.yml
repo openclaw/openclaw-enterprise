@@ -67,9 +67,9 @@ jobs:
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
     # The lanes ci.yml runs on blacksmith 32vcpu run there too (its kernel enforces the k3d
-    # lanes' NetworkPolicy checks; Image Runtime Startup 2 runs three files at once). The
-    # demo lane, which PR CI does not run, stays on ubuntu-22.04.
-    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability' || startsWith(matrix.lane, 'images-runtime-startup')) && 'blacksmith-32vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    # lanes' NetworkPolicy checks; Image Runtime Startup 2 runs three files at once, PostgreSQL
+    # Application up to eight). The demo lane, which PR CI does not run, stays on ubuntu-22.04.
+    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability' || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application') && 'blacksmith-32vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: preflight
     if: needs.preflight.outputs.run_all == 'true'
     timeout-minutes: ${{ matrix.timeout }}
@@ -534,6 +534,10 @@ jobs:
     timeout-minutes: 240
     environment: integration-qa
     env:
+      # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs
+      # in checks-baseline-1 asserts the +v1.35 default.
+      OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: all
       OCC_TEST_QA_PRESET: all
       OCC_TEST_QA_SCENARIOS: all

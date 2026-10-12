@@ -3389,9 +3389,10 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
-  // This Plugin Driver has no Configuration check, so the save does not read the values: an
-  // unavailable or slow Configuration Driver must not block saves that have nothing to check.
-  assert.equal(configurationReads, readsBeforeSave);
+  // This Plugin Driver has no Configuration check, but Agent save checks the Agent against its
+  // Configuration as deployment would (the Harness and its execution mode), so it reads the
+  // values once, shared by every check.
+  assert.equal(configurationReads, readsBeforeSave + 1);
 
   const saved = await controller.request(
     "GET",
@@ -5756,6 +5757,39 @@ test("Agent provisioning API validates inline configuration with existing Secret
         'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
     },
   );
+  // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
+  // message (finding 1116), before any Agent or Configuration is stored.
+  computeDriver.validateConfiguration = (values) => kubernetes.validateConfiguration(values);
+  const agentsBefore = (
+    await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
+  ).length;
+  for (const [values, message] of [
+    [
+      { ...model, channels: { discord: { enabled: true } } },
+      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+    ],
+    [
+      { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
+      "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
+    ],
+  ]) {
+    const refused = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
+    );
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(
+      { code: refused.body.error.code, message: refused.body.error.message },
+      { code: "INVALID_REQUEST", message },
+    );
+  }
+  assert.equal(
+    (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)).length,
+    agentsBefore,
+  );
+  delete computeDriver.validateConfiguration;
   // A refusal the caller cannot fix (here the Installation enables dedicated runtime storage
   // without gateway routing) keeps fixed text, since its reason names Installation settings.
   // The API log names it with the request ID for the operator.
@@ -6814,7 +6848,7 @@ test("authorization rejects sparse decision evidence", async () => {
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
-test("deployment refuses the retired Codex untrusted approval policy across Compute Drivers", async (t) => {
+test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
       // The API/state fixture owns lifecycle and credentials; the actual selected
@@ -6833,18 +6867,40 @@ test("deployment refuses the retired Codex untrusted approval policy across Comp
         namespace.id,
         "ready",
       );
+      const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
       // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
-      // cannot edit Compute's read-only configuration (finding 987).
-      for (const [name, approvalPolicy, expectedStatus] of [
-        ["untrusted", "untrusted", 409],
-        ["on-failure", "on-failure", 202],
-        ["omitted", undefined, 202],
+      // cannot edit Compute's read-only configuration (finding 987), and any value outside its
+      // enum; preparation refused those only after a dedicated deployment stopped the running
+      // revision (finding 1113). Configuration save refuses them now, so each is a row an older
+      // release saved, written past OCC.
+      for (const [name, approvalPolicy, message] of [
+        [
+          "untrusted",
+          "untrusted",
+          `Configuration setting ${setting} must not be "untrusted", which the OpenClaw runtime retired: use "on-request".`,
+        ],
+        [
+          "always",
+          "always",
+          `Configuration setting ${setting} must be "never", "on-request" or "on-failure".`,
+        ],
+        ["on-failure", "on-failure"],
+        ["omitted", undefined],
       ]) {
-        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`, {
-          plugins: {
-            entries: {
-              codex: {
-                config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
+        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`);
+        const stored = fixture.configurationDriver.stored({
+          namespaceId: namespace.id,
+          id: agent.configurationId,
+        });
+        await fixture.configurationDriver.update({
+          ...stored,
+          values: {
+            ...stored.values,
+            plugins: {
+              entries: {
+                codex: {
+                  config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
+                },
               },
             },
           },
@@ -6854,13 +6910,15 @@ test("deployment refuses the retired Codex untrusted approval policy across Comp
           "POST",
           `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
         );
-        assert.equal(result.status, expectedStatus, `${kind}: ${JSON.stringify(result.body)}`);
-        if (expectedStatus === 409) {
+        assert.equal(
+          result.status,
+          message === undefined ? 202 : 409,
+          `${kind}: ${JSON.stringify(result.body)}`,
+        );
+        if (message !== undefined) {
           assert.equal(result.body.error.code, "RESOURCE_CONFLICT");
-          assert.equal(
-            result.body.error.message,
-            'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
-          );
+          assert.equal(result.body.error.message, message);
+          // No revision is admitted, so the worker never stops the running one.
           const revisions = await controller.request(
             "GET",
             `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
@@ -7075,8 +7133,10 @@ test("deploy audit preserves its authorization decision and rolls back with appe
     yield "forged-iterator-value";
   };
   const computeDriver = createProvisioningCapableComputeDriver();
+  // Agent saves run this check too; only the deployment below swaps the IAM Driver.
+  let deploying = false;
   computeDriver.validateHarnessAuth = () => {
-    if (fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
+    if (!deploying || fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
       return;
     }
     sharedEvidence.push("mutated-after-authorization");
@@ -7112,6 +7172,7 @@ test("deploy audit preserves its authorization decision and rolls back with appe
 
   // Harness validation runs after OCC has checked deploy authorization. Changing
   // Driver selection here proves the audit uses that completed decision.
+  deploying = true;
   const deployed = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,

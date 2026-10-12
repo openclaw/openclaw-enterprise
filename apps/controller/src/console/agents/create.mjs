@@ -10,14 +10,12 @@ import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
-import { link, message, namespacePath, rejectionMessage } from "./list.mjs";
+import { GENERIC_CONFLICT, link, message, namespacePath, rejectionMessage } from "./list.mjs";
 
 // The API's duplicate-name sentence. Other Agent conflicts reach the client as generic text,
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
-// The API's text for a conflict whose reason it does not name.
-const GENERIC_CONFLICT = "The requested platform resource already exists.";
 // The API's Agent name limit, in characters (code points).
 const AGENT_NAME_MAX_CHARACTERS = 200;
 

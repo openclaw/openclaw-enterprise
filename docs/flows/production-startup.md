@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-10"
-last_updated_session: "authoring-run/pr1903-peerlabels-sync"
+updated: "2026-10-11"
+last_updated_session: "authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93"
 ---
 
 # Production Startup Flow
@@ -112,18 +112,16 @@ installs initialization isolation before the Job. It and later workload policies
 grant configured DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` refuses
-fractional routing ports and custom hostnames Compute rejects. `database.port`
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` validates routing ports and hostnames against Compute. `database.port`
 must be decimal 1–65535 without leading zeros. Empty hostnames retain Service DNS
 for Gateway listeners and Certificate SANs.
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 
-The initialization hook retains the full release name and limits its suffix to
-63 characters. Both containers mount `database.caSecretName` read-only when
-configured. Migration uses the migrator credential; bootstrap uses the
-lower-privilege application credential, Better Auth settings, administrator
-email, Installation name and protected output paths.
+The hook keeps the release name and bounds its suffix to 63 characters. Both
+containers optionally mount the CA. Helm validates distinct application and
+migration Secret keys against Kubernetes syntax before use. Bootstrap also
+receives auth, administrator, Installation and output settings.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -282,11 +280,11 @@ until tenant deployment/TUI procedures run.
 - `compute.preflight-warning` with code `KUBERNETES_VERSION_BELOW_MINIMUM`:
   startup continues, but upgrade to Kubernetes 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE` means the Compute preflight got no answer from
-  the Kubernetes API server named by `host` and `port`. Check that
-  `cluster.cidrs` still lists that address; a restarted cluster can move it.
-- Code `PRESET_FILE_INVALID`: a bad `presets.files` list or file (missing,
-  unreadable, malformed, invalid, duplicate).
+  `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
+  the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
+- Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
+- Code `GATEWAY_STORAGE_CLASS_INVALID`: correct `runtime.gatewayStorageClassName`
+  to a Kubernetes DNS-subdomain resource name before restarting.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
@@ -316,6 +314,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 18:29: Validate database URL Secret keys. (authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93 - 19304cadb9a8b8c6473a22b183055ff7b5852e02)
 
 - 2026-10-10 08:22: Retain Namespace and bootstrap guidance with peer-map validation. (authoring-run/3cecc2d2-5f5c-4ce3-9901-928542c3d370 - ac237c12f504fd8f49a5e66c05a8d3865b13444e)
 

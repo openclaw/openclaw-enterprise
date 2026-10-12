@@ -75,8 +75,11 @@ async function removeAbandonedLock(path, content) {
       // Another waiter removed the abandoned lock and a live process took a new one.
       // link(2) never replaces a file. If a third process took the lock in this gap,
       // two holders now overlap: fail here rather than let them both write the state.
-      // It needs a dead holder and three live contenders; a lane has two (the runner
-      // and one test process).
+      // It needs a holder that died with the lock (in practice a test killed by its
+      // timeout) and three live contenders. The runner and each test process that calls
+      // prepareFile contend, so a lane has up to fileConcurrency + 1 (PostgreSQL
+      // Application: seven, as six of its files call it). The likely result is this
+      // error on a run that is already failing.
       await link(aside, path).catch((error) => {
         if (error.code === "EEXIST") {
           throw new Error(`Displaced a live CI state lock ${path} and could not restore it.`);

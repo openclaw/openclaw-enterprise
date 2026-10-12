@@ -960,9 +960,10 @@ export function createHumanLogin(
     oidcLogin === undefined ? undefined : externalProviderEndpoints("oidc", oidcLogin);
   // A rejected password is audited before the refusal. When the audit write fails the
   // answer is 503 (audits fail closed), marked so admission still spends the budget.
+  const recordPasswordDenial = () => state.recordDenied("INVALID_CREDENTIALS");
   async function refusePassword(): Promise<never> {
     try {
-      await state.recordDenied("INVALID_CREDENTIALS");
+      await recordPasswordDenial();
     } catch {
       throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
         message: "Authentication dependency unavailable.",
@@ -1090,6 +1091,8 @@ export function createHumanLogin(
           },
         }),
     designateRecovery,
+    // The controller also uses this owner for malformed-email refusals before account reads.
+    recordPasswordDenial,
     /** Whether `email` (normalized) is the recovery account's; its password stays reserved. */
     isRecoveryEmail: (email: string) => recoveryEmail !== undefined && email === recoveryEmail,
     /** Whether the known-device cookie uses its host-only (__Host-) name. */
