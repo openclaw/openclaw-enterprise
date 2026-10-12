@@ -2290,6 +2290,8 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   await page.getByRole("status").getByText("Stop requested.").waitFor();
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  // Readback permits an explicit new intent; it never resends the masked request.
+  assert.equal(await page.getByRole("button", { name: "Request Stop again" }).isEnabled(), true);
 });
 
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
@@ -2421,7 +2423,7 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
   assert.equal((await response.json()).data.status, "deleting");
 
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
-  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
   assert.deepEqual(
     agentDeleteRequests(requests, namespace.id, agent.id).map((request) => [
@@ -2490,7 +2492,7 @@ test("Agent deletion says access ended when the deleter can no longer read the A
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Scoped Candidate?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
-  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
   const reads = () => pathRequests(requests, "GET", agentPath).length;
   const accepted = reads();
 
@@ -2509,7 +2511,7 @@ test("Agent deletion says access ended when the deleter can no longer read the A
     );
     return refresh !== undefined && !refresh.disabled;
   });
-  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
 
   // Finishing the deletion removes the bindings that target the Agent, so the next read is a
   // real 403 for this member (an administrator would get 404 and return to the list).
@@ -2598,9 +2600,319 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   );
   await page.getByRole("button", { name: "Refresh deletion status" }).click();
   assert.equal((await refresh).status(), 200);
-  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
   assert.equal(interceptedDeletes, 1);
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+});
+
+test("An already deleting Agent permits only a confirmed manual repeat DELETE", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deletion repeat", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Repeat cleanup", nativeValues("repeat"));
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("DELETE", path)).status, 202);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
+  await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
+  requests.length = 0;
+  const open = () =>
+    page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  await open();
+  let dialog = page.getByRole("dialog", { name: "Request deletion again for Repeat cleanup?" });
+  await dialog
+    .getByText("Cleanup that is queued or running continues unchanged.", { exact: false })
+    .waitFor();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Request deletion again", exact: true })
+      .evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+  );
+  await open();
+  dialog = page.getByRole("dialog", { name: "Request deletion again for Repeat cleanup?" });
+  const response = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + path && response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  assert.equal((await response).status(), 202);
+  assert.deepEqual(
+    agentDeleteRequests(requests, namespace.id, agent.id).map(({ method, path, body }) => [
+      method,
+      path,
+      body,
+    ]),
+    [["DELETE", path, null]],
+  );
+  assert.equal((await fixture.request("GET", path)).data.status, "deleting");
+});
+
+test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Retry refusal feedback", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Owned cleanup", nativeValues("repeat"));
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("DELETE", path)).status, 202);
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
+  const ownership =
+    "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.";
+  let serverMessage = ownership;
+  let writes = 0;
+  // Exercise the bounded API-client error consumer independently of durable worker admission.
+  await page.route(fixture.origin + path, async (route) => {
+    if (route.request().method() !== "DELETE") {
+      await route.continue();
+      return;
+    }
+    writes += 1;
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "FORBIDDEN", message: serverMessage } }),
+    });
+  });
+  const confirm = async () => {
+    await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Request deletion again for Owned cleanup?" })
+      .getByRole("button", { name: "Request deletion again", exact: true })
+      .click();
+  };
+  await confirm();
+  await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
+  await expectNoText(page, "Ask an administrator for Agent delete access");
+  assert.equal(writes, 1);
+  await page.clock.fastForward(DELETION_POLL_MS * 2);
+  await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
+  assert.equal(writes, 1);
+  serverMessage = "The exact platform operation was not authorized.";
+  await confirm();
+  await page
+    .getByRole("alert")
+    .getByText("You do not have permission to delete this Agent", { exact: false })
+    .waitFor();
+  assert.equal(writes, 2);
+  await page.clock.fastForward(DELETION_POLL_MS * 2);
+  await page
+    .getByRole("alert")
+    .getByText("You do not have permission to delete this Agent", { exact: false })
+    .waitFor();
+  await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
+  await page.getByRole("alert").waitFor({ state: "hidden" });
+  assert.equal(writes, 2);
+  assert.equal((await fixture.request("GET", path)).data.status, "deleting");
+});
+
+test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
+  for (const [status, text, guarded] of [
+    [400, "Check the entered values and resource IDs, then try again.", false],
+    [
+      409,
+      "This Agent could not be deleted in its current state. Refresh its status before trying again.",
+      true,
+    ],
+    [429, "Too many requests. Wait before trying again.", false],
+  ]) {
+    await t.test(`HTTP ${status}`, async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Pending repeat poll", { ready: true });
+      const agent = await fixture.createAgent(
+        namespace.id,
+        "Failed repeat",
+        nativeValues("repeat"),
+      );
+      const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+      assert.equal((await fixture.request("DELETE", path)).status, 202);
+      const { page } = await newPage(t, fixture);
+      await page.clock.install();
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      t.after(() => release());
+      let entered;
+      const pending = new Promise((resolve) => {
+        entered = resolve;
+      });
+      let writes = 0;
+      await page.route(fixture.origin + path, async (route) => {
+        if (route.request().method() !== "DELETE") {
+          await route.continue();
+          return;
+        }
+        writes += 1;
+        entered();
+        await gate;
+        await route.fulfill({
+          status,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "INVALID_REQUEST", message: "Controlled repeat refusal" },
+          }),
+        });
+      });
+      await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
+      const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
+      await repeat.click();
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Request deletion again", exact: true })
+        .click();
+      await pending;
+      // Poll callbacks see pending and rearm. Failure must cancel the rearmed timer too.
+      await page.clock.fastForward(DELETION_POLL_MS * 2);
+      release();
+      await page.getByRole("alert").getByText(text, { exact: true }).waitFor();
+      await page.clock.fastForward(DELETION_POLL_MS * 2);
+      await page.getByRole("alert").getByText(text, { exact: true }).waitFor();
+      assert.equal(await repeat.isDisabled(), guarded);
+      assert.equal(writes, 1);
+      await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
+      await page.getByRole("alert").waitFor({ state: "hidden" });
+      await page.waitForFunction(() =>
+        [...globalThis.document.querySelectorAll("button")].some(
+          (node) => node.textContent === "Request deletion again" && !node.disabled,
+        ),
+      );
+      assert.equal(writes, 1, "manual readback does not replay a write");
+    });
+  }
+});
+
+test("an in-flight deletion status read cannot overlap confirmed repeat admission", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Read before repeat", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Read guarded repeat",
+    nativeValues("repeat"),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("DELETE", path)).status, 202);
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  let holdRead = false;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  let entered;
+  const pending = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let writes = 0;
+  await page.route(fixture.origin + path, async (route) => {
+    if (route.request().method() === "DELETE") {
+      writes += 1;
+    }
+    if (route.request().method() !== "GET" || !holdRead) {
+      await route.continue();
+      return;
+    }
+    holdRead = false;
+    const response = await route.fetch();
+    entered();
+    await gate;
+    await route.fulfill({ response });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
+  await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  const confirm = page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Request deletion again", exact: true });
+  holdRead = true;
+  await page.clock.fastForward(DELETION_POLL_MS);
+  await pending;
+  await confirm.click();
+  assert.equal(writes, 0, "pending read prevents delete admission");
+  release();
+  await page.waitForFunction(() =>
+    [...globalThis.document.querySelectorAll("button")].some(
+      (node) => node.textContent === "Refresh deletion status" && !node.disabled,
+    ),
+  );
+  const accepted = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + path && response.request().method() === "DELETE",
+  );
+  await confirm.click();
+  assert.equal((await accepted).status(), 202);
+  assert.equal(writes, 1);
+});
+
+test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Repeat deletion uncertainty", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Uncertain repeat", nativeValues("repeat"));
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("DELETE", path)).status, 202);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await page.clock.install();
+  let writes = 0;
+  await page.route(`**${path}`, async (route, request) => {
+    if (request.method() !== "DELETE" || ++writes > 1) {
+      await route.continue();
+      return;
+    }
+    await route.fetch();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked repeat response" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+      }),
+    });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
+  const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await repeat.waitFor();
+  requests.length = 0;
+  await repeat.click();
+  let dialog = page.getByRole("dialog", { name: "Request deletion again for Uncertain repeat?" });
+  await dialog.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
+  assert.equal(await repeat.isDisabled(), true);
+  assert.equal(writes, 1);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+  await page.clock.fastForward(DELETION_POLL_MS * 2);
+  assert.equal(
+    await repeat.isDisabled(),
+    true,
+    "a background poll cannot settle this unknown write",
+  );
+  await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
+  assert.equal(writes, 1);
+  await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
+  await repeat.waitFor({ state: "visible" });
+  await page.waitForFunction(() =>
+    [...globalThis.document.querySelectorAll("button")].some(
+      (node) => node.textContent === "Request deletion again" && !node.disabled,
+    ),
+  );
+  assert.equal(writes, 1);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+  await repeat.click();
+  dialog = page.getByRole("dialog", { name: "Request deletion again for Uncertain repeat?" });
+  const response = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + path && response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  assert.equal((await response).status(), 202);
+  assert.equal(writes, 2);
 });
 
 test("Agent deletion recovery returns a missing Agent detail to its Namespace list", async (t) => {
@@ -5085,4 +5397,83 @@ test("Credentials saves an issued service account as a PAT source without granti
     `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
   );
   await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
+});
+
+test("Console can repeat Stop without treating the selected version as cleanup completion", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Repeat Stop");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repeat Stop",
+    nativeValues("repeat-stop"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const first = await fixture.request("POST", `${path}/stop`);
+  assert.equal(first.status, 202);
+  assert.equal(first.data.activeRevisionId, active.revision.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Repeat Stop", exact: true }).waitFor();
+  const repeat = page.getByRole("button", { name: "Request Stop again", exact: true });
+  assert.equal(await repeat.count(), 1, "the existing Stop API permits another authorized intent");
+  assert.equal(await repeat.isEnabled(), true);
+  await repeat.focus();
+  await repeat.press("Enter");
+  let dialog = page.getByRole("dialog", { name: "Stop Repeat Stop?" });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
+  assert.equal(await repeat.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await repeat.press("Enter");
+  await dialog.waitFor();
+  await page.keyboard.press("Escape");
+  await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
+  assert.equal(await repeat.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
+  await repeat.click();
+  dialog = page.getByRole("dialog", { name: "Stop Repeat Stop?" });
+  const result = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,
+  );
+  await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  assert.equal((await result).status(), 202);
+  await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Refresh stop status" })
+      .evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+  );
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  const after = await fixture.request("GET", path);
+  assert.equal(after.data.activeRevisionId, active.revision.id);
+  assert.equal(after.data.desiredRuntimeState, "stopped");
+  assert.equal(after.data.configurationId, agent.configurationId);
+  // No selected version does not prove candidate/history cleanup completed.
+  await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await page
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
+    .waitFor();
+  assert.equal(await repeat.isEnabled(), true);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  await repeat.click();
+  const noSelectionResult = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,
+  );
+  await page
+    .getByRole("dialog", { name: "Stop Repeat Stop?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  assert.equal((await noSelectionResult).status(), 202);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 2);
 });

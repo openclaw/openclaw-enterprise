@@ -47,19 +47,31 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local \
   node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.mjs \
     tests/integration/kubernetes-compute-provisioning-real.test.mjs \
-    tests/integration/kubernetes-compute-driver-real.test.mjs
+    tests/integration/kubernetes-compute-driver-real.test.mjs \
+    tests/integration/kubernetes-oauth-bootstrap-real.test.mjs
 ```
 
-All four fixture cases must run: Driver lifecycle/isolation (in the
+All baseline fixture cases must run: Driver lifecycle/isolation (in the
 `kubernetes-compute-driver-real` file, which CI runs in `k3d-fixture-plugins`),
 externally managed namespace preservation and provisioning handoff (in
 `kubernetes-compute-provisioning-real`, run in `k3d-fixture-state`), and PostgreSQL
 API-plus-worker reconciliation. The files share
 `tests/helpers/kubernetes-compute-real.mjs`. No model key is needed. Missing all
 cluster selectors skips the suite; partial selectors fail, and a missing
-database skips the provisioning handoff and API-plus-worker cases. The two
-PostgreSQL-backed files share one database here, so run them one at a time
+database skips PostgreSQL-backed cases. Those files share one database here; run them one at a time
 (`--test-concurrency=1`); CI gives each file its own database.
+
+The OAuth Job case uses authenticated device-login, Agent-create, and Deploy
+routes, Kubernetes Secret storage, and PostgreSQL in `k3d-fixture-configuration`.
+Only provider HTTP uses synthetic responses. It
+retires an exact-owned legacy bootstrap Deployment before executing the seed
+Job, preserves its PVC and seed, and accepts API-canonicalized resource quantities.
+It checks Job completion and source consumption before native startup, then
+forces a filesystem refusal to exhaust retries. Authorized API reads select
+main and init logs. Bounded Job/Pod evidence and separate cleanup status survive
+restart while retaining the source and claim.
+The fixture provides Node, `tini`, and `flock`. It proves handoff and cleanup,
+not live OAuth, native refresh, or model execution.
 
 An imported immutable `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` extends the
 API-plus-worker case through real runtime credential Secret and private-state

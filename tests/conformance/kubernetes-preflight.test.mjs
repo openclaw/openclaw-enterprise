@@ -472,7 +472,7 @@ test("execution tenant grant check reads every Namespace page before any review"
     (error) =>
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
-        "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods. " +
+        "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods, get jobs, create jobs, delete jobs. " +
           "Upgrade the openclaw-execution chart before this release.",
   );
   assert.deepEqual(events, [
@@ -480,8 +480,14 @@ test("execution tenant grant check reads every Namespace page before any review"
     "list page-2",
     "review oce-first get pods",
     "review oce-first patch pods",
+    "review oce-first get jobs",
+    "review oce-first create jobs",
+    "review oce-first delete jobs",
     "review oce-second get pods",
     "review oce-second patch pods",
+    "review oce-second get jobs",
+    "review oce-second create jobs",
+    "review oce-second delete jobs",
   ]);
 });
 
@@ -495,10 +501,19 @@ test("execution tenant grant check treats a review without a decision as missing
     (error) =>
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
-        "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods. " +
+        "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods, get jobs, create jobs, delete jobs. " +
           "Upgrade the openclaw-execution chart before this release.",
   );
-  assert.deepEqual(reviews.map(ruleName), ["get pods", "patch pods"]);
+  assert.deepEqual(reviews.map(ruleName), [
+    "get pods",
+    "patch pods",
+    "get jobs",
+    "create jobs",
+    "delete jobs",
+  ]);
+  assert.ok(
+    reviews.filter(({ resource }) => resource === "jobs").every(({ group }) => group === "batch"),
+  );
 });
 
 test("execution tenant grant check reports an invalid Namespace list as incomplete", async () => {

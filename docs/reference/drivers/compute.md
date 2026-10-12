@@ -63,6 +63,10 @@ requires a true flag and no failure.
 Methods without a return value must reject if they cannot complete. The revision
 context is optional in TypeScript; the worker supplies it after authorization.
 
+`prepareRevision` throws `ComputePreparationFailedError` for terminal initialization.
+OCC atomically fails deployment with durable `stopRevision` cleanup.
+Restart resumes cleanup, not preparation; codes exclude credentials.
+
 ### Optional additions
 
 | Method or declaration                                                                               | When it is needed                                                                                                                                                                   |

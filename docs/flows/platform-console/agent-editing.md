@@ -56,6 +56,7 @@ graph TD
     G -->|accepted or uncertain| H["Refresh exact Agent"]
     G -->|denied| I["Show access denied"]
     H -->|exists| J["Show current Agent state"]
+    J -->|known deleting and manual request| E
     H -->|not found| K["Return to Agents list"]
   end
 ```
@@ -279,7 +280,11 @@ composed by `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`. C
 bodyless `POST` to the exact Agent's `/stop` route. OCC's
 `packages/occ/src/index.ts:stopAgent` checks exact-Agent `operate`, persists the
 requested stopped state, and queues reconciliation. The response proves
-admission, not completed Compute shutdown.
+admission, not completed Compute shutdown. When stopped,
+**Request Stop again** confirms a new stop intent through the same authorized route.
+It remains available without a selected revision because history/candidate cleanup
+is not exposed, and an uncertain write blocks it until readback succeeds.
+Cancelling confirmation restores its invoking button; submitted requests focus status refresh.
 
 **Refresh stop status** reads the exact Agent again. It displays desired runtime
 state and selected revision without inferring live health or completion from a
@@ -302,8 +307,17 @@ detail page in a deleting state. The page rereads the exact Agent every few
 seconds until it is gone; **Refresh deletion status** reads it on demand, and
 a read error stops the polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An uncertain deletion
-blocks writes until a successful read; the browser never retries it.
+returns to the Agents list in the selected Namespace. An already deleting Agent
+keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
+and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
+work stays unchanged; terminal work can restart under the controller's existing
+current-permission and retry-ownership checks. The view does not infer a worker
+outcome from the Agent's deleting state or add a separate status contract.
+
+An uncertain initial or repeated deletion blocks writes until a successful exact
+Agent read. A deleting read clears that guard even when the view was already deleting;
+a failed read does not. Cancel returns focus to the repeat-request button, and
+successful writes retain status refresh. The browser never retries DELETE automatically.
 
 `packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
 [Agent deletion reference](../../reference/agents.md#deletion) covers
@@ -320,8 +334,9 @@ worker cleanup and the Namespace-owned resources it preserves.
 - Compare saved `Agent.plugins` with the viewed revision's plugin snapshot after
   a plugin edit. A successful Agent update does not install or activate plugins;
   deploy and inspect startup status separately.
-- On `403`, check `delete` permission on the exact Agent; Agent `read` and
-  `operate` do not authorize deletion. Use the displayed request ID when present.
+- On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
+  denials, check `delete` on the exact Agent; Agent `read` and
+  `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
 - An accepted deletion remains in progress until the exact Agent read reports
   not found. A failed refresh does not establish whether cleanup finished.
 - See [console failures](../../reference/console.md#failures-and-logout) for
@@ -341,7 +356,10 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
-- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000)
+- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
+- 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)
+- 2026-10-10 01:41: Trace confirmed manual deletion recovery and uncertain repeat readback in the accompanying change. (authoring-run/da61175b-df1b-4e96-b202-94e9e82538f9 - 243b38ba6d951240065e5061e1e4abccdb44410c)
+- 2026-10-10 00:08: Trace explicit repeated Stop recovery in the accompanying change. (authoring-run/52a975bb-0283-40ba-9126-2c2f6eb8992c - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)
 

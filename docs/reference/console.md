@@ -5,13 +5,13 @@ workspace files, and credentials. Authorized operators can also open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console has no rollback, live
 runtime health, or browser chat through OCE.
 
-Start with [Create and deploy Agents](console/create-and-deploy.md) or
+See [Create and deploy Agents](console/create-and-deploy.md) or
 [Understand Agent detail](../guides/console/agent-details.md). Operator setup and
 runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
-At your administrator-provided address, enter your provisioned account email as
+Enter your provisioned account email as
 **Username**, then its password, and select **Login**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or a password reset. To set up your own
@@ -33,8 +33,8 @@ release revision into the console HTML.
 ## Browse and select a Namespace
 
 The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
-Set up models during Agent creation; the [experimental Backends](backends.md)
-tab is hidden. Namespace rows are read-only.
+Configure models during creation. [Experimental Backends](backends.md) stay
+hidden; Namespace rows are read-only.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -42,9 +42,9 @@ tab is hidden. Namespace rows are read-only.
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
-The console uses a light appearance and OCC-served fonts. Full-page client
-navigation focuses the destination heading when the previous control disappears.
-On mobile, **Open navigation** opens a drawer; widening to desktop closes it
+The console uses light appearance and OCC-served fonts. Navigation focuses
+the destination heading when the previous control disappears.
+**Open navigation** opens a mobile drawer; desktop closes it
 and releases page controls.
 
 When available, a retained view stays mounted and inert while a full-page return
@@ -83,7 +83,8 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 ## Agent creation and deployment
 
-Supported Dedicated provisioning deploys the first revision during creation. Otherwise, creation
+Dedicated provisioning waits for first activation; failure links the original
+request’s existing Agent and revision. Otherwise, creation
 saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
@@ -96,7 +97,6 @@ or policy choices.
 ## Inspect detail, revisions, and channel drafts
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
-The selected tab stays visible in the horizontal strip at narrow widths.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive in-document navigation as drafts
 scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
@@ -120,11 +120,12 @@ while the catalog list and plugin details scroll within the picker.
 **Save plugin selections** updates the Agent; deployment snapshots them.
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
-binding, but API permissions and topology checks still apply. **Current version**
-displays `activeRevisionId`, which can differ from the viewed snapshot and does
-not prove live serving.
-**Deployment activity** shows the latest visible version's persisted result;
-the viewed version shows its own recorded outcome.
+binding, but API permissions and topology checks still apply. **Current version** shows `activeRevisionId`, a selected pointer, not serving health.
+**Deployment activity** shows the newest authorized outcome and the viewed version’s
+own result. The Agent list’s **Latest deployment** links failure details beside
+Current version. Unreadable results remain unavailable. Bootstrap failures retain
+safe evidence and refresh separate cleanup progress.
+
 For a failed deployment, **Open vN Logs** opens that exact version and brings
 its Logs panel into view, including when starting from the draft or another
 version. The panel shows runtime output or the applicable access or availability
@@ -219,7 +220,9 @@ retaining revision history, credentials, gateway state, and workspace files.
 An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
 Refresh before retrying an uncertain result. Permission denials remain visible,
-and the console never repeats a stop request automatically.
+and the console never repeats a stop request automatically. After Stop, **Request Stop again** confirms
+a new stop intent, even without a selected version. That does not prove cleanup
+finished or diagnose a shutdown failure.
 
 To resume, open **Create new version** and select **Deploy new version**, which
 creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
@@ -227,19 +230,19 @@ worker lifecycle and preservation guarantees.
 
 ## Delete an Agent
 
-Select **Delete Agent** below the Agent detail tabs, then **Permanently delete
-Agent** in the confirmation dialog. This requires exact
-Agent `delete`; `read` or `operate` is not enough. Deletion permanently removes
-the Agent, its version history, and its workspace data; Namespace-owned
-Configurations and Secrets remain; see
-[Agent deletion](agents.md#deletion).
+Select **Delete Agent**, then **Permanently delete Agent**. Exact Agent `delete`
+is required; `read` or `operate` is not enough. Deletion removes the Agent, its
+versions, and its workspace data. Namespace Configurations and Secrets remain;
+see [Agent deletion](agents.md#deletion).
 
-An accepted request starts asynchronous cleanup, and the detail page shows the
-Agent as deleting; **Refresh deletion status** checks progress. Once the API
-confirms the Agent is gone, the console returns to Agents in the same Namespace.
-An access denial stays on the detail page and says deletion requires permission.
-An unconfirmed outcome may have succeeded; refresh before retrying. The console
-never resends a delete request automatically.
+**Refresh deletion status** follows asynchronous cleanup. When the API confirms
+the Agent is gone, the console returns to that Namespace. A deleting Agent keeps
+**Request deletion again** behind confirmation. Failed cleanup can be replenished;
+queued or running cleanup is unchanged. An uncertain repeat stays disabled until
+a status read confirms deletion. The API keeps retry ownership and exact-Agent
+permission. A denial stays visible, and a refused repeat keeps the retry-ownership explanation.
+Refresh before retrying an unconfirmed outcome. The console never resends a
+delete automatically.
 
 ## Failures and logout
 
@@ -248,6 +251,9 @@ dependencies, missing resources, and network failures clear affected rows and
 offer recovery. Backend error text is not rendered; include any displayed request
 ID when reporting an API failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
+Interrupted response bodies and request deadlines keep the interrupted-read
+recovery path. View cancellation does not show a new failure, and a failed
+response never automatically retries a mutation.
 Backend discovery shows only configured IDs and types; see its
 [limits](backends.md#read-configured-backends).
 

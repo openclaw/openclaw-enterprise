@@ -312,3 +312,46 @@ test(
     }
   },
 );
+
+test(
+  "demo chart refuses NetworkPolicy ports Kubernetes cannot use",
+  await helmAvailable(),
+  async () => {
+    const render = (sets) =>
+      execute(
+        helm,
+        [
+          "template",
+          "demo",
+          "deploy/helm/openclaw-observability-demo",
+          "--namespace",
+          "oce-observability-demo",
+          ...[
+            "occ.namespace=openclaw-system",
+            "occ.release=oce",
+            "cluster.cidrs[0]=10.43.0.1/32",
+            "grafana.adminSecretName=grafana-admin",
+          ].flatMap((value) => ["--set", value]),
+          ...sets,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    for (const path of ["cluster.port", "occ.metricsPort"]) {
+      for (const port of ["0", "010", "65536", "99999999999999999999"]) {
+        await assert.rejects(
+          render(["--set-string", `${path}=${port}`]),
+          ({ stderr }) => stderr.includes(`${path} must be an integer TCP port from 1 to 65535`),
+          `${path}=${port}`,
+        );
+      }
+    }
+    const { stdout } = await render([
+      "--set-string",
+      "cluster.port=6443",
+      "--set-string",
+      "occ.metricsPort=9464",
+    ]);
+    assert.match(stdout, /port: 6443/);
+    assert.match(stdout, /port: 9464/);
+  },
+);

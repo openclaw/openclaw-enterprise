@@ -787,6 +787,24 @@ export const scenarios = {
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", hold: true }],
     description: "The collection read remains pending until the real 15-second client timeout.",
   },
+  agentsInterruptedResponse: {
+    group: "Pages/Agents",
+    name: "Interrupted response",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        bodyError: true,
+        once: true,
+      },
+    ],
+    description:
+      "A collection response body fails after its headers arrive. Retry reloads the list.",
+    gap: "This preview simulates a stream failure; the socket tests verify real HTTP interruption.",
+    workflow: [
+      "Check that Request interrupted appears with Retry instead of an empty Agent collection.",
+      "Select Retry. The populated Agent list returns without changing Namespace or saved resources.",
+    ],
+  },
   backends: {
     group: "Pages/Backends",
     name: "Configured",
@@ -1476,29 +1494,28 @@ export const scenarios = {
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
-    name: "Created Agent with pending deployment",
+    name: "Initial deployment pending",
     path: create,
     actions: readyForm,
-    provisionedDeploymentStatus: "queued",
+    provisionedDeploymentStatus: "running",
     description:
-      "Creation opens Agent details after provisioning completes, while the first deployment remains queued.",
+      "Creation stays on the original provisioning request while its first deployment is running.",
     steps: [
-      "Click Create Agent and wait for Agent details to open.",
-      "Inspect Deployment activity: the recorded status remains queued, and no version is selected.",
-      "Click Refresh deployment. The simulated deployment stays queued; the create form does not reopen.",
+      "Click Create Agent and confirm provisioning remains in progress.",
+      "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
-    name: "Created Agent with failed deployment",
+    name: "Initial deployment failed",
     path: create,
     actions: readyForm,
     provisionedDeploymentStatus: "failed",
     description:
-      "A first-deployment failure appears on Agent details after successful provisioning, without trapping creation on the form.",
+      "The original provisioning request reports its first-deployment failure and links to the existing Agent and revision.",
     steps: [
-      "Click Create Agent and wait for Agent details to open.",
-      "Inspect the failed Deployment activity and its reconciliation error.",
+      "Click Create Agent and wait for the credential initialization failure.",
+      "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
     ],
   },
   createUnsupportedProvisioning: {
@@ -1608,6 +1625,44 @@ export const scenarios = {
     actions: createWorkspaceFields,
     description:
       "The creation form seeds AGENTS.md, SOUL.md, IDENTITY.md, and USER.md before the Agent's first deployment. Clearing a field creates an empty file.",
+  },
+  createPresetMultiline: {
+    group: "Pages/Create Agent",
+    name: "Multiline Preset strings",
+    path: create,
+    presetVariables: {
+      notes: {
+        type: "string",
+        default: "# Notes\r\n- First instruction\r\n- Second instruction\r\n",
+      },
+    },
+    presetWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Multiline preset example" },
+    ],
+    description:
+      "String variables accept multiple lines. An untouched CRLF default retains its original value; editing uses the browser's LF text.",
+  },
+  createPresetMultilineApplied: {
+    group: "Pages/Create Agent",
+    name: "Multiline Preset applied",
+    path: create,
+    presetVariables: {
+      notes: {
+        type: "string",
+        default: "# Notes\r\n- First instruction\r\n- Second instruction\r\n",
+      },
+    },
+    presetWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Multiline preset example" },
+      click("Use Preset"),
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "Use Preset preserves the line structure in the editable workspace copy. Workspace textareas follow the existing LF submission contract; no Agent is created by this story.",
   },
   createDedicatedOpenclaw: {
     group: "Pages/Create Agent",
@@ -2821,6 +2876,77 @@ export const scenarios = {
     description:
       "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
+  agentsDeploymentFailed: {
+    group: "Pages/Agents",
+    name: "Latest deployment failed",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    description:
+      "The list shows the newest visible failure beside the current version, without asserting serving health.",
+    steps: [
+      "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
+    ],
+  },
+  deploymentBootstrapCleanup: {
+    group: "Pages/Agent detail",
+    name: "Bootstrap failure with cleanup pending",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    cleanupStatus: "queued",
+    cleanupCompletes: true,
+    description:
+      "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+    steps: [
+      "Read the failing oauth-bootstrap exit status beside the successful init container.",
+      "Wait for cleanup to change from pending to completed; the deployment must still show failed.",
+    ],
+  },
+  agentsDeploymentDenied: {
+    group: "Pages/Agents",
+    name: "Latest deployment access denied",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadStatus: 403,
+    description:
+      "Agent identity and current pointer remain visible while deployment access is denied.",
+  },
+  agentsDeploymentLoading: {
+    group: "Pages/Agents",
+    name: "Latest deployment loading",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadDelay: 6000,
+    description:
+      "Deployment reads show loading beside the current pointer, then show the visible result.",
+  },
+  agentsDeploymentError: {
+    group: "Pages/Agents",
+    name: "Latest deployment unavailable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadStatus: 503,
+    description:
+      "An interrupted deployment read leaves the Agent and current pointer visible without guessing an outcome.",
+  },
+  runtimeBootstrapContainers: {
+    group: "Pages/Agent detail",
+    name: "Bootstrap container status and logs",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    bootstrapRuntime: true,
+    description:
+      "The Pod card names both containers; the writer's exit 1 is visible beside the init container's exit 0.",
+    steps: [
+      "Switch Pod / container from oauth-bootstrap to prepare-oauth-home and read its initialization output.",
+      "Switch back to oauth-bootstrap to inspect the failed writer.",
+    ],
+  },
   deploymentFailed: {
     group: "Pages/Agent detail",
     name: "New version failed",
@@ -3131,6 +3257,42 @@ export const scenarios = {
     ],
     actions: [click("Deploy new version")],
     description: "A rejected deployment reports failure and re-enables the action.",
+  },
+  deployRefusedSetting: {
+    group: "Pages/Agent detail",
+    name: "Deployment refused by a Configuration setting",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Configuration setting gateway.bind must listen on all interfaces to serve routed traffic: use lan or omit the setting.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "A typed conflict shows the API's sentence, which names the setting to change. No version is created.",
+  },
+  deployAgentPrincipalDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment denied for the Agent's service principal",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "The Agent service principal service-agent-agt_00000000-0000-4000-8000-000000000001 is not authorized to operate secret sec_00000000-0000-4000-8000-000000000001. Grant that principal operate on the secret, then deploy again.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "A denial for the Agent's own service principal names the principal and the grant to add. A caller's own denial keeps the console's guidance.",
   },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
@@ -4028,7 +4190,36 @@ export const scenarios = {
     path: draft,
     deleting: true,
     description:
-      "Pending cleanup removes editing and deployment controls. Refresh deletion status checks completion.",
+      "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
+  },
+  deletionRetryConfirm: {
+    group: "Components/Deletion",
+    name: "Repeat cleanup confirmation",
+    path: draft,
+    deleting: true,
+    actions: [click("Request deletion again")],
+    description:
+      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged.",
+  },
+  deletionRetryUnknown: {
+    group: "Components/Deletion",
+    name: "Repeat cleanup outcome unknown",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 503,
+        once: true,
+      },
+    ],
+    actions: [
+      click("Request deletion again"),
+      { selector: ".agent-delete-dialog button.danger", click: "Request deletion again" },
+    ],
+    description:
+      "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",
   },
   deletionDenied: {
     group: "Components/Deletion",
@@ -4361,7 +4552,40 @@ export const scenarios = {
     deployed: true,
     stopped: true,
     description:
-      "The requested state is stopped. Deployment resumes the Agent; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+  },
+  stopRepeatConfirm: {
+    group: "Components/Stop Agent",
+    name: "Repeat confirmation",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    actions: [click("Request Stop again")],
+    description:
+      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+  },
+  stopNoSelection: {
+    group: "Components/Stop Agent",
+    name: "No selected version",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    stopNoSelection: true,
+    description:
+      "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
+  },
+  stopRepeatUnknown: {
+    group: "Components/Stop Agent",
+    name: "Repeated Stop outcome unknown",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
+    actions: [
+      click("Request Stop again"),
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
   },
   stopDenied: {
     group: "Components/Stop Agent",
@@ -4393,6 +4617,7 @@ export const scenarios = {
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
+      "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Create new version and Deploy new version to request running again.",
     ],
     gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
@@ -4407,7 +4632,7 @@ export const scenarios = {
     steps: [
       "Scroll to Delete Agent and open its confirmation dialog.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
-      "The page enters Deletion in progress and removes edit/deploy controls.",
+      "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
     ],
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",

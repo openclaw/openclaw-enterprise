@@ -838,17 +838,21 @@ export class PostgresWorkQueue {
   async enqueueRepositoryCleanup(
     claim: WorkClaim,
     owner: RepositoryRevisionOwner,
-    purpose: "sessions" | "terminal-runtime" = "sessions",
+    purpose: "sessions" | "terminal-runtime" | "failed-preparation" = "sessions",
   ): Promise<ControllerWork | undefined> {
     validateClaim(claim);
     const revisionId = nonempty(owner.revisionId, "Repository cleanup revision ID");
     if (revisionId.length !== 40 || !new RegExp(`^${REVISION_ID_PATTERN}$`).test(revisionId)) {
       throw new ScopeViolationError("Repository cleanup requires an exact revision ID.");
     }
-    if (purpose !== "sessions" && purpose !== "terminal-runtime") {
+    if (
+      purpose !== "sessions" &&
+      purpose !== "terminal-runtime" &&
+      purpose !== "failed-preparation"
+    ) {
       throw new ScopeViolationError("Repository cleanup requires a supported purpose.");
     }
-    const retireRuntime = purpose === "terminal-runtime";
+    const retireRuntime = purpose !== "sessions";
     const key = `agent_revision:${revisionId}:repository_cleanup:${retireRuntime ? "retire:" : ""}${createHash(
       "sha256",
     )
@@ -882,7 +886,7 @@ export class PostgresWorkQueue {
          WHERE revision.namespace_id = $3 AND revision.agent_id = $4 AND revision.id = $5
            AND NOT ${repositoryCleanupSql("source")}
            AND (NOT $7::boolean OR (source.revision_id = revision.id
-             AND revision.admitted_spec->'repository_credentials' IS NOT NULL))
+             AND ($8::boolean OR revision.admitted_spec->'repository_credentials' IS NOT NULL)))
            AND (
              (source.agent_id = revision.agent_id AND source.revision_id IS NOT NULL
                -- Excludes credential withdrawal work; see CREDENTIAL_WITHDRAWAL_TARGET.
@@ -924,6 +928,7 @@ export class PostgresWorkQueue {
         revisionId,
         key,
         retireRuntime,
+        purpose === "failed-preparation",
       ],
     );
     const row = result.rows[0] as

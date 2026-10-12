@@ -3057,7 +3057,7 @@ if (followsPeerStatus) {
 }
 `;
 
-export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
+const CODEX_OAUTH_BOOTSTRAP_WRITER = String.raw`
 try {
 const fs = require("node:fs");
 const path = require("node:path");
@@ -3100,6 +3100,8 @@ if (receipt?.sourceUid === expected.sourceUid) {
   // A new source starts from an empty Codex home: no previous login, sessions, or links.
   // rmSync removes symbolic links themselves and never follows them.
   for (const entry of fs.readdirSync(directory)) {
+    // Keep the locked inode: deleting it would let another writer lock a new file.
+    if (entry === ".oce-oauth-bootstrap.lock") continue;
     fs.rmSync(path.join(directory, entry), { recursive: true, force: true });
   }
   const writeJson = (target, value) => {
@@ -3122,7 +3124,7 @@ if (receipt?.sourceUid === expected.sourceUid) {
   } finally {
     fs.closeSync(descriptor);
   }
-  // Readiness reports only a verified final state.
+  // Successful exit reports only a verified final state.
   const written = readRegularJson(receiptPath);
   if (
     !validAuth(readRegularJson(authPath)) ||
@@ -3131,6 +3133,40 @@ if (receipt?.sourceUid === expected.sourceUid) {
   ) {
     throw new Error("OAuth bootstrap could not verify private credentials.");
   }
+}
+} catch {
+  throw new Error("OAuth bootstrap could not initialize private credentials.");
+}
+`;
+
+export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
+try {
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const directory = process.env.CODEX_HOME;
+if (!directory) throw new Error();
+if (fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() === false) {
+  throw new Error();
+}
+fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+const descriptor = fs.openSync(
+  path.join(directory, ".oce-oauth-bootstrap.lock"),
+  fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW,
+  0o600,
+);
+try {
+  if (!fs.fstatSync(descriptor).isFile()) throw new Error();
+  // The pinned runtime base supplies flock. Kernel locks release on process
+  // death, so an interrupted Pod cannot leave a stale ownership marker. Pass
+  // the already-opened inode to avoid following a link planted in the home.
+  const result = spawnSync("/usr/bin/flock", [
+    "--exclusive", "--timeout", "60", "/proc/self/fd/3",
+    process.execPath, "-e", ${JSON.stringify(CODEX_OAUTH_BOOTSTRAP_WRITER)},
+  ], { stdio: ["ignore", "inherit", "inherit", descriptor] });
+  if (result.error || result.status !== 0) throw new Error();
+} finally {
+  fs.closeSync(descriptor);
 }
 } catch {
   throw new Error("OAuth bootstrap could not initialize private credentials.");
