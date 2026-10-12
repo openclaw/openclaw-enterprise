@@ -758,15 +758,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
             "OpenShell OpenAI-compatible credential sources require a dedicated Harness.",
           );
         }
-        if (
-          context.revision.harness.id === "openclaw" &&
-          sourceBaseUrl(source.config) !== OPENAI_DEFAULT_BASE_URL
-        ) {
-          // TODO(dedicated-native-custom-endpoints): validate source-bound model endpoints when supported.
-          throw new ScopeViolationError(
-            "Dedicated native OpenClaw credential sources require the default OpenAI endpoint.",
-          );
-        }
       }
       // Two sources cannot place their placeholders in the same Sandbox variable.
       for (const name of Object.values(type.credentials(source.config))) {

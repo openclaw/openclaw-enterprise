@@ -2133,7 +2133,8 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
 function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
-): object {
+  sourceBaseUrl?: string,
+) {
   const models = harnessModels(configuration);
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
@@ -2148,6 +2149,7 @@ function nativeRuntimeConfiguration(
     throw createError("models.providers.openai.headers", "must be unset on Dedicated OpenClaw");
   }
   const entries = openai.models.map((value) => asRecord(value));
+  const endpoints = new Set<string>();
   const runtimeModels = models.map((reference) => {
     const { provider, id } = splitModelRef(reference);
     if (provider !== "openai" || !id) {
@@ -2192,26 +2194,27 @@ function nativeRuntimeConfiguration(
         "must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw",
       );
     }
-    let endpoint: URL | undefined;
-    try {
-      endpoint = new URL(baseUrl as string);
-    } catch {
-      endpoint = undefined;
-    }
-    if (
-      endpoint === undefined ||
-      endpoint.protocol !== "https:" ||
-      endpoint.hostname !== "api.openai.com" ||
-      endpoint.port !== "" ||
-      endpoint.username !== "" ||
-      endpoint.password !== "" ||
-      endpoint.search !== "" ||
-      endpoint.hash !== "" ||
-      endpoint.pathname.replace(/\/$/u, "") !== "/v1"
-    ) {
+    const endpoint = normalizeOpenAiBaseUrl(baseUrl as string);
+    if (endpoint === undefined) {
       throw createError(
         `${setting}.baseUrl`,
-        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+        "(or models.providers.openai.baseUrl) must be a valid HTTPS /v1 URL without credentials, query, fragment, or wildcards",
+      );
+    }
+    if (endpoint !== "https://api.openai.com/v1" && api !== "openai-responses") {
+      throw createError(`${setting}.api`, "must be openai-responses for a custom model endpoint");
+    }
+    if (sourceBaseUrl !== undefined && endpoint !== sourceBaseUrl) {
+      throw createError(
+        `${setting}.baseUrl`,
+        "must match the bound model credential source endpoint",
+      );
+    }
+    endpoints.add(endpoint);
+    if (endpoints.size > 1) {
+      throw createError(
+        `${setting}.baseUrl`,
+        "must use the same endpoint for every selected model",
       );
     }
     if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") {
@@ -2260,7 +2263,7 @@ function nativeRuntimeConfiguration(
     models: {
       providers: {
         openai: {
-          baseUrl: "https://api.openai.com/v1",
+          baseUrl: [...endpoints][0]!,
           apiKey: { source: "env", provider: "model", id: MODEL_API_KEY },
           models: runtimeModels,
         },
@@ -2270,7 +2273,10 @@ function nativeRuntimeConfiguration(
   };
 }
 
-function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot | undefined {
+function nativeRuntimeSnapshot(
+  revision: AgentRevision,
+  sourceBaseUrl: string | undefined,
+): NativeRuntimeSnapshot | undefined {
   if (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated") {
     return undefined;
   }
@@ -2281,9 +2287,13 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
       "Dedicated OpenClaw runtime transport is owned by the selected Compute Driver.",
     );
   }
+  const endpoint = normalizeOpenAiBaseUrl(sourceBaseUrl ?? "https://api.openai.com/v1");
+  if (endpoint === undefined) {
+    throw new ConfigurationFailure("The bound native model credential source endpoint is invalid.");
+  }
   return {
     configuration: JSON.stringify(
-      nativeRuntimeConfiguration(revision.configuration, preparationSettingError),
+      nativeRuntimeConfiguration(revision.configuration, preparationSettingError, endpoint),
     ),
   };
 }
@@ -3285,6 +3295,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     configuration: OpenClawConfigurationDocument,
     secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
+    credentialSource?: Readonly<CredentialSource>,
   ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
     // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) and
@@ -3395,7 +3406,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError);
+      const sourceBaseUrl =
+        credentialSource === undefined
+          ? undefined
+          : normalizeOpenAiBaseUrl(credentialSource.config.base_url ?? "https://api.openai.com/v1");
+      if (credentialSource !== undefined && sourceBaseUrl === undefined) {
+        throw new ConfigurationFailure(
+          "The bound native model credential source endpoint is invalid.",
+        );
+      }
+      const nativeConfiguration = nativeRuntimeConfiguration(
+        configuration,
+        callerSettingError,
+        sourceBaseUrl,
+      );
+      if (
+        auth.method !== "credential_source" &&
+        nativeConfiguration.models.providers.openai.baseUrl !== "https://api.openai.com/v1"
+      ) {
+        throw callerSettingError(
+          "models.providers.openai.baseUrl",
+          "must use a credential_source Harness binding for a custom model endpoint",
+        );
+      }
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -4763,6 +4796,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         admittedRevision.configuration,
         revision.secretBindings,
         await this.admittedCredentialSourceType(revision),
+        context?.harnessAuth.method === "credential_source"
+          ? context.harnessAuth.source
+          : undefined,
       ),
     );
     const channels = this.enabledChannels(admittedRevision);
@@ -4783,7 +4819,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
-    const nativeRuntime = nativeRuntimeSnapshot(admittedRevision);
+    const nativeRuntime = nativeRuntimeSnapshot(
+      admittedRevision,
+      harnessAuth.credentialSource?.config.base_url,
+    );
     const tenantOwnership = { namespaceId: revision.namespaceId };
     const observed = await this.getNamespace(namespace);
     if (observed === undefined) {
@@ -5746,6 +5785,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       admittedRevision.configuration,
       revision.secretBindings,
       await this.admittedCredentialSourceType(revision),
+      context?.harnessAuth.method === "credential_source" ? context.harnessAuth.source : undefined,
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
@@ -5757,7 +5797,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const secretEnvironment = this.secretEnvironmentForRevision(revision, context, sourceNamespace);
     const harnessAuth = this.harnessAuthForRevision(admittedRevision, context, sourceNamespace);
     const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
-    const nativeRuntime = nativeRuntimeSnapshot(admittedRevision);
+    const nativeRuntime = nativeRuntimeSnapshot(
+      admittedRevision,
+      harnessAuth.credentialSource?.config.base_url,
+    );
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
     const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
     const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };

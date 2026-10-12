@@ -9,13 +9,16 @@ import {
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 // Gateway storage and Compute placement are test doubles. Requests use the real
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
-async function fixture(t, { toolSources = false } = {}) {
+async function fixture(t, { toolSources = false, nativeAdmission = false } = {}) {
   const providers = new Map();
   const profiles = new Map();
   const mutations = [];
@@ -87,15 +90,43 @@ async function fixture(t, { toolSources = false } = {}) {
       return namespace;
     },
   };
+  const sandboxDriver = nativeAdmission
+    ? {
+        id: "native-sandbox",
+        capability: "sandbox",
+        implementation: "test/native",
+        facets: ["networking", "filesystem", "process"],
+        async cleanup() {},
+        async provisionHarness() {
+          throw new Error("This API fixture does not execute Kubernetes workloads.");
+        },
+      }
+    : undefined;
+  if (nativeAdmission) {
+    // Placement remains a fixture; the native admission rule under proof is the real Driver.
+    const admission = new KubernetesComputeDriver(
+      conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["192.0.2.0/24"] }),
+      {
+        sandboxDriver,
+        credentialGatewayDriver: driver,
+      },
+    );
+    computeDriver.validateHarnessAuth = (...args) => admission.validateHarnessAuth(...args);
+  }
   const secretDriver = createTestSecretDriver();
   const app = await createConsoleAppFixture(t, {
     now: () => new Date(now),
     computeDriver,
     secretDriver,
+    ...(nativeAdmission ? { nativeWorkerSupport: "custom-image" } : {}),
   });
   await app.bootstrap();
   app.controller.registerDriver(driver);
   app.controller.selectDriver("credential_gateway", driver.id);
+  if (sandboxDriver !== undefined) {
+    app.controller.registerDriver(sandboxDriver);
+    app.controller.selectDriver("sandbox", sandboxDriver.id);
+  }
   if (toolSources) {
     const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
     app.controller.registerDriver(refresh);
@@ -230,6 +261,84 @@ test("credential source HTTP deletion recovers invalid stored endpoints without 
   assert.equal((await f.request("GET", f.path + "/" + unknown.id)).data.state, "deleting");
 });
 
+test("native Agent deployment checks the source endpoint before admitting a revision", async (t) => {
+  const f = await fixture(t, { nativeAdmission: true });
+  const source = await f.create("native-model", { base_url: "https://models.example.test/api/v1" });
+  assert.equal(source.status, 201, JSON.stringify(source.error));
+  const values = createHarnessConfiguration("openclaw", "vendor/organization/model");
+  values.models.providers.openai.baseUrl = "https://other.example.test/api/v1";
+  const configuration = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    body: { kind: "agent", values },
+  });
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
+  const agent = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+    body: {
+      name: "native",
+      configurationId: configuration.data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: source.data.id },
+      credentialSources: [{ sourceId: source.data.id }],
+    },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.error));
+  // Seed the fixture IAM dataset with the normal exact Agent/source operator grant.
+  // Role CRUD is not under proof; endpoint admission still uses real IAM authorization.
+  const roleId = `native-model-${agent.data.id}`;
+  f.policy.identities.push({
+    id: agent.data.servicePrincipalId,
+    kind: "service_principal",
+    namespaceId: f.namespace.id,
+    agentId: agent.data.id,
+  });
+  f.policy.roles.push({
+    id: roleId,
+    namespaceId: f.namespace.id,
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  f.policy.bindings.push({
+    id: roleId,
+    namespaceId: f.namespace.id,
+    subjectKind: "identity",
+    subjectId: agent.data.servicePrincipalId,
+    roleId,
+    resourceKind: "credential_source",
+    resourceId: source.data.id,
+  });
+
+  // A source mismatch must not publish a revision or queue workload replacement.
+  const rejected = await f.request(
+    "POST",
+    `/namespaces/${f.namespace.id}/agents/${agent.data.id}/deploy`,
+  );
+  assert.equal(rejected.status, 400, JSON.stringify(rejected));
+  assert.match(
+    rejected.body.error.message,
+    /must match the bound model credential source endpoint/,
+  );
+  const untouched = await f.request("GET", `/namespaces/${f.namespace.id}/agents/${agent.data.id}`);
+  assert.equal(untouched.data.activeRevisionId, undefined);
+
+  values.models.providers.openai.baseUrl = "https://MODELS.example.test:443/api/v1/";
+  const updated = await f.request(
+    "PATCH",
+    `/namespaces/${f.namespace.id}/configurations/${configuration.data.id}`,
+    {
+      body: { values },
+    },
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.error));
+  const deployed = await f.request(
+    "POST",
+    `/namespaces/${f.namespace.id}/agents/${agent.data.id}/deploy`,
+  );
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  assert.equal(deployed.data.harness.id, "openclaw");
+  assert.equal(
+    deployed.data.configuration.agents.defaults.model,
+    "openai/vendor/organization/model",
+  );
+});
+
 test("OpenShell custom and default credential profiles keep independent ownership and lifecycle", async (t) => {
   const f = await fixture(t);
   const standard = await f.create("default");
@@ -261,23 +370,17 @@ test("OpenShell custom and default credential profiles keep independent ownershi
     source,
     signal: AbortSignal.timeout(5000),
   };
-  // Native OpenClaw cannot use a custom endpoint. Codex can attach only the source's profile.
-  await assert.rejects(
-    f.driver.attachForRevision({
-      ...context,
-      sources: [source],
-      revision: { harness: { id: "openclaw", mode: "dedicated" } },
-    }),
-    /default OpenAI endpoint/,
-  );
-  assert.deepEqual(
-    await f.driver.attachForRevision({
-      ...context,
-      sources: [source],
-      revision: { harness: { id: "codex", mode: "dedicated" } },
-    }),
-    [{ sourceId: custom.data.id, ref: provider.name }],
-  );
+  // Both dedicated Harnesses attach only the registered source's endpoint-specific profile.
+  for (const harnessId of ["openclaw", "codex"]) {
+    assert.deepEqual(
+      await f.driver.attachForRevision({
+        ...context,
+        sources: [source],
+        revision: { harness: { id: harnessId, mode: "dedicated" } },
+      }),
+      [{ sourceId: custom.data.id, ref: provider.name }],
+    );
+  }
   provider.type = "oce-openai";
   assert.equal((await f.request("GET", f.path + "/" + custom.data.id)).data.status.state, "failed");
   await assert.rejects(

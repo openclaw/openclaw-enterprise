@@ -42,6 +42,20 @@ that key can use. Register the complete native model ID under
 configuration supplies the native provider explicitly; do not add it to the
 model ID yourself.
 
+For **dedicated native OpenClaw**, register the same `openai` source, then use
+`openai/<model>` and `agentRuntime.id: "openclaw"` in your Configuration instead
+of the Codex Configuration below. Keep the full native ID, including slashes.
+Set `models.providers.openai.baseUrl` to the same HTTPS `/v1` endpoint as
+`config.base_url` (omission means OpenAI’s default). For a custom endpoint, use
+`api: "openai-responses"` and complete model token/cost metadata. Do not add
+provider or model headers. Permit `/usr/local/bin/node` in the Credential Gateway’s
+`binaries`; the gateway must not receive the model key.
+
+A mismatched URL fails before deployment admission or workload mutation. To use
+another endpoint, register a new immutable source, update the Configuration to
+match, and grant the Agent access to that source. This supports Bearer Responses,
+not Anthropic Messages or a custom authentication header.
+
 ## Register the key
 
 Store the key as a Namespace Secret. Build the request file with owner-only

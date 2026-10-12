@@ -323,6 +323,10 @@ function nativeCodexConfiguration(gatewayAuth) {
 function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
   const configuration = createHarnessConfiguration("openclaw", providerModel);
   configuration.models.providers.openai.models[0].input = ["text", "image"];
+  if (openShellModelBaseUrl !== undefined) {
+    // The native worker's endpoint must match the immutable source used by its real Agent.
+    configuration.models.providers.openai.baseUrl = openShellModelBaseUrl;
+  }
   configuration.secrets = {
     providers: {
       model: {

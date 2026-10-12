@@ -140,23 +140,21 @@ token. Compute pins it in `dedicated-native` with `inference: "worker"`:
 missing/disconnected Harnesses fail without Gateway inference. Callbacks and session-bound
 admission scope transport to the Agent.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
-projects admitted OpenAI models and an environment SecretRef into canonical
-`models.providers.openai`.
+projects admitted models, a normalized source-matching endpoint, and an environment
+SecretRef into `models.providers.openai`. OCC passes source metadata to Compute admission; dispatch rechecks before mutation.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
-writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`.
+writes capacity/isolation settings and `OPENCLAW_WORKSPACE_DIR`.
 `apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` admits its data
 mount as default workspace, also used by native Gateway file transfer unless
-overridden. OpenClaw snapshots node-local models/credentials and derives workspaces
-from authorized launch descriptors, without an inference file, grant catalog or
-retired `nativeInferenceConfig`.
+overridden. OpenClaw snapshots node-local models/credentials and derives workspaces from
+authorized launch descriptors.
 
-Embedded OpenClaw combines workload, exact Agent identity and model key. Scoped
-worker Secret/workload permissions deliver credentials and enroll nodes; Gateway
-Pods receive no controller or Harness Kubernetes credentials.
+Embedded OpenClaw combines identity, workload, and model key; worker permissions
+deliver credentials and enroll nodes. Gateways receive neither controller nor
+Harness Kubernetes credentials.
 
-Sandbox consumes these projections and explicit login mode through
-`HarnessWorkloadRequirements`; unsupported projection fails without a test-only
-credential bridge.
+Sandbox validates projections and login mode through `HarnessWorkloadRequirements`;
+unsupported delivery fails closed.
 
 Every Compute Pod template, ordinary allow policy and Gateway/Harness peer requires
 the [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
@@ -317,6 +315,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 08:50: Bind native URLs to credential sources. (01a121bf-8122-79c0-b547-a0e44361c2a5 - 3d1103db7)
 
 - 2026-10-10 04:41: Reconcile endpoint validation and routing with credential refresh, native approval and readiness contracts. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 

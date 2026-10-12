@@ -6728,6 +6728,9 @@ export class OpenClawController {
         admittedConfiguration,
         configuration.secretBindings,
         credentialSourceType,
+        harnessAuth.method === "credential_source"
+          ? await state.credentialSources.findCredentialSource(namespace.id, harnessAuth.sourceId)
+          : undefined,
       );
       // Every preparation attempt would refuse such a gateway setting and the deployment would
       // fail as an unavailable dependency, so refuse it here with the 409 provisioning answers.

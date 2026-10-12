@@ -1809,6 +1809,8 @@ export interface ComputeDriver extends Driver {
     secretBindings?: SecretBindings | null,
     /** Catalog entry for a `credential_source` binding; absent for every other method. */
     credentialSourceType?: CredentialSourceType,
+    /** Authoritative source metadata, when available at deployment or dispatch. */
+    credentialSource?: Readonly<CredentialSource>,
   ): void;
   /** Discovery availability; deployment must still validate its exact Harness. */
   validateRepositoryCredentialSupport?(sandboxDriverId?: string): void;

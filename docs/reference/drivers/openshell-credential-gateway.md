@@ -216,10 +216,9 @@ calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
 the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
 and only a listed provider is detached again.
 
-For Codex, Compute selects a named compatible provider with the source endpoint
-and HTTPS Responses transport. Other existing Harness consumers retain their
-default OpenAI endpoint limit. In the running
-Sandbox, the Harness environment holds only an
+For Codex, Compute selects a named compatible Responses provider. Native
+OpenClaw receives normalized worker configuration matching the source endpoint;
+custom URLs require Responses. In the Sandbox, the Harness holds only an
 `openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
 --with-api-key` stores that placeholder, and the supervisor proxy substitutes the
 real key on matching requests.

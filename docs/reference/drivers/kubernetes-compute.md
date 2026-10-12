@@ -241,17 +241,17 @@ The Agent's Harness configuration determines its execution topology:
   Service DNS and the paired node for workspace operations. Codex accepts an
   Agent-scoped model API key or a managed ChatGPT service-account credential,
   and permits `openai/` or `codex/` models.
-- **Dedicated native OpenClaw:** The gateway and paired OpenClaw Harness run in
-  separate Pods with separate ServiceAccounts. Compute issues a node-only setup
+- **Dedicated native OpenClaw:** Gateway and Harness use separate Pods and ServiceAccounts. Compute issues a node-only setup
   credential through the gateway and stores the resulting device identity on the
   Harness workspace claim. The node host supervises the remote worker, which owns
   the agent loop, model inference, and coding tools. Only the Harness receives the
   model API key. Compute makes its generated `dedicated-native` worker-inference
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
-  inference fallback. Explicit `openai/` models require complete API,
-  token-limit, input, reasoning, and cost metadata at the approved
-  `https://api.openai.com/v1` endpoint.
+  inference fallback. Explicit `openai/` models require API, token-limit, input, reasoning, and cost
+  metadata. HTTPS `/v1` Responses URLs require `credential_source`
+  authentication and must match its immutable endpoint. Secret-backed native
+  authentication retains `https://api.openai.com/v1`.
 
 Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
 the worker stops predecessors before starting the new Harness. This permits RWO

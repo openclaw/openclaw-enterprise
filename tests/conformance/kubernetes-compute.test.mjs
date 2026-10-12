@@ -994,7 +994,13 @@ test("activation refuses a missing or foreign workspace node before changing the
 // With `clock` ({ now }), enrollment waits are simulated on that fake clock: an
 // observation advances it by its whole wait, or to `state.pairAtMs` if the node
 // pairs within the wait, and never sleeps.
-function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint } = {}) {
+function dedicatedFirstDeployFixture({
+  statusProxy = true,
+  clock,
+  modelEndpoint,
+  sandboxDriver,
+  credentialGatewayDriver,
+} = {}) {
   const state = {
     setupCalls: 0,
     connected: false,
@@ -1017,6 +1023,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
   };
   const driver = new KubernetesComputeDriver(
     routedOptions({
+      ...(sandboxDriver === undefined ? {} : { servicePrincipalCredentials: { mode: "disabled" } }),
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
@@ -1027,6 +1034,8 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
       ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
     }),
     {
+      ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -1254,6 +1263,10 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
     const labels = Object.fromEntries(labelSelector.split(",").map((entry) => entry.split("=")));
     const role = labels["openclaw.dev/workload-role"];
+    // The provider has accepted the native workload, but has not published a Pod yet.
+    if (sandboxDriver !== undefined && role === "agent") {
+      return { items: [] };
+    }
     return {
       items: [
         {
@@ -1336,7 +1349,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
     };
   };
   driver.apiClients = Promise.resolve(clients);
-  const prepare = () => driver.prepareRevision(revision, authContext(revision));
+  const prepare = (context = authContext(revision)) => driver.prepareRevision(revision, context);
   const markReady = (name) => {
     const object = read(
       "Deployment",
@@ -6763,6 +6776,193 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
   assert.equal(env.includes("OPENCLAW_PLUGIN_STATUS_PORT"), false);
 });
 
+test("native source endpoints reach the prepared worker without leaking credentials to the Gateway", async () => {
+  const requests = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "test/native",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness(context) {
+      requests.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+        resourceName: "native-fixture",
+      };
+    },
+  };
+  const credentialGatewayDriver = {
+    id: "native-credentials",
+    async attachForRevision() {
+      return [{ sourceId: "source-native", ref: "oce-cs-native-fixture" }];
+    },
+    async listSourceTypes() {
+      return [{ type: "openai", harnessAuth: { modelProvider: "openai", loginMode: "api_key" } }];
+    },
+  };
+  const fixture = dedicatedFirstDeployFixture({ sandboxDriver, credentialGatewayDriver });
+  const { revision } = fixture;
+  revision.harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  revision.sandboxDriverId = sandboxDriver.id;
+  delete revision.plugins;
+  revision.configuration = admitLoggingConfiguration(
+    createHarnessConfiguration("openclaw", "vendor/organization/model"),
+    "info",
+  );
+  revision.configuration.models.providers.openai.baseUrl =
+    "https://MODELS.example.test:443/api/v1/";
+  revision.harnessAuth = {
+    method: "credential_source",
+    sourceId: "source-native",
+    credentialGatewayId: credentialGatewayDriver.id,
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const source = {
+    id: revision.harnessAuth.sourceId,
+    namespaceId: revision.namespaceId,
+    driverId: credentialGatewayDriver.id,
+    type: "openai",
+    state: "ready",
+    config: { base_url: "https://models.example.test/api/v1" },
+    name: "Native models",
+    createdAt: tenant.createdAt,
+    secrets: { api_key: apiKeyAuth.source },
+  };
+  revision.credentialSources = [
+    {
+      sourceId: source.id,
+      credentialGatewayId: credentialGatewayDriver.id,
+      sourceType: source.type,
+    },
+  ];
+  const context = {
+    harnessAuth: { ...revision.harnessAuth, source },
+    credentialSources: [source],
+    secretEnvironment: [],
+  };
+  const original = structuredClone(revision.configuration);
+
+  // A mismatched source must fail before any Kubernetes workload is changed.
+  const before = fixture.objects.size;
+  await assert.rejects(
+    fixture.prepare({
+      ...context,
+      harnessAuth: { ...context.harnessAuth, source: { ...source, config: {} } },
+    }),
+    /must match the bound model credential source endpoint/,
+  );
+  assert.equal(fixture.objects.size, before);
+  await fixture.prepare(context);
+  fixture.markReady(fixture.gatewayName);
+  await fixture.prepare(context);
+  assert.deepEqual(revision.configuration, original);
+  assert.equal(requests.length, 1);
+  const environment = requests[0].requirements.environment;
+  const configuration = JSON.parse(
+    environment.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG").value,
+  );
+  assert.equal(configuration.models.providers.openai.baseUrl, "https://models.example.test/api/v1");
+  assert.equal(configuration.models.providers.openai.models[0].id, "vendor/organization/model");
+  assert.deepEqual(configuration.models.providers.openai.apiKey, {
+    source: "env",
+    provider: "model",
+    id: "OPENAI_API_KEY",
+  });
+  const gateway = [...fixture.objects.values()].find(
+    ({ kind, spec }) =>
+      kind === "Deployment" && spec.template.spec.containers[0].name === "gateway",
+  );
+  assert.equal(
+    gateway.spec.template.spec.containers.some(({ env }) =>
+      env.some(({ name }) => name === "OPENAI_API_KEY"),
+    ),
+    false,
+  );
+});
+
+test("native custom endpoints require source-bound Responses metadata", () => {
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "test/native",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {},
+  };
+  const driver = new KubernetesComputeDriver(options(), {
+    sandboxDriver,
+    credentialGatewayDriver: { id: "native-credentials" },
+  });
+  const harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const auth = {
+    method: "credential_source",
+    sourceId: "source-native",
+    credentialGatewayId: "native-credentials",
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const type = { type: "openai", harnessAuth: { modelProvider: "openai", loginMode: "api_key" } };
+  const configuration = createHarnessConfiguration("openclaw", "vendor/organization/model");
+  configuration.models.providers.openai.baseUrl = "https://MODELS.example.test:443/api/v1/";
+  const source = {
+    id: auth.sourceId,
+    namespaceId: tenant.id,
+    type: "openai",
+    driverId: auth.credentialGatewayId,
+    state: "ready",
+    config: { base_url: "https://models.example.test/api/v1" },
+  };
+
+  // The actual Compute admission hook preserves qualified IDs and compares normalized endpoints.
+  const original = structuredClone(configuration);
+  driver.validateHarnessAuth(harness, auth, configuration, undefined, type, source);
+  assert.deepEqual(configuration, original);
+  assert.throws(
+    () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
+    /must use a credential_source Harness binding/,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(harness, auth, configuration, undefined, type, {
+        ...source,
+        config: {},
+      }),
+    /must match the bound model credential source endpoint/,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(harness, auth, configuration, undefined, type, {
+        ...source,
+        config: { base_url: "https://other.example.test/api/v1" },
+      }),
+    /must match the bound model credential source endpoint/,
+  );
+
+  const completions = structuredClone(configuration);
+  completions.models.providers.openai.api = "openai-completions";
+  assert.throws(
+    () => driver.validateHarnessAuth(harness, auth, completions, undefined, type, source),
+    /must be openai-responses for a custom model endpoint/,
+  );
+  for (const baseUrl of [
+    "http://models.example.test/v1",
+    "https://*.example.test/v1",
+    "https://models.example.test/v1?route=other",
+    "https://models.example.test/v1#other",
+    "https://models.example.test:0/v1",
+    "https://models.example.test/v1/*",
+  ]) {
+    const invalid = structuredClone(configuration);
+    invalid.models.providers.openai.baseUrl = baseUrl;
+    assert.throws(
+      () => driver.validateHarnessAuth(harness, auth, invalid, undefined, type, source),
+      /must be a valid HTTPS/,
+    );
+  }
+});
+
 test("dedicated OpenClaw renders an enrolled Harness without exposing model credentials to its gateway", async () => {
   const driverOptions = options({
     runtime: {
@@ -11547,7 +11747,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     {
       name: "ConfigurationHarnessError",
       message:
-        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw.",
+        "Configuration setting models.providers.openai.baseUrl must use a credential_source Harness binding for a custom model endpoint.",
     },
   );
   // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
@@ -11583,7 +11783,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     [
       withEntry({ baseUrl: "not a url" }),
       "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+      "(or models.providers.openai.baseUrl) must be a valid HTTPS /v1 URL without credentials, query, fragment, or wildcards",
     ],
     [
       withEntry({ reasoning: "yes" }),
