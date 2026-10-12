@@ -121,6 +121,7 @@ import {
   MANAGED_WORKSPACE,
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
+  workspaceSetupMainEntry,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
@@ -264,12 +265,13 @@ const kubernetesSetupWorkspaces = (mode: "embedded" | "dedicated"): readonly str
   mode === "dedicated" ? [MANAGED_WORKSPACE, HARNESS_WORKSPACE] : [MANAGED_WORKSPACE];
 
 // A Sandbox Harness's requirements carry no workspace initializer
-// (harnessRequirementsFromDeployment), so a Harness a SandboxDriver provisions, dedicated
-// OpenClaw always among them, cannot receive initial workspace files.
+// (harnessRequirementsFromDeployment), so a Harness in a Sandbox, dedicated OpenClaw always
+// among them, cannot receive initial workspace files. Every Sandbox Driver that ships
+// provisions its Harness, so any Sandbox is refused.
 function requireNoSandboxWorkspaceSetup(sandboxDriverId: string | undefined): void {
   if (sandboxDriverId !== undefined) {
     throw new ConfigurationFailure(
-      "Initial workspace files cannot be delivered to a Harness a SandboxDriver provisions.",
+      "Initial workspace files cannot be delivered to a Harness in a Sandbox.",
     );
   }
 }
@@ -10416,8 +10418,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       workspaceNodeId !== undefined
         ? { nativeWorkerNodeId: workspaceNodeId }
         : {}),
+      // Initial workspace setup's directory: the main entry in any letter case, as OpenClaw
+      // and the setup rule read it (finding 1144).
       workspace:
-        asRecord(asRecord(asRecord(nativeConfiguration.agents)?.entries)?.main)?.workspace ??
+        workspaceSetupMainEntry(nativeConfiguration)?.agent?.workspace ??
         asRecord(asRecord(nativeConfiguration.agents)?.defaults)?.workspace ??
         "/home/node/.openclaw/workspace",
     };

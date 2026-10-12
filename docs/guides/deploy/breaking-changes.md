@@ -19,12 +19,13 @@ real Installation.
   `initialWorkspaceFiles`, and Agent update and deployment while those files
   are pending, answer `409` naming the Sandbox. Before, dedicated Codex saved
   and its first deployment failed, and dedicated OpenClaw got a `400` naming
-  `agents.defaults.workspace`, which the Sandbox had set.
-- The Agent provisioning request answers `409` for `repositoryBindings` that
-  the Compute topology cannot deliver, as Agent create does. Before, it
-  answered `202` and the work failed.
-- Newly accepted: an `agents.entries` roster key of `Main` (any letter case)
-  with initial workspace files.
+  `agents.defaults.workspace` or `agents.entries.main.workspace`, which the
+  Sandbox had set.
+- The Agent provisioning request, and its retry, answer `409` for
+  `repositoryBindings` that the Compute topology cannot deliver, with Agent
+  create's message. Before, the request answered `202` and the work failed.
+- Newly accepted on Kubernetes and Docker Compute: an `agents.entries` roster
+  key of `Main` (any letter case) with initial workspace files.
 
 **Who is affected.** OpenShell Installations that create Agents with initial
 workspace files, and provisioning clients that send repository bindings on a

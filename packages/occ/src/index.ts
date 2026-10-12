@@ -1209,7 +1209,7 @@ function validateWorkspaceSetupTopology(
     throw new ResourceStateConflictError(
       sandboxDriverId === undefined
         ? "The selected Compute Driver cannot deliver initial workspace files to this Agent."
-        : "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Create the Agent without initialWorkspaceFiles.",
+        : "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.",
     );
   }
 }
@@ -2473,8 +2473,9 @@ export class OpenClawController {
         createdAt: this.timestamp(),
       });
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
-      // Agent create refuses repository bindings on a topology that cannot deliver them; the
-      // request does too, before queueing work the worker's admission would refuse (finding 1145).
+      // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
+      // queueing work the worker's admission would refuse (finding 1145). Unlike Agent save, a
+      // Compute Driver without repository support is refused here too: deployment would be.
       if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
         validateRepositoryTopology(
           compute,
@@ -8415,6 +8416,16 @@ export class OpenClawController {
       }
       if (asRecord(record.plan)?.initialWorkspaceFiles !== undefined) {
         validateWorkspaceSetupTopology(compute, harness, configuration, sandbox?.id);
+      }
+      // The request checks repository bindings before queueing (provisionAgent); retry and the
+      // worker check them again until the Agent exists, when admitRepositoryCredentials does.
+      const repositoryBindings = asRecord(record.plan)?.repositoryBindings;
+      if (
+        agent === undefined &&
+        Array.isArray(repositoryBindings) &&
+        repositoryBindings.length > 0
+      ) {
+        validateRepositoryTopology(compute, harness, sandbox?.id);
       }
     }
     // Plugin policy is admission for writes (replay, retry, the worker). A status read reports

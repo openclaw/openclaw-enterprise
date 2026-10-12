@@ -312,7 +312,7 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
   };
   const f = await setup(t, { sandboxDriver });
   const message =
-    "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Create the Agent without initialWorkspaceFiles.";
+    "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.";
   for (const [runtime, model] of [
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],
