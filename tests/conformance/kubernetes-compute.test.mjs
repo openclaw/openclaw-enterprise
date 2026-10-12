@@ -14843,6 +14843,10 @@ function workspaceSetupFixture(
           ],
         };
       }
+      if (state.jobPods !== undefined && labels["openclaw.dev/namespace"] === undefined) {
+        // Job-owned pods; the termination wait (namespace-labelled selector) sees none.
+        return { items: structuredClone(state.jobPods) };
+      }
       return {
         items: state.failedInitializer
           ? [
@@ -15271,6 +15275,47 @@ for (const [reason, code] of [
     );
   });
 }
+
+test("Kubernetes OAuth failure evidence lists Job pods newest first by creation time", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+  stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(({ kind }) => kind === "Job");
+  // The client returns Date timestamps. String(Date) starts with the weekday, so
+  // text order puts Sunday 23:59 before Monday 00:01, and September before October.
+  const created = {
+    "pod-week-before": new Date("2026-09-27T23:59:00Z"),
+    "pod-sunday": new Date("2026-10-04T23:59:00Z"),
+    "pod-monday": new Date("2026-10-05T00:01:00Z"),
+  };
+  state.jobPods = Object.entries(created).map(([name, creationTimestamp]) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name,
+      namespace,
+      uid: `${name}-uid`,
+      creationTimestamp,
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+      ownerReferences: [{ kind: "Job", name: job.metadata.name, uid: job.metadata.uid }],
+    },
+    spec: { containers: [{ name: "oauth-bootstrap" }] },
+    status: { phase: "Failed" },
+  }));
+  state.jobFailure = "BackoffLimitExceeded";
+  await assert.rejects(driver.prepareRevision(revision, context), (error) => {
+    assert.ok(error instanceof ComputePreparationFailedError);
+    assert.deepEqual(
+      error.evidence.pods.map(({ name }) => name),
+      ["pod-monday", "pod-sunday", "pod-week-before"],
+    );
+    return true;
+  });
+});
 
 test("Kubernetes OAuth reobserves an API-defaulted Job without changing its generation", async () => {
   const { driver, revision, objects, records, context } = workspaceSetupFixture(

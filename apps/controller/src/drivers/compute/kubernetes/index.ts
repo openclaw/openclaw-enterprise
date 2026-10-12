@@ -12922,9 +12922,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             (owner) => asRecord(owner)?.uid === job.metadata.uid && asRecord(owner)?.kind === "Job",
           ),
       )
+      // The client returns `Date`s; compare ISO times, never `String(Date)` (weekday text).
       .sort((a, b) =>
-        String(asRecord(b.metadata)?.creationTimestamp).localeCompare(
-          String(asRecord(a.metadata)?.creationTimestamp),
+        (validKubernetesTime(asRecord(b.metadata)?.creationTimestamp) ?? "").localeCompare(
+          validKubernetesTime(asRecord(a.metadata)?.creationTimestamp) ?? "",
         ),
       )
       .slice(0, 4);
