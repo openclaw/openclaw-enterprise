@@ -1826,6 +1826,22 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return account === undefined || account.disabled === false;
       },
+      holdAuthenticationSession: async (sessionId, userId) => {
+        // Account and method revocation lock the user first. Take the same order
+        // before Namespace/policy locks; deleting a held session then waits for COMMIT.
+        const user = await client.query('SELECT id FROM occ."user" WHERE id = $1 FOR SHARE', [
+          userId,
+        ]);
+        if (user.rowCount !== 1) {
+          return false;
+        }
+        const session = await client.query(
+          `SELECT id FROM occ.session
+           WHERE id = $1 AND user_id = $2 AND expires_at > clock_timestamp() FOR SHARE`,
+          [sessionId, userId],
+        );
+        return session.rowCount === 1;
+      },
     };
 
     const namespaces: NamespaceRepository = {

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-07
-last_updated_session: "codex/01a0eb4c-5933-7752-bddc-f787e8da79e7"
+updated: 2026-10-12
+last_updated_session: "authoring-run/3dab5ffe-1c2c-4b63-9899-8f98cacf0b43"
 ---
 
 # Namespace IAM Policy Flow
@@ -32,11 +32,16 @@ graph TD
   A["Caller invokes Namespace IAM route"] --> B["OCC admits identity and required permissions"]
   B --> C{"Read or mutation?"}
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
-  C -->|create/delete| E["Controller validates Role, subject, and exact target"]
+  C -->|create/delete| S{"Human-session caller?"}
+  S -->|yes| L{"Assigning session current?"}
+  L -->|yes, held through transaction| E["Controller validates Role, subject, and exact target"]
+  L -->|revoked or expired| X["Roll back and deny"]
+  S -->|no| E
   E --> F["Selected IAM Driver mutates platform IAM policy"]
   F --> G["Controller appends audit event in the same transaction"]
   D --> H["API returns policy metadata"]
-  G --> H
+  G -->|commit with current session| H
+  G -->|session expired| X
 ```
 
 ## Execution Trace
@@ -57,9 +62,20 @@ policy delegation.
 `apps/controller/src/http/iam.ts:iamHandlers`
 
 List and read operations call the corresponding `OpenClawController` IAM method
-and return policy metadata. Create and delete operations run inside
-`controller.transact`, append an attributable mutation audit event, and return
-only after the transaction commits. The event's authorization records the
+and return policy metadata. Create and delete operations use the handler's `transactIAM` callback, append an attributable mutation audit event, and return
+only after the transaction commits. For human sessions, authentication wraps
+`controller.transact` and retains the admitted session before the IAM command and
+checks its expiry again after the command and audit append. PostgreSQL locks the
+user before the session, then the controller takes its existing Namespace and
+account locks. Guarded profiles first reuse
+`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`,
+which validates the bound account and sign-in method through the existing actor guard.
+Logout or account/method revocation must wait for a protected
+write to finish; revocation that completes first makes the write fail. Expiry
+during the write rolls back policy and its success audit. The memory auth adapter
+serializes policy writes with local logout and rechecks the session inside the
+transaction. Non-session credentials keep their existing admission behavior.
+The event's authorization records the
 Installation `administer` check. Role events carry the Namespace as resource and
 `roleId` plus `permissions` in details. AccessBinding create and delete events
 carry the bound target as resource (the Namespace for a Namespace binding) and
@@ -109,8 +125,9 @@ original transaction. Authorization therefore sees that unit's pending grants
 and removals. Outside a callback, the loader opens its ordinary read transaction.
 Work that escapes the callback retains its original closed lifetime and fails;
 it cannot obtain another client after commit, rollback, or an unknown outcome.
-This transaction binding supplies neither authenticated session custody nor a
-fence against concurrent policy invalidation.
+This transaction binding alone does not fence concurrent policy invalidation.
+Human HTTP policy writers additionally retain their session through the original
+unit's `holdAuthenticationSession` operation, implemented by PostgreSQL State.
 
 ### 5. Platform state commits policy and audit together
 
@@ -152,7 +169,12 @@ selected account, session, and policy writers join the same protocol.
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
-- A `403` means the caller lacks Installation administration, exact Namespace
+- The production bootstrap Sharing case in
+  `tests/integration/postgres-production-wireup.test.mjs` checks revocation after
+  real HTTP admission, cross-replica logout ordering and expiry rollback. It uses
+  real authentication, IAM and PostgreSQL; its passive Compute does not prove a native Gateway.
+- A `403` can also mean the admitted assigning session was revoked or expired
+  before its protected transaction completed. A `403` means the caller lacks Installation administration, exact Namespace
   read, or target read for binding creation. A `400` names the invalid
   field in its detail path. A `409` on Role deletion means a binding still
   references the Role.
@@ -168,6 +190,8 @@ selected account, session, and policy writers join the same protocol.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 13:25: Retain human sessions through Namespace policy commits and coordinate revocation. (authoring-run/3dab5ffe-1c2c-4b63-9899-8f98cacf0b43 - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)

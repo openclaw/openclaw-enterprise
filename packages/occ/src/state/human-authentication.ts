@@ -890,6 +890,19 @@ export class PostgresHumanAuthentication {
     }
   }
 
+  /** Retains the guarded actor on the caller's original State transaction. */
+  async holdSession(unit: PlatformUnitOfWork, userId: string, sessionId: string): Promise<void> {
+    await this.guardActor(
+      unit,
+      {
+        userId,
+        sessionId,
+        principalId: await this.principal(unit, userId),
+      },
+      [],
+    );
+  }
+
   /** Present state under the same guards; this is not an operation-result receipt. */
   async readAccount(
     userId: string,
