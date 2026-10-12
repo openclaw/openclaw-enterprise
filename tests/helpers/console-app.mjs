@@ -12,6 +12,7 @@ import { once } from "node:events";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
+import { nativeAdminOriginResolver } from "../../apps/controller/src/gateway/native-admin-origin.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -322,6 +323,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         state: platformState,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,
+        nativeAdminOrigin: nativeAdminOriginResolver(options.nativeAdmin, publicOrigin),
         backends,
         defaultPresets: options.defaultPresets ?? [],
         bundledPresetVersions: options.bundledPresetVersions ?? [],

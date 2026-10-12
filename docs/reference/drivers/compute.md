@@ -19,28 +19,34 @@ The [shared contracts](../../../packages/contracts/src/index.ts) define the type
 Every `ComputeDriver` has an `id`, `implementation`, and
 `capability: "compute"`.
 
+Optional `configureAgent(configuration, {nativeAdminOrigin?})` transforms a frozen
+Sandbox-adjusted deployment copy after Agent allocation, before validation and
+immutable admission; it does not run during Agent save. Guided provisioning calls
+it at revision handoff. OCC supplies the Installation-owned origin; Compute owns
+native policy and conflicts. Preserve the Harness, opt-outs, unrelated settings and
+SecretRefs without source mutation or infrastructure effects. Without the hook,
+OCC keeps the Sandbox-adjusted copy. Kubernetes prepares
+[first-deployment native admin](../agent-native-admin.md#first-deployment-configuration).
+`ComputeGatewaySettingError` returns a setting-specific `409`; provisioning records
+the refusal without admitting a revision.
+
 Optional `getRuntimeImages(revision)` returns
-`{workload, container, image, imageId, commit, openclawCommit}` entries for
-containers owned by that admitted revision. OCC requires exact Agent read
-authority and calls the Driver pinned by the active revision. The
-`runtime-images` API reports `undeployed` without an active revision and
-`unsupported` when the Driver omits this method.
+`{workload, container, image, imageId, commit, openclawCommit}` for revision-owned
+containers, excluding separate Sandbox workloads. OCC requires exact Agent `read`
+and uses the active revision's Driver. The API reports `undeployed` without an
+active revision or `unsupported` without this method. Commits are full lowercase
+Git SHAs; absent IDs or provenance remain `null`. Neither Docker nor Kubernetes
+[derives commits from moved tags](../console/debug-fields.md#where-the-source-commit-comes-from).
+Kubernetes [binds metadata](../console/debug-fields.md#inspection-scope) to the Pod
+UID and running container ID; both commits apply only to that image ID.
 
-Commits must be full lowercase Git SHAs; missing IDs or provenance remain `null`.
-Results exclude separate Sandbox Driver workloads. Neither Docker nor Kubernetes
-[derives commits](../console/debug-fields.md#where-the-source-commit-comes-from)
-from a moved tag. Kubernetes
-[inspects](../console/debug-fields.md#inspection-scope) revision-owned Pods and
-binds its private metadata read to the Pod UID and running container ID; both
-commits apply only to containers with that image ID.
-
-Optional `discoverHarnessModels({provider, apiKey})` returns native model IDs
-and names without persisting credentials. OCC checks Agent creation authority
-before calling it. Bundled Kubernetes and Docker call the official OpenAI and
-Anthropic model-list APIs with bounded requests and no redirects. Discovery requires
-[OCC API egress](../console/create-and-deploy.md#create-an-agent) to each
-provider; it neither provisions runtime credentials nor proves model
-compatibility. Unsupported or unavailable discovery permits manual model entry.
+Optional `discoverHarnessModels({provider, apiKey})` returns native model IDs and
+names without persisting credentials, after OCC checks Agent creation authority.
+Bundled Kubernetes and Docker use bounded, nonredirecting official OpenAI and
+Anthropic model-list requests. Each provider needs
+[OCC API egress](../console/create-and-deploy.md#create-an-agent).
+Discovery neither provisions credentials nor proves compatibility; unavailable or
+unsupported discovery permits manual model entry.
 
 The bundled Codex OAuth device-login implementation is **Experimental**.
 Optional `startHarnessDeviceAuthorization(harnessId)` returns a public challenge
@@ -86,16 +92,13 @@ Bundled Kubernetes Compute requires it in production.
 
 ### Optional gateway endpoint resolution
 
-`getGatewayEndpoint(revision)` returns a private WSS address derived from trusted
-Driver settings and approved resource IDs, or `undefined` if gateway access is
-unsupported. OCC calls it after authorizing access to the Agent and selecting
-its active revision. The method does not check readiness, authorize the caller,
-grant backend route permissions, or save a URL in Agent Configuration. Connection
-errors are dependency failures.
-
-Workspace-file access and the opt-in
-[Agent native admin UI](../agent-native-admin.md#agent-host-identity) use this
-endpoint; without it, native admin access is unavailable. Kubernetes implements
+`getGatewayEndpoint(revision)` returns a private WSS address from trusted Driver
+settings and approved resource IDs, or `undefined` when unsupported. OCC authorizes
+Agent access and selects its active revision first. This method neither checks
+readiness nor grants caller or backend authority, and does not save Configuration
+URLs. Connection errors are dependency failures. Workspace files and
+[Agent native admin UI](../agent-native-admin.md#agent-host-identity) require this
+endpoint; Kubernetes implements
 [private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
 
 ### Optional initial runtime credential provisioning
@@ -148,16 +151,15 @@ without invoking Compute.
 ### Optional runtime diagnostics
 
 After [OCC authorization](../agents.md#current-runtime-diagnostics),
-`diagnoseAgentDeployment(binding)` returns current checks for an exact revision
-using its approved Namespace and Agent. The Driver maps native evidence to generic `component`, `check`, `state`,
-nullable `checkedAt` and optional safe `code` fields. It verifies runtime
-identity, bounds size and time, and omits credentials, provider output and logs.
-OCC rejects mismatched revisions, invalid timestamps, more than 32 checks and
-unsupported states.
+`diagnoseAgentDeployment(binding)` returns exact-revision checks using approved
+Namespace and Agent IDs. Compute verifies runtime identity, bounds time and size,
+and maps evidence to `component`, `check`, `state`, nullable `checkedAt` and optional
+safe `code`; credentials, provider output and logs are excluded. OCC rejects
+mismatched revisions, invalid timestamps, over 32 checks and unsupported states.
 
-The call does not update deployment work, rerun the startup probe, send
-messages, or prove a model response. Missing support returns dependency
-unavailable; Drivers unable to collect safe evidence should omit the method.
+This read neither changes deployment work, reruns probes, sends messages nor proves
+model responses. Omit the method when safe evidence cannot be collected; absence
+returns dependency unavailable.
 
 ### Optional runtime status and logs
 
@@ -176,17 +178,17 @@ fractional precision.
 
 ### Runtime logging ownership
 
-Omitting `runtimeLogging` or setting it to `"platform"` uses the bundled
+Omitting `runtimeLogging` or choosing `"platform"` uses bundled
 [Harness logging policy](../harness-execution.md#runtime-logging). With `"driver"`,
-OCC preserves native logging after any Sandbox changes, validates it through
-ConfigurationDriver, and records it in the immutable revision. Compute must
-apply that configuration and reject unsupported changes. The Driver operator owns
-log destinations, credentials, redaction, access, and delivery; the bundled
-Collector's privacy and export guarantees do not apply.
+OCC preserves native logging after Sandbox and Compute transforms, validates it
+through ConfigurationDriver, and freezes it in the revision. Compute applies that
+configuration and rejects unsupported changes. Its operator owns destinations,
+credentials, redaction, access, and delivery; bundled Collector privacy and export
+guarantees do not apply.
 
-The gateway and Harness emit their own logs in either mode. OCC does not
-transport them, and neither OCC nor Compute streams, stores or exports them;
-authorized readers fetch bounded, redacted pages on demand through the Driver. OCC process logs, lifecycle results and audit records use their own paths.
+Gateway and Harness emit their own logs. OCC and Compute do not stream, store or
+export them; authorized readers fetch bounded, redacted pages through the Driver.
+OCC process logs, lifecycle results and audits use separate paths.
 
 ## IAM
 
@@ -215,11 +217,11 @@ not isolate untrusted code.
 
 ### Driver initialization and shutdown
 
-At startup, each API or worker process constructs the selected Driver from trusted
-Installation configuration, validates its identity and methods, attaches required
-hooks, and runs production preflight when required or provided. The interface has
-no `initialize`, `dispose`, or `destroy` method; stopping the process does not
-delete managed resources. See the [Driver loading flow](../../flows/driver-plugin-loading.md).
+Each API and worker constructs Compute from trusted Installation configuration,
+validates its identity and methods, attaches required hooks, and runs required or
+provided production preflight. There is no `initialize`, `dispose`, or `destroy`;
+process shutdown retains managed resources. See
+[Driver loading](../../flows/driver-plugin-loading.md).
 
 ### Production revision stages
 

@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { nativeAdminOriginResolver } from "../../apps/controller/src/gateway/native-admin-origin.ts";
+import {
+  nativeAdminConfigurationSupported,
+  deriveNativeAdminHost,
+} from "../../apps/controller/src/gateway/native-admin.ts";
 
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -11,6 +19,7 @@ import {
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
@@ -20,6 +29,7 @@ import {
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -368,17 +378,33 @@ async function createFixture(context, options = {}) {
     sandboxDriver: options.sandboxDriver,
     nativeWorkerSupport: options.nativeWorkerSupport,
   });
-  const app = await composePostgresDevelopment(
-    {
-      mode: "development",
-      host: "127.0.0.1",
-      databaseUrl,
-      authSecret,
-      authBaseURL,
-    },
-    drivers,
-  );
-  const session = await signInToControllerApp(app, credentials);
+  const nativeAdmin = options.nativeAdmin;
+  const publicOrigin =
+    nativeAdmin === undefined ? authBaseURL : "https://console.oce.example.test:8443";
+  let gatewayApiKeyPath;
+  if (nativeAdmin !== undefined) {
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-admin-provisioning-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    gatewayApiKeyPath = join(directory, "key");
+    await writeFile(gatewayApiKeyPath, `synthetic-gateway-key-${randomUUID()}`, { mode: 0o600 });
+  }
+  const app =
+    nativeAdmin === undefined
+      ? await composePostgresDevelopment(
+          { mode: "development", host: "127.0.0.1", databaseUrl, authSecret, authBaseURL },
+          drivers,
+        )
+      : await composeProduction({
+          mode: "production",
+          host: "127.0.0.1",
+          databaseUrl,
+          authSecret,
+          authBaseURL: publicOrigin,
+          drivers,
+          nativeAdmin,
+          gatewayApiKeyPath,
+        });
+  const session = await signInToControllerApp(app, credentials, publicOrigin);
 
   context.after(async () => {
     for (const binding of revokedBindings) {
@@ -410,7 +436,7 @@ async function createFixture(context, options = {}) {
     const headers = {
       ...(selectedSession === null ? {} : authenticatedHeaders(selectedSession)),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
-      ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
+      ...(method === "GET" ? {} : { origin: publicOrigin }),
       host: "127.0.0.1",
     };
     const response = await app.inject({
@@ -457,6 +483,8 @@ async function createFixture(context, options = {}) {
     worker = createControllerWorker({
       pool: workerPool,
       drivers,
+      mode: nativeAdmin === undefined ? "development" : "production",
+      nativeAdminOrigin: nativeAdminOriginResolver(nativeAdmin, publicOrigin),
       pollIntervalMs: 15,
       leaseDurationMs: options.leaseDurationMs ?? 30_000,
       maxAttempts: 3,
@@ -3610,5 +3638,115 @@ test(
       [namespace.id, failed.agentId],
     );
     assert.equal(revisions.rowCount, 1);
+  },
+);
+
+test(
+  "guided Codex provisioning freezes native admin policy on its first worker handoff and retry",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const compute = createRuntimeComputeDriver();
+    const native = createTestKubernetesComputeDriver(compute.id, {
+      gatewayRouting: {
+        hostname: "agents.example.internal",
+        gatewayName: "oce-agent-gateways",
+        gatewayNamespace: "openclaw-system",
+        envoyNamespace: "envoy-gateway-system",
+      },
+    });
+    // Runtime credentials/readiness are simulated. Configuration transformation and validation
+    // use the production Driver; HTTP, PostgreSQL, IAM, queue and worker handoff are real.
+    compute.preflight = async () => undefined;
+    compute.configureAgent = native.configureAgent.bind(native);
+    compute.validateAgentProvisioning = native.validateAgentProvisioning.bind(native);
+    compute.validateHarnessAuth = native.validateHarnessAuth.bind(native);
+    compute.getGatewayEndpoint = native.getGatewayEndpoint.bind(native);
+    const fixture = await createFixture(context, {
+      computeDriver: compute,
+      stopAfterProvisioning: true,
+      nativeAdmin: {
+        enabled: true,
+        domain: "agents.oce.example.test",
+        sharedCookieDomain: "oce.example.test",
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    // Keep this regression on supported Codex gateway settings, without requiring Slack or
+    // cluster/network readiness proof for the native UI admission change.
+    delete body.configuration.values.channels;
+    delete body.configuration.secretBindings.SLACK_BOT_TOKEN;
+    delete body.configuration.secretBindings.SLACK_SIGNING_SECRET;
+    body.configuration.secretBindings.EXTERNAL_SERVICE_TOKEN.delivery = { type: "env" };
+    body.configuration.values = {
+      ...createHarnessConfiguration("codex", "gpt-6-astra"),
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: {
+          enabled: true,
+          communityInvite: false,
+          allowedOrigins: ["https://tools.example.test"],
+        },
+        auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+      },
+    };
+    const original = structuredClone(body.configuration);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    await fixture.startWorker();
+    const status = await waitFor("native admin provisioning handoff", async () => {
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    await fixture.stopWorker();
+    fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, status.agentId),
+    );
+    assert.equal(revisions.length, 1);
+    const revision = revisions[0];
+    const installation = await fixture.state.loadInstallation();
+    const origin = `https://${deriveNativeAdminHost(installation.id, { namespaceId: namespace.id, id: status.agentId }, "agents.oce.example.test")}:8443`;
+    assert.equal(nativeAdminConfigurationSupported(revision, origin), true);
+    assert.equal(revision.configuration.gateway.publicOrigin, origin);
+    assert.deepEqual(revision.configuration.gateway.controlUi.allowedOrigins, [
+      "https://tools.example.test",
+      origin,
+    ]);
+    assert.equal(revision.configuration.gateway.controlUi.communityInvite, false);
+    assert.deepEqual(
+      revision.configuration.gateway.auth.password,
+      original.values.gateway.auth.password,
+    );
+    assert.deepEqual(revision.configuration.plugins, original.values.plugins);
+    assert.deepEqual(revision.configuration.models, original.values.models);
+    assert.deepEqual(revision.secretBindings, original.secretBindings);
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${status.configurationId}`,
+    );
+    assert.equal(saved.data.generation, 1);
+    assert.deepEqual(saved.data.values, original.values);
+    const retried = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(retried.data.provisioning.revisionId, revision.id);
+    assert.equal(
+      (
+        await fixture.state.read((view) =>
+          view.revisions.listRevisions(namespace.id, status.agentId),
+        )
+      ).length,
+      1,
+    );
   },
 );

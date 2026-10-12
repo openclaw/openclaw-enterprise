@@ -1,3 +1,4 @@
+import { nativeAdminOriginResolver } from "../gateway/native-admin-origin.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -252,6 +253,9 @@ export async function composeProduction(config: ProductionConfig) {
     const controller = new OpenClawController(persistedInstallation, {
       state,
       recordOperations: true,
+      ...(config.nativeAdmin?.enabled === true
+        ? { nativeAdminOrigin: nativeAdminOriginResolver(config.nativeAdmin, config.authBaseURL)! }
+        : {}),
       backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
       bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],

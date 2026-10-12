@@ -533,6 +533,11 @@ export interface ControllerOptions {
    */
   readonly refreshBundledDefaultPresets?: boolean;
   readonly loggingLevel?: LoggingLevel;
+  /** Installation-owned origin resolution; never taken from a request Host or Agent input. */
+  readonly nativeAdminOrigin?: (
+    installationId: string,
+    agent: Pick<Agent, "namespaceId" | "id">,
+  ) => string | undefined;
   readonly configuredServiceAccountDriverId?: string;
   /** Installation startup `runtime.nativeWorkerSupport`; never set from the API. */
   readonly nativeWorkerSupport?: NativeWorkerSupport;
@@ -1340,6 +1345,7 @@ export class OpenClawController {
   private readonly bundledPresetVersions: readonly BundledPresetVersion[];
   private readonly refreshBundledDefaultPresets: boolean;
   private readonly loggingLevel: LoggingLevel;
+  private readonly nativeAdminOrigin: ControllerOptions["nativeAdminOrigin"];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly configuredServiceAccountDriverId: string | undefined;
 
@@ -1382,6 +1388,7 @@ export class OpenClawController {
     this.bundledPresetVersions = immutableCopy(options.bundledPresetVersions ?? []);
     this.refreshBundledDefaultPresets = options.refreshBundledDefaultPresets === true;
     this.loggingLevel = normalizeLoggingLevel(options.loggingLevel);
+    this.nativeAdminOrigin = options.nativeAdminOrigin;
     if (
       options.nativeWorkerSupport !== undefined &&
       options.nativeWorkerSupport !== "custom-image"
@@ -6531,10 +6538,17 @@ export class OpenClawController {
               sandbox.configureAgent(frozenValues(configuration.values), revisionHarness),
             )
           : configuration.values;
+      const nativeAdminOrigin = this.nativeAdminOrigin?.(this.installation.id, lockedAgent);
+      const computeConfiguration =
+        compute.configureAgent === undefined
+          ? sandboxConfiguration
+          : compute.configureAgent(frozenValues(sandboxConfiguration), {
+              ...(nativeAdminOrigin === undefined ? {} : { nativeAdminOrigin }),
+            });
       const admittedConfiguration = frozenValues(
         compute.runtimeLogging === "driver"
-          ? sandboxConfiguration
-          : admitLoggingConfiguration(sandboxConfiguration, this.loggingLevel),
+          ? computeConfiguration
+          : admitLoggingConfiguration(computeConfiguration, this.loggingLevel),
       );
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {

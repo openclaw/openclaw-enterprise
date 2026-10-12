@@ -12,15 +12,47 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 
 ## Requirements
 
-- `agentNativeAdmin.enabled: true` in Helm, which sets `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` on the API.
+- `agentNativeAdmin.enabled: true` in Helm, which sets `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` on the API and worker.
 - `agentNativeAdmin.domain` set to the Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. Helm passes it as `OCC_AGENT_NATIVE_ADMIN_DOMAIN`. Use a previously unused DNS suffix for the first pilot rollout; the proxy blocks new service-worker registration but does not evict service workers that a prior experiment registered on the same origin.
 - `agentNativeAdmin.sharedCookieDomain` set to the explicit shared OCE session cookie parent domain, such as `oce.example.com`. Helm passes it as `OCC_AUTH_COOKIE_DOMAIN` when `agentNativeAdmin.enabled` is true. The console host and Agent host suffix must both be inside this parent on DNS-label boundaries. Public suffixes, malformed domains, and DNS-label boundary violations fail closed. Helm has no public suffix list, so it renders a suffix such as `co.uk` or `github.io`; the installation profile renderer refuses it, and so does API startup (`AUTH_BASE_URL_INVALID`). The Agent suffix may equal the cookie domain; OCC excludes its configured Console hostname from native proxy routing.
 - `gatewayRouting.enabled: true`. Helm rejects native admin enablement without private gateway routing because the API process must reach each Agent gateway through the private route.
-- `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
+- `OCC_AUTH_BASE_URL` on API and worker set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
 - The Agent must be running, have an active revision, and expose a `ComputeDriver.getGatewayEndpoint` value that can be mapped from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+
+## First-deployment configuration
+
+With the Installation feature and private Kubernetes gateway routing enabled,
+OCC prepares native admin access when `gateway.controlUi.enabled` is `true`.
+The Standard OpenClaw and Standard Codex Presets already select this setting.
+At deployment admission, Kubernetes Compute adds its trusted-proxy service
+identity, administrator device approval, the exact Agent `allowedOrigins` entry,
+and `gateway.publicOrigin`. OCC derives the origin from the Installation,
+Namespace and allocated Agent identities, retaining the configured public scheme
+and port. Guided dedicated provisioning uses the same admission path after
+allocating its Agent identity.
+
+The immutable revision contains the effective policy; the reusable Configuration
+and its generation stay unchanged. Agents sharing one Configuration receive
+separate origins. Redeploying does not accumulate sibling origins. Existing
+Agents adopt this behavior on their next explicit deployment; OCC does not
+rewrite active or historical revisions or start a rollout.
+
+Disabled or omitted `controlUi.enabled`, disabled `deviceAutoApprove.enabled`,
+and disabled Installation access leave the native policy unprepared. Unsafe
+device-auth or host-header fallback settings do not enable managed access.
+Conflicting authentication, approval scopes, `publicOrigin`, wildcard origins,
+or another origin inside the Installation's Agent domain refuse deployment with
+a setting-specific message. Omit managed origins from reusable Configurations.
+Compatible password SecretRefs, loopback policy, other exact origins, model,
+Harness, plugin settings and Secret bindings are preserved. Drivers without the
+admission hook retain their existing availability requirements.
+
+This enables the existing full native administrator surface, including its
+native terminal where supported. It adds no OCE grants and does not change
+native tool restrictions or support external-sign-in profiles.
 
 ## Authorization and availability
 
