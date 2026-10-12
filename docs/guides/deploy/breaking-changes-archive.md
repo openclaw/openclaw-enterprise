@@ -1,9 +1,56 @@
 # Earlier breaking-change notices
 
-These [breaking-change notices](breaking-changes.md) are dated before
-2026-10-10. They still apply when you upgrade from a source commit older than
+These [breaking-change notices](breaking-changes.md) are older than the ones
+on that page. They still apply when you upgrade from a source commit older than
 their date. Entries are newest first. Steps marked _untested_ have not been run
 against a real Installation.
+
+## 2026-10-10: controller-only releases can restart Agent Pods once
+
+**What breaks.** After a controller-only release, the first time the new worker
+prepares an existing Kubernetes revision again, it applies the Gateway and
+Harness Pod templates the new controller renders. When they changed (since #1758,
+for example, readiness uses an HTTP probe), both Deployments roll once on the
+same runtime image, and chat is unavailable until the new Pods are ready (about
+17 seconds in one test).
+
+**Who is affected.** Running Agents with repository credentials, within about a
+minute of the controller rollout, while their repository session lasts. Other
+Agents only if their deployment was still finishing when the new worker took
+over.
+
+**How to tell.** The Agent's Gateway and Harness Pods restart after the
+controller rollout under a new ReplicaSet of the same revision.
+
+**Steps.** Before a controller-only release, confirm the new controller supports
+the deployed runtime ([checklist](upgrade-checklist.md)): affected Pods restart
+with its rendering on the existing image. Plan for one short chat interruption
+per affected Agent.
+
+## 2026-10-10: Codex approval policy is checked at save and before deployment
+
+**What breaks.** Provisioning and deployment answer `409` when
+`plugins.entries.codex.config.appServer.approvalPolicy` is `untrusted` (Compute
+Drivers also refuse to prepare it). Creating or updating an Agent, provisioning
+and deployment answer `400` when an enabled plugin selection sets
+`toolDefaults.reviewer` to `auto` and that policy is omitted or `never`.
+Native startup checks the automatic reviewer against the policy Compute renders,
+but with the policy omitted the Gateway picks its own, which can be `never`.
+
+**Who is affected.** Custom Codex Configurations with `untrusted` (the Gateway
+already refused them at load, with a `doctor --fix` hint that cannot work), and
+Agents with an automatic plugin reviewer whose Configuration omits the policy
+or sets `never` (readiness already refused `never`). Before, saves succeeded;
+now any other update of an Agent with such a reviewer, even of credentials only,
+is refused. Every bundled Preset sets the policy.
+
+**How to tell.** The `409` or `400` names the setting.
+
+**Steps.** Set the policy to `on-request` before saving the Agent, or choose the
+human reviewer, then deploy the Agent again. `on-failure` still works; native
+startup now gets `on-request`, which the Gateway runs for it. An Agent already
+deployed with the policy omitted keeps its current session policy until it is
+deployed again.
 
 ## 2026-10-09: refresh-token source updates need a new Secret
 

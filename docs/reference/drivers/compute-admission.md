@@ -53,16 +53,22 @@ Agent that fails a check still reads; its next update must fix the pair.
 - an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
   case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or
   `CODEX_LOGIN_MODE`;
-- on any `models.providers.<provider>` or one of its models, whether or not
-  a model setting selects it: a credential header in `headers` or
-  `request.headers` (a name whose last hyphen-separated word is `auth`,
-  `authorization`, `apikey`, `api-key`, `subscription-key`, `token`,
-  `secret`, `password` or `cookie`), a header name that is not a valid HTTP
-  field name, and a `request.auth` other than `{mode: "provider-default"}`.
+- on any `models.providers.<provider>`, whether or not a model setting
+  selects it: a credential header in `headers` (on the provider or one of
+  its models) or `request.headers`, a header name that is not a valid HTTP
+  field name, and a `request.auth` other than exactly
+  `{mode: "provider-default"}`. A credential header's last hyphen- or
+  underscore-separated word is `auth`, `authorization`, `token`, `secret`,
+  `password`, `cookie` or a key word such as `api-key` or
+  `subscription-key`; the
+  [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
 
-So model credentials in `models.providers` reach the runtime only through the
-Harness authentication binding: a provider `apiKey` is the one remaining slot,
-and the Configuration Driver accepts it only as a reference.
+These close the provider credential slots OpenClaw knows. The provider
+`apiKey` stays, checked against the Harness binding on selected providers
+only; the Configuration Driver accepts it, the TLS client keys and the
+credential headers only as references. A credential under a header name the
+rule does not match, or a literal in another `env` name that a reference
+reads, still passes: the binding cannot see what a name means.
 
 `validateHarnessAuth` applies these first, then names the Agent's
 `harnessAuth.method` when its topology cannot use it (embedded OpenClaw takes
