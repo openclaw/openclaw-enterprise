@@ -160,7 +160,8 @@ the setting and what is accepted, never its value, before any revision is create
 ### Pending deployment progress
 
 While a revision is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live Pod
+when Compute knows. Kubernetes reports `HARNESS_CREDENTIAL_BOOTSTRAP_PENDING`
+while an OAuth bootstrap Job runs, `REVISION_UNSCHEDULABLE` when a live Pod
 of the revision has `PodScheduled` `False` with reason `Unschedulable`, for
 example for want of node memory, and `WORKSPACE_NODE_PENDING` when the Harness
 and gateway are ready and only the workspace node's gateway connection is

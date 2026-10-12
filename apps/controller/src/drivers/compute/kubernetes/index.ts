@@ -5192,7 +5192,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.prepareOAuthCredentials(revision, context, namespace),
         ))
       ) {
-        return result;
+        // The worker retires the bootstrap (Job and seed Secret) if the deadline passes here.
+        return { ...result, pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" };
       }
     }
     const deliveredHarnessAuth = await this.prepareRevisionStage("harness_auth", () =>

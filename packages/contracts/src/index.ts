@@ -1641,7 +1641,8 @@ export interface RuntimeFailureEvidence {
  * Why an unready revision is still pending, when Compute knows: its Pods cannot be
  * scheduled, or its workloads are ready but the workspace node has not connected.
  */
-export type ComputePendingReason = "WORKLOAD_UNSCHEDULABLE" | "WORKSPACE_NODE_PENDING";
+export type ComputePendingReason =
+  "WORKLOAD_UNSCHEDULABLE" | "WORKSPACE_NODE_PENDING" | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
 
 export interface ComputeReadiness extends Scope {
   readonly namespaceId: string;
