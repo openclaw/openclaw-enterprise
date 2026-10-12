@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-12
-last_updated_session: authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1
+last_updated_session: authoring-run/78c0ea3f-c6ee-4d2e-8738-47b58af366b1
 ---
 
 # Installation Profile Rendering Flow
@@ -64,10 +64,11 @@ malformed input cannot leave deployable files or an old success report behind.
 
 `scripts/render-installation-profile.mjs:readProfile`
 
-The renderer reads the selected path relative to the working directory,
-or the bundled `deploy/profiles/<profile>.json` beside the repository source. It requires a matching `name`, descriptive strings,
-and a bundled PluginDriver with optional configuration object; unknown fields
-fail. Driver options are validated at startup. Failures never fall back.
+Selected paths resolve from the working directory; bundled profiles live under
+`deploy/profiles/`. The renderer requires a matching `name`, descriptive strings,
+and a bundled PluginDriver; unknown fields fail. Omitted configuration renders
+as `{}`; supplied values must be objects. Driver options are validated at startup.
+Failures never fall back.
 `recommendedPreset` remains metadata; the [Preset flow](agent-presets.md) owns
 Console selection.
 
@@ -283,6 +284,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 11:45: Normalize omitted PluginDriver configuration for startup. (authoring-run/78c0ea3f-c6ee-4d2e-8738-47b58af366b1 - a361fada166f4274080199ec65cb829f48aee53e)
 
 - 2026-10-12 11:23: Document trusted profile validation and custom-only Preset seeding through startup. (authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1 - b195e54e9)
 

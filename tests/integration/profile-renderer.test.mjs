@@ -291,22 +291,51 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
 test("an explicit profile selects the startup PluginDriver and its credential diagnostics", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const profile = JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8"));
-  profile.installation.drivers.plugin.configuration.catalogSource = "openai-curated";
-  const profileFile = join(directory, "curated-profile.json");
-  writeFileSync(profileFile, JSON.stringify(profile));
+  const profileFile = join(directory, "selected-profile.json");
+  for (const [name, configuration] of [
+    ["openclaw", undefined],
+    ["codex", undefined],
+    ["codex", { catalogSource: "openai-curated" }],
+  ]) {
+    const profile = JSON.parse(
+      readFileSync(join(repository, `deploy/profiles/${name}.json`), "utf8"),
+    );
+    if (configuration === undefined) {
+      delete profile.installation.drivers.plugin.configuration;
+    } else {
+      profile.installation.drivers.plugin.configuration = configuration;
+    }
+    writeFileSync(profileFile, JSON.stringify(profile));
 
-  // Selecting a curated catalog must reach real startup without imposing hosted PAT login.
-  const output = render("codex", codexInput(), directory, repository, profileFile);
-  const runtime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
-  });
-  assert.equal(runtime.installation.drivers.plugin.configuration.catalogSource, "openai-curated");
-  const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join("\n");
-  assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
-  assert.match(diagnostics, /runtime credentials.*Agent/);
-  assert.match(diagnostics, /seccomp profile installed/);
+    // An optional profile configuration must reach real startup as an object; Driver defaults
+    // still determine whether catalog discovery requires a credential.
+    const output = render(
+      name,
+      name === "codex" ? codexInput() : baseInput(),
+      directory,
+      repository,
+      profileFile,
+    );
+    const runtime = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
+    });
+    assert.deepEqual(runtime.installation.drivers.plugin.configuration, configuration ?? {});
+    const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join(
+      "\n",
+    );
+    if (name === "codex") {
+      assert.match(diagnostics, /runtime credentials.*Agent/);
+      assert.match(diagnostics, /seccomp profile installed/);
+      if (configuration === undefined) {
+        assert.match(diagnostics, /Hosted plugin discovery.*PAT/);
+      } else {
+        assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
+      }
+    } else {
+      assert.doesNotMatch(diagnostics, /Hosted plugin discovery|seccomp profile installed/);
+    }
+  }
 });
 
 test("an invalid explicit profile revokes prior outputs without falling back to the bundled profile", (t) => {

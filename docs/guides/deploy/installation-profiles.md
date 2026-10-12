@@ -298,8 +298,8 @@ Only the PluginDriver selection under `installation.drivers.plugin` is copied
 from the profile. The remaining fields (`description`, `recommendedPreset`,
 `agentHarness`, `pluginSelection`) are required descriptive strings; they do
 not select a Console default or override infrastructure. Unsupported fields
-fail. Driver `configuration`, when supplied, must be an object; the selected
-Driver validates its options at controller startup. Rendering is not startup
+fail. Omitted Driver `configuration` renders as `{}`; supplied values must be
+objects. The Driver validates its options at controller startup. Rendering is not startup
 validation or deployment proof. This option does not load custom modules or
 change the profile family selected by `--profile`.
 

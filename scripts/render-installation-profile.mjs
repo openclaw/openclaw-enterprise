@@ -169,7 +169,9 @@ async function readProfile(name, profileFile) {
   if (diagnostics.errors.length > 0) {
     fail(diagnostics.errors.join("\n"));
   }
-  if (plugin.configuration !== undefined) {
+  if (plugin.configuration === undefined) {
+    plugin.configuration = {};
+  } else {
     record(plugin.configuration, "profile.installation.drivers.plugin.configuration", diagnostics);
   }
   if (diagnostics.errors.length > 0) {
