@@ -101,8 +101,10 @@ exact-Agent directory and remote helper. Delivery does not put document strings
 in container arguments or environment values. Dedicated Harness startup must
 also verify completion before execution. Unsupported workspace placement fails
 rather than writing outside managed storage. Provider-owned Sandbox startup
-cannot carry this init container, so it rejects workspace setup instead of
-dropping initialization.
+cannot carry this init container, so Agent save, provisioning and deployment
+refuse initial workspace files in a Sandbox with a `409` before staging
+([Compute admission](../reference/drivers/compute-admission.md)); preparation
+keeps the same refusal instead of dropping initialization.
 
 The runner validates identity, paths, OpenClaw `2026.9.8`, and the rendered
 template digest against Console defaults; defaults identities must match, and
@@ -355,6 +357,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 22:30: Initial workspace files in a Sandbox are refused at save with a `409`. (fix-1144-1145b - 8aa391300)
 
 - 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
 
