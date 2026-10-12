@@ -860,10 +860,11 @@ if (a[0] === 'get' && a[1] === 'nodes') {
 `,
       { mode: 0o700 },
     );
+    // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
     await writeFile(
       join(tools, "docker"),
       `#!${process.execPath}
-require('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
+process.getBuiltinModule('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
 process.exit(71);
 `,
       { mode: 0o700 },

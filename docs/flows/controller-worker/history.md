@@ -8,6 +8,12 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-10-11 10:30: Draining stops skip yielded stops. (fix-1093-1095)
+
+- 2026-10-11 09:30: Yield an Agent stop's Gateway drain to due work. (fix-1088)
+
+- 2026-10-10 16:40: Retry a stored refusal's stop first. (fix-1033-1034)
+
 - 2026-10-10 15:30: Delete a refused Harness first; only failed stops back off. (fix-1025)
 
 - 2026-10-10 14:10: Yield refused-candidate stops to due work; persist their backoff. (fix-1022-1019)

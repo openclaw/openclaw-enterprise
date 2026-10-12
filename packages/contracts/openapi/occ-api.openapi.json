@@ -1744,6 +1744,63 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Bad Request",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" }
+                                ]
+                              },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -3122,6 +3179,63 @@
               }
             },
             "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Bad Request",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" }
+                                ]
+                              },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad Request"
           },
           "401": {
             "content": {
@@ -9933,7 +10047,7 @@
     },
     "/api/auth/sign-in/email": {
       "post": {
-        "description": "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
+        "description": "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
         "operationId": "signInEmail",
         "requestBody": {
           "content": {

@@ -22,10 +22,11 @@ const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(64)}`;
 
 // This fixture substitutes the external command protocols, not the upgrade
 // script. It records accepted writes independently of the client response.
+// getBuiltinModule, not require: each stand-in loads as ESM when TMPDIR is inside this repo.
 const executable = `#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const { execFileSync, spawnSync } = require('child_process');
+const fs = process.getBuiltinModule('fs');
+const path = process.getBuiltinModule('path');
+const { execFileSync, spawnSync } = process.getBuiltinModule('child_process');
 const root = process.env.UPGRADE_FIXTURE;
 const tool = path.basename(process.argv[1]);
 const args = process.argv.slice(2);
@@ -439,7 +440,7 @@ async function fixture(
     // These cases exercise upgrade orchestration after a successful qualification.
     // The separately selected real-image test verifies compatibility itself.
     const wrapper = `#!${process.execPath}
-const {spawnSync} = require('child_process');
+const {spawnSync} = process.getBuiltinModule('child_process');
 const args = process.argv.slice(2);
 if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
   const identity = (image) => ({image, platform: args[3], rootDigest: image.split('@').at(-1), manifestDigest: image.split('@').at(-1), configDigest: image.split('@').at(-1)});

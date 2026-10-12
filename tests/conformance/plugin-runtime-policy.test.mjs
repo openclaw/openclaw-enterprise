@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 import { WORKSPACE_FILE_NAMES } from "../../packages/contracts/src/index.ts";
+import { requireWorkspaceNodePlugins } from "../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts";
 import {
   WORKSPACE_NODE_BINDING_PATH,
   runOpenClawRuntimeHelper,
@@ -1456,6 +1457,61 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
         }),
       /requires the file-transfer plugin/,
     );
+  }
+});
+
+test("deployment admission and the Gateway entrypoint agree on the workspace node's plugins", async () => {
+  // The entrypoint exits at every start on a plugin shape a workspace node cannot use, so a
+  // dedicated deployment that admitted one crash-looped after its predecessor stopped
+  // (finding 1112). Admission applies its own copy of the rule; both must refuse the same shapes.
+  const admits = (config) => {
+    try {
+      requireWorkspaceNodePlugins(
+        config,
+        (setting, requirement) => new Error(setting + requirement),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const entrypointStarts = async (config) => {
+    try {
+      await runOpenClawRuntimeHelper(undefined, [], {
+        baseConfig: config,
+        workspaceNodeId: "enrolled-node",
+      });
+      return true;
+    } catch (error) {
+      assert.match(String(error?.message), /requires the file-transfer plugin|is not a function/);
+      return false;
+    }
+  };
+  for (const [config, starts] of [
+    [{}, true],
+    [{ plugins: null }, true],
+    [{ plugins: "none" }, true],
+    [{ plugins: { deny: [] } }, true],
+    [{ plugins: { deny: null } }, true],
+    [{ plugins: { deny: ["other", "file-transfers"] } }, true],
+    [{ plugins: { deny: ["other", "file-transfer"] } }, false],
+    // A deny that is not a list stops the entrypoint (OpenClaw requires a list as well).
+    [{ plugins: { deny: { "file-transfer": true } } }, false],
+    [{ plugins: { deny: 1 } }, false],
+    [{ plugins: { deny: "file-transfer" } }, false],
+    // Not listed: a deny string without file-transfer starts the entrypoint, but admission
+    // refuses it as not a list, as OpenClaw's own schema (an array of strings) does.
+    [{ plugins: { entries: { "file-transfer": { enabled: false } } } }, false],
+    [{ plugins: { entries: { "file-transfer": { enabled: true } } } }, true],
+    [{ plugins: { entries: { "file-transfer": { enabled: "false" } } } }, true],
+    [{ plugins: { entries: { "file-transfer": null } } }, true],
+    [{ plugins: { entries: { "file-transfer": {} } } }, true],
+    [{ plugins: { entries: { other: { enabled: false } } } }, true],
+    [{ plugins: { entries: [] } }, true],
+  ]) {
+    const label = JSON.stringify(config);
+    assert.equal(await entrypointStarts(structuredClone(config)), starts, label);
+    assert.equal(admits(config), starts, label);
   }
 });
 

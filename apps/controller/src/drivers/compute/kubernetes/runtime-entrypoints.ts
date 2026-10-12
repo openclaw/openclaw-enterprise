@@ -2275,6 +2275,7 @@ function configureNativeWorkerProfile() {
   });
 }
 
+// Admission applies the same rule (configuration-rules.ts); a parity test pins the two.
 function requireWorkspaceNodePlugins(config) {
   const plugins = isPlainObject(config.plugins) ? config.plugins : {};
   if (

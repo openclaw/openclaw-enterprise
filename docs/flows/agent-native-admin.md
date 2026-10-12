@@ -1,14 +1,14 @@
 ---
 created: "2026-09-19"
 updated: "2026-10-12"
-last_updated_session: "authoring-run/c4085970-fd77-4614-a01b-95819dc08e6f"
+last_updated_session: "authoring-run/522f2037-41de-4f2e-ae7b-8b26a769aa47"
 ---
 
 # Agent Native Admin UI Flow
 
 ## Overview
 
-Deployment admission prepares enabled Kubernetes native admin policy on an Agent-specific copy; the immutable revision freezes its exact origin without changing the reusable Configuration. The console checks exact-Agent `administer` access and returns a stable native admin URL for the active gateway revision. The Agent host uses the OCE session cookie; OCC rechecks access before proxying HTTP and WebSocket traffic.
+Deployment prepares enabled Kubernetes native admin policy in an immutable Agent revision without changing its reusable Configuration. The console returns the active gateway's stable URL after exact-Agent `administer` authorization. The Agent host uses the OCE session cookie; OCC rechecks access before proxying HTTP and WebSockets.
 
 ## Entry Points
 
@@ -23,9 +23,10 @@ Deployment admission prepares enabled Kubernetes native admin policy on an Agent
 ```mermaid
 graph TD
   DEP["Deploy or provision Agent"] --> OPT{"Installation routing and Agent UI enabled?"}
-  OPT -->|yes| PREP["Compute admits exact origin and native policy"]
+  OPT -->|yes| PREP["Compute prepares exact origin and native policy"]
   OPT -->|no| COPY["Preserve explicit opt-out"]
-  PREP --> SNAP["Validate and freeze revision copy"]
+  PREP -->|accepted| SNAP["Validate and freeze revision copy"]
+  PREP -->|setting conflict| REFUSE["Refuse admission without a new revision"]
   COPY --> SNAP
   SNAP --> A["Console opens Agent detail tab"] --> B["GET exact Agent native-admin status"]
   B --> C["Resolve OCC session and exact Agent administrator principal"]
@@ -68,15 +69,16 @@ graph TD
 `packages/occ/src/index.ts:deployAgentWithAuthorization`
 `apps/controller/src/drivers/compute/kubernetes/index.ts:configureAgent`
 
-API composition and worker startup derive each origin from trusted Installation
-settings through `nativeAdminTarget`; Helm supplies both processes with matching
-inputs. After Agent allocation, ordinary deployment and provisioning handoff pass
-a frozen Sandbox-adjusted copy to Compute. Kubernetes validates its gateway
-baseline and admits device approval, `publicOrigin` and the exact allowed origin.
-Conflicts refuse admission; disabled Installation, routing, UI or device approval
-leave policy unprepared. OCC validates and freezes the result without changing
-the Configuration or historical revisions. The runtime renderer consumes that
-snapshot and selects its writable native copy.
+API composition and worker startup derive origins from trusted Installation
+settings through `nativeAdminTarget`; Helm supplies matching inputs. Deployment
+and provisioning handoff pass the allocated Agent and frozen Sandbox-adjusted
+copy to Compute through `agentRuntimeConfiguration`. Agent save transforms the copy through Sandbox
+and logging only. Kubernetes validates its gateway baseline and prepares device
+approval, `publicOrigin` and the exact allowed origin. Conflicts refuse admission;
+disabled Installation, routing, UI or device approval leaves policy unprepared.
+OCC applies logging, validates and freezes the result without changing the source
+Configuration or historical revisions. The runtime renderer selects its writable
+native copy.
 
 ### 2. Console renders native admin availability
 
@@ -228,6 +230,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 15:30: Refreshed first-deployment admission for the shared configuration helper on latest inspected upstream; Agent save remains unchanged. (authoring-run/522f2037-41de-4f2e-ae7b-8b26a769aa47 - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-12 14:04: Ported first-deployment admission onto inspected pure-main baseline with accompanying code changes. (authoring-run/c4085970-fd77-4614-a01b-95819dc08e6f - 80725162a946f80652b939a32a57ee4e922eeb5c)
 - 2026-10-12 12:20: Documented first-deployment Compute admission and provisioning origin preparation. (authoring-run/ed71af64-d4b4-45ac-9ad4-6c2d65a97d17 - b195e54e9b0ce98ead2b2306015a5209325e837b)

@@ -27,6 +27,45 @@ export function workspaceSetupMainAgent(
   return asRecord(entries.main);
 }
 
+/** The managed durable workspace native OpenClaw reads its setup documents from. */
+export const MANAGED_WORKSPACE = "/home/node/.openclaw/workspace";
+/** The Harness working directory, which a Compute Driver may mount on the same storage. */
+export const HARNESS_WORKSPACE = "/home/node/workspace";
+
+type SettingError = (setting: string, requirement: string) => Error;
+
+/**
+ * Initial workspace files reach only the native main Agent's managed durable workspace, so the
+ * roster must be main alone (or omitted) and its workspace one of `workspaces`: the paths the
+ * Compute Driver mounts on that storage for this Agent, managed path first. Docker and
+ * Kubernetes Compute apply this rule at Agent save and in preparation, so each refusal names
+ * the same setting with the same text. Returns the workspace path.
+ */
+export function requireWorkspaceSetupConfiguration(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  workspaces: readonly string[],
+  createError: SettingError,
+): string {
+  const main = workspaceSetupMainAgent(configuration);
+  if (main === undefined) {
+    throw createError(
+      "agents.entries",
+      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
+    );
+  }
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  const setting =
+    main.workspace !== undefined ? "agents.entries.main.workspace" : "agents.defaults.workspace";
+  const workspace = main.workspace ?? defaults?.workspace ?? MANAGED_WORKSPACE;
+  if (typeof workspace !== "string" || !workspaces.includes(workspace)) {
+    throw createError(
+      setting,
+      `must be ${workspaces.join(" or ")}, or unset, for initial workspace files`,
+    );
+  }
+  return workspace;
+}
+
 /** Shared, non-executing setup entrypoint. Drivers own private delivery and exclusive startup. */
 export const WORKSPACE_SETUP_RUNTIME = String.raw`
 const fs = require("node:fs");

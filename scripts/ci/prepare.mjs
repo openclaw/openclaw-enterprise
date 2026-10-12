@@ -57,7 +57,9 @@ const fixtureLanes = new Set([
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
 // it deliberately to a newer v1.35 patch; OPENCLAW_CI_K3S_IMAGE still
-// overrides it with another immutable reference.
+// overrides it with another immutable reference. The QA workflows pass the same
+// image to the Compose launcher as OCC_DEVELOPMENT_K3S_IMAGE (ci-prepare.test.mjs
+// checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
 const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
@@ -361,6 +363,13 @@ async function markResourceReady(statePath, state, resource) {
   await writeState(statePath, state);
 }
 
+// A timed-out command gets SIGTERM, SIGKILL after this grace, and after the same
+// grace again its held output pipes are abandoned. Tests shorten it.
+const commandKillGraceMs =
+  Number(process.env.OPENCLAW_CI_COMMAND_KILL_GRACE_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_COMMAND_KILL_GRACE_MS)
+    : 5_000;
+
 function execFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -425,8 +434,8 @@ function execFile(command, args, options = {}) {
             child.stdout?.destroy();
             child.stderr?.destroy();
             finish(() => reject(timedOutError(child.exitCode, child.signalCode)));
-          }, 5_000);
-        }, 5_000);
+          }, commandKillGraceMs);
+        }, commandKillGraceMs);
       }, options.timeoutMs);
     }
     let stdout = "";
@@ -850,11 +859,10 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
   }
 }
 
-// Lanes that may restore the hosted BuildKit cache. Only images-packaging
-// exports it, on main pushes, and the main-only warm job (ci-image-cache.yml)
-// builds with that lane's state. The repository platform lane loads its
-// runtime image into the Docker engine so a default-builder fixture build can
-// derive from it.
+// Lanes that restore the hosted BuildKit cache. Only the main-only warm job
+// (ci-image-cache.yml) exports it, building with images-packaging's state. The
+// repository platform lane loads its runtime image into the Docker engine so a
+// default-builder fixture build can derive from it.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
   ["images-model-probes", { localStore: false }],
@@ -886,21 +894,14 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       "SOURCE_DATE_EPOCH=0",
       "--cache-from",
       `${cache},timeout=60s`,
-      // One writer per image among the parallel image lanes; on main the warm job
-      // writes the same scope too (the last index wins). The warm job exists to
-      // export, so each cache transfer may take longer and a failed export fails
-      // the job instead of being ignored. Pull request runs only restore: their
-      // export cost Images and Packaging about 40 s and filled only their own
-      // merge ref's scope. Main pushes keep the lane's export as a backstop.
-      ...(state.lane === "images-packaging" &&
-      (cacheWarm || process.env.GITHUB_EVENT_NAME === "push")
-        ? [
-            "--cache-to",
-            cacheWarm
-              ? `${cache},mode=max,timeout=10m`
-              : `${cache},mode=max,ignore-error=true,timeout=60s`,
-          ]
-        : []),
+      // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for
+      // every image input change, in order and never cancelled, so the newest
+      // commit's export lands last. CI lanes only restore: a lane export on main
+      // could land after a newer commit's warm export and replace it, and on a
+      // pull request it cost about 40 s and filled only the merge ref's scope.
+      // The warm job exists to export, so each transfer may take longer and a
+      // failed export fails the job instead of being ignored.
+      ...(cacheWarm ? ["--cache-to", `${cache},mode=max,timeout=10m`] : []),
     ];
   }
   return [
@@ -917,8 +918,8 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
 // image from the BuildKit cache without exporting its layers, then tag the
 // engine's image if it has the same ID. The ID is the digest of a config that
 // names every layer's content digest, so the tagged image is the one the build
-// would load. Lanes that export the cache, and any probe failure (a timeout, an
-// engine error, unreadable metadata, a failed tag), build as before. The log
+// would load. The warm job, which exports the cache, and any probe failure (a
+// timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
 // says "absent" only when the engine reports no such image, "different" when it
 // holds another image under that reference, and "probe-failed" otherwise.
 async function reuseEngineImage(state, role, args, tag) {

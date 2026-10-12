@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -24,6 +22,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -362,8 +361,7 @@ test("Repository options expose only Namespace-approved display choices behind A
 
 test("Denied Agent discovery cannot start repository metadata lookups", async (t) => {
   const f = await fixture(t);
-  const directory = await mkdtemp(join(tmpdir(), "repository-options-auth-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t, "repository-options-auth-");
   const socket = join(directory, "control.sock");
   let lookups = 0;
   // The independent socket peer observes actual metadata requests; IAM and Driver policy are real.
@@ -497,18 +495,30 @@ test("Repository discovery supports a dedicated-only Compute Driver without admi
     assert.equal(options.status, 200, JSON.stringify(options));
     assert.equal(options.data[0].repositoryRef, "project");
 
+    if (status === 409) {
+      // Agent save refuses the topology every deployment refuses (finding 1117), with
+      // deployment's message, and stores no Agent.
+      const refused = await f.request("POST", f.collection, {
+        name: `Repository Agent ${randomUUID()}`,
+        configurationId: f.configuration.id,
+        executionMode,
+        repositoryBindings: selection,
+      });
+      assert.equal(refused.status, 409, JSON.stringify(refused));
+      assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.error.message,
+        "The selected Compute Driver cannot deliver repository credentials to this Harness topology.",
+      );
+      assert.deepEqual((await f.request("GET", f.collection)).data, []);
+      continue;
+    }
     const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
     await f.prepareDeployment(agent);
-    const path = `${f.collection}/${agent.id}`;
-    const deployed = await f.request("POST", `${path}/deploy`);
+    const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
     assert.equal(deployed.status, status, JSON.stringify(deployed));
-    if (status === 409) {
-      assert.equal(deployed.error.code, "RESOURCE_CONFLICT");
-      assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
-    } else {
-      assert.equal(deployed.data.harness.mode, "dedicated");
-      assert.equal(deployed.data.repositoryCredentials.bindings[0].repositoryRef, "project");
-    }
+    assert.equal(deployed.data.harness.mode, "dedicated");
+    assert.equal(deployed.data.repositoryCredentials.bindings[0].repositoryRef, "project");
   }
 });
 
@@ -887,22 +897,46 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
 });
 
 test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code, message } of [
+  for (const { harness, executionMode, status, code, message, atSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
     { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
-    // The pinned runtime lacks native worker support, so admission refuses first.
-    { harness: "openclaw", executionMode: "dedicated", status: 400, code: "INVALID_REQUEST" },
-    // A Harness/mode mismatch names the execution mode the Configuration needs.
+    // Kubernetes delivers repository credentials to no dedicated OpenClaw runtime, so Agent
+    // save refuses the pair (finding 1117); deployment would refuse it first because the
+    // pinned runtime lacks native worker support.
+    {
+      harness: "openclaw",
+      executionMode: "dedicated",
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message: /cannot deliver repository credentials to this Harness topology/,
+      atSave: true,
+    },
+    // A Harness/mode mismatch names the execution mode the Configuration needs, at Agent save
+    // as at deployment.
     {
       harness: "codex",
       executionMode: "embedded",
       status: 400,
       code: "INVALID_REQUEST",
       message: /selects the Codex Harness, which needs dedicated execution/,
+      atSave: true,
     },
   ]) {
     await t.test(`${harness}/${executionMode}`, async (t) => {
       const f = await fixture(t, { harness });
+      if (atSave) {
+        const refused = await f.request("POST", f.collection, {
+          name: `Repository Agent ${randomUUID()}`,
+          configurationId: f.configuration.id,
+          executionMode,
+          repositoryBindings: selection,
+        });
+        assert.equal(refused.status, status, JSON.stringify(refused));
+        assert.equal(refused.error.code, code);
+        assert.match(refused.error.message, message);
+        assert.deepEqual((await f.request("GET", f.collection)).data, []);
+        return;
+      }
       const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
       await f.prepareDeployment(agent);
       const path = `${f.collection}/${agent.id}`;

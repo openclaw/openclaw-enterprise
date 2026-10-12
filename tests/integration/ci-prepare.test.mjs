@@ -342,13 +342,10 @@ test("image cache preparation refuses missing credentials and unmapped lanes bef
   }
 });
 
-test("Images and Packaging exports the image caches only on main pushes", async (t) => {
-  for (const [event, exported] of [
-    ["pull_request", false],
-    ["merge_group", false],
-    ["workflow_dispatch", false],
-    ["push", true],
-  ]) {
+// Only main's warm job exports: a lane export on main could land after a newer
+// commit's warm export and replace main's cache with older layers.
+test("Images and Packaging only restores the image caches, on main pushes too", async (t) => {
+  for (const event of ["pull_request", "merge_group", "workflow_dispatch", "push"]) {
     const commands = await fixtureImageCommands(t, "success", "images-packaging", {
       GITHUB_ACTIONS: "true",
       GITHUB_EVENT_NAME: event,
@@ -361,26 +358,20 @@ test("Images and Packaging exports the image caches only on main pushes", async 
     const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
     const builds = calls.filter(({ args }) => args.includes("--load"));
     assert.equal(builds.length, 2, event);
-    // Only a lane that exports the cache skips the probe for an existing image.
-    assert.equal(calls.length, exported ? 2 : 4, event);
+    // Each build first probes for an image the engine already holds.
+    assert.equal(calls.length, 4, event);
     // A fixed epoch keeps independent builds of the same layers on one image ID;
     // the probe must resolve the same ID the build would load.
     for (const { args } of calls) {
       assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
     }
-    if (!exported) {
-      assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
-      assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);
-    }
+    assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
+    assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);
     for (const { args } of builds) {
       const role = args.includes("--target") ? "controller" : "runtime";
       const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
       assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`, event);
-      assert.equal(
-        args.includes("--cache-to") && args[args.indexOf("--cache-to") + 1],
-        exported && `${cache},mode=max,ignore-error=true,timeout=60s`,
-        event,
-      );
+      assert.equal(args.includes("--cache-to"), false, event);
     }
     const cleaned = commands.cleanup();
     assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
@@ -1835,11 +1826,12 @@ test("prepareLane pre-pulls logging and metrics images with retry and preserves 
       // pulls in its own file: reading the shared call log while the other
       // image's process creates or appends to it can return an empty or torn line.
       const dockerPath = join(root, "docker");
+      // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
       await writeFile(
         dockerPath,
         `#!${process.execPath}
-const { appendFileSync, existsSync, readFileSync } = require("node:fs");
-const { createHash } = require("node:crypto");
+const { appendFileSync, existsSync, readFileSync } = process.getBuiltinModule("node:fs");
+const { createHash } = process.getBuiltinModule("node:crypto");
 const log = ${JSON.stringify(join(root, "docker.jsonl"))};
 const args = process.argv.slice(2);
 appendFileSync(log, JSON.stringify(args) + "\\n");
@@ -1968,6 +1960,21 @@ test("every lane whose tests run the Codex sandbox prepares the reviewed Docker 
     toolProfiles.some(([where]) => where === "ci.yml images-runtime-startup"),
     "the tool profile scan finds runtime startup lane 1",
   );
+});
+
+test("QA workflows pin the Compose launcher's K3s image to the CI default", async () => {
+  // Without the pin, dev-up resolves the +v1.35 channel through update.k3s.io,
+  // so a channel-server outage fails every Compose QA run (finding 1056).
+  const workflows = [
+    [".github/workflows/qa-advisory.yml", (workflow) => workflow.jobs.qa.env],
+    [".github/workflows/full-integration.yml", (workflow) => workflow.jobs["qa-matrix"].env],
+  ];
+  for (const [path, env] of workflows) {
+    const workflow = loadYaml(await readFile(join(repositoryRoot, path), "utf8"));
+    assert.equal(env(workflow)?.OCC_DEVELOPMENT_K3S_IMAGE, defaultK3sImage, path);
+    // Workflow-wide would reach dev-up.test.mjs, which asserts the +v1.35 default.
+    assert.equal(workflow.env?.OCC_DEVELOPMENT_K3S_IMAGE, undefined, path);
+  }
 });
 
 test("prepareFile applies the images packaging Node base default without hiding invalid overrides", async (t) => {

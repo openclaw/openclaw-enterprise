@@ -248,18 +248,8 @@ test("Kubernetes preflight without a recorded endpoint keeps the original failur
   await assert.rejects(driver.preflight(), (error) => error === refused);
 });
 
-// A two-cluster Driver whose execution cluster answers SelfSubjectAccessReviews from
-// `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
-// Pods call verifyExecutionTenantGrants with each component's own identity.
-function executionDriver(
-  review,
-  listNamespace = async ({ labelSelector }) => {
-    assert.equal(labelSelector, "openclaw.dev/namespace");
-    return {
-      items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
-    };
-  },
-) {
+// Two-cluster options; `network` overrides entries of the execution cluster's network.
+function executionOptions(network = {}) {
   const configured = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
@@ -279,9 +269,117 @@ function executionDriver(
       harnessEndpointCidrs: ["192.0.2.2/32"],
       gatewayEndpointCidrs: ["192.0.2.1/32"],
       pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      ...network,
     },
   };
+  return configured;
+}
+
+// Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
+test("two-cluster CIDR lists refuse ranges that cover every address", () => {
+  for (const [key, description] of [
+    ["harnessEndpointCidrs", "Harness endpoint CIDR"],
+    ["gatewayEndpointCidrs", "Gateway endpoint CIDR"],
+    ["pluginStatusProxySourceCidrs", "Execution status proxy CIDR"],
+  ]) {
+    for (const cidr of ["0.0.0.0/0", "::/0", "::ffff:0:0/96"]) {
+      assert.throws(
+        () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/32", cidr] })),
+        (error) =>
+          error.constructor.name === "ConfigurationFailure" &&
+          error.message === `${description}s cannot cover every address.`,
+        `${key} ${cidr}`,
+      );
+    }
+    assert.throws(
+      () => createKubernetesComputeDriver(executionOptions({ [key]: [] })),
+      new RegExp(`${description}s must be explicit and nonempty\\.$`),
+    );
+    assert.throws(
+      () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/33"] })),
+      new RegExp(`${description} 0 must be a valid IPv4 or IPv6 CIDR\\.$`),
+    );
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(executionOptions({ [key]: ["10.42.0.0/16", "::/96"] })),
+    );
+  }
+});
+
+// The documented status proxy source is the API server's address; a wider range, such as
+// the Pod CIDR, admits every Pod in it to the status port. It starts, with a warning.
+test("Kubernetes preflight warns about status proxy sources wider than one address", async () => {
+  const configured = executionOptions({
+    pluginStatusProxySourceCidrs: ["192.0.2.2/32", "10.42.0.0/16"],
+  });
+  configured.network.pluginStatusProxySourceCidrs = ["2001:db8::1/128", "2001:db8::/64"];
   const driver = createKubernetesComputeDriver(configured);
+  let identity = 0;
+  const clients = {
+    version: {
+      async getCode() {
+        return { gitVersion: "v1.35.0" };
+      },
+    },
+    core: {
+      async listNamespace() {
+        return { items: [] };
+      },
+      async readNamespace() {
+        identity += 1;
+        return { metadata: { uid: `cluster-${identity}` } };
+      },
+    },
+  };
+  driver.apiClients = Promise.resolve(clients);
+  driver.executionApiClients = Promise.resolve(clients);
+  const warning = (cidr) => ({
+    code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+    message:
+      `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
+      "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
+  });
+  const result = await driver.preflight();
+  assert.deepEqual(result, {
+    warnings: [warning("2001:db8::/64"), warning("10.42.0.0/16")],
+  });
+  // The worker logs each warning; the log keeps only plain text, so the message must survive.
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-worker",
+    destination: {
+      write(chunk) {
+        lines.push(JSON.parse(String(chunk)));
+        return true;
+      },
+    },
+  });
+  for (const entry of result.warnings) {
+    emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });
+  }
+  assert.deepEqual(
+    lines.map(({ code, message }) => ({ code, message })),
+    result.warnings,
+  );
+
+  const exact = createKubernetesComputeDriver(executionOptions());
+  exact.apiClients = Promise.resolve(clients);
+  exact.executionApiClients = Promise.resolve(clients);
+  assert.deepEqual(await exact.preflight(), { warnings: [] });
+});
+
+// A two-cluster Driver whose execution cluster answers SelfSubjectAccessReviews from
+// `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
+// Pods call verifyExecutionTenantGrants with each component's own identity.
+function executionDriver(
+  review,
+  listNamespace = async ({ labelSelector }) => {
+    assert.equal(labelSelector, "openclaw.dev/namespace");
+    return {
+      items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
+    };
+  },
+) {
+  const driver = createKubernetesComputeDriver(executionOptions());
   const reviews = [];
   driver.executionApiClients = Promise.resolve({
     core: { listNamespace },

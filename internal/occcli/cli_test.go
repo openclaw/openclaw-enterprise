@@ -136,6 +136,22 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 			t.Fatalf("%v: got %+v, want %+v", test.args, calls, test.want)
 		}
 	}
+
+	calls = nil
+	command := New(io.Discard, io.Discard)
+	command.SetArgs([]string{
+		"credential-source", "update", "cs_1", "--file=",
+		"--url", server.URL,
+		"--service-key-file", keyFile,
+		"--namespace", "ns_1",
+	})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--file must name a JSON document") {
+		t.Fatalf("explicit empty --file error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("explicit empty --file sent requests: %+v", calls)
+	}
 }
 
 type runtimeLogStub struct {
@@ -344,6 +360,9 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		{"agent", "runtime", "my-agent"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "0"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "1001"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "0"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "500ms"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "999ms"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "25h"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--follow", "--previous"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--level", "unknown"},
@@ -866,5 +885,77 @@ func TestUnknownTopLevelCommandFailsInsteadOfPrintingHelp(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Available Commands:") {
 		t.Fatalf("bare occ stdout = %q, want help", out.String())
+	}
+}
+
+// Cobra treats --flag= as set. Each of these flags reads an empty value as
+// omitted, so an explicit empty value is refused before any work instead of
+// silently taking the default or failing later with a misleading error.
+func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	directory := t.TempDir()
+	keyFile := filepath.Join(directory, "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(directory, "new-key.json")
+	// Should the dev up check regress, fail without starting a development stack.
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "none")
+	connection := []string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
+	serviceKeyCreate := []string{"service-key", "create", "--service-principal", "spn_1", "--name", "ci", "--out", outFile}
+
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "runtime", "agt_1", "--revision="}, "--revision must name a revision ID"},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway", "--revision="}, "--revision must name a revision ID"},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway", "--pod="}, "--pod must name a Pod"},
+		{[]string{"agent", "logs", "agt_1", "--source", "sandbox", "--pod="}, "--pod must name a Pod"},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway", "--level="}, "--level must name error, warn, info or debug"},
+		{[]string{"agent", "logs", "agt_1", "--source="}, "--source must name gateway, agent or sandbox"},
+		{[]string{"dev", "up", "--key-output="}, "--key-output must name a key file path"},
+		{[]string{"configuration", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"configuration", "update", "cfg_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"secret", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"secret", "update", "sec_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"credential-source", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"credential-source", "update", "cs_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"agent", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"agent", "update", "agt_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"iam", "role", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"iam", "access-binding", "create", "--file="}, "--file must name a JSON document"},
+		{append(slices.Clone(serviceKeyCreate), "--out="), "--out must name a key file path"},
+		{append(slices.Clone(serviceKeyCreate), "--service-principal="), "--service-principal must name a ServicePrincipal ID"},
+		{[]string{"agent", "runtime", "agt_1", "--url="}, "--url must name the OCC endpoint URL"},
+		{[]string{"agent", "runtime", "agt_1", "--service-key-file="}, "--service-key-file must name a bootstrap or service-key response file"},
+	} {
+		requests = 0
+		command := New(io.Discard, io.Discard)
+		// Connection flags come first so a test's own explicit empty value wins.
+		command.SetArgs(append(slices.Clone(connection), test.args...))
+		err := command.Execute()
+		if err == nil || err.Error() != test.want {
+			t.Errorf("%v: error = %v, want %q", test.args, err, test.want)
+		}
+		if requests != 0 {
+			t.Errorf("%v: sent %d requests", test.args, requests)
+		}
+		if _, statErr := os.Stat(outFile); !os.IsNotExist(statErr) {
+			t.Fatalf("%v: created the key file: %v", test.args, statErr)
+		}
+	}
+
+	// --ca-bundle= is the exception: it clears OCC_CA_BUNDLE, and the request is sent.
+	requests = 0
+	command := New(io.Discard, io.Discard)
+	command.SetArgs(append(slices.Clone(connection), "agent", "runtime", "agt_1", "--revision", "rev_1", "--ca-bundle="))
+	if err := command.Execute(); err == nil || requests != 1 {
+		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
 	}
 }

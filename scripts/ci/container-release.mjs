@@ -21,6 +21,7 @@ const integerPattern = /^[1-9][0-9]*$/;
 // container-release.test.mjs pins this list to both lane manifests.
 export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-startup.test.mjs",
+  "tests/integration/runtime-image-state-migration.test.mjs",
   "tests/integration/runtime-image-startup-probe.test.mjs",
   "tests/integration/runtime-image-gateway-peer.test.mjs",
   "tests/integration/runtime-image-native-worker.test.mjs",

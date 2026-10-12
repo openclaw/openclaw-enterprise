@@ -136,10 +136,10 @@ one `@` and a dotted domain.
 }
 ```
 
-`controlPlane.gatewayClassName` must be a Kubernetes resource name of at most
-253 characters. Use the name of the existing GatewayClass that Envoy Gateway
-serves. `controlPlane.gatewayApiKeySecretName` follows the same Kubernetes
-resource-name rule and must name the dedicated Secret that holds the `occ` key.
+`controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
+`controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
+most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
+Secret that holds the `occ` key, and the database CA Secret.
 
 For the `codex` profile, merge the reviewed Codex seccomp profile and model
 discovery egress into the base input:
@@ -171,6 +171,11 @@ ChatGPT Backend admin credential path:
   }
 }
 ```
+
+`adminSecretName` must be a lowercase DNS-subdomain Kubernetes resource name
+of at most 253 characters. `adminSecretKey` accepts letters, digits, `-`, `_`
+and `.`, up to 253 characters, but it cannot be `.` or start with `..`; omit it
+to keep the `admin-key` default.
 
 `workspaceId` must be a UUID the controller accepts at startup: version digit
 1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
@@ -223,18 +228,18 @@ as behind a source-preserving NLB, needs none.
 }
 ```
 
-Client-ID and client-secret Secret keys must differ. Preflight compares custom
-keys with the chart defaults (`client-id` and `client-secret`) when a key is omitted.
-Each credential Secret must be dedicated, as the chart requires: a sign-in
+Client-ID and client-secret Secret keys must differ; an omitted key counts as
+the chart default (`client-id` or `client-secret`).
+As the chart requires, each credential Secret is dedicated: a sign-in
 `secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
-`gatewayApiKeySecretName`, `databaseCa.secretName`, the ChatGPT admin Secret when
-`codex.managedServiceAccounts` is set, and each repository Secret must differ from
-each other, from the chart's `occ-installation-startup`, `occ-database` and
-`occ-auth` Secrets, and from the Gateway TLS (`<release>-agent-gateways-tls` for
+`gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
+`repository.publicCaSecretName`), the ChatGPT admin Secret (with
+`codex.managedServiceAccounts`) and each repository Secret must differ from
+one another, from the chart's `occ-installation-startup`, `occ-database` and
+`occ-auth` Secrets, from the Gateway TLS (`<release>-agent-gateways-tls` for
 short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
-generates. With `controlPlane.loggingCollector.enabled`, no credential
-Secret may be named `occ-otel-collector-config` or
-`occ-otel-collector-exporter`.
+generates, and, with `controlPlane.loggingCollector.enabled`, from
+`occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
@@ -264,6 +269,10 @@ If you opt in to repositories, add the broker inputs:
   }
 }
 ```
+
+The repository registry ConfigMap and all four repository Secret names must be
+Kubernetes DNS-subdomain resource names of at most 253 characters. Invalid names
+fail preflight before deployable files are written.
 
 `serviceName` is optional. When omitted, the renderer leaves it out of
 `values.yaml`: a new installation gets the chart's `git` Service, and a Helm

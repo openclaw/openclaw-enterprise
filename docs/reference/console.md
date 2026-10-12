@@ -96,7 +96,6 @@ or policy choices.
 ## Inspect detail, revisions, and channel drafts
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
-The selected tab stays visible in the horizontal strip at narrow widths.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive in-document navigation as drafts
 scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
@@ -219,7 +218,9 @@ retaining revision history, credentials, gateway state, and workspace files.
 An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
 Refresh before retrying an uncertain result. Permission denials remain visible,
-and the console never repeats a stop request automatically.
+and the console never repeats a stop request automatically. After Stop, **Request Stop again** confirms
+a new stop intent, even without a selected version. That does not prove cleanup
+finished or diagnose a shutdown failure.
 
 To resume, open **Create new version** and select **Deploy new version**, which
 creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
@@ -227,19 +228,19 @@ worker lifecycle and preservation guarantees.
 
 ## Delete an Agent
 
-Select **Delete Agent** below the Agent detail tabs, then **Permanently delete
-Agent** in the confirmation dialog. This requires exact
-Agent `delete`; `read` or `operate` is not enough. Deletion permanently removes
-the Agent, its version history, and its workspace data; Namespace-owned
-Configurations and Secrets remain; see
-[Agent deletion](agents.md#deletion).
+Select **Delete Agent**, then **Permanently delete Agent**. Exact Agent `delete`
+is required; `read` or `operate` is not enough. Deletion removes the Agent, its
+versions, and its workspace data. Namespace Configurations and Secrets remain;
+see [Agent deletion](agents.md#deletion).
 
-An accepted request starts asynchronous cleanup, and the detail page shows the
-Agent as deleting; **Refresh deletion status** checks progress. Once the API
-confirms the Agent is gone, the console returns to Agents in the same Namespace.
-An access denial stays on the detail page and says deletion requires permission.
-An unconfirmed outcome may have succeeded; refresh before retrying. The console
-never resends a delete request automatically.
+**Refresh deletion status** follows asynchronous cleanup. When the API confirms
+the Agent is gone, the console returns to that Namespace. A deleting Agent keeps
+**Request deletion again** behind confirmation. Failed cleanup can be replenished;
+queued or running cleanup is unchanged. An uncertain repeat stays disabled until
+a status read confirms deletion. The API keeps retry ownership and exact-Agent
+permission. A denial stays visible, and a refused repeat keeps the retry-ownership explanation.
+Refresh before retrying an unconfirmed outcome. The console never resends a
+delete automatically.
 
 ## Failures and logout
 
@@ -248,6 +249,9 @@ dependencies, missing resources, and network failures clear affected rows and
 offer recovery. Backend error text is not rendered; include any displayed request
 ID when reporting an API failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
+Interrupted response bodies and request deadlines keep the interrupted-read
+recovery path. View cancellation does not show a new failure, and a failed
+response never automatically retries a mutation.
 Backend discovery shows only configured IDs and types; see its
 [limits](backends.md#read-configured-backends).
 

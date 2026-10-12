@@ -1,9 +1,187 @@
 # Earlier breaking-change notices
 
 These [breaking-change notices](breaking-changes.md) are dated before
-2026-10-09. They still apply when you upgrade from a source commit older than
+2026-10-10. They still apply when you upgrade from a source commit older than
 their date. Entries are newest first. Steps marked _untested_ have not been run
 against a real Installation.
+
+## 2026-10-09: refresh-token source updates need a new Secret
+
+**What breaks.** Since #2016, `PATCH` on an `oauth2-refresh-token` credential
+source answers `409` when it keeps the recorded `refresh_token` Secret. That
+includes `{}` and `occ credential-source update ID` without `--file`, which the
+docs used to suggest after a failed update. The issuer may have rotated the
+token, and re-sending a stale one can revoke the sign-in.
+
+**Who is affected.** Operators and scripts that change such a source's Secret
+value in place and re-send it. Other source types,
+including `oauth2-client-credentials`, still accept `{}`.
+
+**How to tell.** The `409` says the gateway may already hold a newer
+`refresh_token`.
+
+**Steps.** Complete a new sign-in, store its refresh token in a new Secret, and
+send `{ "secrets": { "refresh_token": <the new Secret's ref> } }`, or
+`occ credential-source update ID --file` with that document. Redeploy Agents
+that use the source.
+
+## 2026-10-09: released Gateways need an agent database migration
+
+**What breaks.** Gateways deployed by the 2026-09-28 release keep their chat
+state in an OpenClaw agent database at schema 23. Runtimes since #587
+(2026-09-29) use schema 24, and OpenClaw refuses the older database until
+`openclaw doctor --fix` migrates it. Deployed again on such a runtime, the
+Gateway exits and restarts into the same refusal. Since #1986 the Gateway runs
+that migration itself before OpenClaw starts; see
+[Gateway storage](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+
+**Who is affected.** Installations upgraded from the 2026-09-28 release whose
+Agents are deployed again by a controller before #1986 (#2009 for the Docker
+development Driver). Gateways without chat state are not affected.
+
+**How to tell.** The Gateway log shows
+`uses schema version 23; stop active agents and run openclaw doctor --fix`.
+
+**Steps.** Upgrade the controller to #1986 or later (#2009 for Docker
+development), then deploy the Agent again (`occ agent deploy <id>`). With an
+older controller, scale the Gateway Deployment to zero, run
+`OPENCLAW_CONFIG_READONLY=1 openclaw doctor --fix --non-interactive` once in a
+Pod with the Gateway's template and `sleep` as its command, delete that Pod,
+and scale the Deployment back. Doctor logs `v23 -> v24`. Without
+`OPENCLAW_CONFIG_READONLY=1` it may end with a read-only file system error and
+exit code `1`; the migration still applies.
+
+## 2026-10-09: Dedicated Codex deployment requires the main Agent
+
+**What breaks.** Since #1972, Kubernetes Compute applies dedicated OpenClaw's
+`main` Agent rules to dedicated Codex. Deployment answers `400` naming the
+setting when the Configuration has:
+
+- `agents.entries` without a `main` entry, for example
+  `Dedicated Codex serves the main Agent: add agents.entries.main, or rename an entry to main.`
+- `agents.defaults.sessionStore.agentId` or `agents.defaults.systemAgent.agentId`
+  set to another Agent.
+- an `agents.entries` key that is not canonical, such as `_helper`.
+
+The Gateway serves the Harness workspace only to `main`. Without a `main` entry,
+workspace file reads and writes answered `503`; with another default Agent,
+chats ran as an Agent other than the one the files page edits.
+
+**Who is affected.** Dedicated Codex Agents whose Configuration matches one of
+these. No bundled Preset does. Running workloads are not changed, but until the
+Agent is deployed again with a fixed Configuration, re-preparing its active
+revision reports the same refusal and skips repair. Embedded OpenClaw and SSH
+Compute are unchanged.
+
+**How to tell.** Check the Agent's Configuration for the settings above.
+
+**Steps.** Rename the entry to `main` (or add `agents.entries.main`), set or
+remove the named `agentId`, rename a non-canonical key, save the Configuration,
+and deploy the Agent again. _untested_
+
+## 2026-10-09: Configuration save refuses Agent rosters every deployment refuses
+
+**What breaks.** Since #1959, Configuration create and update
+(`POST /namespaces/<id>/configurations`, `PATCH .../configurations/<id>`,
+`occ configuration create` and `update`) answer `400 INVALID_REQUEST` for an
+`agents` roster that Kubernetes Compute deployment already refused on every
+topology, such as an `agents.list`, an entry's `default`, or more than one
+`agents.entries` entry without `agents.ownership: "explicit"`. The
+[Configuration reference](../../reference/configuration.md#create-read-update-and-delete)
+lists every rule. Such a write used to save and fail only at deploy, with the
+same message.
+
+**Who is affected.** Clients and scripts that save such a roster, including the
+split-layout `import` below, which re-creates each exported Configuration.
+Stored Configurations do not change: they still read, Kubernetes deployment still
+refuses them with the same message, and an update that fixes the roster saves.
+SSH Compute deployment does not check rosters, so there the save is the first
+refusal. Rules that depend on the topology, such as dedicated OpenClaw serving
+the `main` Agent, still apply only at deployment.
+
+**How to tell.** A save, like a Kubernetes deployment, fails with a `400`
+naming an `agents` setting.
+
+**Steps.** Fix the roster as the message says and save again. For a split-layout
+bundle, fix that Configuration's `values` in the bundle file and run `import`
+again; it resumes from its ID map.
+
+## 2026-10-09: Driver package entries are checked as Node resolves them
+
+**What breaks.** Since #1923 and #1944, the controller picks an external Driver
+package's root export, and decides whether the entry is ESM, the way Node's
+`import()` does. It refuses to start, with a `drivers.<capability>.package`
+message, on shapes the older loader accepted:
+
+- A `.js` entry whose nearest `package.json` lacks `"type": "module"`, even when
+  the package root has it, such as `dist/index.js` beside a `dist/package.json`
+  without `type`. Node can still import that file by detecting ESM syntax; the
+  controller does not. Its refusal now names the `package.json` that decided the
+  format.
+- A nested `package.json` that is not valid JSON or not an object
+  (`has invalid package scope metadata`); the older loader ignored it.
+- An export target that is extensionless (`./dist/index`), a directory, or has
+  an encoded `/` or `\`; a file name with a literal `%`, which is now
+  percent-decoded; and mixed subpath and condition keys, or numeric condition
+  keys.
+
+Some shapes load a different file instead of refusing: a `"."` nested inside an
+array entry or condition no longer selects a file, so a later entry may load, and
+the `module-sync` and `node-addons` conditions now match as in Node.
+
+**Who is affected.** Installations that select a Driver package
+(`drivers.<capability>.package`) built with one of these shapes. Built-in
+Drivers and the [documented manifest](../../reference/drivers/selection.md) are
+not affected.
+
+**How to tell.** The controller exits at startup with a
+`drivers.<capability>.package` message naming the problem. For a package that
+uses nested `"."` keys or those conditions, check which compiled file its root
+export now selects.
+
+**Steps.** Fix the package and publish a new version: add `"type": "module"` to
+the `package.json` the message names, or rename the entry to `.mjs`, and point
+`exports` at the exact compiled file. Pin that version in the controller image's
+dependencies, rebuild the image and upgrade.
+
+## 2026-10-09: peer namespaces must be Kubernetes namespace names
+
+**What breaks.** Since #1914, the controller refuses to start with
+`DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most
+63 characters.` (or the same message for a gateway client, the repository
+credential gateway, the provider Harness gateway or the managed channel proxy)
+when that peer's namespace is not a DNS label (lowercase letters, digits and
+inner hyphens). The observability demo chart refuses such
+an `occ.namespace`, `dns.namespace` or `grafana.clients[N].namespace`.
+
+**Who is affected.** Only a hand-written `installation.yaml` or demo chart
+values with such a value. Such a peer was already unreachable: no Namespace can
+have that name. The profile renderer and product charts refuse these values
+already.
+
+**How to tell.** The controller logs the message above at startup; `helm
+upgrade` of the demo chart fails with the field name.
+
+**Steps.** Set the peer's real Namespace name (`kubectl get namespaces`), then
+upgrade.
+
+## 2026-10-09: sandbox domains longer than 214 characters are refused
+
+**What breaks.** Since #1823, Helm refuses a `gatewayRouting.sandbox.domain`
+over 214 characters (`must not exceed 214 characters, leaving room for the
+agent-<32 hex>. prefix`), and the controller refuses to start with
+`Sandbox domain must not exceed 214 characters`. Each dedicated Agent hostname,
+`agent-<32 hex>.<domain>`, must fit the 253-character Gateway API limit.
+
+**Who is affected.** Installations with sandbox routing and a 215-253 character
+domain. Their dedicated Agent preview routes were already refused at deploy.
+
+**How to tell.**
+`helm get values <release> -o json | jq '.gatewayRouting.sandbox.domain // "" | length'`
+prints more than 214.
+
+**Steps.** Pick a shorter preview domain, issue its wildcard certificate and
+DNS, set the new domain, then upgrade.
 
 ## 2026-10-07: migration 0049 refuses managed ChatGPT service-account Agents
 

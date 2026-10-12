@@ -197,9 +197,9 @@ and the OpenShell development profile disables projected workload identity.
 Explicitly requesting that identity fails before provisioning.
 
 The fixture gives that gateway its own scoped DNS/API access. Ordinary Harness
-DNS comes from Compute. Workspace-node policies select the OpenShell supervisor
-label (`openshell.ai/boundary-role=supervisor`) and the tenant's Agent Gateway
-Service in both directions, because the supervisor originates the proxied call.
+DNS comes from Compute. The supervisor originates the proxied node call, so each
+Agent Gateway admits only its own Sandbox's supervisor (`openshell.ai/sandbox-id`
+from the Driver's `workspaceNodePeerLabels`); supervisor egress is OpenShell's own.
 The test requires the provider Harness Pod to carry `provider-fenced-v1`; it
 receives no ordinary Compute model or authentication egress. Older fixtures
 may retain broad policies or Sandbox templates without the profile. Inspect

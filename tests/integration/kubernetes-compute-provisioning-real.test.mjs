@@ -506,6 +506,8 @@ test(
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
+          // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
+          channels: { proxyUrl: "http://10.42.0.15:3128" },
           gatewayNodeSelector: {
             "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
               .items[0].metadata.name,

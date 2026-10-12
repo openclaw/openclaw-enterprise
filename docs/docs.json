@@ -755,6 +755,10 @@
                         "label": "Compute"
                       },
                       {
+                        "page": "reference/drivers/compute-admission",
+                        "label": "Compute Admission"
+                      },
+                      {
                         "page": "reference/drivers/configuration",
                         "label": "Configuration"
                       },

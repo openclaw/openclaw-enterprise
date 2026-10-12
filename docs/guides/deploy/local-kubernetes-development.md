@@ -98,8 +98,8 @@ requires [hybrid private routing](local-compose-kubernetes.md), configured
 before creating Agent Namespaces; that page also covers Compose repository and
 Slack service connections.
 
-If the K3s channel lookup times out, follow
-[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-times-out).
+If the K3s channel lookup fails or times out, follow
+[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-fails).
 
 ### Start the OpenShell fail-closed profile
 

@@ -74,6 +74,11 @@ required member Drivers. A ChatGPT workspace UUID identifies the upstream worksp
 Inline keys and configurable upstream URLs are unsupported. Credential TTL
 accepts 1–2,592,000 seconds and defaults to 2,592,000 (30 days); changing it does
 not renew issued credentials. Retired `integrations` and `adminKeyPath` keys fail.
+The production chart's `backend.chatgpt.secretName` must be a lowercase
+DNS-subdomain Kubernetes resource name of at most 253 characters. Its
+`backend.chatgpt.key` accepts letters, digits, `-`, `_` and `.`, up to 253
+characters, but cannot be `.` or start with `..`; the unchanged default is
+`admin-key`.
 
 `backend[].drivers` declares required membership. The ChatGPT Backend and its
 selected `service_account` Driver must be configured together with matching IDs.

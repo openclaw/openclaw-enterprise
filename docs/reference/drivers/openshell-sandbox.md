@@ -302,13 +302,11 @@ Compute passes the provider-fenced network profile (`provider-fenced-v1`) to the
 provider Harness template; the provider must retain it on the resulting Pod.
 It admits no Compute DNS, model, or authentication egress; OpenShell's workload
 fence governs those decisions. The policy proxy opens node connections from
-OpenShell supervisor Pods (`openshell.ai/managed-by=openshell`,
-`openshell.ai/boundary-role=supervisor`), which carry no `openclaw.dev` labels,
-so same-cluster policies grant those callers only the tenant's Agent Gateway
-Service port. The separately installed OpenShell gateway needs its own scoped
-DNS/API policies.
-Existing Sandboxes keep their template: redeploy the Agent revision to apply the
-profile. See the
+OpenShell supervisor Pods, which carry no `openclaw.dev` labels; on one cluster,
+each Agent Gateway admits only its own Sandbox's supervisor
+(`openshell.ai/sandbox-id`). The separately installed OpenShell gateway needs
+its own scoped DNS/API policies. Redeploy an existing Agent to apply the profile
+and this scoping. See the
 [network profile reference](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
 
 ## Qualification contract

@@ -146,11 +146,12 @@ export async function createQaInstallation(
     async record(name, value) {
       // API results are evidence only: a fixed JSON suffix, a confined basename,
       // and exclusive creation prevent replacing files or following symlinks.
-      await writeFile(
-        join(artifacts, `${controlPlane}-${name.replaceAll(/[^a-zA-Z0-9-]/g, "-")}.json`),
-        JSON.stringify(value, null, 2) + "\n",
-        { mode: 0o600, flag: "wx" },
-      );
+      const file = `${controlPlane}-${name.replaceAll(/[^a-zA-Z0-9-]/g, "-")}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value, null, 2) + "\n", {
+        mode: 0o600,
+        flag: "wx",
+      });
+      return file;
     },
     async run(command, args, options = {}) {
       try {

@@ -661,12 +661,11 @@ test("Codex startup preserves explicit session approval choices and native defau
   // Native startup gets the policy the pinned Gateway runs: it runs on-failure as on-request.
   // A reviewer request must never silently upgrade an incompatible session policy to
   // on-request; the native readiness check owns that rejection, and deployment refuses
-  // untrusted and an omitted policy with an automatic reviewer before rendering.
+  // an omitted policy with an automatic reviewer before rendering.
   for (const [policy, native] of [
     ["on-request", "on-request"],
     ["on-failure", "on-request"],
     ["never", "never"],
-    ["untrusted", "untrusted"],
     [undefined, undefined],
   ]) {
     const candidate = revision({ plugins: codexLinearPluginState() });
@@ -682,11 +681,33 @@ test("Codex startup preserves explicit session approval choices and native defau
     const delivered = JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]);
     assert.equal(delivered.codexConfigurationToml, config);
   }
-  const malformed = revision();
-  malformed.configuration.plugins.entries.codex.config.appServer.approvalPolicy = "invalid";
-  assert.throws(
-    () => pluginRuntimeSpecForRevision(malformed),
-    /session approval policy is invalid/,
+  // Preparation applies admission's rule again (codexApprovalPolicy): a value outside the
+  // Gateway's enum, the retired untrusted included, is refused before anything renders.
+  const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
+  for (const [policy, requirement] of [
+    ["invalid", 'must be "never", "on-request" or "on-failure"'],
+    [null, 'must be "never", "on-request" or "on-failure"'],
+    ["untrusted", 'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"'],
+  ]) {
+    const malformed = revision();
+    malformed.configuration.plugins.entries.codex.config.appServer.approvalPolicy = policy;
+    assert.throws(() => pluginRuntimeSpecForRevision(malformed), {
+      message: `Configuration setting ${setting} ${requirement}.`,
+    });
+  }
+  const notObject = revision();
+  notObject.configuration.plugins.entries.codex.config.appServer = "on-request";
+  assert.throws(() => pluginRuntimeSpecForRevision(notObject), {
+    message: "Configuration setting plugins.entries.codex.config.appServer must be an object.",
+  });
+  // The Gateway entrypoint replaces a null plugin config, so it sets no policy.
+  const nullConfig = revision();
+  nullConfig.configuration.plugins.entries.codex.config = null;
+  assert.doesNotMatch(
+    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(nullConfig))[
+      PLUGIN_RUNTIME_CODEX_CONFIG
+    ],
+    /approval_policy/,
   );
 });
 
@@ -2695,6 +2716,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
         "openclaw.dev/workload-role": "gateway",
       },
     },
+    status: { phase: "Running", podIP: "10.42.0.20" },
   };
   const readyReport = {
     revisionId: candidate.id,
@@ -2739,10 +2761,12 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     ],
   ]) {
     await t.test(name, async () => {
+      let proxied = 0;
       driver.clients = async () => ({
         core: {
           listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [pod] }),
           connectGetNamespacedPodProxyWithPath: async () => {
+            proxied += 1;
             if (response instanceof Error) {
               throw response;
             }
@@ -2770,6 +2794,8 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
         );
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
+      // Every case, not-ready ones included, reads the running Pod's report.
+      assert.equal(proxied, 1);
     });
   }
 });
@@ -2795,6 +2821,8 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
       },
     },
     status: {
+      phase: "Running",
+      podIP: "10.42.0.21",
       containerStatuses: [{ name: "agent", containerID: "containerd://runtime-status-1" }],
     },
   };
@@ -4546,7 +4574,11 @@ test("Kubernetes diagnostics name the startup step a held Gateway failed", async
         "openclaw.dev/workload-role": role,
       },
     },
-    status: { containerStatuses: [{ name: role, containerID: `containerd://${role}-1` }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.22",
+      containerStatuses: [{ name: role, containerID: `containerd://${role}-1` }],
+    },
   });
   // The Pod UIDs match the ones each runtime reports for itself.
   const pods = { agent: pod("agent", "agent-pod-1"), gateway: pod("gateway", "gateway-pod-1") };

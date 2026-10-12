@@ -4,7 +4,13 @@ import { once } from "node:events";
 import { mkdir, open, readdir, readFile, rm, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
-import { failureSecrets, redactLogLine } from "./failure-redaction.mjs";
+import {
+  failureSecrets,
+  isCredentialLine,
+  maskPrivateKeyLines,
+  redactLogLine,
+  redactOutputLine,
+} from "./failure-redaction.mjs";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -59,6 +65,11 @@ const NODE_LOG_HEAD = { lines: 60, chars: 8_000 };
 const NODE_LOG_FIRST_PROBLEMS = { lines: 20, chars: 4_000 };
 const NODE_LOG_LAST_PROBLEMS = { lines: 100, chars: 12_000 };
 const NODE_LOG_TAIL_CHARS = 16_000;
+// Each diagnostic command is bounded; a hung one must not replace the failure.
+const diagnosticCommandTimeoutMs =
+  Number(process.env.OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS)
+    : 10_000;
 
 function takeWithin(lines, { lines: maxLines = Infinity, chars }, fromEnd = false) {
   const ordered = fromEnd ? [...lines].reverse() : lines;
@@ -183,7 +194,7 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
   ) {
     try {
       const output = await execFile(command, args, {
-        timeoutMs: 10_000,
+        timeoutMs: diagnosticCommandTimeoutMs,
         maxOutputChars,
       });
       return { status: "ok", value: project(output) };
@@ -411,10 +422,6 @@ const MAX_CONTAINER_LOG_RECORDS = 8;
 const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
-// Value-level redaction keeps the credential lifecycle lines a slow stop needs;
-// these lines are dropped whole.
-const CONTAINER_LOG_SECRET_LINE =
-  /authorization|bearer\s|private.?key|-----BEGIN|https?:\/\/[^\s/]+@/i;
 
 function eventStatus(object) {
   return {
@@ -443,14 +450,13 @@ export function projectContainerLog(value, secrets = []) {
   const text = (field, limit = 200) =>
     typeof field === "string" ? redactLogLine(field, secrets, limit) : undefined;
   const count = (field) => (Number.isSafeInteger(field) && field >= 0 ? field : 0);
-  const lines = value.lines.filter((line) => typeof line === "string");
+  // Lines are redacted one at a time, so a private key's body lines go first.
+  const lines = maskPrivateKeyLines(value.lines.filter((line) => typeof line === "string"));
   const kept = lines
     .slice(-CONTAINER_LOG_LINES)
-    .map((line) =>
-      CONTAINER_LOG_SECRET_LINE.test(line)
-        ? "[redacted credential-bearing line]"
-        : redactLogLine(line, secrets, CONTAINER_LOG_LINE_CHARS),
-    );
+    // Value-level redaction keeps the credential lifecycle lines a slow stop
+    // needs; lines that name a credential are dropped whole.
+    .map((line) => redactOutputLine(line, secrets, "", CONTAINER_LOG_LINE_CHARS));
   const stream = record(value.stream) ? value.stream : {};
   const markers = (Array.isArray(value.markers) ? value.markers : []).filter(record);
   return {
@@ -472,12 +478,9 @@ export function projectContainerLog(value, secrets = []) {
       error:
         typeof stream.error === "string"
           ? text(
-              stream.error
-                .split("\n")
+              maskPrivateKeyLines(stream.error.split("\n"))
                 .map((line) =>
-                  CONTAINER_LOG_SECRET_LINE.test(line)
-                    ? "[redacted credential-bearing line]"
-                    : line,
+                  isCredentialLine(line) ? "[redacted credential-bearing line]" : line,
                 )
                 .join("\n"),
               2_000,

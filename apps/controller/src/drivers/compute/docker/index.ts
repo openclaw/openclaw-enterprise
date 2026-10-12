@@ -15,10 +15,15 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
+  RevisionHarnessDescriptor,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
 import {
+  HARNESS_WORKSPACE,
+  MANAGED_WORKSPACE,
+  requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
   workspaceSetupMainAgent,
   workspaceSetupVerifier,
@@ -323,6 +328,50 @@ function validTopology(revision: AgentRevision): boolean {
   );
 }
 
+type SettingError = (setting: string, requirement: string) => Error;
+
+// Agent save and provisioning name the setting the caller must fix; preparation names it too,
+// where the message reaches only diagnostics.
+const callerSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+const preparationSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationFailure(configurationSettingMessage(setting, requirement));
+
+// Docker mounts one workspace volume at both paths, for every Harness topology.
+const DOCKER_SETUP_WORKSPACES = [MANAGED_WORKSPACE, HARNESS_WORKSPACE] as const;
+
+/**
+ * The workspace initial files are written to. The roster and workspace path follow the rule
+ * every Compute Driver shares; Docker's initializer also needs native bootstrap, which seeds
+ * the workspace the setup documents complete.
+ */
+function dockerSetupWorkspace(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): string {
+  const workspace = requireWorkspaceSetupConfiguration(
+    configuration,
+    DOCKER_SETUP_WORKSPACES,
+    createError,
+  );
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  const main = workspaceSetupMainAgent(configuration);
+  for (const [parent, agent] of [
+    ["agents.defaults", defaults],
+    ["agents.entries.main", main],
+  ] as const) {
+    for (const option of ["skipBootstrap", "skipOptionalBootstrapFiles"]) {
+      if (agent?.[option] === true) {
+        throw createError(
+          `${parent}.${option}`,
+          "must not be true for initial workspace files: Docker Compute writes them after native bootstrap",
+        );
+      }
+    }
+  }
+  return workspace;
+}
+
 function optionalEnvironment(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
@@ -476,6 +525,15 @@ export class DockerComputeDriver implements ComputeDriver {
     validatePlaintextNativeGateway(configuration);
     validateRoutableNativeListener(configuration);
     validateCodexApprovalPolicySetting(configuration);
+  }
+
+  // Agent create and update apply preparation's workspace rule, with its message. (OCC
+  // provisioning and deployment refuse Docker's Harness authentication first.)
+  validateWorkspaceSetup(
+    _harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    dockerSetupWorkspace(configuration, callerSettingError);
   }
 
   validateHarnessAuth(): never {
@@ -729,25 +787,7 @@ export class DockerComputeDriver implements ComputeDriver {
   }
 
   private workspaceDirectory(revision: Readonly<AgentRevision>): string {
-    const agents = asRecord(revision.configuration.agents);
-    const defaults = asRecord(agents?.defaults);
-    const main = workspaceSetupMainAgent(revision.configuration);
-    if (main === undefined) {
-      throw new ConfigurationFailure("Workspace setup requires only the native main Agent.");
-    }
-    const workspace = main?.workspace ?? defaults?.workspace ?? "/home/node/.openclaw/workspace";
-    if (
-      (workspace !== "/home/node/.openclaw/workspace" && workspace !== "/home/node/workspace") ||
-      defaults?.skipBootstrap === true ||
-      defaults?.skipOptionalBootstrapFiles === true ||
-      main?.skipBootstrap === true ||
-      main?.skipOptionalBootstrapFiles === true
-    ) {
-      throw new ConfigurationFailure(
-        "Workspace setup requires native bootstrap in exact-Agent managed storage.",
-      );
-    }
-    return workspace;
+    return dockerSetupWorkspace(revision.configuration, preparationSettingError);
   }
 
   private async initializeWorkspace(

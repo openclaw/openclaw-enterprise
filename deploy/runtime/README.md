@@ -206,6 +206,7 @@ set -a
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
   node --test tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs

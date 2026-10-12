@@ -263,7 +263,8 @@ Other rosters retain the explicit main target; dedicated deployment requires it.
 ```
 
 `content` must be well-formed Unicode without NUL characters and fit within
-16 KiB when encoded as UTF-8. The complete request body is limited to 48 KiB.
+16 KiB when encoded as UTF-8. The complete request body is limited to 97 KiB,
+enough for 16 KiB written entirely in six-byte JSON escapes.
 Success returns `200`. A successful `PUT` reports `size` in UTF-8 bytes and
 records the Agent, file name, and outcome in the audit log.
 
@@ -273,7 +274,7 @@ records the Agent, file name, and outcome in the audit log.
 | `404 NOT_FOUND`              | The requested Agent or file was not found.           |
 | `409 AGENT_DELETING`         | The Agent is being deleted.                          |
 | `409 RESOURCE_CONFLICT`      | The Agent is stopping.                               |
-| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 48 KiB.                     |
+| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 97 KiB.                     |
 | `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
 | `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |
 

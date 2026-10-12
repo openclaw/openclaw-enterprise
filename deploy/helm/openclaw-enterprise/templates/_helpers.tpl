@@ -1,5 +1,17 @@
 {{- /* One IPv4 host. Go's ParseCIDR rejects an octet above 255 and a leading zero. */ -}}
 {{- define "openclaw.ipv4Host32" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/32${{- end -}}
+{{- define "openclaw.validateSecretKey" -}}
+{{- if or (eq (toString .value) ".") (hasPrefix ".." (toString .value)) (gt (len (toString .value)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString .value))) -}}
+{{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
+{{- end -}}
+{{- end -}}
+{{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
+{{- define "openclaw.validateResourceName" -}}
+{{- $value := toString .value -}}
+{{- if or (gt (len $value) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $value)) -}}
+{{- fail (printf "%s must be a Kubernetes resource name of at most 253 characters" .label) -}}
+{{- end -}}
+{{- end -}}
 {{- define "openclaw.validate" -}}
 {{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
 {{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
@@ -56,7 +68,10 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if not .Values.installation.secretName -}}{{- fail "installation.secretName must name the operator-created installation startup Secret" -}}{{- end -}}
+{{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
 {{- $github := .Values.auth.github -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
 {{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
@@ -93,6 +108,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $github $github.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientIdKey" "value" $github.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientSecretKey" "value" $github.clientSecretKey) -}}
 {{- if eq $github.clientIdKey $github.clientSecretKey -}}{{- fail "auth.github client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
@@ -107,6 +124,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $google $google.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.google.clientIdKey" "value" $google.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.google.clientSecretKey" "value" $google.clientSecretKey) -}}
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
@@ -121,6 +140,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $oidc $oidc.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientIdKey" "value" $oidc.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientSecretKey" "value" $oidc.clientSecretKey) -}}
 {{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
@@ -223,8 +244,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
 {{- end -}}
 {{- range $label, $fileName := dict "bootstrap.password.fileName" .Values.bootstrap.password.fileName "bootstrap.serviceKey.fileName" .Values.bootstrap.serviceKey.fileName -}}
-{{- if or (eq $fileName ".") (eq $fileName "..") (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
-{{- fail (printf "%s must be a simple basename" $label) -}}
+{{- if or (eq $fileName ".") (eq $fileName "..") (gt (len (toString $fileName)) 255) (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
+{{- fail (printf "%s must be a simple basename of at most 255 characters" $label) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
@@ -291,8 +312,19 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
+{{- range $label, $key := dict "database.appUrlKey" .Values.database.appUrlKey "database.migrationUrlKey" .Values.database.migrationUrlKey -}}
+{{- if or (eq (toString $key) ".") (hasPrefix ".." (toString $key)) (gt (len (toString $key)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString $key))) -}}
+{{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" $label) -}}
+{{- end -}}
+{{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
+{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}
+{{- $chatgpt := .Values.backend.chatgpt -}}
+{{- /* Checked here as well as in the dedicated-Secret table below, so this refusal keeps its place before backend.chatgpt.key. */ -}}
+{{- if $chatgpt.secretName -}}{{- include "openclaw.validateResourceName" (dict "label" "backend.chatgpt.secretName" "value" $chatgpt.secretName) -}}{{- end -}}
+{{- if $chatgpt.key -}}{{- include "openclaw.validateSecretKey" (dict "label" "backend.chatgpt.key" "value" $chatgpt.key) -}}{{- end -}}
 {{- end -}}
 {{- if .Values.database.caSecretName -}}
 {{- if or (not .Values.database.caKey) (not .Values.database.caMountPath) -}}
@@ -341,10 +373,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
 {{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
 {{- $credentials := .Values.repositoryCredentials -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $credentials.image) -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $credentials.image) -}}
 {{- fail "repositoryCredentials.image must be an approved immutable SHA-256 image reference" -}}
 {{- end -}}
 {{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
@@ -380,6 +413,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
+{{- range $label, $key := dict "repositoryCredentials.registryKey" $credentials.registryKey "repositoryCredentials.serviceConfigKey" $credentials.serviceConfigKey "repositoryCredentials.appKeyKey" $credentials.appKeyKey "repositoryCredentials.publicCaKey" $credentials.publicCaKey -}}
+{{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
+{{- end -}}
+{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $credentials.registryConfigMapName) -}}
 {{- /* Installation startup checks a GitHub Backend ID with isBackendId, then refuses one longer than 200 UTF-16 code units because repository bindings store it under that bound. */ -}}
 {{- $backendId := toString $credentials.backendId -}}
 {{- if or (ne $backendId (trim $backendId)) (hasPrefix "\uFEFF" $backendId) (hasSuffix "\uFEFF" $backendId) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $backendId)) -}}
@@ -410,6 +447,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
+{{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.gatewayClassName" "value" $routing.gatewayClassName) -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
@@ -423,12 +461,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not $routing.issuerRef -}}{{- fail "gatewayRouting.issuerRef must be configured" -}}{{- end -}}
 {{- if and (hasKey $routing.issuerRef "name") (not (kindIs "string" $routing.issuerRef.name)) -}}{{- fail "gatewayRouting.issuerRef.name must be a string when supplied" -}}{{- end -}}
 {{- if $routing.issuerRef.name -}}
+{{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.issuerRef.name" "value" $routing.issuerRef.name) -}}
 {{- if or (not $routing.issuerRef.kind) (not $routing.issuerRef.group) -}}{{- fail "gatewayRouting.issuerRef kind and group must be set with an external issuer" -}}{{- end -}}
 {{- else -}}
 {{- if or $routing.caSecretName $routing.caSecretKey -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey require an external issuerRef.name" -}}{{- end -}}
 {{- end -}}
 {{- if not $routing.apiKeySecretName -}}{{- fail "gatewayRouting.apiKeySecretName must reference an operator-created Opaque Secret with key 'occ'" -}}{{- end -}}
 {{- if and (or $routing.caSecretName $routing.caSecretKey) (or (not $routing.caSecretName) (not $routing.caSecretKey)) -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey must be set together" -}}{{- end -}}
+{{- if $routing.caSecretKey -}}{{- include "openclaw.validateSecretKey" (dict "label" "gatewayRouting.caSecretKey" "value" $routing.caSecretKey) -}}{{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.tenantGatewayPort))) (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
 {{- fail "gatewayRouting.tenantGatewayPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
@@ -452,17 +492,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $cookieDomain (or (eq $routing.sandbox.domain $cookieDomain) (hasSuffix (printf ".%s" $cookieDomain) $routing.sandbox.domain) (hasSuffix (printf ".%s" $routing.sandbox.domain) $cookieDomain)) -}}{{- fail "gatewayRouting.sandbox.domain must be outside the OCE shared session cookie domain" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
-{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first, so a refusal names the operator's setting. */ -}}
+{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. The public CA settings (marked "ca") may share one Secret with each other, such as one trust bundle: each mounts only its selected key, which holds public data (finding 1059). They stay apart from database.secretName, whose migration URL key a matching CA key would mount into the API and worker. Each name must also be a Kubernetes resource name, so a malformed one fails here rather than when Kubernetes refuses the Pod or leaves it waiting for a Secret that cannot exist (finding 1066). */ -}}
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
-{{- if $routing.enabled -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
+{{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
 {{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $roles = append $roles (list "backend.chatgpt.secretName" .Values.backend.chatgpt.secretName) -}}{{- end -}}
-{{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName) -}}
+{{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName "ca") -}}
 {{- if $routing.enabled -}}
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
-{{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName)) -}}
+{{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
 {{- end -}}
 {{- range $provider := list "github" "google" "oidc" -}}
 {{- $signIn := index $.Values.auth $provider -}}
@@ -472,14 +512,25 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
-{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
+{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
+{{- $roles = append $roles (list "repositoryCredentials.publicCaSecretName" .Values.repositoryCredentials.publicCaSecretName "ca") -}}
+{{- end -}}
+{{- if .Values.logging.collector.enabled -}}
+{{- range $key := list "configSecretName" "envSecretName" -}}{{- $roles = append $roles (list (printf "logging.collector.%s" $key) (index $.Values.logging.collector $key)) -}}{{- end -}}
 {{- end -}}
 {{- $holders := dict -}}
+{{- $groups := dict -}}
 {{- range $role := $roles -}}
 {{- if index $role 1 -}}
 {{- $name := toString (index $role 1) -}}
-{{- if hasKey $holders $name -}}{{- fail (printf "%s must name a dedicated Secret; %s is also %s" (index $role 0) $name (get $holders $name)) -}}{{- end -}}
+{{- include "openclaw.validateResourceName" (dict "label" (index $role 0) "value" $name) -}}
+{{- $group := ternary (last $role) "" (eq (len $role) 3) -}}
+{{- if not (hasKey $holders $name) -}}
 {{- $_ := set $holders $name (index $role 0) -}}
+{{- $_ := set $groups $name $group -}}
+{{- else if not (and $group (eq $group (get $groups $name))) -}}
+{{- fail (printf "%s must name a dedicated Secret; %s is also %s" (index $role 0) $name (get $holders $name)) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

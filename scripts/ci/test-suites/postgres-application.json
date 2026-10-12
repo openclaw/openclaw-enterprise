@@ -3,11 +3,15 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
-  "fileConcurrency": 4,
+  "fileConcurrency": 8,
   "parallelFiles": [
-    "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
     "tests/integration/occ-metrics.test.mjs"
@@ -66,6 +70,39 @@
       "path": "tests/integration/postgres-worker-agent-revision-health.test.mjs",
       "expectedTests": [
         "worker fixture disposal preserves another database's live claim and activation"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
+      "expectedTests": [
+        "a refused candidate whose stop keeps failing shows the refusal in deployment status"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+      "expectedTests": [
+        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
+      "expectedTests": [
+        "a redeploy's predecessor stop yields during its Gateway drain and the replacement starts after it",
+        "a newer deployment admitted while a predecessor stop is yielded supersedes it and starts last",
+        "a yielded redeploy superseded by a deployment refused before Compute finishes its predecessor stop",
+        "a redeploy refused while its predecessor stop is yielded finishes that stop before it fails",
+        "a yielded redeploy overtaken by an Agent stop finishes its predecessor stop before it ends stopped",
+        "a yielded redeploy overtaken by an Agent stop retries a failed predecessor stop before it ends stopped",
+        "another Agent's optional wait ends for a yielded redeploy, which starts soon after its drain",
+        "a redeploy refused before stopping its predecessor leaves the serving revision running",
+        "a yielded redeploy whose last claim expires gets one more attempt, which finishes its predecessor stop",
+        "a yielded redeploy refused on the extra attempt after its last claim expired finishes its predecessor stop"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+      "expectedTests": [
+        "a refused candidate superseded while its stop fails is stopped before it completes"
       ]
     },
     {

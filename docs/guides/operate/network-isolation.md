@@ -257,4 +257,9 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
   [network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   and the model egress exclusions.
 - The status proxy fails for every Pod: set `network.pluginStatusProxySourceCidrs`
-  to the API server's source addresses on each node.
+  to the API server's source addresses on each node. It never reaches an
+  OpenShell Harness Pod, whose provider fence admits only its Gateway; Compute
+  does not try, and OpenShell reports that Harness's status.
+- The worker logs `KUBERNETES_STATUS_PROXY_SOURCE_BROAD`: a status source wider
+  than one address, such as the Pod CIDR, lets every Pod in it reach each
+  Agent's status port. List only the API server's `/32` or `/128` sources.

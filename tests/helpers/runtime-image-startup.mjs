@@ -1,6 +1,7 @@
 // Shared by the runtime image startup smoke tests, which CI runs in two lanes
 // (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
-// runtime-image-gateway-peer.test.mjs and runtime-image-native-worker.test.mjs).
+// runtime-image-gateway-peer.test.mjs, runtime-image-native-worker.test.mjs and
+// runtime-image-state-migration.test.mjs).
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -41,6 +42,16 @@ export async function runDocker(args, options = {}, input) {
   });
   const [result] = await Promise.all([command, inputComplete]);
   return result;
+}
+
+// Like Promise.all over a case's scenarios, but waits for every one so no
+// container outlives the test's cleanup, then rethrows the first failure.
+export async function eachSettled(items, each) {
+  const results = await Promise.allSettled(items.map(each));
+  const failed = results.find(({ status }) => status === "rejected");
+  if (failed) {
+    throw failed.reason;
+  }
 }
 
 export async function waitForDockerLog(containerName, pattern) {

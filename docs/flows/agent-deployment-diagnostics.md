@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-10
-last_updated_session: fix-1043
+updated: 2026-10-11
+last_updated_session: issue-2142
 ---
 
 # Agent deployment diagnostics flow
@@ -82,8 +82,10 @@ currently returns no channel checks.
 runtime status. A runtime that held startup, such as a Gateway with an unusable
 peer configuration record or an Agent whose model check failed, reports its
 failure there. The Driver lists it first as a `failed` check named after the
-startup step, with the failure code; diagnostics do not rerun that step. A
-failed or invalid status read adds nothing.
+startup step, with the failure code; diagnostics do not rerun that step. The
+private boundary accepts only real UTC timestamps, normalizing a valid whole-second
+value to the public millisecond form. A failed, impossible-date, or otherwise
+invalid status read adds nothing.
 
 An [OpenShell](../reference/drivers/openshell-sandbox.md) Harness listens inside
 its Sandbox's own network namespace, not the Pod's, so the Kubernetes API
@@ -148,6 +150,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 14:30: Reject impossible private runtime timestamps before returning held failure evidence. (issue-2142)
 
 - 2026-10-10 18:30: Report a Harness that OpenShell is restarting as `HARNESS_RESTARTING`. (fix-1043)
 
