@@ -15230,7 +15230,10 @@ for (const [reason, code] of [
     const { driver, revision, namespace, objects, records, state, context } =
       workspaceSetupFixture(false);
     const sourceKey = stageReadyOAuthSource(objects, revision, context);
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+    // A running Job is named, so the worker can retire it if the deadline passes now.
+    const running = await driver.prepareRevision(revision, context);
+    assert.equal(running.ready, false);
+    assert.equal(running.pendingReason, "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING");
     const job = [...objects.values()].find(({ kind }) => kind === "Job");
     const creations = records.filter(({ kind }) => kind === "Job").length;
     state.jobFailure = reason;

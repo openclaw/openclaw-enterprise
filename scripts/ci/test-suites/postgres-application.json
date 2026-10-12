@@ -59,6 +59,7 @@
         "real PostgreSQL preserves the failure budget while an Agent runtime converges",
         "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
         "an overdue Agent runtime fails closed without activating its incomplete revision",
+        "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
         "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
         "a lost retirement claim preserves the activated replacement and cannot complete stolen work",
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",

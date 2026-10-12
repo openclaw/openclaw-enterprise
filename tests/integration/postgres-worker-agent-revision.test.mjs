@@ -4308,6 +4308,59 @@ revisionTest(
       data: { timeoutMs: 1, runtimeFailure },
     });
     assert.deepEqual(status.warnings, []);
+    // A runtime that failed by itself stays for diagnosis: nothing retires it.
+    assert.equal(status.cleanup, null);
+  },
+);
+
+revisionTest(
+  "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("expired-bootstrap");
+    const stopped = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+          };
+        },
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          await fixture.compute.stopRevision(revision);
+        },
+      },
+      { convergenceTimeoutMs: 1 },
+    );
+
+    await fixture.work(candidate, "failed_permanent");
+    // The retirement obligation commits with the failure, so the bootstrap Job and its
+    // seed Secret (the OAuth token bundle) cannot outlive the failed revision.
+    const cleanupRow = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+    assert.equal((await cleanupRow()).length, 1);
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "CONVERGENCE_DEADLINE_EXCEEDED",
+      message: "Deployment convergence deadline exceeded.",
+      data: { timeoutMs: 1 },
+    });
+    assert.notEqual(status.cleanup, null);
+    await waitFor("the expired bootstrap's revision cleanup", async () => {
+      const [row] = await cleanupRow();
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    assert.ok(stopped.includes(candidate.id));
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
   },
 );
 
