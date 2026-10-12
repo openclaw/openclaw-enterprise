@@ -11,6 +11,21 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: repository credential images follow the control-plane image rule
+
+**What breaks.** The chart (since #2221) and now profile preflight refuse a
+`repositoryCredentials.image` or `repository.image` that does not start with a
+letter or digit or that holds a character other than letters, digits, `.`,
+`_`, `:`, `/` or `-` before the `@sha256:` digest, as for the controller image.
+
+**Who is affected.** Hand-written values or profile inputs with such a
+reference. Registries do not serve such names.
+
+**How to tell.** Rendering fails with `repositoryCredentials.image must be an
+approved immutable SHA-256 image reference`; preflight names `repository.image`.
+
+**Steps.** Use the image's registry reference with its digest.
+
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 
 **What breaks.**

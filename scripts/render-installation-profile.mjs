@@ -39,8 +39,9 @@ const secretKeyRule = {
   description: "a Kubernetes Secret key of at most 253 characters",
 };
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
-// The controller reference also feeds prepare-bootstrap-volume and the chart.
-const controllerDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
+// The chart's rule for control-plane images: the controller (which also feeds
+// prepare-bootstrap-volume) and repository credentials.
+const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
 function isLiteralIpv4ProxyUrl(value) {
@@ -1314,7 +1315,7 @@ function buildRendered(profile, parsed, diagnostics) {
     description: NAME_RULE,
   });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
-    pattern: controllerDigestImage,
+    pattern: controlPlaneDigestImage,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
@@ -1834,7 +1835,7 @@ function buildRendered(profile, parsed, diagnostics) {
     values.repositoryCredentials = {
       enabled: true,
       image: asString(repository, ["repository", "image"], diagnostics, {
-        pattern: digestImage,
+        pattern: controlPlaneDigestImage,
         description: "an immutable image reference with a SHA-256 digest",
       }),
       // Installation startup checks a GitHub Backend ID with isBackendId, then bounds it to
