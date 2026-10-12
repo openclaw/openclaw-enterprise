@@ -895,15 +895,15 @@ test(
     const namespace = await initial.bootstrapNamespace();
     const repoDriver = new GitHubRepoDriver(
       {
-        id: "provisioning-topology-repositories",
+        id: "provisioning-repositories",
         client: new UnixRepositoryCredentialControlClient({
           controlSocket: "/unused/provisioning/control.sock",
         }),
-        drivers: { repo: "provisioning-topology-repo" },
+        drivers: { repo: "provisioning-repo" },
       },
       {
         version: 1,
-        backendId: "provisioning-topology-repositories",
+        backendId: "provisioning-repositories",
         providerInstanceId: "provisioning-github",
         appId: "123",
         githubInstallationId: "456",
@@ -956,11 +956,15 @@ test(
       return row.progress.error === undefined ? undefined : row;
     });
     await fixture.stopWorker();
+    // The status keeps the fixed text; retry answers Agent create's 409.
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    });
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
     const message =
       "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
-    assert.equal(failed.status, "failed");
-    assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message });
-    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
     const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
     assert.equal(retried.status, 409, JSON.stringify(retried.body));
     assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
