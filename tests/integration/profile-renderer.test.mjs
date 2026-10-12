@@ -317,6 +317,34 @@ test("an invalid explicit profile revokes prior outputs without falling back to 
     [undefined, /unavailable or invalid JSON/],
     ["{", /unavailable or invalid JSON/],
     [JSON.stringify({ name: "openclaw" }), /must declare matching name/],
+    [JSON.stringify({ name: "codex" }), /profile.installation must be an object/],
+    [JSON.stringify([]), /must declare matching name/],
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: {
+          drivers: { plugin: { id: "codex-plugin", configuration: [] } },
+        },
+      }),
+      /profile.installation.drivers.plugin.configuration must be an object/,
+    ],
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: { drivers: { plugin: { id: "uninstalled-plugin" } } },
+      }),
+      /must select occ-plugin or codex-plugin/,
+    ],
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: {
+          drivers: { plugin: { id: "codex-plugin" } },
+          presets: { includeDefaults: false },
+        },
+      }),
+      /profile.installation.presets is not supported/,
+    ],
   ]) {
     render("codex", codexInput(), directory);
     if (contents !== undefined) {

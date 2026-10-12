@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-10
-last_updated_session: authoring-run/3bda898e-2a6d-44ac-adf6-cd00cf0033c9
+updated: 2026-10-12
+last_updated_session: authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1
 ---
 
 # Agent Presets flow
@@ -150,14 +150,12 @@ path records mutations and denials without template or variable contents.
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
 lists only readable Presets (the list requires Namespace read), then reads the
-selected resource once. It sorts the readable list by name (case-insensitive).
+selected resource once. It sorts by case-insensitive locale order, then exact name.
 **Start with default Preset** prefers its `default-codex` ID, otherwise the first
-listed ID, through that same exact-resource read. Variable-free templates apply
-immediately; templates with variables retain the chooser and its shortcut origin
-when restored. Empty lists or failed list/read requests cannot open a hidden
-hardcoded starter. Other readable Presets remain selectable. The separate **Start without Preset** action opens
-the ordinary form without reading a Namespace Preset; it does not automatically
-replace a denied selection. Normal creation authorization still applies.
+listed ID, through that same exact-resource read. Variable-free templates apply immediately; others retain the chooser and shortcut
+origin when restored. Empty lists or failed list/read requests cannot open a hidden
+hardcoded starter. **Start without Preset** opens the ordinary form without reading a Preset;
+it does not replace a denied selection. Creation authorization still applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -290,6 +288,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-12 11:23: Document readable shortcut selection and exact-name tie-breaking. (authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1 - b195e54e9)
 
 - 2026-10-10 22:21: Choose a readable custom Preset when default-codex is absent; retain exact-resource authorization and independent manual setup. (authoring-run/3bda898e-2a6d-44ac-adf6-cd00cf0033c9 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 

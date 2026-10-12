@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-10
-last_updated_session: authoring-run/f39c7c2c-32e4-4409-8333-c018f226985c
+updated: 2026-10-12
+last_updated_session: authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1
 ---
 
 # Installation Profile Rendering Flow
@@ -33,7 +33,7 @@ graph TD
   C -->|No| X["Exit before reading input"]
   C -->|Yes| R["Clear prior generated files and preflight"]
   R --> D["Load selected or bundled profile and input JSON"]
-  D -->|Unreadable or mismatched| Y["Exit without rendered files or preflight"]
+  D -->|Unreadable or invalid| Y["Exit without rendered files or preflight"]
   D -->|Valid| E["Reject unsupported sections and fields"]
   E --> F["Validate consumed image, CIDR, proxy, label, and Backend inputs"]
   F --> G{"Any diagnostics errors?"}
@@ -64,9 +64,12 @@ malformed input cannot leave deployable files or an old success report behind.
 
 `scripts/render-installation-profile.mjs:readProfile`
 
-The renderer reads `--profile-file` or `deploy/profiles/<profile>.json`, resolving
-relative paths from the working directory. It checks that `name` matches
-`--profile`; loading failures never fall back to the bundled definition.
+The renderer reads the selected path relative to the working directory,
+or the bundled `deploy/profiles/<profile>.json` beside the repository source. It requires a matching `name`, descriptive strings,
+and a bundled PluginDriver with optional configuration object; unknown fields
+fail. Driver options are validated at startup. Failures never fall back.
+`recommendedPreset` remains metadata; the [Preset flow](agent-presets.md) owns
+Console selection.
 
 The trusted profile selects the PluginDriver. Site inputs supply infrastructure
 settings. Credential diagnostics follow that Driver's catalog: Codex hosted
@@ -280,6 +283,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 11:23: Document trusted profile validation and custom-only Preset seeding through startup. (authoring-run/81414043-12ab-41e3-aaa8-aaec0e8ca0e1 - b195e54e9)
 
 - 2026-10-10 22:12: Added explicit profile-file selection, configurable bundled Preset seeding, and catalog-specific credential diagnostics. (authoring-run/f39c7c2c-32e4-4409-8333-c018f226985c - 80725162a946f80652b939a32a57ee4e922eeb5c)
 

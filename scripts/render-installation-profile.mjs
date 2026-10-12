@@ -143,15 +143,39 @@ async function readProfile(name, profileFile) {
     `profile ${name}`,
     diagnostics,
   );
-  if (diagnostics.errors.length > 0) {
-    fail(diagnostics.errors.join("\n"));
-  }
   if (profile.name !== name) {
     fail(`profile ${name} must declare matching name.`);
   }
-  if (profile.name === "default") {
-    fail("default is not an installation profile.");
+  closed(
+    profile,
+    `profile ${name}`,
+    ["name", "description", "recommendedPreset", "agentHarness", "pluginSelection", "installation"],
+    diagnostics,
+  );
+  for (const key of ["description", "recommendedPreset", "agentHarness", "pluginSelection"]) {
+    asString(profile, [`profile ${name}`, key], diagnostics);
   }
+  const installation = record(profile.installation, "profile.installation", diagnostics);
+  closed(installation, "profile.installation", ["drivers"], diagnostics);
+  const drivers = record(installation.drivers, "profile.installation.drivers", diagnostics);
+  closed(drivers, "profile.installation.drivers", ["plugin"], diagnostics);
+  const plugin = record(drivers.plugin, "profile.installation.drivers.plugin", diagnostics);
+  closed(plugin, "profile.installation.drivers.plugin", ["id", "configuration"], diagnostics);
+  if (plugin.id !== "occ-plugin" && plugin.id !== "codex-plugin") {
+    diagnostics.errors.push(
+      "profile.installation.drivers.plugin.id must select occ-plugin or codex-plugin.",
+    );
+  }
+  if (diagnostics.errors.length > 0) {
+    fail(diagnostics.errors.join("\n"));
+  }
+  if (plugin.configuration !== undefined) {
+    record(plugin.configuration, "profile.installation.drivers.plugin.configuration", diagnostics);
+  }
+  if (diagnostics.errors.length > 0) {
+    fail(diagnostics.errors.join("\n"));
+  }
+
   return profile;
 }
 

@@ -435,9 +435,13 @@ export function createPresetFields(context, apply) {
       if (!context.isCurrent() || !section.isConnected) {
         return;
       }
-      const readablePresets = presets.toSorted((left, right) =>
-        left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
-      );
+      const readablePresets = presets.toSorted((left, right) => {
+        const byName = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+        if (byName !== 0) {
+          return byName;
+        }
+        return left.name < right.name ? -1 : 1;
+      });
       selector.append(
         ...readablePresets.map((preset) => element("option", { value: preset.id }, preset.name)),
       );
