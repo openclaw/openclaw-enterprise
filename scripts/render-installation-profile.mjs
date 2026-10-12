@@ -1963,19 +1963,19 @@ function buildRendered(profile, parsed, diagnostics) {
       );
     }
   }
+  if (
+    profile.installation.drivers.plugin.id === "codex-plugin" &&
+    (profile.installation.drivers.plugin.configuration?.catalogSource ?? "hosted") === "hosted"
+  ) {
+    diagnostics.prerequisites.push(
+      "Hosted plugin discovery requires a PAT supplied later through a Namespace Secret or the Console; the renderer does not create or verify that credential.",
+    );
+  }
   if (profile.name === "codex") {
     diagnostics.prerequisites.push(
       "Configured Codex seccomp profile installed and verified on every node selected by runtime.nodeSelector.",
       "Codex runtime credentials configured per Agent; the renderer does not create or verify model credentials.",
     );
-    if (
-      profile.installation.drivers.plugin.id === "codex-plugin" &&
-      (profile.installation.drivers.plugin.configuration?.catalogSource ?? "hosted") === "hosted"
-    ) {
-      diagnostics.prerequisites.push(
-        "Hosted plugin discovery requires a PAT supplied later through a Namespace Secret or the Console; the renderer does not create or verify that credential.",
-      );
-    }
     if (Object.keys(managedServiceAccounts).length > 0) {
       diagnostics.prerequisites.push(
         "ChatGPT service-account app connections configured outside OCE before Agents select a managed ServiceAccount as their codex_pat source.",

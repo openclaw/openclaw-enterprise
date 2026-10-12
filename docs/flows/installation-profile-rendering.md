@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-12
-last_updated_session: authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247
+last_updated_session: authoring-run/d5a03f17-87b8-4652-bfd0-e703b8e20eb7
 ---
 
 # Installation Profile Rendering Flow
@@ -73,9 +73,8 @@ Failures never fall back.
 Console selection.
 
 The trusted profile selects the PluginDriver. Site inputs supply infrastructure
-settings. Credential diagnostics follow that Driver's catalog: Codex hosted
-discovery needs a PAT; curated discovery does not. Runtime credentials remain
-per Agent.
+settings. Hosted `codex-plugin` discovery needs a PAT under either profile
+family; curated discovery does not. Runtime credentials remain per Agent.
 
 ### 3. Validate every supplied input
 
@@ -278,6 +277,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 22:38: Derive hosted catalog prerequisites from the selected PluginDriver under either profile family. (authoring-run/d5a03f17-87b8-4652-bfd0-e703b8e20eb7 - 2f94a9ef472f4f7a2168f08df0e478ea7a4eb67b)
 
 - 2026-10-12 15:28: Integrate upstream b195e54e9 while retaining the custom profile and readable starter contracts. (authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247 - 85561c4fc4666805b187d0a554c872938eb9b048)
 

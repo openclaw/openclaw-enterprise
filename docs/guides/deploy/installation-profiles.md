@@ -393,9 +393,9 @@ the install as ready:
   proxy authorizes Slack hostnames, so connectivity survives Slack DNS rotation.
   For an external proxy, omit `managedSlackProxy` and provide literal IPv4
   `runtimeProxyUrl` and `directoryProxyUrl` inputs.
-- For the stock Codex hosted catalog, a discovery PAT supplied through a
-  same-Namespace Secret or the Console. A curated catalog needs no discovery
-  credential. Configure runtime credentials separately for each Agent.
+- For hosted `codex-plugin` discovery under either profile family, a PAT supplied
+  through a same-Namespace Secret or the Console. Curated discovery needs no
+  credential. Configure runtime credentials per Agent.
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

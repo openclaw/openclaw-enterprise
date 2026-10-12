@@ -292,14 +292,17 @@ test("an explicit profile selects the startup PluginDriver and its credential di
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const profileFile = join(directory, "selected-profile.json");
-  for (const [name, configuration] of [
-    ["openclaw", undefined],
-    ["codex", undefined],
-    ["codex", { catalogSource: "openai-curated" }],
+  for (const [name, pluginId, configuration] of [
+    ["openclaw", "occ-plugin", undefined],
+    ["codex", "codex-plugin", undefined],
+    ["codex", "codex-plugin", { catalogSource: "openai-curated" }],
+    ["openclaw", "codex-plugin", { catalogSource: "hosted" }],
+    ["openclaw", "codex-plugin", { catalogSource: "openai-curated" }],
   ]) {
     const profile = JSON.parse(
       readFileSync(join(repository, `deploy/profiles/${name}.json`), "utf8"),
     );
+    profile.installation.drivers.plugin.id = pluginId;
     if (configuration === undefined) {
       delete profile.installation.drivers.plugin.configuration;
     } else {
@@ -307,8 +310,8 @@ test("an explicit profile selects the startup PluginDriver and its credential di
     }
     writeFileSync(profileFile, JSON.stringify(profile));
 
-    // An optional profile configuration must reach real startup as an object; Driver defaults
-    // still determine whether catalog discovery requires a credential.
+    // Profile families select runtime settings; the selected PluginDriver independently
+    // determines catalog credentials, including an OpenClaw family with hosted Codex discovery.
     const output = render(
       name,
       name === "codex" ? codexInput() : baseInput(),
@@ -320,6 +323,7 @@ test("an explicit profile selects the startup PluginDriver and its credential di
       mode: "production",
       environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
     });
+    assert.equal(runtime.installation.drivers.plugin.id, pluginId);
     assert.deepEqual(runtime.installation.drivers.plugin.configuration, configuration ?? {});
     const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join(
       "\n",
@@ -327,13 +331,13 @@ test("an explicit profile selects the startup PluginDriver and its credential di
     if (name === "codex") {
       assert.match(diagnostics, /runtime credentials.*Agent/);
       assert.match(diagnostics, /seccomp profile installed/);
-      if (configuration === undefined) {
-        assert.match(diagnostics, /Hosted plugin discovery.*PAT/);
-      } else {
-        assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
-      }
     } else {
-      assert.doesNotMatch(diagnostics, /Hosted plugin discovery|seccomp profile installed/);
+      assert.doesNotMatch(diagnostics, /runtime credentials.*Agent|seccomp profile installed/);
+    }
+    if (pluginId === "codex-plugin" && configuration?.catalogSource !== "openai-curated") {
+      assert.match(diagnostics, /Hosted plugin discovery.*PAT/);
+    } else {
+      assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
     }
   }
 });
