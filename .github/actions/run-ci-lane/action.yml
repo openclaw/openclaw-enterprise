@@ -150,7 +150,7 @@ runs:
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
     - name: Install trusted browser certificate tooling
-      if: inputs.lane == 'qa-matrix'
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d'
       shell: bash
       run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libnss3-tools
     - name: Run lane

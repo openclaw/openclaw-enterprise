@@ -601,6 +601,8 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     "Build Go CLI for development installation proof",
     "Install browser dependencies",
     "Enable Kubernetes bridge packet filtering",
+    // certutil imports the printed CA files into the Keycloak case's browser.
+    "Install trusted browser certificate tooling",
   ]) {
     const step = action.runs.steps.find((step) => step.name === name);
     assert.equal(evaluate(step.if), true, `${name} must run for this lane`);
@@ -612,12 +614,8 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   );
   assert.ok(timeout >= 7_800_000, "six sequential cases need at least 130 minutes");
   assert.ok(job["timeout-minutes"] * 60_000 > timeout, "job must also allow setup and cleanup");
-  const secretSteps = action.runs.steps.filter(({ name }) =>
-    ["Expose image cache credentials", "Install trusted browser certificate tooling"].includes(
-      name,
-    ),
+  const secretStep = action.runs.steps.find(
+    ({ name }) => name === "Expose image cache credentials",
   );
-  for (const step of secretSteps) {
-    assert.equal(evaluate(step.if), false);
-  }
+  assert.equal(evaluate(secretStep.if), false);
 });

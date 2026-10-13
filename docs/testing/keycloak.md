@@ -156,5 +156,7 @@ after the OIDC upgrade, and fresh login with a changed password
 after a Keycloak Pod restart, and `occ dev down`. The failure case refuses the
 second Helm command and first owned cluster deletion to verify rollback and
 retained state, then retries real cleanup. Failed cleanup preserves that state.
-Browser DNS mappings and certificate pins are process-local; this automation does
-not verify a human browser's CA import or manual hosts-file setup.
+The browser follows the printed steps: it trusts the two printed CA files
+through a fresh NSS database (`certutil`) under a private `HOME`, resolves the
+printed hosts line with a process-local resolver rule, and passes no
+certificate-error bypass. It does not edit the host's `/etc/hosts`.

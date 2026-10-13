@@ -57,8 +57,9 @@ The `dev-up-k3d` lane selects all six real local installation cases and fails
 on skips. Install Node.js 24 or newer, the repository-pinned pnpm, the Go
 version from `go.mod`, Docker, k3d, kubectl, and Helm. Then build the CLI as
 described in [Local Kubernetes installation](kubernetes.md#local-kubernetes-installation),
-and prepare Playwright Chromium for the Keycloak cases. Those cases also require
-exclusive, bindable loopback port 443 and a host that supports the Chromium sandbox.
+and prepare Playwright Chromium and `certutil` (`libnss3-tools`) for the Keycloak
+cases. Those cases also require exclusive, bindable loopback port 443 and a host
+that supports the Chromium sandbox.
 The lane creates its own disposable clusters. An explicit credential-free
 [hosted dispatch](#run-the-hosted-local-installation-lane) can qualify a reviewed
 branch. For local execution, use a fresh results directory:

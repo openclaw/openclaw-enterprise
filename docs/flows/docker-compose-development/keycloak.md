@@ -107,8 +107,8 @@ Run the [real launcher cases](../../testing/keycloak.md#local-launcher-coverage)
 only with their owned disposable fixture. They cover browser login, recovery,
 realm persistence, second-pass failure and cleanup. After the OIDC upgrade, API
 probes must reach Keycloak and reject unrelated HTTPS between successful
-listener controls; automated certificate pins
-do not verify a human browser's CA import. The realm-hash warning runs only at
+listener controls. The browser imports the two printed CA files into a fresh
+NSS database and maps only the printed hosts line. The realm-hash warning runs only at
 installation. A retained-state error names the directory needed by `occ dev down`;
 repair access to its recorded engine and cluster before retrying cleanup.
 

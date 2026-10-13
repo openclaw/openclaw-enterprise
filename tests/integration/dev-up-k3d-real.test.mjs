@@ -761,12 +761,24 @@ test(
     timeout: 1_800_000,
   },
   async (t) => {
-    const { keycloakLauncher, publishedJSON, verifyKeycloakAPIEgress } =
-      await import("../helpers/dev-up-keycloak.mjs");
-    const { createHash, X509Certificate } = await import("node:crypto");
+    const {
+      keycloakInstructions,
+      keycloakLauncher,
+      launchTrustingBrowser,
+      publishedJSON,
+      verifyKeycloakAPIEgress,
+    } = await import("../helpers/dev-up-keycloak.mjs");
     const { chromium } = await import("playwright");
     const fixture = await keycloakLauncher(t);
-    await fixture.dev("up");
+    const up = await fixture.dev("up");
+    const instructions = keycloakInstructions(up.stdout);
+    const origin = `https://${fixture.consoleHost}:${fixture.browserPort}`;
+    assert.equal(instructions.consoleUrl, `${origin}/console/`);
+    assert.deepEqual(instructions.caFiles, [
+      join(fixture.stateDirectory, "browser-ca.crt"),
+      join(fixture.stateDirectory, "gateway-ca.crt"),
+    ]);
+    assert.deepEqual(instructions.hosts, [{ address: "127.0.0.1", host: fixture.keycloakHost }]);
     const state = JSON.parse(await fixture.read("state.json"));
     assert.equal(state.signIn, "keycloak");
     const values = JSON.parse(await fixture.read("helm-values.json"));
@@ -797,30 +809,10 @@ test(
     assert.equal(providers.data.oidc, true);
     assert.equal(providers.data.password, false);
 
-    // Trust only this fixture's issued leaves. Chromium retains its sandbox;
-    // host mapping is scoped to this process, with no global DNS/CA mutation.
-    const mirror = JSON.parse(await fixture.read("keycloak-tls.json"));
-    const certificates = [
-      await fixture.read("browser-tls.crt"),
-      Buffer.from(mirror.data["tls.crt"], "base64"),
-    ];
-    const pins = certificates.map((cert) =>
-      createHash("sha256")
-        .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
-        .digest("base64"),
-    );
-    const browser = await chromium.launch({
-      headless: true,
-      chromiumSandbox: true,
-      args: [
-        `--ignore-certificate-errors-spki-list=${pins.join(",")}`,
-        `--host-resolver-rules=MAP ${fixture.consoleHost} 127.0.0.1, MAP ${fixture.keycloakHost} 127.0.0.1`,
-      ],
-      ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
-        ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
-        : {}),
-    });
-    const origin = `https://${fixture.consoleHost}:${fixture.browserPort}`;
+    // Follow the printed steps: import the two CA files into a fresh NSS
+    // database and resolve only the printed hosts line. The Console host is a
+    // *.localhost name, which browsers resolve to loopback themselves.
+    const browser = await launchTrustingBrowser(chromium, fixture.root, instructions);
     const api = (page, path, body) =>
       page.evaluate(
         async ({ path, body }) => {
