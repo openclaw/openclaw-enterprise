@@ -80,9 +80,12 @@ function runPrepare(args, env = {}) {
 }
 
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
-// and retry backoff. Two cases per CPU run at once; with four copies of this file on
-// one CPU, four per CPU still passed, while all at once missed the 3 s command timeouts.
-describe("CI preparation", { concurrency: 2 * availableParallelism() }, () => {
+// and retry backoff, so a few run at once: two per CPU, at most four. With four copies
+// of this file on one CPU, four at once still passed, while all at once missed the 3 s
+// command timeouts. More than four only takes CPU from the lane's other files.
+const concurrency = Math.min(4, 2 * availableParallelism());
+
+describe("CI preparation", { concurrency }, () => {
   for (const { scenario, error } of [
     { scenario: "success" },
     { scenario: "podman-success" },
