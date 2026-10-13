@@ -21,7 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
-import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
+import { ANSI_COLOR, captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
@@ -1235,8 +1235,12 @@ async function ensureK3dCluster(statePath, state) {
       `127.0.0.1:${apiPort}`,
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
-      "--lb-config-override",
-      `settings.workerConnections=${k3dLoadBalancerWorkerConnections}`,
+      // One server needs no load balancer: agents join k3d-<cluster>-server-0
+      // directly, so k3d's serverlb (nginx) only proxied the host's API port.
+      // Its entrypoint sleeps 6 s before nginx starts, and k3d waited for it on
+      // every create. Without it, server-0 publishes the API port itself, and
+      // the nginx connection limit behind finding 682 is gone too.
+      "--no-lb",
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
       ...(crossNodePluginStatus ? ["--no-rollback"] : []),
@@ -1323,14 +1327,6 @@ async function ensureK3dCluster(statePath, state) {
   return resource;
 }
 
-// k3d's serverlb (nginx) in front of the API server allows 1024 connections per
-// worker, and each proxied API connection counts twice. The connections appear to
-// land on one worker: drops started once the serverlb held about 1,024. The k3d
-// Fixture and Configuration lane peaked at 1,050-1,080 on the 32vcpu runner
-// (530-760 on ubuntu-22.04), and kubectl reported "Unable to connect to the
-// server: EOF" (finding 682). With this limit it peaks at about 2,000.
-const k3dLoadBalancerWorkerConnections = 8192;
-
 const k3dNodeRegistrationTimeoutMs = 120_000;
 
 // Wait until every node this cluster owns is registered, so the Ready wait
@@ -1388,17 +1384,15 @@ function forwardK3dOutput(lane, child) {
     stream?.on("data", (chunk) => {
       const lines = (pending + chunk.toString()).split(/\r?\n/);
       pending = lines.pop();
-      for (const line of lines) {
-        if (line.trim()) {
-          progress(lane, `k3d: ${line.trimEnd().slice(0, 400)}`);
-        }
-      }
+      lines.forEach(print);
     });
-    stream?.on("end", () => {
-      if (pending.trim()) {
-        progress(lane, `k3d: ${pending.trimEnd().slice(0, 400)}`);
-      }
-    });
+    stream?.on("end", () => print(pending));
+  }
+  function print(line) {
+    const text = line.replace(ANSI_COLOR, "").trimEnd();
+    if (text.trim()) {
+      progress(lane, `k3d: ${text.slice(0, 400)}`);
+    }
   }
 }
 

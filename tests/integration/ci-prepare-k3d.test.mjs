@@ -195,7 +195,6 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       /^INFO\[0002\] Starting node 'k3d-openclaw-k8s-\S+-server-0'$/,
     );
     assert.match(evidence.containers[0].processes.value, /kubectl uncordon/);
-    assert.equal(evidence.loadBalancer.state.value.status, "created");
 
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
