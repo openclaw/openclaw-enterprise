@@ -445,9 +445,28 @@ export async function createQaInstallation(
               });
             }
           }
+          // A failed startup model check names the provider's HTTP status and known
+          // error code in its sanitized probe log record; CI shows them with the error.
+          let probe = "";
+          const component = value.error?.data?.runtimeFailure?.component;
+          if (value.error?.code === "RUNTIME_MODEL_PROBE_FAILED" && component) {
+            try {
+              const logs = await f.api(
+                "GET",
+                base +
+                  `/deployments/${agent.revision.id}/runtime/logs?source=${component}&minLevel=error`,
+              );
+              const record = logs.records.findLast(({ message }) =>
+                message?.endsWith(".model_probe"),
+              );
+              probe = record ? ` probe log: ${JSON.stringify(record.fields ?? {})}` : "";
+            } catch {
+              probe = " probe log: unavailable";
+            }
+          }
           assert.ok(
             !["failed", "cancelled"].includes(value.status),
-            `Agent deployment ${value.status}: ${JSON.stringify(value.error)}`,
+            `Agent deployment ${value.status}: ${JSON.stringify(value.error)}${probe}`,
           );
           return value.status === "succeeded" && value;
         },

@@ -3498,7 +3498,7 @@ function isRecoveredNativeStreamError(event) {
 // Requests") as a fatal error event or failed turn; the probe names it rate_limit.
 function codexRateLimited(message) {
   return typeof message === "string" &&
-    /too many requests|\bstatus:? 429\b|rate[ _-]?limit|usage[ _-]?limit|insufficient_quota|exceeded your current quota|(?<!disk )quota exceeded/i.test(message);
+    /too many requests|\bstatus:? 429\b|rate[ _-]?limit|usage[ _-]?limit|spend cap|insufficient_quota|exceeded your current quota|(?<!disk )quota exceeded/i.test(message);
 }
 function codexProbeStatusFailure(message, detail) {
   return { ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail), ...providerErrorSummary(message) };

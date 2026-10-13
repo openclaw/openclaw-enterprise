@@ -3521,6 +3521,20 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       probeStatus: 1,
     },
     {
+      // Native text when a workspace owner's spend cap blocks the account.
+      name: "workspace spend cap is a rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+      events: [
+        started,
+        {
+          type: "error",
+          message:
+            "You've reached the spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+        },
+      ],
+      probeStatus: 1,
+    },
+    {
       name: "local disk quota is not a provider rate limit",
       cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [started, { type: "error", message: "failed to write session: Disk quota exceeded" }],
