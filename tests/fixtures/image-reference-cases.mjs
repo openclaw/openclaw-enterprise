@@ -33,6 +33,9 @@ export const imageReferenceCases = [
   // The 255-character limit covers the repository path, not the registry host.
   ["path of 255 characters", `registry.example/${"a".repeat(255)}${digest}`],
   ["Docker Hub path of 255 characters with library/", `${"a".repeat(247)}${digest}`],
+  // A dotted first component that does not parse as a host counts toward the path.
+  ["unparsable dotted host in a path of 255 characters", `my_reg.io/${"a".repeat(245)}${digest}`],
+  ["explicit Docker Hub path of 255 characters", `docker.io/${"a".repeat(247)}${digest}`],
   ["SHA-512 digest", `registry.example/repo@sha512:${"a".repeat(128)}`],
   ["tag without a digest", "registry.example/repo:1.0"],
   ["IPv6 registry host without a digest", "[fd00::1]:5000/repo:1.0"],
@@ -79,6 +82,16 @@ export const imageReferenceCases = [
   ["tag starting with a dot", `registry.example/repo:.tag${digest}`, "invalid"],
   ["path of 256 characters", `registry.example/${"a".repeat(256)}${digest}`, "invalid"],
   ["Docker Hub path of 256 characters with library/", `${"a".repeat(248)}${digest}`, "invalid"],
+  [
+    "unparsable dotted host in a path of 256 characters",
+    `my_reg.io/${"a".repeat(246)}${digest}`,
+    "invalid",
+  ],
+  [
+    "explicit Docker Hub path of 256 characters",
+    `docker.io/${"a".repeat(248)}${digest}`,
+    "invalid",
+  ],
   ["letter in the port", `registry.example:5000A/repo${digest}`, "invalid"],
   ["@ in the path", `registry.example/re@po${digest}`, "invalid"],
   ["second @ before the digest", `registry.example/repo@extra${digest}`, "invalid"],

@@ -73,7 +73,7 @@ function workerStartupFailureCode(error) {
     return "OBSERVABILITY_URL_INVALID";
   }
   if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase)/.test(
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
       message,
     )
   ) {

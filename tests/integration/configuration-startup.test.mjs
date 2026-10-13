@@ -178,21 +178,24 @@ test("API and worker refuse a bad observability host or runtime image before ope
       assert.equal(diagnostic.message, undefined);
     }
   }
-  // Kubernetes refuses to pull an image whose repository path has an uppercase letter.
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path.
   configuration.observability = { url: "http://192.168.1.1" };
   const images = configuration.drivers.compute.configuration.images;
   for (const role of ["gateway", "agent"]) {
     const original = images[role];
-    images[role] = original.replace(
-      /^([^/]*\/)(.)/,
-      (_, host, first) => host + first.toUpperCase(),
-    );
-    assert.notEqual(images[role], original);
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    for (const [script, event, env] of processes) {
-      const diagnostic = boot(script, event, env);
-      assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
-      assert.equal(diagnostic.message, undefined);
+    for (const refused of [
+      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
+      original.replace(/^([^/]*\/)/, "$1re..po/"),
+    ]) {
+      assert.notEqual(refused, original);
+      images[role] = refused;
+      await writeFile(path, JSON.stringify(configuration), "utf8");
+      for (const [script, event, env] of processes) {
+        const diagnostic = boot(script, event, env);
+        assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
+        assert.equal(diagnostic.message, undefined);
+      }
     }
     images[role] = original;
   }

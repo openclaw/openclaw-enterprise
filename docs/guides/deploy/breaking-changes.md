@@ -36,8 +36,8 @@ those spellings.
 **How to tell.** Preflight, the chart and the tools report `... repository path
 must be lowercase`, the field's image reference message, or the URL field's
 absolute-URL message. API startup logs
-`AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` or
-`OBSERVABILITY_URL_INVALID`.
+`AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` for
+any refused Gateway or Agent image, or `OBSERVABILITY_URL_INVALID`.
 
 **Steps.** Fix the image reference (lowercase its repository path), or delete
 the `@`, then render or restart again.
