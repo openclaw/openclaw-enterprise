@@ -55,10 +55,12 @@ function createConfigurationBackend() {
 // one administrator and one session, and one app per Driver shape: with or without a Compute
 // Driver and a Configuration Driver. Cases run one at a time. Each gets a new Namespace and its
 // own Drivers, audit sink and IAM grants: the app's Drivers and sink forward to the running
-// case's. A forwarding Driver keeps one identity, because OCC rechecks it on every selection.
-const current = {};
+// case's. A forwarding Driver keeps one identity, because OCC rechecks it on every selection,
+// so a case Driver's own id and implementation never reach OCC.
+const running = {};
 const apps = new Map();
 let administrator;
+let session;
 
 function forwarder(identity, target) {
   return new Proxy(identity, {
@@ -91,7 +93,7 @@ async function sharedApp(withCompute, withConfiguration) {
       restrictions: [],
     }),
   });
-  const auditSink = forwarder({}, () => current.auditSink);
+  const auditSink = forwarder({}, () => running.auditSink);
   let controller;
   const app = createControllerApp({
     createController(installation) {
@@ -111,7 +113,7 @@ async function sharedApp(withCompute, withConfiguration) {
               capability: "configuration",
               implementation: "integration-memory-substrate",
             },
-            () => current.configurationDriver,
+            () => running.configurationDriver,
           ),
         }
       : {}),
@@ -123,7 +125,7 @@ async function sharedApp(withCompute, withConfiguration) {
               capability: "compute",
               implementation: "integration-compute-substrate",
             },
-            () => current.computeDriver,
+            () => running.computeDriver,
           ),
         }
       : {}),
@@ -150,8 +152,8 @@ async function sharedApp(withCompute, withConfiguration) {
     });
   };
   grant();
-  authFixture.session ??= await signInToControllerApp(app, authFixture);
-  app.defaultSession = authFixture.session;
+  session ??= await signInToControllerApp(app, authFixture);
+  app.defaultSession = session;
   const installed = await request(app, "POST", "/installation/bootstrap", {
     body: { name: "Configuration integration" },
   });
@@ -167,7 +169,7 @@ async function fixture({
   computeDriver,
   auditSink = new InMemoryAuditSink(),
 } = {}) {
-  Object.assign(current, { configurationDriver, computeDriver, auditSink });
+  Object.assign(running, { configurationDriver, computeDriver, auditSink });
   const shape = `${computeDriver !== undefined}/${configurationDriver !== null}`;
   if (!apps.has(shape)) {
     apps.set(shape, sharedApp(computeDriver !== undefined, configurationDriver !== null));
@@ -1094,7 +1096,6 @@ test("Configuration HTTP routes reject foreign Namespace ownership and missing a
 test("Configuration authorization failures target the exact Configuration resource", async () => {
   const { namespace, ...context } = await fixture({
     permissions: [
-      { action: "administer", resourceKind: "installation" },
       { action: "create", resourceKind: "namespace" },
       { action: "create", resourceKind: "configuration" },
     ],
