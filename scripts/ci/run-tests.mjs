@@ -531,14 +531,19 @@ function withinLimit(step, limitMs) {
 
 // The file's timeout: the per-file limit, cut to what is left before the lane deadline, but
 // never under minStepMs. A file starts only with at least that much left (laneDeadlinePassed),
-// so the floor only absorbs the moments between that check and the start.
+// so the floor only absorbs the moments between that check and the start. A file started with a
+// second or two left can still be stopped during Node's startup; its timeout then says no test
+// was running.
 function fileTimeout() {
   const limitMs = testTimeoutMs();
   const deadline = laneDeadlineMs();
   if (deadline === undefined || deadline - Date.now() >= limitMs) {
     return { timeoutMs: limitMs, laneDeadline: false };
   }
-  return { timeoutMs: Math.max(minStepMs, deadline - Date.now()), laneDeadline: true };
+  return {
+    timeoutMs: Math.min(limitMs, Math.max(minStepMs, deadline - Date.now())),
+    laneDeadline: true,
+  };
 }
 
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs

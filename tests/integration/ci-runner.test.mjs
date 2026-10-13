@@ -2595,7 +2595,8 @@ test("a runner timeout while no test was running says so", async (t) => {
   });
 
   const result = run(root, laneArgs(root, "hook", statePath, resultsPath), {
-    CI_RUNNER_TEST_TIMEOUT_MS: "3000",
+    // Long enough for a loaded host to finish "passes" before the timeout; the hook outlasts it.
+    CI_RUNNER_TEST_TIMEOUT_MS: "8000",
   });
 
   assert.equal(result.status, 1, result.stderr);
@@ -2603,7 +2604,7 @@ test("a runner timeout while no test was running says so", async (t) => {
   const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
   assert.equal(
     timeout.message,
-    "selected file exceeded the runner timeout (3000 ms): tests/integration/hook.test.mjs; no test was running (stopped in a hook, teardown or top-level code)",
+    "selected file exceeded the runner timeout (8000 ms): tests/integration/hook.test.mjs; no test was running (stopped in a hook, teardown or top-level code)",
   );
 });
 
