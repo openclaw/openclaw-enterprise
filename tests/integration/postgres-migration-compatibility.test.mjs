@@ -9,7 +9,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
-import { match } from "ts-pattern";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
@@ -1991,33 +1990,16 @@ test(
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
         // Abort 0054 after its function was created, before the deferred trigger exists.
-        const rollbackTag = match(prefix)
-          .with(53, () => "CREATE TRIGGER")
-          .when(
-            (value) => value >= 50,
-            () => "GRANT",
-          )
-          .when(
-            (value) => value >= 41,
-            () => "ALTER TABLE",
-          )
-          .when(
-            (value) => value >= 38,
-            () => "CREATE FUNCTION",
-          )
-          .when(
-            (value) => value >= 36,
-            () => "CREATE INDEX",
-          )
-          .when(
-            (value) => value >= 31,
-            () => "ALTER TABLE",
-          )
-          .when(
-            (value) => value >= 27,
-            () => "CREATE FUNCTION",
-          )
-          .otherwise(() => "ALTER FUNCTION");
+        const rollbackTag = [
+          [53, "CREATE TRIGGER"],
+          [50, "GRANT"],
+          [41, "ALTER TABLE"],
+          [38, "CREATE FUNCTION"],
+          [36, "CREATE INDEX"],
+          [31, "ALTER TABLE"],
+          [27, "CREATE FUNCTION"],
+          [0, "ALTER FUNCTION"],
+        ].find(([minimum]) => prefix >= minimum)[1];
         await historyAdmin(
           db,
           db.name,
