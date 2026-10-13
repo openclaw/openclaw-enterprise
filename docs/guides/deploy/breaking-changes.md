@@ -116,7 +116,11 @@ Preset saved with one still reads but cannot launch: edit it. A later change
 refuses one in `proxy.proxyUrl`, a channel or channel account `proxy`, an MCP
 server `url`, and `env` proxy variables such as `HTTPS_PROXY` in any case; a
 `baseUrl` with an empty host (`https:///v1`, as an empty variable leaves it);
-and a number or boolean variable as the whole `baseUrl` or `api`.
+and a number or boolean variable as the whole `baseUrl` or `api`. A later
+change refuses a `baseUrl` without exactly `//` after `http:` or `https:`
+(`https:/v1`, `https:${HOST}`, `https:{{ vars.host }}`), and a user name or
+password in an MCP server's `env` proxy variables, Codex's network proxy URLs
+and speech provider `proxy` settings.
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
@@ -130,8 +134,9 @@ or `... must be an absolute http or https URL.`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
 list of model objects, or remove it. Remove the user name and password from
-the URL, or make the whole URL a `${NAME}` reference. Give a `baseUrl` its host,
-and use a string variable for a whole `baseUrl` or `api`.
+the URL, or make the whole URL a `${NAME}` reference. Give a `baseUrl` its host
+and write `//` after its scheme, and use a string variable for a whole `baseUrl`
+or `api`.
 
 ## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
 

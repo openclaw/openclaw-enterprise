@@ -63,6 +63,17 @@ const isRuntimeUrl = (value: unknown): boolean => {
   );
 };
 
+// Whether a baseUrl that holds an environment reference writes exactly two slashes after a literal
+// http(s) scheme, as `isRuntimeUrl` requires (finding 1259): `https:${HOST}/v1` is refused, though
+// the URL parser would read it filled. The runtime fills the reference before it parses the URL,
+// so the text after the slashes is its to check. `literals` is the text around the references
+// and any Preset variables.
+function writesSchemeSlashes(literals: readonly string[]): boolean {
+  const [first = ""] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
+  const scheme = /^[\0- ]*https?:/i.exec(first);
+  return scheme === null || /^[/\\]{2}(?![/\\])/.test(first.slice(scheme[0].length));
+}
+
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
 // for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
 // address (the whole bracketed address, whatever literal text surrounds the variable in it), or
@@ -290,13 +301,15 @@ function validateSettings(
   // provider's default endpoint; a model's baseUrl must be a nonempty URL.
   const unsetBaseUrl = provider && typeof baseUrl === "string" && baseUrl.trim() === "";
   if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl) {
-    // An environment reference is one more variable, so the text around it is checked as for a
-    // Preset variable (`https:${HOST}/v1` writes no slashes).
     const literals = unresolved([...path, "baseUrl"]);
     if (
-      literals === undefined && !environment(baseUrl)
-        ? !isRuntimeUrl(baseUrl)
-        : !fillsAsRuntimeUrl(splitEnvironmentReferences(literals ?? [String(baseUrl)], () => false))
+      environment(baseUrl)
+        ? !writesSchemeSlashes(
+            splitEnvironmentReferences(literals ?? [String(baseUrl)], () => false),
+          )
+        : literals === undefined
+          ? !isRuntimeUrl(baseUrl)
+          : !fillsAsRuntimeUrl(literals)
     ) {
       throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
     }

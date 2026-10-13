@@ -1736,7 +1736,18 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       ["baseUrl", { baseUrl: `https://user:${sentinel}@{{ vars.url }}/v1` }],
       ["baseUrl", { baseUrl: "https://{{ vars.header }}@{{ vars.url }}/v1" }],
       ["baseUrl", { baseUrl: `{{ vars.url }}://user:${sentinel}@{{ vars.api }}/v1` }],
-      ["baseUrl", { baseUrl: `https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1` }],
+      // A baseUrl needs literal slashes after its scheme (finding 1259); a proxy URL does not.
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: {
+              mode: "explicit-proxy",
+              url: `https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1`,
+            },
+          },
+        },
+      ],
       ["baseUrl", { baseUrl: `https://[{{ vars.url }}user:${sentinel}@models.test/]` }],
       [
         "models/0/baseUrl",
