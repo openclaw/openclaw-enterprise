@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-07
-last_updated_session: codex/01a05a69-3fbe-7441-9e6d-20394758cf94
+updated: 2026-10-10
+last_updated_session: authoring-run/b1416b0a-a6de-4fea-8edb-8ba8239a7003
 ---
 
 # Service API Keys Flow
@@ -25,6 +25,11 @@ identity lookup and authorization. A key fixes the identity's Installation and
 optional Namespace at issuance, but it does not snapshot or grant permissions.
 
 ## Entry Points
+
+- `occ service-key create` validates an explicitly supplied `--expires-in-days`
+  as 1–365 before opening the output file or requesting issuance. Omission keeps
+  the API’s 30-day default. The existing owner is
+  [`serviceKeyCommand`](../../internal/occcli/iam.go).
 
 - `POST /api/auth/service-keys`: a human session or Installation-scoped service
   key with current IAM `administer` on the bootstrapped Installation names an
@@ -112,8 +117,9 @@ changing IAM scope later does not widen an existing credential. PostgreSQL
 uses the official Drizzle adapter and the `occ.apikey` table. Key-based sessions
 and public plugin management routes are not enabled.
 
-The controller appends an issuance audit containing the resolved issuer and
-non-secret key/principal IDs, then returns `201` with the plaintext key once.
+The controller appends an issuance audit containing the resolved issuer, the
+principal ID, and the key's ID (`serviceKeyId`) and name (`serviceKeyName`), then
+returns `201` with the plaintext key once.
 There is no plaintext retrieval endpoint. If creation or audit persistence
 fails, the response is `503` with no credential. If creation already succeeded,
 the controller attempts deletion of the unreturned key; this cleanup is best
@@ -156,7 +162,10 @@ A denied decision records authorization evidence and returns `403`. Unavailable
 required dependencies fail closed with `503`. An allowed read returns the
 Namespace response through the existing OCC API envelope. Other resource
 operations retain their own OCC authorization and mutation-audit behavior;
-key admission does not bypass them.
+key admission does not bypass them. Admission keeps the verified key's ID, and
+every route audit event built for the request (change, audited read, or denial)
+records it as `details.actorServiceKeyId`. Events OCC appends for the work
+itself, such as `openclaw.agents.provision`, carry only the principal.
 
 ### 5. Delete the credential and record revocation
 
@@ -222,6 +231,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 03:27: Trace explicit CLI lifetime validation before key-file creation and issuance in the accompanying change. (authoring-run/b1416b0a-a6de-4fea-8edb-8ba8239a7003 - f92cf60b2ae4740a93bdd41e94e8f1c7fc92218f)
 
 - 2026-10-07: Namespace ServicePrincipals are created through the Namespace IAM policy API; `occ service-key` issues and revokes keys.
 

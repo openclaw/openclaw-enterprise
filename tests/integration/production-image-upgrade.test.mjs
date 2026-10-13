@@ -7,6 +7,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
+
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const upgradeScript = fileURLToPath(
@@ -453,5 +455,59 @@ test("production image upgrades refuse uppercase or wrong-length digests before 
         return true;
       },
     );
+  }
+});
+
+test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-locale-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const locale = await rangeWideningLocale();
+  if (!locale) {
+    t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");
+    return;
+  }
+  const options = { cwd: repository, env: { ...process.env, LANG: locale, LC_ALL: locale } };
+  const argumentsFor = ({
+    revision = "d".repeat(40),
+    timeout = "60",
+    controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
+  }) => [
+    "--kubeconfig",
+    join(directory, "kubeconfig"),
+    "--context",
+    "fixture",
+    "--namespace",
+    "openclaw-system",
+    "--release",
+    "oce",
+    "--values",
+    join(directory, "values"),
+    "--installation",
+    join(directory, "installation"),
+    "--source-revision",
+    revision,
+    "--evidence-dir",
+    join(directory, "evidence"),
+    "--timeout-seconds",
+    timeout,
+    "--controller-image",
+    controllerImage,
+  ];
+  for (const [overrides, message] of [
+    [{ revision: "é".repeat(40) }, /--source-revision must be a full lowercase Git commit SHA/u],
+    [{ timeout: "٣" }, /--timeout-seconds must be positive/u],
+    [
+      { controllerImage: `registry.example.invalid/contrôleur@sha256:${"a".repeat(64)}` },
+      /--controller-image must be an approved immutable SHA-256 image reference/u,
+    ],
+    [
+      { controllerImage: `registry.example.invalid/controller@sha256:${"é".repeat(64)}` },
+      /--controller-image must be an approved immutable SHA-256 image reference/u,
+    ],
+  ]) {
+    await assert.rejects(execute(upgradeScript, argumentsFor(overrides), options), (error) => {
+      assert.match(error.stderr, message);
+      return true;
+    });
   }
 });

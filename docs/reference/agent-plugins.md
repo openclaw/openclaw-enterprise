@@ -291,11 +291,15 @@ Codex maps `toolDefaults.reviewer` to the native app-wide reviewer. Native Codex
 has no per-tool reviewer setting, so explicit `tools.<toolId>.reviewer` values
 are rejected rather than applied to the whole app. Unsupported choices fail even if the tool is disabled
 or the value matches an inherited reviewer. Reviewer does not belong in
-`driverPolicy`.
+`driverPolicy`. Agent create, update, provisioning, and deploy answer `400` for an enabled
+`auto` reviewer unless the Agent's Configuration sets
+`plugins.entries.codex.config.appServer.approvalPolicy` to `on-request` or
+`on-failure`.
 
-For explicit Codex reviewers, startup checks effective reviewer settings, session
-approval, and managed model requirements, but not routing after later session or
-model changes. [Native limits](drivers/plugin-bundled.md#native-mappings-and-limits)
+The dedicated Codex app-server starts with the admitted Harness model. For explicit
+Codex reviewers, startup checks that model against managed requirements along with
+effective reviewer settings and session approval. These checks do not cover routing
+after later session or model changes. [Native limits](drivers/plugin-bundled.md#native-mappings-and-limits)
 lists the value mapping and exact checks.
 
 ### Codex-specific policy

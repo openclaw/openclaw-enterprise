@@ -125,7 +125,17 @@ The worker emits fixed operational event classes through the same logger:
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A provisioning plan that the Compute Driver refuses for a reason the caller
+  write. A pass that could not stop a refused candidate stays pending with code
+  `REFUSED_CANDIDATE_STOP_PENDING` and adds `refusal`, the refusal's code
+  (`CONVERGENCE_DEADLINE_EXCEEDED` once a lifted refusal outlived the deadline),
+  until the stop succeeds. A stopped Agent's stop or revision pass whose Gateway drain
+  yielded to other work stays pending with `AGENT_STOP_YIELDED` and runs again after it;
+  a deployment whose dedicated predecessor's drain yielded stays pending with
+  `PREDECESSOR_STOP_YIELDED`. Such a deployment that then fails (with the full wait), is
+  superseded or ends stopped first finishes that stop. A failed or superseded one adds
+  `predecessorStop`, the stop's `cause`, if it still fails; a stopped one retries it.
+  Only the work's first yield, then at most one a minute, is logged; these lines and the
+  work's next other line add `stopYields`, the yields this worker counted for it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
   `reason` when it gives one: bounded printable text that never carries another
   tenant's values. These fields stay in the local log; the Collector
@@ -137,7 +147,11 @@ The worker emits fixed operational event classes through the same logger:
   worker process ran; a restart starts them again. Maintenance, cleanup, and
   stop work carry no deployment timing.
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
-  credentials.
+  credentials. A deployment pass that cannot read its stored refusal adds the work
+  identity and `cause`, then leaves its claim to lease recovery.
+- `worker.pass-interrupted`: a graceful shutdown aborted the pass in flight, at
+  info level with `cause` `WorkerStopping`; another worker resumes the work once
+  its lease expires, unless that was its last attempt (`LEASE_EXPIRED`).
 - `worker.repository-cleanup-warning`: a repository cleanup that another
   pass cannot settle, at warn level, once per work item and `cause`. `cause` is
   `REPOSITORY_ATTEMPT_INVALIDATED` or the cleanup error code (for example
@@ -150,7 +164,8 @@ Startup failures write `startup-error`, `worker.startup-error`,
 `installation.bootstrap-failed`, or `migration.failed` and exit before serving
 or processing work. Log sanitization keeps only reviewed scalar fields and drops
 credentials, provider payloads, request objects, and unbounded error values. The
-worker does not expose an HTTP health endpoint.
+worker does not expose an HTTP health endpoint. A startup Installation with an
+invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`.
 
 ## Failures and diagnostics
 

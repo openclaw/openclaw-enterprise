@@ -49,6 +49,9 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   if (options.isUpgrade) {
     args.push("--is-upgrade");
   }
+  for (const file of options.valuesFiles ?? []) {
+    args.push("--values", file);
+  }
   for (const [key, value] of Object.entries({ ...productionValues, ...overrides })) {
     args.push("--set", `${key}=${value}`);
   }

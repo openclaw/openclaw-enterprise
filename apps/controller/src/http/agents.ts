@@ -44,6 +44,9 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     repositoryBindings: agent.repositoryBindings,
     repositoryAccess: agent.repositoryAccess,
     harnessAuth: agent.harnessAuth,
+    ...(agent.credentialSources === undefined || agent.credentialSources.length === 0
+      ? {}
+      : { credentialSources: agent.credentialSources }),
     activeRevisionId: agent.activeRevisionId,
     desiredRuntimeState: agent.desiredRuntimeState,
     status: agent.status,
@@ -106,6 +109,9 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
           },
         }),
     harnessAuth: harnessAuthBindingFromSnapshot(revision.harnessAuth),
+    ...(revision.credentialSources === undefined
+      ? {}
+      : { credentialSources: revision.credentialSources.map(({ sourceId }) => ({ sourceId })) }),
     createdAt: revision.createdAt,
   };
 }
@@ -207,7 +213,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const input = body as Omit<CreateAgentInput, "namespaceId">;
       validateWorkspaceSetup(input);
       const agent = await controller.transact(async (unit) => {
-        const created = await controller.createAgent(context.actorId, { ...input, namespaceId });
+        const created = await controller.createAgent(
+          context.actorId,
+          { ...input, namespaceId },
+          options.resolveHarness,
+        );
         await unit.audit.append(mutationEvent({ kind: "agent", id: created.id, namespaceId }));
         return clientAgent(created);
       });
@@ -286,11 +296,15 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     }) {
       const agentId = params.agentId!;
       const agent = await controller.transact(async (unit) => {
-        const updated = await controller.updateAgent(context.actorId, {
-          ...(body as Omit<UpdateAgentInput, "namespaceId" | "agentId">),
-          namespaceId,
-          agentId,
-        });
+        const updated = await controller.updateAgent(
+          context.actorId,
+          {
+            ...(body as Omit<UpdateAgentInput, "namespaceId" | "agentId">),
+            namespaceId,
+            agentId,
+          },
+          options.resolveHarness,
+        );
         await unit.audit.append(mutationEvent({ kind: "agent", id: updated.id, namespaceId }));
         return clientAgent(updated);
       });

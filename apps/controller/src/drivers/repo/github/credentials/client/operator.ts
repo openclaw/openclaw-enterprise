@@ -16,7 +16,7 @@ export async function callControl(
 ): Promise<ControlResponse> {
   if (
     !socket.startsWith("/") ||
-    socket.length > 103 ||
+    Buffer.byteLength(socket) > 103 ||
     !/^\/v1\/sessions(?:\/[A-Za-z0-9_-]{1,128}(?:\/close)?)?$/.test(request.path)
   ) {
     throw new Error("invalid-control-request");

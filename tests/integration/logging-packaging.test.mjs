@@ -281,6 +281,14 @@ test(
         "broad exporter egress",
         { ...loggingValues, "logging.collector.exporter.cidr": "0.0.0.0/0" },
       ],
+      [
+        "exporter host that is not an IPv4 address",
+        { ...loggingValues, "logging.collector.exporter.cidr": "999.1.2.3/32" },
+      ],
+      [
+        "exporter host with a leading-zero octet",
+        { ...loggingValues, "logging.collector.exporter.cidr": "01.2.3.4/32" },
+      ],
       ["missing env Secret", { ...loggingValues, "logging.collector.envSecretName": "" }],
       [
         "shared GitHub sign-in Secret",
@@ -355,7 +363,8 @@ test(
         for (const field of ["configSecretName", "envSecretName"]) {
           await assert.rejects(
             render({ ...loggingValues, ...feature, [`logging.collector.${field}`]: secret }),
-            ({ stderr }) => /logging\.collector Secrets must be dedicated/.test(stderr),
+            ({ stderr }) =>
+              stderr.includes(`logging.collector.${field} must name a dedicated Secret; ${secret}`),
             `${field}=${secret}`,
           );
         }

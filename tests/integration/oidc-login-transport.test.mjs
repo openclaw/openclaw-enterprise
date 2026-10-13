@@ -14,7 +14,7 @@ import {
   startProviderServer,
   testOversizedProviderBodies,
 } from "../helpers/human-login-transport.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 
 const subject = "auth0|65f0c1d2e3a4b5c6d7e8f901";
 const environment = {
@@ -293,9 +293,10 @@ function assertNoSecrets(lines) {
 }
 
 test("an unreachable OIDC token endpoint logs connect_refused with its code", async (t) => {
-  // A port that was just released refuses connections.
-  const port = await availablePort();
-  redirectProviderFetch(t, pinned, `http://127.0.0.1:${port}`);
+  // A held port refuses connections; a released one could be taken by a parallel test.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  redirectProviderFetch(t, pinned, `http://127.0.0.1:${refusing.port}`);
   const fixture = loginFixture();
   await expectDenied(await fixture.callback());
   assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);

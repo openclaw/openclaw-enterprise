@@ -20,12 +20,13 @@ interface CredentialStorage {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly accessToken: string;
-    readonly workspaceId: string;
   }): Promise<SecretReference>;
   deleteServiceAccountCredential(input: {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly secretRef: SecretReference;
+    /** Set by a failed issuance's compensation: delete only a Secret holding this token. */
+    readonly accessToken?: string;
   }): Promise<void>;
 }
 
@@ -117,13 +118,15 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       namespaceId: account.namespaceId,
       serviceAccountId: account.id,
       accessToken: credential.accessToken,
-      workspaceId: linked.workspaceId,
     });
+    // Compensations run after ROLLBACK released the account row lock, when another issuance
+    // may already have stored its Secret under the same name: delete only this token's.
     this.controller.registerRollback(() =>
       this.compute.deleteServiceAccountCredential({
         namespaceId: account.namespaceId,
         serviceAccountId: account.id,
         secretRef,
+        accessToken: credential.accessToken,
       }),
     );
 

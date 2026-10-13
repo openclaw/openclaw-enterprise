@@ -15,7 +15,23 @@ import {
 
 const digest = "a".repeat(64);
 const collectorImage = `registry.example/otelcol@sha256:${digest}`;
-const execute = promisify(execFile);
+const execFileAsync = promisify(execFile);
+// The CI scripts bound commands with `timeoutMs` and read a timeout as `timedOut`, as
+// scripts/ci/prepare.mjs's executor does; Node's execFile names the option `timeout`.
+async function execute(command, args, { timeoutMs, ...options } = {}) {
+  const bounded = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  try {
+    return await execFileAsync(command, args, {
+      ...options,
+      ...(bounded ? { timeout: timeoutMs, killSignal: "SIGKILL" } : {}),
+    });
+  } catch (error) {
+    if (bounded && error.killed && error.signal === "SIGKILL" && error.code == null) {
+      error.timedOut = true;
+    }
+    throw error;
+  }
+}
 const selectedCollectorSmoke = process.env.OCC_TEST_LOGGING_COLLECTOR === "1";
 
 async function readJsonlPayloads(path) {

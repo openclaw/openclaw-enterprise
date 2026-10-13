@@ -122,9 +122,13 @@ CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o 
 ```
 
 The Configuration keeps `"sandbox": "read-only"`, but each deployed revision
-freezes `"sandbox": "danger-full-access"`. The OpenShell Sandbox Driver
-overrides this value for every dedicated Codex revision so that Codex's own
-sandbox does not run inside OpenShell's; OpenShell is the containment boundary.
+freezes `"sandbox": "danger-full-access"` and `"approvalsReviewer": "user"`. The
+OpenShell Sandbox Driver overrides these values for every dedicated Codex
+revision so that Codex's own sandbox does not run inside OpenShell's; OpenShell
+is the containment boundary. Codex's sandbox cannot start there, so keep
+`tools.exec` at its default or `mode: full`: other modes, including those the
+legacy `security` and `ask` fields select, make every shell command fail.
+`approvalPolicy` stays as configured.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
 
 Create the Agent with the source as its Harness authentication:
@@ -221,7 +225,10 @@ the profile instead.
   method. With a Credential Gateway selected, only `credential_source` is
   accepted.
 - **`credential-source delete` returns `409`:** an Agent draft, active
-  revision, or pending deployment still references the source.
+  revision, or pending deployment still references the source. With
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`, only withdrawal work still retrying for
+  an earlier revision that held the source blocks it: wait up to about an hour,
+  or delete the Agent.
 - **`iam role delete` returns `409`:** an access binding still uses the Role.
   Deleting the source removes its bindings; otherwise find the binding with
   `./bin/occ iam access-binding list` and delete it first.

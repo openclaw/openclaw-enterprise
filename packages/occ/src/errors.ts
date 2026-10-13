@@ -23,7 +23,9 @@ export class AuthorizationDeniedError extends Error {
     super(message);
     this.name = "AuthorizationDeniedError";
     if (evidence !== undefined) {
-      this.evidence = evidence;
+      if (evidence !== undefined) {
+        this.evidence = evidence;
+      }
     }
     if (authorization !== undefined) {
       this.authorization = Object.freeze({
@@ -93,6 +95,90 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   constructor(message = "A required platform dependency is unavailable.") {
     super(message);
     this.name = "DependencyUnavailableError";
+  }
+}
+
+/**
+ * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
+ * Installation no longer selects. Each subclass is raised only after the caller's grant and the
+ * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
+ * the fix for its own path. HTTP returns that message; every other 503 keeps the generic text.
+ */
+export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
+
+/**
+ * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
+ * write can replace the binding, so the fixed message says so.
+ */
+export class SecretBindingDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+    );
+    this.name = "SecretBindingDriverError";
+  }
+}
+
+/**
+ * An Agent's requested or bound Harness authentication Secret the selected Secret Driver cannot
+ * serve. The Agent's `harnessAuth` must name another Secret.
+ */
+export class HarnessAuthSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    );
+    this.name = "HarnessAuthSecretDriverError";
+  }
+}
+
+/**
+ * A Secret an Agent provisioning request or its accepted work uses that the selected Secret
+ * Driver cannot serve. Accepted work keeps its inputs, so only a new request can replace it.
+ */
+export class ProvisioningSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    );
+    this.name = "ProvisioningSecretDriverError";
+  }
+}
+
+const SECRET_STORAGE_DRIVER_MESSAGES = Object.freeze({
+  update:
+    "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+  delete:
+    "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
+});
+
+/**
+ * An exact Secret update or delete the selected Secret Driver cannot perform: OCC never writes or
+ * removes a value through a driver that does not own it.
+ */
+export class SecretStorageDriverError extends SecretDriverOwnershipError {
+  readonly operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES;
+
+  constructor(operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES) {
+    super(SECRET_STORAGE_DRIVER_MESSAGES[operation]);
+    this.name = "SecretStorageDriverError";
+    this.operation = operation;
+  }
+}
+
+/**
+ * A credential source registered through a Credential Gateway Driver the Installation no longer
+ * selects. OCC never binds, deploys, updates or deletes a source through a driver that did not
+ * register it. Raised only after the caller's grant and the source lookup, so it reveals nothing
+ * a 403 or 404 hides; one fixed message names the fix on every path. An Installation with no
+ * Credential Gateway, or a selected one that is unusable, is not this error.
+ */
+export class CredentialSourceDriverError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver instead. To update or delete this source, an administrator must first re-select the driver that registered it.",
+    );
+    this.name = "CredentialSourceDriverError";
   }
 }
 
@@ -189,9 +275,23 @@ export class ConfigurationHarnessError extends ScopeViolationError {
 }
 
 /**
+ * An Agent's `harnessAuth` names a credential source its `credentialSources` list does not
+ * hold. OCC raises it only after every source authorization, and the rule depends only on
+ * the request and the Agent the caller may already update, so HTTP reports it as an invalid
+ * request instead of hiding it as a scope miss.
+ */
+export class AgentCredentialSourceBindingError extends ScopeViolationError {
+  constructor() {
+    super("The Harness credential source must be listed in the Agent's credentialSources.");
+    this.name = "AgentCredentialSourceBindingError";
+  }
+}
+
+/**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
- * (including credential-source Harness authentication in Agent provisioning), or
+ * (including missing, runtime or credential-source Harness authentication in Agent
+ * provisioning), or
  * any of those, an Agent's Harness authentication, a credential source, or plugin discovery
  * naming a Secret in another Namespace. Messages are static, so HTTP reports them as an
  * invalid request instead of hiding them as a scope miss; Secret existence is still checked
@@ -231,8 +331,62 @@ function configurationFieldMessage(path: string, message: (path: string) => stri
   );
 }
 
-const modelCredentialMessage = (path: string): string =>
-  `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
+/**
+ * Builds a message that names the Configuration setting `<parent>.<key>`. A submitted key can
+ * hold any character: control, format, line and paragraph separator characters show as ?, a
+ * key that is not a plain ID is quoted, and a long key shortens the path to fit the
+ * 256-character cap.
+ */
+function keyedSettingMessage(
+  parent: string,
+  key: string,
+  message: (path: string) => string,
+): string {
+  return configurationFieldMessage(keyedSettingPath(parent, key), message);
+}
+
+/**
+ * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
+ * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
+ */
+export function keyedSettingPath(parent: string, key: string): string {
+  const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+  return /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
+}
+
+/**
+ * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
+ * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
+ */
+export function configurationSettingMessage(setting: string, requirement: string): string {
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
+}
+
+/** Builds a message that names the Configuration setting `agents.entries.<key>`. */
+export function agentEntryMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("agents.entries", key, message);
+}
+
+/** Builds a message that names the Configuration setting `models.providers.<key>`. */
+export function modelProviderMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("models.providers", key, message);
+}
+
+const inlineCredentialMessage =
+  (instead: string) =>
+  (path: string): string =>
+    `Configuration field ${path} holds a credential value inline, where a reference is required. ${instead}`;
+const modelCredentialMessage = inlineCredentialMessage(
+  "Store the key as a Secret and select it as the Agent's model credential instead.",
+);
+const gatewayPasswordMessage = inlineCredentialMessage(
+  "Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+);
 
 /**
  * A literal credential in a known model credential field of Configuration values. The
@@ -241,10 +395,18 @@ const modelCredentialMessage = (path: string): string =>
 export class ModelCredentialValueError extends Error {
   readonly path: string;
 
-  constructor(path: string) {
-    super(configurationFieldMessage(path, modelCredentialMessage));
+  constructor(path: string, message: (path: string) => string = modelCredentialMessage) {
+    super(configurationFieldMessage(path, message));
     this.name = "ModelCredentialValueError";
     this.path = path;
+  }
+}
+
+/** A literal gateway.auth.password in Configuration values, reported like a model credential. */
+export class GatewayPasswordValueError extends ModelCredentialValueError {
+  constructor(path: string) {
+    super(path, gatewayPasswordMessage);
+    this.name = "GatewayPasswordValueError";
   }
 }
 
@@ -544,6 +706,28 @@ export class ActivationPendingError extends Error {
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
 
 /**
+ * Compute preparation cannot complete for this revision. The worker records a
+ * terminal deployment failure and durable workload retirement in one transaction.
+ * Drivers own initialization and cleanup; status never exposes the error message.
+ */
+export class ComputePreparationFailedError extends Error {
+  readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+  readonly evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence;
+
+  constructor(
+    code: ComputePreparationFailedError["code"],
+    evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence,
+  ) {
+    super("Harness credential initialization could not complete.");
+    this.name = "ComputePreparationFailedError";
+    this.code = code;
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
+  }
+}
+
+/**
  * Activation found its workloads running but one of them can never complete
  * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
  * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
@@ -573,6 +757,56 @@ export class SandboxRevisionUnsupportedError extends Error {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
     this.code = code;
+  }
+}
+
+/**
+ * A Credential Gateway cannot attach this exact AgentRevision's credential sources: two of them
+ * would place their placeholders in the same Sandbox environment variable. The revision's
+ * source list and each source's config are fixed, so retrying cannot change the outcome; the
+ * worker fails the deployment with `code`. The message stays in the controller; status shows a
+ * fixed text.
+ */
+export class CredentialSourceRevisionError extends Error {
+  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT";
+
+  constructor(code: CredentialSourceRevisionError["code"], message: string) {
+    super(message);
+    this.name = "CredentialSourceRevisionError";
+    this.code = code;
+  }
+}
+
+/**
+ * A Compute Driver cannot withdraw a credential source from this exact AgentRevision: its
+ * configuration cannot identify the revision's Sandbox, or it found an object it does not
+ * own. Retrying cannot change the outcome until an operator corrects the cause, so the worker
+ * fails the withdrawal at once with `code` instead of retrying it for an hour; a replay tries
+ * again. The message stays in the controller.
+ */
+export class CredentialWithdrawalRefusedError extends Error {
+  readonly code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT";
+
+  constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
+    super(message);
+    this.name = "CredentialWithdrawalRefusedError";
+    this.code = code;
+  }
+}
+
+/**
+ * Source deletion is refused only because a credential withdrawal attempt or retry series is
+ * still queued or running for an inactive revision that holds the source; nothing else
+ * references it. A fixed message: it names no Agent or revision, which the caller, who holds
+ * only `delete` on the source, may not be allowed to read. A replay cannot help, since the
+ * Agent's active revision no longer holds the source.
+ */
+export class CredentialWithdrawalInProgressError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    );
+    this.name = "CredentialWithdrawalInProgressError";
   }
 }
 
@@ -634,6 +868,71 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/**
+ * The selected Credential Gateway's catalog lacks a source type: registration names one it does
+ * not offer, or a configuration change dropped an existing source's type (OpenShell offers
+ * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
+ * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
+ * message names the fix.
+ */
+export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+    );
+    this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
+  issue:
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  deploy:
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  delete:
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+});
+
+/**
+ * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
+ * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
+ * issued access token cannot be deleted unless forced, since nothing can revoke the token. An Installation
+ * property, raised only after the caller's grant and the account lookup, so it reveals nothing
+ * a 403 or 404 hides. The fixed message names the fix.
+ */
+export class ServiceAccountDriverNotConfiguredError extends ResourceConflictError {
+  constructor(operation: "issue" | "deploy" | "delete") {
+    super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
+    this.name = "ServiceAccountDriverNotConfiguredError";
+  }
+}
+
+const SERVICE_ACCOUNT_REFERENCE_URL =
+  "https://docs-enterprise.openclaw.org/reference/service-accounts/";
+
+/**
+ * An account-owned credential Secret left by an earlier issuance whose outcome OCC could not
+ * settle (a lost create reply whose cleanup failed) blocks every retry until an operator deletes
+ * it (finding 935). Raised only after the caller's update grant, the account lookup and the
+ * "no credential yet" check, so it reaches only callers who may issue for this account. It
+ * names the Kubernetes namespace and Secret (never its contents) and the doc's removal step.
+ */
+export class ServiceAccountCredentialSecretExistsError extends ResourceStateConflictError {
+  readonly secretNamespace: string;
+  readonly secretName: string;
+
+  constructor(secretNamespace: string, secretName: string) {
+    const message = (secret: string) =>
+      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. An operator must delete it, then retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
+    const full = message(`${secretNamespace}/${secretName}`);
+    // The HTTP error contract caps messages at 256 characters; only a long namespace exceeds it.
+    super(full.length <= 256 ? full : message(secretName));
+    this.name = "ServiceAccountCredentialSecretExistsError";
+    this.secretNamespace = secretNamespace;
+    this.secretName = secretName;
   }
 }
 

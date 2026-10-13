@@ -297,10 +297,17 @@ demo_file="$state_dir/demo.json"
 lifecycle_lock="$state_dir/lifecycle.lock"
 export RUNNER_TEMP="$state_dir"
 
+# LC_ALL=C keeps the ranges ASCII: under locales such as en_US.UTF-8, bash
+# regex ranges like [a-z] also match accented letters.
+environment_assignment() {
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]]
+}
+
 load_environment() {
   while IFS= read -r environment_record || [ -n "$environment_record" ]; do
     [ -n "$environment_record" ] || continue
-    [[ "$environment_record" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] ||
+    environment_assignment "$environment_record" ||
       fail "prepared environment contains an invalid assignment"
     export "${environment_record?}"
   done < "$env_file"

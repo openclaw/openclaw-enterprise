@@ -12,7 +12,7 @@ Collector owners must establish equivalent scope. Stop and reconcile uncertain o
 changed scope or ownership. A namespace, kubeconfig or disposable name does not
 prove dedication; demo NetworkPolicy selects Collectors, not records.
 
-From the repository root, use Helm 3, `kubectl`, `yq` v4, Python 3, `openssl`,
+From the repository root, use Helm 3, `kubectl`, `yq` v4, `jq`, Python 3, `openssl`,
 `sha256sum`, `cmp`, an explicit kubeconfig/context and enforcing NetworkPolicy.
 Obtain read access to Helm release Secrets, ConfigMaps and the `kube-system` UID;
 permission to create the demo namespace and OCC Pod-discovery Role/RoleBinding; and
@@ -170,6 +170,22 @@ dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus
 Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
 Grafana stops working until you start it again.
 
+`cluster.port` and `occ.metricsPort` must be decimal integers from 1 through
+65535 with no leading zero. Defaults are 443 and 9464. A saved string such as
+`"010"` used to install, and Kubernetes applied port 8. Upgrade now rejects that
+spelling before it changes the policy. Set the field to the applied decimal,
+`8` in that example, and rerun the block; the NetworkPolicy port stays 8. See
+the [port notice](../deploy/breaking-changes.md#2026-10-12-demo-networkpolicy-ports-must-be-canonical-decimals).
+
+For a custom release, read its generated Service names with
+`helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
+below. Short DNS-label names stay unchanged; other names include the original
+release hash to fit the 63-character Service limit.
+If an upgrade changes the Loki name, update every managed or external Collector
+that saved the old address and refresh its process configuration; see
+[refresh a renamed Loki address](demo-cleanup.md#refresh-a-renamed-loki-address).
+Grafana provisioning does not update separate exporter Secrets.
+
 Services use `ClusterIP`. Prometheus reads Pod metadata, not Secrets. Grafana
 bundles plugins; startup downloads are disabled. Its disposable database is
 memory-backed so first-start migrations finish in seconds.
@@ -209,7 +225,8 @@ If Secret creation fails, the first may exist. Follow
 Create `$OBS_FILES/occ-demo.yaml` from saved values. Replace selector maps because
 Helm merges overlays and can retain old labels. Keep `occ-before.yaml` unchanged
 for restoration. This enables metrics at their existing port; if it is not 9464,
-match demo `occ.metricsPort` to `metrics.port`.
+match demo `occ.metricsPort` to `metrics.port`. Write that port as a decimal
+with no leading zero.
 
 ```bash
 (

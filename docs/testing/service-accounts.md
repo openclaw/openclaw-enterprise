@@ -73,7 +73,15 @@ for the complete setup.
 `tests/integration/occ-api.test.mjs` covers native references, immutable revision
 snapshots, and Namespace-scoped access.
 `tests/conformance/service-account-driver.test.mjs` covers authorized lifecycle,
-transaction-failure compensation, and execution-mode admission.
+transaction-failure compensation, and execution-mode admission. Against an
+in-memory Admin API, it checks that a create reply naming a disabled account in
+this workspace removes only that account, a lost reply deletes nothing, and a
+retried delete completes. An invalid credential reply revokes only a credential
+it places under the requested account in this workspace.
+`tests/conformance/kubernetes-compute.test.mjs` checks that a failed token Secret
+create deletes only an account-owned Secret with the request's token, and that a
+failed issuance's compensation keeps the Secret a later issuance stored under the
+same name.
 
 Its Backend regression uses built-in fetch and real HTTPS connections against a
 loopback TLS server with a test-owned certificate. An unfinished 429, 503 or

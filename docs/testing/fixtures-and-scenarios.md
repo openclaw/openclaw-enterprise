@@ -46,6 +46,13 @@ keep raw request targets intact. The
 composes the real backend factory, session admission, custody, and controlled
 clock for route-policy cases.
 
+Captured state stays small and keyless. The
+[released Gateway state](../../tests/fixtures/runtime-state/released-gateway-state.tar.gz)
+is the state the 2026-09-28 runtime image wrote in one turn against a stub
+provider. Its device identity and config revision keys were deleted and the
+database vacuumed; OpenClaw creates new ones at startup. Its test comment
+names the image. Regenerate it the same way.
+
 Keep expected outcomes independently specified. A test must not calculate
 expected admission using the production route classifier or duplicate that
 classifier in its fixture. Fixtures may emulate an external protocol; they

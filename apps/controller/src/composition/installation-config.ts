@@ -1,12 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   Backend,
   ComputeDriver,
   ConfigurationDriver,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
   DriverImplementation,
   IAMDriver,
   Identity,
@@ -31,7 +32,6 @@ import {
   type SkippedDefaultPreset,
 } from "@openclaw-enterprise/occ";
 import { Check, Errors } from "typebox/value";
-import { isName, NAME_RULE, validatePresetTemplate } from "@openclaw-enterprise/contracts";
 import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
@@ -64,6 +64,9 @@ import {
   OpenShellCredentialGatewayDriver,
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
+
+import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
 
 export { loadOperationalLoggingConfiguration } from "./startup-file.ts";
 
@@ -96,6 +99,7 @@ export interface InstallationStartupConfiguration {
     readonly secret: SelectedDriverConfiguration;
     readonly sandbox?: SelectedDriverConfiguration;
     readonly credential_gateway?: SelectedDriverConfiguration;
+    readonly credential_refresh?: SelectedDriverConfiguration;
     readonly plugin?: SelectedDriverConfiguration;
     readonly service_account?: { readonly id: string };
     readonly repo?: SelectedDriverConfiguration;
@@ -106,13 +110,6 @@ export type ServiceAccountDriverFactory = (
   controller: OpenClawController,
   state: PostgresPlatformState,
 ) => void;
-
-/** A bundled default skipped because a `presets.files` entry uses its name. */
-export interface ShadowedDefaultPreset {
-  readonly presetName: string;
-  /** Resolved path of the operator's file. */
-  readonly presetFile: string;
-}
 
 export interface InstallationRuntimeDrivers {
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
@@ -126,6 +123,7 @@ export interface InstallationRuntimeDrivers {
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
+  readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly pluginDriver?: PluginDriver;
   readonly repoDriver?: RepoDriver;
   readonly repositoryReceipt?: Readonly<{
@@ -287,6 +285,7 @@ function backendConfiguration(
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
   credentialGatewayId: string | undefined,
+  credentialRefreshId: string | undefined,
 ): readonly BackendDefinition[] {
   const backends = validateBackendDefinitions(value ?? []);
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
@@ -294,6 +293,9 @@ function backendConfiguration(
   }
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
     throw new Error("drivers.repo requires an owning backend entry with type github.");
+  }
+  if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
+    throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
   }
   if (
     credentialGatewayId !== undefined &&
@@ -309,6 +311,12 @@ function backendConfiguration(
       if (backend.drivers.credential_gateway !== credentialGatewayId) {
         throw new Error(
           `backend[${backend.id}].drivers.credential_gateway must match the selected drivers.credential_gateway.id.`,
+        );
+      }
+      // Refresh state lives on the gateway's provider record, so both roles share this Backend.
+      if (backend.drivers.credential_refresh !== credentialRefreshId) {
+        throw new Error(
+          `backend[${backend.id}].drivers.credential_refresh must match the selected drivers.credential_refresh.id.`,
         );
       }
       continue;
@@ -338,86 +346,6 @@ function backendConfiguration(
   return backends;
 }
 
-function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
-  const preset = object(value, path);
-  closed(preset, ["name", "template"], path);
-  const name = nonempty(preset.name, `${path}.name`);
-  if (!isName(name)) {
-    throw new Error(`${path}.name must follow the Name rule: ${NAME_RULE}.`);
-  }
-  return Object.freeze({
-    name,
-    template: validatePresetTemplate(preset.template),
-  });
-}
-
-/**
- * A `presets.files` list or entry that cannot become a default Preset: not a list of
- * paths, or a file that is missing, unreadable, malformed, invalid, or a duplicate name. API and worker startup report it as
- * `PRESET_FILE_INVALID` without the path or message, which stay in the thrown error.
- */
-export class PresetFileError extends Error {
-  override readonly name = "PresetFileError";
-}
-
-async function loadPresetDefinition(
-  path: string | URL,
-): Promise<Pick<Preset, "name" | "template">> {
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch {
-    throw new Error(`Preset file ${path} is unavailable.`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(contents);
-  } catch {
-    throw new Error(`Preset file ${path} must contain valid JSON.`);
-  }
-  return presetDefinition(parsed, `Preset file ${path}`);
-}
-
-const bundledPresetDirectory = new URL("../../../../deploy/presets/", import.meta.url);
-
-/**
- * Load every shipped version of the bundled defaults. `archive/versions.json` lists each
- * bundled file's versions oldest first; the last is the file itself and the others are
- * archived as `archive/<file stem>/<version>.json`. A conformance test keeps it complete.
- */
-async function loadBundledPresetVersions(): Promise<readonly BundledPresetVersion[]> {
-  const indexPath = new URL("archive/versions.json", bundledPresetDirectory);
-  let index: unknown;
-  try {
-    index = JSON.parse(await readFile(indexPath, "utf8"));
-  } catch (cause) {
-    throw new Error(
-      `Bundled Preset version index ${fileURLToPath(indexPath)} is unavailable or invalid.`,
-      { cause },
-    );
-  }
-  const versions: BundledPresetVersion[] = [];
-  for (const [file, history] of Object.entries(object(index, "Bundled Preset versions"))) {
-    if (
-      !/^[a-z0-9-]+\.json$/.test(file) ||
-      !Array.isArray(history) ||
-      history.length === 0 ||
-      history.some((version) => typeof version !== "string" || !/^[0-9a-f]{16}$/.test(version))
-    ) {
-      throw new Error(`Bundled Preset versions for ${file} are invalid.`);
-    }
-    const stem = file.slice(0, -".json".length);
-    for (const [position, version] of (history as string[]).entries()) {
-      const current = position === history.length - 1;
-      const preset = await loadPresetDefinition(
-        new URL(current ? file : `archive/${stem}/${version}.json`, bundledPresetDirectory),
-      );
-      versions.push(Object.freeze({ ...preset, file, version, current }));
-    }
-  }
-  return Object.freeze(versions);
-}
-
 export function backendSummariesFromDefinitions(
   backends: readonly BackendDefinition[],
 ): readonly BackendSummary[] {
@@ -440,6 +368,7 @@ function selected(
     | "secret"
     | "sandbox"
     | "credential_gateway"
+    | "credential_refresh"
     | "plugin"
     | "repo",
   implementation: string,
@@ -532,75 +461,8 @@ export async function loadInstallationConfiguration(options: {
   ) {
     return undefined;
   }
-  const presets = object(
-    configuration.presets === undefined ? {} : configuration.presets,
-    "presets",
-  );
-  closed(presets, ["includeDefaults", "files"], "presets");
-  if (presets.includeDefaults !== undefined && typeof presets.includeDefaults !== "boolean") {
-    throw new Error("presets.includeDefaults must be a boolean.");
-  }
-  if (
-    presets.files !== undefined &&
-    (!Array.isArray(presets.files) || presets.files.some((entry) => typeof entry !== "string"))
-  ) {
-    throw new PresetFileError("presets.files must be an array of Preset JSON file paths.");
-  }
-  const includeDefaults = presets.includeDefaults === true;
-  const bundledPresetVersions = await loadBundledPresetVersions();
-  const filePresets: {
-    readonly path: string;
-    readonly preset: Pick<Preset, "name" | "template">;
-  }[] = [];
-  const filePresetPaths = new Map<string, string>();
-  for (const entry of (presets.files ?? []) as readonly string[]) {
-    const trimmed = entry.trim();
-    if (trimmed.length === 0) {
-      throw new PresetFileError("presets.files entries must be nonempty file paths.");
-    }
-    if (!isAbsolute(trimmed) && configurationPath === undefined) {
-      throw new PresetFileError(
-        "Relative presets.files entries require an Installation startup YAML path.",
-      );
-    }
-    const path = isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed);
-    let preset: Pick<Preset, "name" | "template">;
-    try {
-      preset = await loadPresetDefinition(path);
-    } catch (error) {
-      throw new PresetFileError(error instanceof Error ? error.message : String(error), {
-        cause: error,
-      });
-    }
-    const earlier = filePresetPaths.get(preset.name);
-    if (earlier !== undefined) {
-      throw new PresetFileError(
-        `Default Preset ${preset.name} is configured more than once: ${earlier} and ${path}.`,
-      );
-    }
-    filePresetPaths.set(preset.name, path);
-    filePresets.push({ path, preset });
-  }
-  // An operator file named like a bundled default replaces that default: a later release can
-  // bundle a name an operator already uses (default-codex), and startup must not stop for it.
-  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
-  const shadowedDefaultPresets: ShadowedDefaultPreset[] = [];
-  if (includeDefaults) {
-    for (const version of bundledPresetVersions) {
-      if (!version.current) {
-        continue;
-      }
-      const shadow = filePresets.find(({ preset }) => preset.name === version.name);
-      if (shadow !== undefined) {
-        shadowedDefaultPresets.push(
-          Object.freeze({ presetName: version.name, presetFile: shadow.path }),
-        );
-        continue;
-      }
-      defaultPresets.push(Object.freeze({ name: version.name, template: version.template }));
-    }
-  }
-  defaultPresets.push(...filePresets.map(({ preset }) => preset));
+  const { includeDefaults, bundledPresetVersions, defaultPresets, shadowedDefaultPresets } =
+    await loadInstallationPresets(configuration, configurationPath);
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
   const cluster = nonempty(occ.cluster, "occ.cluster");
@@ -616,6 +478,7 @@ export async function loadInstallationConfiguration(options: {
       "secret",
       "sandbox",
       "credential_gateway",
+      "credential_refresh",
       "plugin",
       "service_account",
       "repo",
@@ -651,11 +514,23 @@ export async function loadInstallationConfiguration(options: {
       OpenShellCredentialGatewayDriver,
     );
   }
+  let credentialRefresh: SelectedDriverConfiguration | undefined;
+  if (drivers.credential_refresh !== undefined) {
+    const selection = object(drivers.credential_refresh, "drivers.credential_refresh");
+    closed(selection, ["id", "configuration"], "drivers.credential_refresh");
+    credentialRefresh = selected(
+      selection,
+      "credential_refresh",
+      "openshell",
+      OpenShellCredentialRefreshDriver,
+    );
+  }
   const backends = backendConfiguration(
     configuration.backend,
     serviceAccount,
     repoSelection,
     credentialGateway?.id,
+    credentialRefresh?.id,
   );
   const openShellBackend = backends.find(
     (backend): backend is OpenShellBackendDefinition => backend.type === "openshell",
@@ -841,6 +716,7 @@ export async function loadInstallationConfiguration(options: {
       secret,
       ...(sandbox === undefined ? {} : { sandbox }),
       ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
+      ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(plugin === undefined ? {} : { plugin }),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
       ...(repoSelection === undefined ? {} : { repo: repoSelection }),
@@ -886,6 +762,14 @@ export async function loadInstallationConfiguration(options: {
             backend: openShell!,
           },
         );
+  const credentialRefreshDriver =
+    credentialRefresh === undefined
+      ? undefined
+      : new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
+          id: credentialRefresh.id,
+          implementation: credentialRefresh.implementation,
+          backend: openShell!,
+        });
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -975,6 +859,7 @@ export async function loadInstallationConfiguration(options: {
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+    ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),

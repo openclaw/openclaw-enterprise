@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { OpenClawController, ResourceConflictError } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  ResourceConflictError,
+  ServiceAccountDriverNotConfiguredError,
+} from "../../packages/occ/src/index.ts";
 import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -16,6 +20,7 @@ import {
   requiresPostgres,
   seedBackendBinding,
   serviceAccountDriverId,
+  workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
 
 test(
@@ -73,11 +78,38 @@ test(
       namespaceId: namespace.id,
       name: "account-consumer",
       configurationId: configuration.id,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       backendId,
       executionMode: "dedicated",
     });
     const target = { namespaceId: namespace.id, agentId: agent.id };
+    // Direct SQL proves the canonical source discriminator drives the real ownership FK,
+    // independently of OCC's input validation and authorization.
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT harness_auth_secret_id, harness_auth_service_account_id FROM occ.agents WHERE id = $1",
+          [agent.id],
+        )
+      ).rows,
+      [{ harness_auth_secret_id: null, harness_auth_service_account_id: account.id }],
+    );
+    for (const [source, code] of [
+      [{ ...agent.harnessAuth.source, id: `sa_${randomUUID()}` }, "23503"],
+      [{ ...agent.harnessAuth.source, namespaceId: `ns_${randomUUID()}` }, "23514"],
+      [{ ...agent.harnessAuth.source, kind: "secret" }, "23514"],
+    ]) {
+      await assert.rejects(
+        pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
+          JSON.stringify({ method: "codex_pat", source }),
+          agent.id,
+        ]),
+        { code },
+      );
+    }
     async function claimRevision() {
       const client = await pool.connect();
       try {
@@ -154,7 +186,14 @@ test(
     await controller.updateAgent(actor.id, {
       ...target,
       configurationId: configuration.id,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: replacementAccount.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: replacementAccount.namespaceId,
+          id: replacementAccount.id,
+        },
+      },
     });
     const replacement = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
     const next = await claimRevision();
@@ -194,7 +233,14 @@ test(
     await controller.updateAgent(actor.id, {
       ...target,
       configurationId: configuration.id,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: failedAccount.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: failedAccount.namespaceId,
+          id: failedAccount.id,
+        },
+      },
     });
     const failedRevision = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
     await controller.updateAgent(actor.id, {
@@ -209,5 +255,145 @@ test(
     });
     await controller.deleteServiceAccount(actor.id, namespace.id, failedAccount.id);
     assert.deepEqual(deletedAccounts, [account.id, failedAccount.id]);
+  },
+);
+
+test(
+  "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await createBackendFixture(context);
+    const { state, pool, actor } = fixture;
+    // This API process selects no ServiceAccount Driver: the ChatGPT Backend is gone.
+    const controller = new OpenClawController(fixture.installation, { state });
+    const deletedSecrets = [];
+    for (const driver of [
+      new NativeIAMDriver(state, { id: "service-account-force-iam" }),
+      {
+        ...createDevelopmentComputeDriver(),
+        async deleteServiceAccountCredential(input) {
+          deletedSecrets.push(input);
+        },
+      },
+      createTestConfigurationDriver(),
+    ]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+    const namespace = fixture.track(
+      await state.transact((unit) =>
+        unit.namespaces.createNamespace({
+          id: `ns_${randomUUID()}`,
+          name: `account-force-${randomUUID()}`,
+          status: "ready",
+          createdAt: new Date().toISOString(),
+        }),
+      ),
+    );
+    const bindingOf = async (account) =>
+      (
+        await pool.query(
+          `SELECT backend_id, workspace_id, external_account_id, external_credential_id
+           FROM occ.service_account_driver_bindings WHERE service_account_id = $1`,
+          [account.id],
+        )
+      ).rows[0];
+
+    const account = await createAccessTokenServiceAccount(state, namespace.id, "forced");
+    await seedBackendBinding(pool, account);
+    const binding = await bindingOf(account);
+    await assert.rejects(
+      controller.deleteServiceAccount(actor.id, namespace.id, account.id),
+      ServiceAccountDriverNotConfiguredError,
+    );
+    assert.deepEqual(
+      await controller.deleteServiceAccount(actor.id, namespace.id, account.id, { force: true }),
+      {
+        removedAccessBindings: [],
+        unrevokedCredential: {
+          backendId,
+          workspaceId,
+          externalAccountId: binding.external_account_id,
+          credentialId: binding.external_credential_id,
+        },
+      },
+    );
+    assert.deepEqual(deletedSecrets, [
+      {
+        namespaceId: namespace.id,
+        serviceAccountId: account.id,
+        secretRef: account.credential.secretRef,
+      },
+    ]);
+    // The account and its private binding are gone together.
+    assert.equal(await bindingOf(account), undefined);
+    assert.equal(
+      await state.read((unit) => unit.serviceAccounts.findServiceAccount(namespace.id, account.id)),
+      undefined,
+    );
+
+    // A token issued while the forced delete waits for the account row lock is seen and
+    // reported, never deleted unnoticed: the decision reads the locked row.
+    const racing = await state.transact((unit) =>
+      unit.serviceAccounts.createServiceAccount({
+        id: `sa_${randomUUID()}`,
+        namespaceId: namespace.id,
+        name: `racing-${randomUUID()}`,
+      }),
+    );
+    await seedBackendBinding(pool, racing, { credentialIssued: false });
+    const racingBinding = await bindingOf(racing);
+    const issuer = await pool.connect();
+    let forced;
+    try {
+      await issuer.query("BEGIN");
+      const [{ pid }] = (await issuer.query("SELECT pg_backend_pid() AS pid")).rows;
+      await issuer.query("SELECT id FROM occ.service_accounts WHERE id = $1 FOR UPDATE", [
+        racing.id,
+      ]);
+      forced = controller.deleteServiceAccount(actor.id, namespace.id, racing.id, {
+        force: true,
+      });
+      forced.catch(() => {});
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const [{ blocked }] = (
+          await pool.query(
+            "SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [pid],
+          )
+        ).rows;
+        if (blocked > 0) {
+          break;
+        }
+        assert.ok(Date.now() < deadline, "the forced delete never waited for the account lock");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await issuer.query("UPDATE occ.service_accounts SET credential = $2::jsonb WHERE id = $1", [
+        racing.id,
+        JSON.stringify({
+          kind: "access_token",
+          secretRef: { name: `service-account-${racing.id.slice(3, 35)}`, key: "token" },
+        }),
+      ]);
+      await issuer.query(
+        `UPDATE occ.service_account_driver_bindings SET external_credential_id = $2
+         WHERE service_account_id = $1`,
+        [racing.id, "external-credential-raced"],
+      );
+      await issuer.query("COMMIT");
+    } catch (error) {
+      await issuer.query("ROLLBACK");
+      throw error;
+    } finally {
+      issuer.release();
+    }
+    assert.deepEqual((await forced).unrevokedCredential, {
+      backendId,
+      workspaceId,
+      externalAccountId: racingBinding.external_account_id,
+      credentialId: "external-credential-raced",
+    });
+    assert.equal(deletedSecrets.length, 2);
   },
 );

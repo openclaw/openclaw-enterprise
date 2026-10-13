@@ -857,6 +857,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     nativeAdminSockets.add(socket);
     socket.once("close", () => nativeAdminSockets.delete(socket));
+    // Admission awaits before proxyNativeAdminWebSocket attaches its listener.
+    // A reset in that gap is an 'error' event, and Node exits if nobody is listening.
+    socket.on("error", () => {
+      socket.destroy();
+    });
     const admission = await boundedNativeAdminAdmission(nativeAdminProxyContext(request, hostname));
     if (!isNativeAdminProxyResolution(admission)) {
       try {
@@ -867,7 +872,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       socket.destroy();
       return;
     }
+    if (socket.destroyed) {
+      return;
+    }
     const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
+    if (socket.destroyed) {
+      return;
+    }
     if (context === undefined) {
       socket.destroy();
       return;

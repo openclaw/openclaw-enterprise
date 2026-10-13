@@ -117,6 +117,10 @@ SHA-256 of the exact Namespace, Agent, and AgentRevision IDs.
 <systemdUnitDirectory>/openclaw-enterprise-gateway-<agentHash>.service
 ```
 
+The Driver enables each unit by absolute path. When the configured directory is
+outside systemd's unit load path, lifecycle cleanup relinks the owned unit before
+stopping and disabling it; operators need not register that directory separately.
+
 Each Agent uses a distinct system user and private group. The account name is
 the first 19 characters of `runtime.user`, a hyphen, and the first 12 hex
 characters of SHA-256 of `<namespaceId>:<agentId>`. The Driver creates accounts
@@ -203,6 +207,13 @@ Foreign ownership or configuration failures are permanent; transport, timeouts,
 and unexpected helper failures are retryable.
 
 ## Credentials and supported boundaries
+
+The native listener must serve HTTP for readiness and private traffic.
+`gateway.tls.enabled` must be omitted or false; native TLS enablement is refused
+before backend work. External proxy TLS is independent of this listener setting.
+`plugins.entries.codex.config.appServer.approvalPolicy: "untrusted"`, which the
+OpenClaw runtime retired, is refused the same way. Previously admitted TLS revisions retain their original configuration/hash for
+verified teardown.
 
 When native Configuration omits `gateway.auth.mode`, the Driver renders
 `password` mode with a managed environment SecretRef using

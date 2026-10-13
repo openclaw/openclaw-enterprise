@@ -661,6 +661,43 @@ WantedBy=multi-user.target
   );
 });
 
+test("SSH can verify, stop and retire a previously admitted native TLS snapshot", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-old-tls", {
+    gateway: { tls: { enabled: true } },
+  });
+  await f.driver.ensureNamespace(tenant);
+  bind(f.driver, rev);
+  await assert.rejects(f.driver.prepareRevision(rev), /gateway\.tls\.enabled/);
+  // Seed the exact configuration/hash the old producer admitted through the
+  // real host helper, not by editing its private ownership/snapshot records.
+  // SSH/systemd remain fixtures; this protects persisted teardown semantics.
+  const configuration = expectedRuntimeConfiguration(rev);
+  await f.driver.execute(f.configured.hosts.stable, {
+    operation: "prepare-revision",
+    namespace: tenant,
+    revision: { ...rev, configuration },
+    configurationHash: digest(JSON.stringify(configuration)),
+  });
+  assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), configuration);
+  await f.driver.deactivateRevision(rev);
+  const changed = {
+    ...rev,
+    configuration: { ...rev.configuration, gateway: { tls: { enabled: false } } },
+  };
+  await assert.rejects(f.driver.stopRevision(changed), /immutable snapshot mismatch/);
+  await access(f.revisionDir(rev));
+  await f.driver.stopRevision(rev);
+  await access(f.revisionDir(rev));
+  await f.driver.retireRevision(rev);
+  await assert.rejects(access(f.revisionDir(rev)), { code: "ENOENT" });
+  await f.driver.deleteAgentRuntimeCredentials({
+    namespace: tenant,
+    agent: { id: rev.agentId, namespaceId: tenant.id, servicePrincipalId: rev.servicePrincipalId },
+  });
+  await assert.rejects(access(f.agentDir(rev)), { code: "ENOENT" });
+});
+
 test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Namespaces on a host", async (t) => {
   const f = await fixture(t);
   const first = await prepare(f);
@@ -764,7 +801,7 @@ test("SSH Agent deletion frees the Agent's host port, unit, account, and state",
 test("SSH trusted-proxy can opt into direct loopback password authentication", async (t) => {
   const f = await fixture(t);
   const password = revision(f.driver, 1, "agent-ssh-string-password", {
-    gateway: { auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
+    gateway: { tls: { enabled: false }, auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
   });
   await prepare(f, password);
   assert.match(
@@ -916,15 +953,30 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     { gateway: { auth: { mode: "oauth" } } },
     { gateway: { auth: { unsupportedField: true } } },
     { gateway: { auth: { password: "plaintext" } } },
+    { gateway: { tls: { enabled: true } } },
   ]) {
     await assert.rejects(
       f.driver.prepareRevision({
         ...rev,
         configuration: admitLoggingConfiguration(configuration, "info"),
       }),
-      /gateway authentication|OPENCLAW_GATEWAY_PASSWORD/,
+      /gateway authentication|OPENCLAW_GATEWAY_PASSWORD|gateway\.tls\.enabled/,
     );
   }
+  await assert.rejects(
+    f.driver.prepareRevision({
+      ...rev,
+      configuration: admitLoggingConfiguration(
+        {
+          plugins: {
+            entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
+          },
+        },
+        "info",
+      ),
+    }),
+    /appServer\.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired/,
+  );
   // Bind an Agent in a second Namespace; a revision naming it reaches the ownership check.
   const otherNamespace = { ...tenant, id: "ns-ssh-other" };
   bind(f.driver, revision(f.driver, 1, "agent-ssh-other"), otherNamespace);
@@ -1180,10 +1232,11 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
   const bin = join(f.base, "bin");
   await mkdir(bin);
   // Transport-only stand-in records argv and runs the unchanged stdin program with Node.
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   const ssh = join(bin, "ssh");
   await writeFile(
     ssh,
-    `#!${process.execPath}\nconst fs = require('node:fs');\nconst { spawn } = require('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
   );
   await chmod(ssh, 0o755);
   const previousPath = process.env.PATH;

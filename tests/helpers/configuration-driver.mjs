@@ -7,6 +7,11 @@ export function createTestConfigurationDriver(options = {}) {
     id: options.id ?? "configuration-test",
     capability: "configuration",
     implementation: "test-memory-storage",
+    /** Test-only view of what is stored, or undefined; not part of the Driver contract. */
+    stored(reference) {
+      const configuration = configurations.get(key(reference));
+      return configuration === undefined ? undefined : structuredClone(configuration);
+    },
     async create(configuration) {
       configurations.set(key(configuration), structuredClone(configuration));
       return structuredClone(configuration);

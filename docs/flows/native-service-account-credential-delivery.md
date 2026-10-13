@@ -1,20 +1,17 @@
 ---
 created: 2026-08-24
-updated: 2026-10-03
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-12
+last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
 ---
 
 # Harness Authentication Binding Flow
 
 ## Overview
 
-An operator stores an OpenAI or Anthropic API key, or a service account token, as an OCC Secret or separately issues a
-ChatGPT account credential, then selects that source through Agent `harnessAuth`.
+Select an OCC Secret or ChatGPT account credential through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload, which
-authenticates before guarded activation. With `{ "method": "runtime" }`,
-the operator supplies credentials on an SSH host instead; OCC freezes only the
-method and checks gateway readiness without model authentication.
+authenticates before guarded activation. SSH `runtime` binds operator credentials and checks gateway readiness without model authentication.
 
 Codex OAuth device login and its one-time credential handoff are **Experimental**;
 see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
@@ -35,8 +32,13 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
   DA["Complete device login in OCE"] --> B
-  G -->|dedicated OAuth| OA["Claim source and copy bundle to private disk"]
-  OA --> OB["Consume source and remove seed before native start"]
+  G -->|dedicated OAuth| OA["<b>Claim source</b><br/>Retire old writer, create Job"]
+  OA --> OC{"<b>Job condition</b>"}
+  OC -->|pending| OP["<b>Observe existing Job</b>"]
+  OP --> OC
+  OC -->|Complete| OB["<b>Consume source</b><br/>Erase Job, Pods, seed"]
+  OC -->|Failed| OF["<b>Terminal failure</b><br/>Persist evidence and cleanup"]
+  OF --> OG["<b>Retire failed revision</b><br/>Resume after restart"]
   OB --> J
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
@@ -58,6 +60,11 @@ graph TD
   H --> M{"Native primary model probe succeeds?"}
   M -->|no| N["Gateway stays unready; replacement may interrupt service"]
   M -->|yes| O["Gateway becomes ready; complete activation"]
+
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  class OA,OP,OB,OG operation
+  class OC,OF blocked
 ```
 
 ## Execution Trace
@@ -81,21 +88,17 @@ login. Local discard never logs out or revokes upstream. Before handoff,
 a ready session can supply plugin discovery through the authorized catalog path;
 the Plugin Driver extracts native access and account metadata.
 
-Before saving, Console can call the selected Compute Driver's
+Console calls
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
-without storing the credential. OpenAI API-key discovery
-omits models whose valid `shutdown_date` is today or earlier in UTC, per the
-provider's [model-list contract](https://developers.openai.com/api/reference/resources/models/methods/list);
-missing, null, malformed, or future dates remain, and model age and IDs do not
-imply expiry. Anthropic and service account token catalogs are unfiltered. Discovery
-does not prove a model call will succeed.
+without storing credentials. Catalog discovery does not prove authentication;
+startup checks authentication.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
 `authorizeHarnessAuthSource`
 
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
-API-key, `codex_pat`, and OAuth sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
-needs exact Secret `operate`; a ChatGPT binding needs exact account `read`.
+API-key, imported `codex_pat`, and OAuth sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
+needs exact Secret `operate`; a managed `codex_pat` source needs exact account `read`.
 Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
@@ -115,9 +118,11 @@ reference and Driver identity. For a ChatGPT account, it verifies the issued
 access-token reference and private Backend, member Driver, and workspace
 ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
-with `runtime`; Kubernetes requires managed authentication and admits OAuth only
-for Compute-owned dedicated Codex without a Sandbox Driver, so an unsupported
-binding fails before predecessors stop.
+with `runtime`. Kubernetes `validateHarnessAuth` requires dedicated Codex for
+both imported and managed `codex_pat` sources. OAuth additionally requires
+Compute-owned storage without a Sandbox Driver. Deployment and guided
+provisioning reject unsupported combinations before admitting work or stopping
+predecessors.
 
 Host credential changes can affect a runtime revision after restart without
 redeployment; see the
@@ -146,7 +151,7 @@ backend ownership from OCC state and passes an ephemeral `ComputeRevisionContext
 without reading credential bytes or rewriting the revision. Compute then reads
 the canonical CP source, verifies the admitted Secret UID or managed-account
 ownership, and delivers only selected fields into the DP revision Secret.
-Missing or replaced sources fail preparation. ChatGPT retains the exact account token/workspace source.
+Missing or replaced sources fail preparation. Managed PATs retain the exact account-owned token source.
 Inactive revision history keeps references without retaining their sources
 indefinitely; drafts, active revisions, and pending deployments block source deletion.
 
@@ -160,8 +165,8 @@ Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
 from the immutable native model Configuration; admission requires all selected
 models and fallbacks to use the same supported provider. Dedicated Codex receives
-the key or account token/workspace through a revision-owned DP projection. A
-directly supplied service account token delivers only `CODEX_ACCESS_TOKEN` as the
+the key or account token through a revision-owned DP projection. Both
+imported and managed PATs deliver only `CODEX_ACCESS_TOKEN` as the
 model credential; its separate Gateway receives none.
 Neither gateway-only Configuration secret bindings nor initial runtime
 provisioning, which creates only transport/channel groups, can supply model auth.
@@ -178,7 +183,9 @@ and Kubernetes workload identity credentials stay separate.
 `GATEWAY_RUNTIME_ENTRYPOINT`
 
 Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
-stdin; managed account login forces the admitted workspace; direct service account token login uses `--with-access-token` without a caller-supplied workspace, and native whoami validates and hydrates identity. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
+stdin; both managed and imported PAT sources use `CODEX_LOGIN_MODE=codex_pat`
+and `--with-access-token`. Native whoami validates and hydrates identity;
+control-plane checks retain managed account and workspace ownership. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
 inputs, failed login, or a failed bounded native turn against the primary model
 (under the restricted [probe policy](../reference/harness-execution.md#harness-authentication))
 prevent app-server startup and readiness. API-key and service-account login
@@ -226,33 +233,52 @@ Secret values.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareOAuthCredentials`,
 `removeOAuthBootstrap`
 
-After dedicated predecessors stop, Compute claims the source Secret with an atomic
-resource-version update, binding its immutable UID to the Agent and PVC UID.
-Single-cluster source and seed share the tenant namespace; two-cluster sources
-use the control client. Seed Secret,
-bootstrap Deployment, and private PVC use the resolved execution-plane namespace
-and client.
-A bootstrap-only Deployment runs
+After predecessors stop, Compute atomically claims the source Secret's immutable
+UID for the Agent and PVC. Single-cluster source and seed share the tenant
+namespace; two-cluster sources use control, while seed, Job, and PVC use execution.
+A create-once Job runs
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT`
-and writes native auth and a generation receipt to disk. Repeating
-that generation preserves the bundle. A new selected source
-can replace it after predecessor termination: the script empties `codex-home`,
-writes through exclusive temporaries, and re-reads both files before readiness.
+and writes native auth and a generation receipt. Repeating that generation
+preserves the bundle; a new source empties `codex-home`, writes exclusive
+temporaries, and re-reads both files before successful exit. Kernel-owned
+`flock` serializes duplicate writers. The
+[bootstrap policy](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job)
+defines retries and deadline; pending observations reuse the same Job, accepting
+equivalent Kubernetes resource quantities. `retireOAuthBootstrapDeployment`
+foreground-deletes any exact owned writer Deployment and waits for its Pods
+before admitting the Job; seed and claim remain available.
 A later non-OAuth revision's private-state init container removes `codex-home`.
 
-Compute observes bootstrap readiness, replaces the original Secret value with a
-consumed marker, removes the seed Secret, and waits for bootstrap Pods to
-terminate; only then can Codex start. Its OAuth startup branch opens existing
+Compute observes `Complete`, replaces the original Secret value with a consumed
+marker, foreground-deletes the Job, waits for its exact Pods to disappear, and
+removes the seed Secret; only then can Codex start. Recovery from a consumed
+marker repeats cleanup, never reseeding. Its OAuth startup branch opens existing
 auth, validates the receipt, and runs the ordinary model probe. Native refresh
 writes the same persistent file. Later revisions retain the source and reopen disk;
 a missing file or changed PVC fails with reconnect required.
 
-Token brokerage remains separate work in progress. OCE never refreshes
-a consumed bundle or restores its seed, and the source seal prevents ordinary
-Secret updates from resetting custody.
+For `Failed`, `oauthBootstrapFailureEvidence` captures bounded Job/Pod identities,
+fixed reasons, scheduling, and actual init/main container exits and timestamps;
+it excludes process output and credentials. Compute throws that evidence with
+the terminal preparation error. In
+`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`, OCC commits
+failure evidence and exact runtime-retirement work together through
+`packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.enqueueRepositoryCleanup`.
+`ControllerWorker.processRepositoryCleanup` resumes `stopRevision` after restart
+and defers incomplete cleanup, including without repository credentials.
+The deployment status retains this evidence after cleanup and exposes cleanup's
+separate status and next attempt. Console polls unfinished cleanup even after
+failure. The failed deployment cannot create another Job without a new Deploy.
+
+Token brokerage remains deferred. Consumed markers and source seals prevent OCE from restoring or refreshing credentials.
 
 ## Debugging and Verification
 
+- `node --test tests/integration/kubernetes-oauth-bootstrap-real.test.mjs` with
+  the [fixture prerequisites](../testing/kubernetes.md#kubernetes-http-fixture)
+  proves Job handoff and retry exhaustion through the real API/worker and cluster
+  with synthetic provider credentials. PostgreSQL worker integration separately
+  checks that failed cleanup resumes after restart without preparing again.
 - `node --test tests/conformance/plugin-compute.test.mjs` checks the filtered
   Codex child environments, startup-derived listener hash, and retained wrapper
   token. The runtime-image startup test checks the native Codex shell without a
@@ -290,6 +316,13 @@ Secret updates from resetting custody.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 11:55: Retire owned Deployment writers before Jobs and persist bounded failure evidence before resumable cleanup. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
+
+- 2026-10-09 16:40: Replace the OAuth writer Deployment with a bounded Job and persist terminal failure with resumable cleanup in the accompanying change. (authoring-run/991ba230-4db6-45cb-8456-7561ee7bd446 - f92cf60b2ae4740a93bdd41e94e8f1c7fc92218f)
+
+- 2026-10-07 13:44: Reject imported and managed PAT bindings outside dedicated Codex during admission. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 09be9c241)
+- 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
 - 2026-10-03 15:38: Merge current credential flow while preserving shared-namespace source placement. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 94364ae9)
 

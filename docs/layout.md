@@ -21,6 +21,17 @@ keep its dependency installation separate from the root workspace.
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
 
+Within `internal/occcli/`, `cli.go` assembles the command tree and resource
+commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
+`agent_runtime.go` owns runtime inspection, revision selection for runtime reads,
+and log polling. `agent_runtime_output.go` owns runtime log text, notices, and Pod
+diagnostics. `output.go` owns resource tables, structured output, and shared
+formatting helpers.
+
+Within `internal/occdev/`, `openshell_assets.go` owns local OpenShell chart and
+manifest selection, verified downloads, and source extraction. `openshell.go`
+owns their deployment, workspace resource rendering, and image import.
+
 ## Source ownership
 
 | Path                                                      | Responsibility                                                                                               |
@@ -52,6 +63,17 @@ behavior dependent on contracts; put implementation-specific behavior in the
 owning Driver or Backend and wire it through composition. See
 [platform architecture](design.md) for component interactions, implementation
 status, and remaining design requirements.
+
+Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
+container/Sandbox log types. `index.ts` remains their public export entrypoint.
+
+Within controller composition, `installation-presets.ts` owns Preset file loading
+and bundled-version assembly; `installation-config.ts` owns Driver composition.
+
+HTTP error details live in `apps/controller/src/http/error-details.ts`.
+It translates schema failures into detail paths and expected values. `http/errors.ts`
+owns platform-error mapping, response formatting, and removal of request values
+from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
 uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled

@@ -22,13 +22,13 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        {{- range .Values.api.clients }}
+        {{- range $index, $client := .Values.api.clients }}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .namespace | quote }}
+              kubernetes.io/metadata.name: {{ $client.namespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml .podLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" (printf "api.clients[%d].podLabels" $index) "value" $client.podLabels) | nindent 14 }}
         {{- end }}
       ports:
         - protocol: TCP
@@ -71,13 +71,8 @@ spec:
 {{- end }}
 {{- if .Values.api.modelDiscoveryCidrs }}
 {{- range $cidr := .Values.api.modelDiscoveryCidrs }}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" (toString $cidr)) }}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) (toString $cidr)) }}
 {{- fail "api.modelDiscoveryCidrs entries must identify exactly one IPv4 host with /32" }}
-{{- end }}
-{{- range $octet := splitList "." (trimSuffix "/32" $cidr) }}
-{{- if gt (int $octet) 255 }}
-{{- fail "api.modelDiscoveryCidrs contains an invalid IPv4 address" }}
-{{- end }}
 {{- end }}
 {{- end }}
 ---
@@ -170,7 +165,7 @@ spec:
 {{- end }}
 {{- if .Values.backend.chatgpt.enabled }}
 {{- $providerCidr := .Values.backend.chatgpt.providerCidr }}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" $providerCidr) }}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) $providerCidr) }}
 {{- fail "backend.chatgpt.providerCidr must identify one IPv4 /32 destination for api.chatgpt.com:443; it does not configure a forward proxy" }}
 {{- end }}
 ---

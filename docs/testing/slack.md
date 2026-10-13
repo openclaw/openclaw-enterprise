@@ -1,6 +1,9 @@
 # Slack tests
 
-Verify live Slack ingress and a gateway-authored reply through dedicated Codex.
+Use the [shipped QA matrix](qa-matrix.md) for single-message live Slack ingress and a
+gateway-authored threaded reply through dedicated Codex. Until the protected matrix
+lane is qualified, the focused suite below also retains single-message delivery,
+credential-placement, proxy-isolation, and Socket Mode checks.
 Prepare the [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets)
 and [private credential file](README.md#requirements-and-credentials) first.
 
@@ -19,13 +22,18 @@ must have a literal IP and explicit port. Both bots must belong to the same
 workspace and have joined the channel. Use an existing Socket Mode app configured
 to receive the test messages.
 
+The in-cluster API uses the same approved proxy to validate Slack credentials
+before deployment. The fixture grants that API egress to the exact proxy address
+and port; the worker keeps its existing isolation policy.
+
 ```sh
 OCC_TEST_SLACK_LIVE=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-slack-real.test.mjs
 ```
 
-This posts real Slack messages and leaves them in the channel. It verifies the
-reply and exact runtime/session evidence. The sender bot must differ from the
+Both suites post one real message and verify its response, exact native session,
+and absence of delayed duplicate replies. They leave messages in the test channel.
+Run them serially so Socket Mode consumers do not compete. The sender bot must differ from the
 Agent bot; its credential remains with the test runner. Run this file and the
 ordinary runtime file for both coverage groups. See [Slack test settings](#slack-test-environment).
 
@@ -33,7 +41,7 @@ ordinary runtime file for both coverage groups. See [Slack test settings](#slack
 
 Slack is the only channel with live integration coverage; this suite does not
 verify Teams. The test temporarily adds `allowBots: "mentions"`,
-`users: ["<sender-bot-user-id>"]`, and `replyToMode: "off"` only to the exact test
+`users: ["<sender-bot-user-id>"]`, and a reply policy only on the exact test
 channel. `requireMention` stays enabled. Do not enable bot access account-wide.
 
 ## Slack test environment
@@ -41,9 +49,9 @@ channel. `requireMention` stays enabled. Do not enable bot access account-wide.
 `OCC_TEST_SLACK_LIVE=1` enables
 [`harness-topology-k3d-slack-real.test.mjs`](../../tests/integration/harness-topology-k3d-slack-real.test.mjs).
 Run the ordinary runtime file separately for its coverage. The Slack case uses the same production k3d,
-PostgreSQL, image, and model-turn prerequisites, then posts a real message and
-waits for a gateway-authored reply. It does not delete the Slack messages it
-creates.
+PostgreSQL, image, and model prerequisites. It retains root-reply delivery and
+duplicate observation until the protected QA lane is qualified; the matrix also
+checks threaded replies and native outbound messages.
 
 | Variable                          | Requirement                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------ |

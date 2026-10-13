@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomInt, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -8,11 +8,16 @@ import {
   redactRuntimeLogText,
 } from "../../packages/occ/src/runtime-logs/redact.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
-import { readRuntimeLogPage } from "../../packages/occ/src/runtime-logs/read.ts";
+import {
+  compareRuntimeLogTime,
+  readRuntimeLogPage,
+} from "../../packages/occ/src/runtime-logs/read.ts";
 import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
+  runtimeLogLineHash,
+  validRuntimeLogFrontierTime,
 } from "../../packages/occ/src/runtime-logs/cursor.ts";
 
 const corpusUrl = new URL("../fixtures/runtime-logs/canary-corpus.txt", import.meta.url);
@@ -83,6 +88,22 @@ async function corpusLines(values) {
   lines.push(`\u001b[31mcolored\u001b[0m output\u0007 with ${values.CONTROL} and \u0000nul`);
   return lines.map((raw, index) => ({ time: lineTime(index), raw }));
 }
+
+test("runtime status refuses an invalid Driver timestamp instead of normalizing it", async () => {
+  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
+    await import("../helpers/runtime-logs.mjs");
+  const computeDriver = createRuntimeLogComputeDriver({
+    state: { observedAt: "2026-02-30" },
+  });
+  const fixture = await createRuntimeLogFixture({ computeDriver });
+  const target = await fixture.deployAgent();
+
+  const runtime = await fixture.request("GET", target.runtimePath);
+
+  assert.equal(runtime.status, 503, runtime.text);
+  assert.equal(runtime.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+  assert.equal(runtime.text.includes("2026-03-02"), false);
+});
 
 test("runtime log route bodies never contain planted credentials, prompts or protocol output", async () => {
   const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
@@ -1429,7 +1450,16 @@ test("runtime log cursor context stops at the page byte bound before a future EN
   const reader = pollReader();
   const page = await reader.poll([
     timedLog(pemBegin, 0),
-    ...Array.from({ length: 70 }, (_, i) => timedLog("A".repeat(8192), i + 1)),
+    ...Array.from({ length: 70 }, (_, i) =>
+      timedLog(
+        JSON.stringify({
+          level: "info",
+          subsystem: "gateway",
+          message: "ordinary diagnostic ".repeat(500),
+        }),
+        i + 1,
+      ),
+    ),
     timedLog(pemEnd, 72),
   ]);
   assert.equal(page.truncated, true);
@@ -1477,6 +1507,444 @@ test("runtime log cursor context resets for changed stream, view, expiry and mid
       );
     });
   }
+});
+
+async function runtimeLogRoutePoller() {
+  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
+    await import("../helpers/runtime-logs.mjs");
+  const computeDriver = createRuntimeLogComputeDriver();
+  const fixture = await createRuntimeLogFixture({ computeDriver });
+  const target = await fixture.deployAgent();
+  let cursor;
+  return {
+    startView() {
+      cursor = undefined;
+    },
+    async poll(lines, { tailLines = "1000", truncated = false } = {}) {
+      computeDriver.state.lines = lines;
+      computeDriver.state.truncated = truncated;
+      const query = new URLSearchParams({
+        source: "gateway",
+        tailLines,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      const response = await fixture.request("GET", target.logsPath(query.toString()));
+      assert.equal(response.status, 200, response.text);
+      assert.equal(typeof response.data.cursor, "string");
+      cursor = response.data.cursor;
+      return response.data;
+    },
+  };
+}
+
+test("runtime log route polling preserves identical same-time line occurrences", async () => {
+  const reader = await runtimeLogRoutePoller();
+  const repeated = timedLog("retrying in 5s", 0);
+  // The Driver contract supplies raw lines without requiring unique timestamps.
+  // A later poll must subtract the two delivered occurrences, not all equal text.
+  assert.deepEqual(messages(await reader.poll([repeated, repeated])), [
+    "retrying in 5s",
+    "retrying in 5s",
+  ]);
+  const burst = [repeated, repeated, repeated, timedLog("worker connected", 0)];
+  assert.deepEqual(messages(await reader.poll(burst)), ["retrying in 5s", "worker connected"]);
+  assert.deepEqual(
+    messages(await reader.poll(burst)),
+    [],
+    "replaying the whole overlap must show no duplicate",
+  );
+  assert.deepEqual(messages(await reader.poll([...burst, timedLog("retrying in 5s", 1)])), [
+    "retrying in 5s",
+  ]);
+
+  // A new view can deliver more occurrences than its bounded cursor remembers.
+  // An incomplete count cannot establish a new copy on unchanged follow polls.
+  reader.startView();
+  const saturated = Array.from({ length: 17 }, () => timedLog("retrying in 5s", 0));
+  assert.equal(messages(await reader.poll(saturated)).length, 17);
+  assert.deepEqual(
+    messages(await reader.poll(saturated)),
+    [],
+    "a saturated frontier must not replay old copies",
+  );
+  assert.deepEqual(
+    messages(await reader.poll(saturated)),
+    [],
+    "repeated unchanged polls must remain empty",
+  );
+  assert.deepEqual(messages(await reader.poll([...saturated, timedLog("worker connected", 1)])), [
+    "worker connected",
+  ]);
+});
+
+test("runtime log route polling keeps a cut timestamp group conservative when the tail expands", async () => {
+  const reader = await runtimeLogRoutePoller();
+  const old = Array.from({ length: 3 }, () => timedLog("retrying in 5s", 0));
+  assert.equal(messages(await reader.poll(old, { tailLines: "2" })).length, 2);
+  assert.deepEqual(
+    messages(await reader.poll(old)),
+    [],
+    "expanding the tail does not make an old copy new",
+  );
+  assert.deepEqual(
+    messages(await reader.poll([...old, timedLog("retrying in 5s", 0)])),
+    [],
+    "an incomplete frontier cannot distinguish another identical copy",
+  );
+  assert.deepEqual(messages(await reader.poll([...old, timedLog("worker connected", 1)])), [
+    "worker connected",
+  ]);
+  assert.deepEqual(
+    messages(
+      await reader.poll([...old, timedLog("worker connected", 1), timedLog("worker connected", 1)]),
+    ),
+    ["worker connected"],
+  );
+
+  reader.startView();
+  assert.equal(messages(await reader.poll(old, { truncated: true })).length, 2);
+  assert.deepEqual(
+    messages(await reader.poll(old)),
+    [],
+    "a Driver byte cut cannot establish a complete first timestamp group",
+  );
+});
+
+test("runtime log route polling counts undelivered copies after its page byte cut", async () => {
+  const reader = await runtimeLogRoutePoller();
+  const padding = Array.from({ length: 20 }, (_, index) =>
+    timedLog(
+      JSON.stringify({
+        level: "info",
+        subsystem: "gateway",
+        message: `line ${index} ${"x ".repeat(4096)}`,
+      }),
+      0,
+    ),
+  );
+  const repeated = timedLog(
+    JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `retrying ${"x ".repeat(4096)}`,
+    }),
+    1,
+  );
+  const lines = [...padding, ...Array.from({ length: 80 }, () => repeated)];
+  const first = await reader.poll(lines);
+  assert.equal(first.truncated, true);
+  const delivered = messages(first).length;
+  assert.ok(delivered > padding.length && delivered < lines.length);
+  assert.ok(Buffer.byteLength(JSON.stringify(first), "utf8") <= 512 * 1024);
+  const next = await reader.poll(lines);
+  assert.equal(
+    messages(next).length,
+    lines.length - delivered,
+    "a page cut leaves the remaining copies to deliver at the complete frontier",
+  );
+  assert.deepEqual(messages(await reader.poll(lines)), []);
+});
+
+test("runtime log cursor keeps legacy frontier counts conservative", async () => {
+  const reader = pollReader();
+  const repeated = timedLog("retrying in 5s", 0);
+  await reader.poll([repeated, repeated]);
+  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  const cursor = reader.codec.encode(reader.binding, { ...position, frontierComplete: undefined });
+  assert.deepEqual(
+    messages(await reader.poll([repeated, repeated, repeated], { query: { cursor } })),
+    [],
+  );
+  assert.deepEqual(
+    messages(await reader.poll([repeated, repeated, timedLog("retrying in 5s", 1)])),
+    ["retrying in 5s"],
+  );
+});
+
+test("runtime log polling delivers a timestamp group larger than the hash history once", async () => {
+  for (const size of [16, 17, 20]) {
+    for (const lead of [[timedLog("boot", -1)], []]) {
+      const reader = pollReader();
+      const label = `${size} distinct lines${lead.length === 0 ? " without an earlier line" : ""}`;
+      const group = Array.from({ length: size }, (_, index) =>
+        timedLog(`worker ${index} ready`, 0),
+      );
+      const lines = [...lead, ...group];
+      assert.equal(messages(await reader.poll(lines)).length, lines.length, label);
+      for (let poll = 0; poll < 3; poll += 1) {
+        assert.deepEqual(messages(await reader.poll(lines)), [], `${label}: poll ${poll} replays`);
+      }
+      lines.push(timedLog("worker late ready", 0), timedLog("worker 0 ready", 0));
+      assert.deepEqual(
+        messages(await reader.poll(lines)),
+        ["worker late ready", "worker 0 ready"],
+        `${label}: later lines at the same time`,
+      );
+      assert.deepEqual(messages(await reader.poll(lines)), [], `${label}: after later lines`);
+      lines.push(timedLog("worker connected", 1));
+      assert.deepEqual(messages(await reader.poll(lines)), ["worker connected"], label);
+    }
+  }
+});
+
+test("runtime log polling counts mixed identical and distinct lines at one timestamp", async () => {
+  const reader = pollReader();
+  const lines = [timedLog("boot", -1)];
+  for (let index = 0; index < 12; index += 1) {
+    lines.push(timedLog("retrying in 5s", 0), timedLog(`attempt ${index}`, 0));
+  }
+  assert.equal(messages(await reader.poll(lines)).length, 25);
+  assert.deepEqual(messages(await reader.poll(lines)), []);
+  lines.push(
+    timedLog("retrying in 5s", 0),
+    timedLog("attempt 0", 0),
+    timedLog("retrying in 5s", 0),
+  );
+  assert.deepEqual(messages(await reader.poll(lines)), [
+    "retrying in 5s",
+    "attempt 0",
+    "retrying in 5s",
+  ]);
+  assert.deepEqual(messages(await reader.poll(lines)), []);
+});
+
+test("runtime log polling pages through a large timestamp group and ends", async () => {
+  const reader = pollReader();
+  const big = (index) =>
+    timedLog(
+      JSON.stringify({
+        level: "info",
+        subsystem: "gateway",
+        message: `line ${index} ${"x ".repeat(4096)}`,
+      }),
+      0,
+    );
+  const lines = [timedLog("boot", -1), ...Array.from({ length: 200 }, (_, index) => big(index))];
+  const seen = [];
+  let polls = 0;
+  for (; polls < 20; polls += 1) {
+    const page = messages(await reader.poll(lines));
+    if (page.length === 0) {
+      break;
+    }
+    seen.push(...page);
+  }
+  assert.ok(polls < 20, "pagination must end");
+  assert.equal(seen.length, 201);
+  assert.equal(new Set(seen).size, 201, "no line is delivered twice");
+  assert.deepEqual(messages(await reader.poll(lines)), []);
+});
+
+test("runtime log polling suppresses a forgotten timestamp group when completeness is unknown", async () => {
+  const reader = pollReader();
+  const all = Array.from({ length: 30 }, (_, index) => timedLog(`worker ${index} ready`, 0));
+  // The requested tail clips the group, so the cursor cannot count it from its start.
+  const tail = all.slice(-20);
+  const query = { tailLines: 20 };
+  assert.equal(messages(await reader.poll(tail, { query })).length, 20);
+  assert.deepEqual(messages(await reader.poll(tail, { query })), []);
+  assert.deepEqual(messages(await reader.poll(all)), [], "an expanded tail adds no old line");
+  assert.deepEqual(messages(await reader.poll([...all, timedLog("worker connected", 1)])), [
+    "worker connected",
+  ]);
+});
+
+test("runtime log polling checks a counted timestamp group against its hashes", async () => {
+  const reader = pollReader();
+  const group = Array.from({ length: 10 }, (_, index) => timedLog(`worker ${index} ready`, 0));
+  assert.equal(messages(await reader.poll([timedLog("boot", -1), ...group])).length, 11);
+  // Rotation removed the start of the group; a short page no longer begins with it.
+  const fresh = Array.from({ length: 5 }, (_, index) => timedLog(`worker ${index} joined`, 0));
+  assert.deepEqual(
+    messages(await reader.poll([...group.slice(5), ...fresh])),
+    fresh.map(({ raw }) => raw),
+  );
+  assert.deepEqual(messages(await reader.poll([...group.slice(5), ...fresh])), []);
+});
+
+test("runtime log polling counts a timestamp group past an untimed line", async () => {
+  const reader = pollReader();
+  const lines = [
+    timedLog("boot", -1),
+    ...Array.from({ length: 20 }, (_, index) => timedLog(`worker ${index} ready`, 0)),
+  ];
+  assert.equal(messages(await reader.poll(lines)).length, 21);
+  lines.push(timedLog("untimed", null), timedLog("worker late ready", 0));
+  assert.deepEqual(messages(await reader.poll(lines)), ["untimed", "worker late ready"]);
+  assert.deepEqual(messages(await reader.poll(lines)), ["untimed"]);
+});
+
+test("runtime log polling stops counting by position after tail-clipped polls", async () => {
+  const reader = pollReader();
+  const group = [timedLog("worker 0 ready", 0)];
+  const seen = messages(await reader.poll([timedLog("boot", -1), ...group]));
+  assert.equal(seen.length, 2);
+  for (let index = 1; index < 25; index += 1) {
+    group.push(timedLog(`worker ${index} ready`, 0));
+  }
+  // The view's tail changes between polls, so some polls cannot see the group start.
+  for (const tailLines of [4, 20, 1000]) {
+    const lines = [timedLog("boot", -1), ...group].slice(-tailLines);
+    seen.push(...messages(await reader.poll(lines, { query: { tailLines } })));
+  }
+  assert.equal(new Set(seen).size, seen.length, "no line is delivered twice");
+  assert.deepEqual(messages(await reader.poll([timedLog("boot", -1), ...group])), []);
+});
+
+test("runtime log cursor without a frontier count keeps legacy cursors usable", async () => {
+  const strip = (reader) => {
+    const { frontierCount: _count, ...position } = reader.codec.decode(
+      reader.cursor,
+      reader.binding,
+    ).position;
+    return reader.codec.encode(reader.binding, position);
+  };
+  const full = pollReader();
+  const lines = [
+    timedLog("boot", -1),
+    ...Array.from({ length: 20 }, (_, index) => timedLog(`worker ${index} ready`, 0)),
+  ];
+  await full.poll(lines);
+  assert.equal(full.codec.decode(full.cursor, full.binding).position.frontierCount, 20);
+  assert.deepEqual(messages(await full.poll(lines, { query: { cursor: strip(full) } })), []);
+  assert.deepEqual(messages(await full.poll([...lines, timedLog("worker connected", 1)])), [
+    "worker connected",
+  ]);
+
+  const short = pollReader();
+  const few = [timedLog("boot", -1), timedLog("retrying in 5s", 0), timedLog("retrying in 5s", 0)];
+  await short.poll(few);
+  assert.deepEqual(
+    messages(
+      await short.poll([...few, timedLog("retrying in 5s", 0)], {
+        query: { cursor: strip(short) },
+      }),
+    ),
+    ["retrying in 5s"],
+  );
+
+  const position = full.codec.decode(full.cursor, full.binding).position;
+  const inconsistent = full.codec.encode(full.binding, {
+    ...position,
+    lastHashes: ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"],
+    frontierCount: 1,
+  });
+  assert.equal(full.codec.decode(inconsistent, full.binding).status, "invalid");
+  const untimed = full.codec.encode(full.binding, {
+    ...position,
+    lastTime: null,
+    lastHashes: [],
+    frontierCount: 1,
+  });
+  assert.equal(full.codec.decode(untimed, full.binding).status, "invalid");
+});
+
+function cursorCodecFixture() {
+  const codec = createRuntimeLogCursorCodec(randomBytes(32).toString("hex"));
+  const binding = {
+    principalId: "synthetic-person",
+    agentId: "agent-test",
+    revisionId: "revision-test",
+    source: "gateway",
+  };
+  const issuedAt = Date.parse("2026-09-30T12:10:00Z");
+  const position = {
+    viewId: "rlv_synthetic",
+    pod: "gateway-test-0",
+    podUid: "synthetic-pod-0",
+    restartCount: 0,
+    previous: false,
+    lastTime: "2026-09-30T12:00:00Z",
+    lastHashes: [runtimeLogLineHash("worker ready")],
+    frontierComplete: true,
+    frontierCount: 1,
+    issuedAt,
+  };
+  const status = (cursor, { now = issuedAt, bound = binding } = {}) =>
+    codec.decode(cursor, bound, now).status;
+  return { codec, binding, issuedAt, position, status };
+}
+
+test("runtime log cursor codec refuses other bindings, altered envelopes and future issue times", () => {
+  const { codec, binding, issuedAt, position, status } = cursorCodecFixture();
+  const cursor = codec.encode(binding, position);
+  assert.equal(status(cursor), "valid");
+  for (const [label, bound] of [
+    ["agent", { ...binding, agentId: "agent-other" }],
+    ["revision", { ...binding, revisionId: "revision-other" }],
+    ["source", { ...binding, source: "sandbox" }],
+    // Fields are delimited: moving text between them is another binding.
+    ["boundary", { ...binding, principalId: "synthetic-personagent", agentId: "-test" }],
+  ]) {
+    assert.equal(status(cursor, { bound }), "invalid", label);
+  }
+  // Only the exact three-part v1 envelope verifies; a short MAC is refused, not thrown.
+  const [, payload, mac] = cursor.split(".");
+  for (const [label, forged] of [
+    ["extra part", `${cursor}.extra`],
+    ["version", `v2.${payload}.${mac}`],
+    ["short MAC", `v1.${payload}.${mac.slice(0, -1)}`],
+  ]) {
+    assert.equal(status(forged), "invalid", label);
+  }
+  // Expiry starts strictly after the TTL; up to one minute of clock skew is tolerated.
+  assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS }), "valid");
+  assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS + 1 }), "expired");
+  assert.equal(status(cursor, { now: issuedAt - 60_000 }), "valid");
+  assert.equal(status(cursor, { now: issuedAt - 60_001 }), "invalid");
+});
+
+test("runtime log cursor codec keeps the newest 48 hashes, hashes raw lines exactly and needs a 32-character secret", () => {
+  const { codec, binding, issuedAt, position } = cursorCodecFixture();
+  const hashes = Array.from({ length: 49 }, (_, index) => runtimeLogLineHash(`worker ${index}`));
+  const many = codec.encode(binding, { ...position, lastHashes: hashes, frontierCount: 49 });
+  assert.deepEqual(codec.decode(many, binding, issuedAt).position.lastHashes, hashes.slice(-48));
+  // Frontier hashes compare raw lines exactly.
+  assert.notEqual(runtimeLogLineHash("worker ready"), runtimeLogLineHash("worker ready "));
+  assert.throws(() => createRuntimeLogCursorCodec("s".repeat(31)), TypeError);
+  assert.doesNotThrow(() => createRuntimeLogCursorCodec("s".repeat(32)));
+});
+
+test("runtime log cursor refuses signed positions with malformed fields", () => {
+  const { codec, binding, position, status } = cursorCodecFixture();
+  assert.equal(status(codec.encode(binding, position)), "valid");
+  for (const change of [
+    { viewId: 7 },
+    { podUid: null },
+    { restartCount: -1 },
+    { restartCount: 1.5 },
+    { previous: "false" },
+    { lastTime: 5 },
+    { lastHashes: ["short"] },
+    { issuedAt: String(position.issuedAt) },
+    { frontierComplete: "true" },
+    { frontierCount: "1" },
+    { pemOpen: false, pemAfterTime: [position.lastTime] },
+  ]) {
+    // Authenticated schema validation, separately from MAC tampering.
+    assert.equal(
+      status(codec.encode(binding, { ...position, ...change })),
+      "invalid",
+      JSON.stringify(change),
+    );
+  }
+});
+
+test("runtime log frontier times accept only kubelet UTC and order trimmed fractions", () => {
+  for (const [value, valid] of [
+    ["2026-09-30T12:00:00Z", true],
+    ["2026-09-30T12:00:00.123456789Z", true],
+    ["2026-09-30T12:00:00.1234567890Z", false],
+    ["2026-09-30T12:00:00+00:00", false],
+    ["+012026-09-30T12:00:00Z", false],
+    ["2026-02-30T12:00:00Z", false],
+    ["2026-13-01T12:00:00Z", false],
+  ]) {
+    assert.equal(validRuntimeLogFrontierTime(value), valid, value);
+  }
+  // Kubelet trims trailing zeros from the fraction.
+  assert.equal(compareRuntimeLogTime("2026-09-30T12:00:00Z", "2026-09-30T12:00:00.000Z"), 0);
+  assert.equal(compareRuntimeLogTime("2026-09-30T12:00:00.5Z", "2026-09-30T12:00:00.123Z"), 1);
 });
 
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
@@ -1601,7 +2069,16 @@ test("runtime log cursor keeps the frontier stable on replay and does not inspec
   assert.equal(replay.pemAfterTime, prior.pemAfterTime);
   // A malformed future line beyond the response cut is not consumed evidence.
   const page = await reader.poll([
-    ...Array.from({ length: 70 }, (_, i) => timedLog("A".repeat(8192), i + 1)),
+    ...Array.from({ length: 70 }, (_, i) =>
+      timedLog(
+        JSON.stringify({
+          level: "info",
+          subsystem: "gateway",
+          message: "ordinary diagnostic ".repeat(500),
+        }),
+        i + 1,
+      ),
+    ),
     { raw: pemEnd, time: null },
   ]);
   assert.equal(page.truncated, true);
@@ -1658,4 +2135,1029 @@ test("runtime log cursor preserves an observed BEGIN on uncertain initial and le
       );
     }
   }
+});
+
+test("runtime container wire pages include escaped messages, cursor and HTTP metadata in the limit", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("wire-budget");
+  const started = Date.now() - 1000;
+  fixture.computeDriver.state.lines = Array.from({ length: 70 }, (_, index) => ({
+    time: new Date(started + index).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; 网络🙂 process arguments: ${'--option="value" '.repeat(500)}`,
+    }),
+  }));
+  const seen = [];
+  let cursor;
+  let pages = 0;
+  let firstCount;
+  do {
+    const response = await fixture.request(
+      "GET",
+      target.logsPath(
+        `source=gateway&tailLines=200${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200, response.text.slice(0, 200));
+    assert.equal(response.body.meta.requestId.length, 40);
+    assert.equal(
+      Buffer.byteLength(response.text, "utf8"),
+      Buffer.byteLength(JSON.stringify(response.body), "utf8"),
+      "the actual formatter matches measured JSON, including Unicode",
+    );
+    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    if (pages === 0) {
+      firstCount = lines.length;
+      assert.equal(response.data.truncated, true);
+    }
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    cursor = response.data.cursor;
+    pages += 1;
+    if (!response.data.truncated) {
+      break;
+    }
+    assert.ok(lines.length > 0, "a byte-cut page must advance");
+  } while (pages < 10);
+  assert.ok(firstCount > 0 && firstCount < 70);
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 70 }, (_, index) => index),
+  );
+  const replay = await fixture.request("GET", target.logsPath(`source=gateway&cursor=${cursor}`));
+  assert.deepEqual(replay.data.records, []);
+  assert.equal(
+    fixture.computeDriver.calls.filter(({ operation }) => operation === "read").length,
+    pages + 1,
+    "prefix builds do not read the Driver again",
+  );
+  assert.equal(
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view")
+      .length,
+    1,
+    "prefix builds and continuation do not open extra views",
+  );
+  const download = await fixture.request("GET", target.logsPath("source=gateway&download=true"));
+  assert.equal(download.status, 200);
+  assert.ok(Buffer.byteLength(download.text, "utf8") <= 512 * 1024);
+});
+
+test("runtime container checkpoint suffixes survive append-only growth to a full tail", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const { tail, identical } of [
+    { tail: 100, identical: false },
+    { tail: 300, identical: false },
+    { tail: 100, identical: true },
+  ]) {
+    const cursorSecret = randomBytes(32).toString("hex");
+    const fixture = await createRuntimeLogFixture({
+      agentRuntimeLogs: { enabled: true, cursorSecret },
+    });
+    const target = await fixture.deployAgent("wire-budget-growing-tail");
+    const time = new Date(Date.now() - 1000).toISOString();
+    const row = (index, large = false) => ({
+      time,
+      raw:
+        large && tail === 300
+          ? `[info] row=${index}; process arguments: ${'"'.repeat(3000)}`
+          : JSON.stringify({
+              level: "info",
+              subsystem: "gateway",
+              message: `row=${identical ? 7 : index}; ${large || identical ? '--option="value" '.repeat(500) : "anchor"}`,
+            }),
+    });
+    const ids = (page) => messages(page).map((message) => Number(/row=(\d+);/.exec(message)[1]));
+    fixture.computeDriver.state.lines = Array.from({ length: 20 }, (_, index) => row(index));
+    const prime = await fixture.request("GET", target.logsPath(`source=gateway&tailLines=${tail}`));
+    assert.equal(prime.status, 200);
+    const seen = ids(prime.data);
+    assert.equal(seen.length, 20, "the baseline exceeds the retained frontier hash history");
+    fixture.computeDriver.state.lines.push(
+      ...Array.from({ length: tail - 21 }, (_, index) => row(index + 20, true)),
+    );
+    assert.ok(
+      fixture.computeDriver.state.lines.reduce(
+        (bytes, line) => bytes + Buffer.byteLength(line.raw) + 32,
+        0,
+      ) <
+        1024 * 1024,
+    );
+    let cursor = prime.data.cursor;
+    let cuts = 0;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await fixture.request(
+        "GET",
+        target.logsPath(`source=gateway&tailLines=${tail}&cursor=${cursor}`),
+      );
+      assert.equal(response.status, 200);
+      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      assert.ok(response.data.cursor.length <= 2048);
+      seen.push(...ids(response.data));
+      cuts += response.data.truncated ? 1 : 0;
+      cursor = response.data.cursor;
+      if (identical && page > 0) {
+        assert.ok(
+          response.data.records.some(
+            ({ type, reason }) => type === "gap" && reason === "window_exceeded",
+          ),
+          "full identical-value windows retain the conservative gap even when their checkpoint drains",
+        );
+      }
+      if (page === 0) {
+        assert.equal(
+          response.data.truncated,
+          true,
+          "the short window must cut the serialized page",
+        );
+        if (tail === 100 && !identical) {
+          // The previous compact cursor had ten window entries and no inherited proof.
+          const parts = cursor.split(".");
+          const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+          if (payload.cw.length === 11) {
+            payload.cw.pop();
+          }
+          const legacyPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+          const mac = createHmac("sha256", cursorSecret)
+            .update("occ-runtime-logs-cursor")
+            .update("\0")
+            .update(legacyPayload)
+            .digest("base64url");
+          const legacy = await fixture.request(
+            "GET",
+            target.logsPath(`source=gateway&tailLines=100&cursor=v1.${legacyPayload}.${mac}`),
+          );
+          assert.equal(
+            legacy.status,
+            200,
+            "legacy windows remain usable on their stable short source",
+          );
+          assert.deepEqual(
+            ids(legacy.data),
+            Array.from({ length: 99 - seen.length }, (_, index) => index + seen.length),
+          );
+        }
+        fixture.computeDriver.state.lines.push(row(tail - 1, true));
+      }
+      if (!response.data.truncated) {
+        break;
+      }
+    }
+    assert.deepEqual(
+      seen,
+      Array.from({ length: tail }, (_, index) => (identical ? 7 : index)),
+    );
+    const replay = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=${tail}&cursor=${cursor}`),
+    );
+    assert.equal(replay.status, 200);
+    assert.deepEqual(ids(replay.data), []);
+    if (tail === 300) {
+      assert.ok(cuts >= 2, "positional proof survives multiple full-tail cuts");
+    }
+  }
+});
+
+test("container byte-cut checkpoints retain untimed progress or advance mixed windows", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const mixed of [false, true]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-untimed-driver-cut");
+    const count = 330;
+    const started = Date.now() - 40_000;
+    fixture.computeDriver.state.lines = [
+      ...Array.from({ length: count }, (_, index) => ({
+        time: mixed && index > 0 ? new Date(started + index * 118).toISOString() : null,
+        raw: `[info] row=${index}; process arguments: ${'"'.repeat(3000)}`,
+      })),
+      { time: null, raw: "partial trailing row" },
+    ];
+    fixture.computeDriver.state.truncated = true;
+    assert.ok(
+      fixture.computeDriver.state.lines.reduce(
+        (bytes, line) => bytes + Buffer.byteLength(line.raw) + 32,
+        0,
+      ) <
+        1024 * 1024,
+    );
+    const seen = [];
+    let cursor;
+    let pages = 0;
+    let drained;
+    while (seen.length < count && pages < 10) {
+      const response = await fixture.request(
+        "GET",
+        target.logsPath(
+          `source=gateway&tailLines=1000${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+        ),
+      );
+      assert.equal(response.status, 200);
+      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      assert.equal(response.data.truncated, true, "the underlying Driver cut remains visible");
+      const rows = messages(response.data).map((message) => Number(/row=(\d+);/.exec(message)[1]));
+      assert.ok(rows.length > 0, "each wire cut advances through the complete fetched prefix");
+      seen.push(...rows);
+      cursor = response.data.cursor;
+      drained = response.data;
+      pages += 1;
+    }
+    assert.ok(pages > 1);
+    assert.deepEqual(
+      seen,
+      Array.from({ length: count }, (_, index) => index),
+    );
+    if (mixed) {
+      assert.ok(
+        drained.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+        "timed advancement explicitly resets the uncertain window",
+      );
+      const next = await fixture.request(
+        "GET",
+        target.logsPath(`source=gateway&tailLines=1000&cursor=${cursor}`),
+      );
+      assert.equal(next.status, 200);
+      const resumedRead = fixture.computeDriver.calls
+        .filter(({ operation }) => operation === "read")
+        .at(-1);
+      assert.ok(
+        Number.isInteger(resumedRead.sinceSeconds) && resumedRead.sinceSeconds <= 10,
+        "the supported Driver receives a recent floor instead of rereading the entire old byte-cut window",
+      );
+      continue;
+    }
+    for (let poll = 0; poll < 2; poll += 1) {
+      const replay = await fixture.request(
+        "GET",
+        target.logsPath(`source=gateway&tailLines=1000&cursor=${cursor}`),
+      );
+      assert.equal(replay.status, 200);
+      assert.equal(
+        messages(replay.data).length,
+        0,
+        "a stable byte-truncated window cannot replay its consumed untimed prefix",
+      );
+      assert.equal(replay.data.truncated, true);
+      cursor = replay.data.cursor;
+    }
+  }
+});
+
+test("runtime container wire budgeting handles empty, single and grouped withheld pages", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("wire-budget-boundaries");
+  const row = (raw, index = 0) => ({
+    raw,
+    time: new Date(Date.now() - 1000 + index).toISOString(),
+  });
+  for (const lines of [
+    [],
+    [
+      row(
+        JSON.stringify({
+          level: "info",
+          subsystem: "gateway",
+          message: `single 网络🙂 ${'--option="value" '.repeat(500)}`,
+        }),
+      ),
+    ],
+  ]) {
+    fixture.computeDriver.state.lines = lines;
+    const response = await fixture.request("GET", target.logsPath("source=gateway&tailLines=200"));
+    assert.equal(response.status, 200);
+    assert.equal(response.data.truncated, false);
+    assert.equal(response.data.records.filter(({ type }) => type === "line").length, lines.length);
+    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+  }
+  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) =>
+    row(JSON.stringify({ ordinary_metadata: "diagnostic ".repeat(900) }), index),
+  );
+  const withheld = await fixture.request("GET", target.logsPath("source=gateway&tailLines=200"));
+  assert.equal(withheld.status, 200);
+  assert.equal(
+    withheld.data.truncated,
+    false,
+    "a compact withheld run fits even when its input is large",
+  );
+  assert.equal(withheld.data.withheld, 80);
+  assert.equal(withheld.data.records[0].count, 80);
+  assert.ok(Buffer.byteLength(withheld.text, "utf8") <= 512 * 1024);
+  const replay = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${withheld.data.cursor}`),
+  );
+  assert.deepEqual(replay.data.records, []);
+});
+
+function wireContainerRows(time, count = 60) {
+  return Array.from({ length: count }, (_, index) => ({
+    time,
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; diagnostic ${'--option="value" '.repeat(500)}`,
+    }),
+  }));
+}
+
+test("container byte-window checkpoints drain full same-time and untimed tails", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const time of [new Date(Date.now() - 1000).toISOString(), null]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-window");
+    fixture.computeDriver.state.lines = wireContainerRows(time);
+    const seen = [];
+    let cursor;
+    let first;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await fixture.request(
+        "GET",
+        target.logsPath(
+          `source=gateway&tailLines=60${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+        ),
+      );
+      assert.equal(response.status, 200);
+      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      const lines = response.data.records.filter(({ type }) => type === "line");
+      if (page === 0) {
+        first = lines.length;
+        assert.equal(response.data.truncated, true);
+      }
+      seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+      cursor = response.data.cursor;
+      if (!response.data.truncated) {
+        break;
+      }
+      assert.ok(lines.length > 0);
+    }
+    assert.ok(first > 16 && first < 60);
+    assert.deepEqual(
+      seen,
+      Array.from({ length: 60 }, (_, index) => index),
+    );
+    const replay = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=60&cursor=${cursor}`),
+    );
+    assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+  }
+});
+
+test("container byte-window changes expose a fresh snapshot and fitting untimed progress", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const changed of ["value", "tail", "buffer"]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-window-change");
+    fixture.computeDriver.state.lines = wireContainerRows(null);
+    const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+    assert.equal(first.data.truncated, true);
+    if (changed === "value") {
+      fixture.computeDriver.state.lines[59] = {
+        time: null,
+        raw: JSON.stringify({ level: "info", message: "changed suffix" }),
+      };
+    }
+    if (changed === "buffer") {
+      fixture.computeDriver.state.lines.splice(25);
+    }
+    const tail = changed === "tail" ? 25 : 60;
+    const next = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=${tail}&cursor=${first.data.cursor}`),
+    );
+    assert.equal(next.status, 200);
+    assert.ok(Buffer.byteLength(next.text) <= 512 * 1024);
+    assert.ok(
+      next.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+      changed,
+    );
+    assert.ok(
+      next.data.records.some(({ type }) => type === "line"),
+      changed,
+    );
+    if (changed !== "value") {
+      assert.equal(next.data.truncated, false);
+      const replay = await fixture.request(
+        "GET",
+        target.logsPath(`source=gateway&tailLines=${tail}&cursor=${next.data.cursor}`),
+      );
+      assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0, changed);
+    }
+  }
+});
+
+test("container byte-window checkpoints retain the pre-cut deduplication baseline", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("container-window-baseline");
+  const time = new Date(Date.now() - 1000).toISOString();
+  const anchor = { time, raw: JSON.stringify({ level: "info", message: "previous diagnostic" }) };
+  fixture.computeDriver.state.lines = [anchor];
+  const initial = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
+  fixture.computeDriver.state.lines = [
+    anchor,
+    ...wireContainerRows(new Date(Date.parse(time) + 1).toISOString()),
+  ];
+  let cursor = initial.data.cursor;
+  const seen = [];
+  for (let page = 0; page < 10; page += 1) {
+    const response = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=100&cursor=${cursor}`),
+    );
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    assert.ok(lines.every(({ message }) => message !== "previous diagnostic"));
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    cursor = response.data.cursor;
+    if (!response.data.truncated) {
+      break;
+    }
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 60 }, (_, index) => index),
+  );
+});
+
+test("container byte-window progress does not cross UID or restart changes", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const changed of ["uid", "restart"]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-window-instance");
+    fixture.computeDriver.state.lines = wireContainerRows(
+      new Date(Date.now() - 1000).toISOString(),
+    );
+    const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+    assert.equal(first.data.truncated, true);
+    if (changed === "uid") {
+      fixture.computeDriver.state.podUid = randomUUID();
+    } else {
+      fixture.computeDriver.state.restartCount += 1;
+    }
+    const next = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=60&cursor=${first.data.cursor}`),
+    );
+    assert.equal(next.status, 200);
+    assert.ok(
+      next.data.records.some(({ type, reason }) => type === "gap" && reason === "stream_replaced"),
+    );
+    assert.ok(
+      next.data.records.some(
+        ({ type, message }) => type === "line" && message.startsWith("row=0;"),
+      ),
+    );
+  }
+});
+
+test("container changed byte-windows keep PEM masking conservative", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("container-window-pem");
+  const time = new Date(Date.now() - 1000).toISOString();
+  fixture.computeDriver.state.lines = wireContainerRows(time);
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+  assert.equal(first.data.truncated, true);
+  fixture.computeDriver.state.lines[30] = {
+    time,
+    raw: pemBegin,
+  };
+  fixture.computeDriver.state.lines[31] = {
+    time,
+    raw: syntheticPemTail,
+  };
+  const replacement = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=60&cursor=${first.data.cursor}`),
+  );
+  assert.equal(replacement.status, 200);
+  assert.ok(
+    replacement.data.records.some(
+      ({ type, reason }) => type === "gap" && reason === "window_exceeded",
+    ),
+  );
+  assertTailMasked(replacement.data);
+  fixture.computeDriver.state.lines = [
+    {
+      time: new Date(Date.parse(time) + 1).toISOString(),
+      raw: syntheticPemTail,
+    },
+  ];
+  const carried = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=60&cursor=${replacement.data.cursor}`),
+  );
+  assertTailMasked(carried.data);
+});
+
+test("container byte-window baselines reset when the Driver observes an instance change during read", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const changed of ["uid", "restart"]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-window-reread");
+    const time = new Date(Date.now() - 1000).toISOString();
+    fixture.computeDriver.state.lines = [
+      {
+        time: new Date(Date.parse(time) + 100).toISOString(),
+        raw: JSON.stringify({ level: "info", message: "prior instance" }),
+      },
+    ];
+    const initial = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+    fixture.computeDriver.state.lines = wireContainerRows(time);
+    if (changed === "uid") {
+      fixture.computeDriver.state.readPodUid = randomUUID();
+    } else {
+      fixture.computeDriver.state.readRestartCount = 1;
+    }
+    const replaced = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=60&cursor=${initial.data.cursor}`),
+    );
+    assert.equal(replaced.data.truncated, true);
+    assert.ok(
+      replaced.data.records.some(
+        ({ type, reason }) => type === "gap" && reason === "stream_replaced",
+      ),
+    );
+    if (changed === "uid") {
+      fixture.computeDriver.state.podUid = fixture.computeDriver.state.readPodUid;
+    } else {
+      fixture.computeDriver.state.restartCount = fixture.computeDriver.state.readRestartCount;
+    }
+    const rest = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=60&cursor=${replaced.data.cursor}`),
+    );
+    assert.equal(rest.status, 200);
+    const seen = [...replaced.data.records, ...rest.data.records]
+      .filter(({ type }) => type === "line")
+      .map(({ message }) => Number(/^row=(\d+);/.exec(message)[1]));
+    assert.deepEqual(
+      seen,
+      Array.from({ length: 60 }, (_, index) => index),
+    );
+  }
+});
+
+test("container expanded byte-windows preserve valid conservative PEM cursors", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const changed of ["expanded", "empty"]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-window-recovery");
+    const time = new Date(Date.now() - 1000).toISOString();
+    const before = new Date(Date.parse(time) - 2000).toISOString();
+    fixture.computeDriver.state.lines = [{ time: before, raw: pemEnd }];
+    const prime = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+    const older = Array.from({ length: 100 }, (_, i) => ({
+      time: new Date(Date.parse(time) - 1000).toISOString(),
+      raw: `[info] older row=${i}; diagnostic ${'"a" '.repeat(1000)}`,
+    }));
+    const current = wireContainerRows(time);
+    fixture.computeDriver.state.lines = [...older, ...current];
+    const first = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=60&cursor=${prime.data.cursor}`),
+    );
+    assert.equal(first.data.truncated, true);
+    if (changed === "empty") {
+      fixture.computeDriver.state.lines = [];
+    }
+    const seen = [];
+    let cursor = first.data.cursor;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await fixture.request(
+        "GET",
+        target.logsPath(`source=gateway&tailLines=160&cursor=${cursor}`),
+      );
+      assert.equal(response.status, 200, "recovery must not poison the next signed cursor");
+      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      const lines = response.data.records.filter(({ type }) => type === "line");
+      seen.push(...lines.map(({ message }) => message.split(";", 1)[0]));
+      cursor = response.data.cursor;
+      if (!response.data.truncated) {
+        break;
+      }
+    }
+    if (changed === "expanded") {
+      assert.deepEqual(
+        seen,
+        [...older, ...current].map(({ raw }) =>
+          raw.startsWith("[info]")
+            ? raw.split(";", 1)[0]
+            : JSON.parse(raw).message.split(";", 1)[0],
+        ),
+      );
+    } else {
+      assert.equal(seen.length, 0);
+    }
+    const replay = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=160&cursor=${cursor}`),
+    );
+    assert.equal(replay.status, 200);
+    assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+  }
+});
+
+test("container empty checkpoint recovery suppresses the next single untimed snapshot", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("container-empty-window");
+  fixture.computeDriver.state.lines = wireContainerRows(null);
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+  assert.equal(first.data.truncated, true);
+  fixture.computeDriver.state.lines = [];
+  const empty = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=60&cursor=${first.data.cursor}`),
+  );
+  assert.equal(empty.status, 200);
+  fixture.computeDriver.state.lines = [
+    {
+      time: null,
+      raw: JSON.stringify({ level: "info", subsystem: "gateway", message: "worker ready" }),
+    },
+  ];
+  const single = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=60&cursor=${empty.data.cursor}`),
+  );
+  assert.equal(single.data.records.filter(({ type }) => type === "line").length, 1);
+  const replay = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=60&cursor=${single.data.cursor}`),
+  );
+  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+});
+
+test("container checkpoints preserve the existing overlap through backend processing delay", async () => {
+  const { createRuntimeLogFixture, createRuntimeLogComputeDriver } =
+    await import("../helpers/runtime-logs.mjs");
+  const underlying = createRuntimeLogComputeDriver();
+  const read = underlying.readAgentRuntimeLogs.bind(underlying);
+  let calls = 0;
+  const driver = {
+    ...underlying,
+    async readAgentRuntimeLogs(binding, request) {
+      calls += 1;
+      if (calls === 1) {
+        const time = new Date(Date.now() - request.sinceSeconds * 1000 + 500).toISOString();
+        underlying.state.lines = wireContainerRows(time);
+      }
+      const chunk = await read(binding, request);
+      // Equivalent backend processing time, without changing the host clock or reader.
+      const floor = Date.now() + (calls === 1 ? 0 : 1800) - request.sinceSeconds * 1000;
+      return { ...chunk, lines: chunk.lines.filter(({ time }) => Date.parse(time) >= floor) };
+    },
+  };
+  const fixture = await createRuntimeLogFixture({ computeDriver: driver });
+  const target = await fixture.deployAgent("container-processing-delay");
+  const first = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&tailLines=200&sinceSeconds=60"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  const next = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=200&cursor=${first.data.cursor}`),
+  );
+  assert.equal(next.status, 200);
+  const seen = [...messages(first.data), ...messages(next.data)].map((message) =>
+    Number(/^row=(\d+);/.exec(message)[1]),
+  );
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 60 }, (_, index) => index),
+  );
+});
+
+test("container checkpoint windows remain stable when relative seconds round outward", async () => {
+  const { createRuntimeLogFixture, createRuntimeLogComputeDriver } =
+    await import("../helpers/runtime-logs.mjs");
+  for (const skew of [0, 2000]) {
+    const underlying = createRuntimeLogComputeDriver();
+    const read = underlying.readAgentRuntimeLogs.bind(underlying);
+    const driver = {
+      ...underlying,
+      async readAgentRuntimeLogs(binding, request) {
+        const chunk = await read(binding, request);
+        const floor = Date.now() - skew - request.sinceSeconds * 1000;
+        return {
+          ...chunk,
+          lines:
+            request.sinceSeconds === undefined
+              ? chunk.lines
+              : chunk.lines.filter(({ time }) => time === null || Date.parse(time) >= floor),
+        };
+      },
+    };
+    const fixture = await createRuntimeLogFixture({ computeDriver: driver });
+    const target = await fixture.deployAgent("container-relative-window");
+    const now = Date.now();
+    const time = new Date(now - (skew === 0 ? 1000 : 11000)).toISOString();
+    const rows = wireContainerRows(time);
+    underlying.state.lines = [
+      {
+        time: new Date(now - skew - 10050).toISOString(),
+        raw: JSON.stringify({
+          level: "info",
+          subsystem: "gateway",
+          message: "older than original window",
+        }),
+      },
+      ...rows,
+    ];
+    const first = await fixture.request(
+      "GET",
+      target.logsPath("source=gateway&tailLines=61&sinceSeconds=10"),
+    );
+    assert.equal(first.data.truncated, true);
+    const rest = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&tailLines=61&cursor=${first.data.cursor}`),
+    );
+    assert.equal(rest.status, 200);
+    assert.equal(rest.data.truncated, false);
+    const seen = [...first.data.records, ...rest.data.records]
+      .filter(({ type }) => type === "line")
+      .map(({ message }) => message.split(";", 1)[0]);
+    assert.deepEqual(
+      seen,
+      rows.map(({ raw }) => JSON.parse(raw).message.split(";", 1)[0]),
+    );
+    assert.ok(
+      !rest.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+    );
+  }
+});
+
+test("container wire-prefix builds retain fetched masking evidence without advancing PEM state", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("container-mask-evidence");
+  const start = Date.now() - 1000;
+  fixture.computeDriver.state.lines = [
+    ...wireContainerRows(null, 50),
+    ...Array.from({ length: 300 }, () => ({ time: null, raw: "QUJD" })),
+    { time: null, raw: pemEnd },
+  ].map((line, index) => ({ ...line, time: new Date(start + index).toISOString() }));
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=1000"));
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  assert.ok(!messages(first.data).includes("QUJD"));
+  const payload = JSON.parse(Buffer.from(first.data.cursor.split(".")[1], "base64url").toString());
+  assert.equal(payload.po, undefined, "an undelivered END must not advance persistent PEM state");
+  const rest = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=1000&cursor=${first.data.cursor}`),
+  );
+  assert.equal(rest.status, 200);
+  assert.ok(!messages(rest.data).includes("QUJD"));
+});
+
+test("container wire continuation retains fetched JSON withholding decisions", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  for (const offset of [0]) {
+    const fixture = await createRuntimeLogFixture();
+    const target = await fixture.deployAgent("container-json-evidence");
+    const start = Date.now() - 1000;
+    const rows = [
+      ...wireContainerRows(null, 42).map((line, index) => ({
+        ...line,
+        raw: JSON.stringify({
+          level: "info",
+          subsystem: "gateway",
+          message: `row=${index}; diagnostic ${" ".repeat(500)}${'"a" '.repeat(2100)}`,
+        }),
+      })),
+      ...Array.from({ length: offset }, () => ({
+        raw: JSON.stringify({ ordinary_metadata: "padding" }),
+        time: null,
+      })),
+      { raw: "[", time: null },
+      ...Array.from({ length: 15 }, () => [
+        { raw: "1".repeat(32769) + ",", time: null },
+        { raw: "  true,", time: null },
+      ]).flat(),
+      { raw: "]", time: null },
+    ];
+    fixture.computeDriver.state.lines = rows.map((line, index) => ({
+      ...line,
+      time: new Date(start + index).toISOString(),
+    }));
+    assert.ok(
+      fixture.computeDriver.state.lines.reduce(
+        (bytes, line) => bytes + Buffer.byteLength(line.raw) + Buffer.byteLength(line.time) + 2,
+        0,
+      ) <=
+        1024 * 1024,
+      "the whole fetched fixture respects the Driver read bound",
+    );
+    let cursor;
+    let cut = false;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await fixture.request(
+        "GET",
+        target.logsPath(
+          `source=gateway&tailLines=1000${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+        ),
+      );
+      assert.equal(response.status, 200);
+      assert.ok(!messages(response.data).some((message) => message.trim() === "true,"));
+      cursor = response.data.cursor;
+      cut ||= response.data.truncated;
+      if (!response.data.truncated) {
+        break;
+      }
+    }
+    assert.equal(cut, true);
+  }
+});
+
+test("container follows a growing full wire-cut tail without replaying its delivered prefix", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("full-growing-wire-tail");
+  const start = Date.now() - 120_000;
+  const row = (index) => ({
+    time: new Date(start + index * 1000).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    }),
+  });
+  fixture.computeDriver.state.lines = Array.from({ length: 100 }, (_, index) => row(index));
+  let cursor;
+  const seen = [];
+  const counts = [];
+  for (let poll = 0; poll < 6; poll += 1) {
+    if (poll > 0) {
+      const offset = fixture.computeDriver.state.lines.length;
+      fixture.computeDriver.state.lines.push(
+        ...Array.from({ length: 3 }, (_, index) => row(offset + index)),
+      );
+    }
+    const response = await fixture.request(
+      "GET",
+      target.logsPath(
+        `source=gateway&tailLines=100${cursor === undefined ? "" : `&cursor=${cursor}`}`,
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+    const lines = response.data.records.filter(({ type }) => type === "line");
+    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+    counts.push(lines.length);
+    if (poll === 0) {
+      assert.equal(response.data.truncated, true);
+    }
+    cursor = response.data.cursor;
+  }
+  assert.deepEqual(
+    seen,
+    Array.from({ length: 115 }, (_, index) => index),
+  );
+  assert.deepEqual(counts.slice(2), [3, 3, 3, 3]);
+  const replay = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=100&cursor=${cursor}`),
+  );
+  assert.deepEqual(
+    replay.data.records.filter(({ type }) => type === "line"),
+    [],
+  );
+});
+
+test("container checkpoint recovery does not duplicate an observed window-loss gap", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("wire-cut-burst-gap");
+  const start = Date.now() - 120_000;
+  const row = (index) => ({
+    time: new Date(start + index * 1000).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    }),
+  });
+  fixture.computeDriver.state.lines = Array.from({ length: 100 }, (_, index) => row(index));
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  // The burst replaces the whole tail before the byte-cut snapshot drains.
+  // Actual missing rows still require one window gap, not a second gap for the
+  // discarded checkpoint alongside that same observed loss.
+  fixture.computeDriver.state.lines.push(
+    ...Array.from({ length: 100 }, (_, index) => row(100 + index)),
+  );
+  const second = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.ok(Buffer.byteLength(second.text) <= 512 * 1024);
+  assert.equal(
+    second.data.records.filter(({ type, reason }) => type === "gap" && reason === "window_exceeded")
+      .length,
+    1,
+  );
+});
+
+test("container checkpoint recovery keeps an unknown-time reset visible", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("wire-cut-unknown-reset");
+  const start = Date.now() - 120_000;
+  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
+    time: index === 0 ? null : new Date(start + index * 1000).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    }),
+  }));
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  // The timed frontier cannot locate an unknown row in a changed snapshot.
+  // Recovering timed rows must keep that reset visible, even on a short tail.
+  fixture.computeDriver.state.lines[0] = { time: null, raw: "changed unknown-time diagnostic" };
+  const second = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.ok(
+    second.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+  );
+});
+
+test("container shortened timed checkpoints disclose missing undelivered rows", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("wire-cut-shortened-timed-window");
+  const start = Date.now() - 120_000;
+  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
+    time: new Date(start + index * 1000).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    }),
+  }));
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  // Rotation can leave a short surviving window in the same container. Its
+  // later times establish progress, not continuity with the unread snapshot.
+  fixture.computeDriver.state.lines = fixture.computeDriver.state.lines.slice(-5);
+  const second = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.equal(second.data.records.filter(({ type }) => type === "line").length, 5);
+  assert.ok(
+    second.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+  );
+});
+
+test("container same-size short replacements disclose missing undelivered rows", async () => {
+  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent("wire-cut-same-size-short-window");
+  const start = Date.now() - 120_000;
+  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
+    time: new Date(start + index * 1000).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `old=${index}; ${"ordinary diagnostic ".repeat(350)}`,
+    }),
+  }));
+  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  // Rotation retains the same row count but replaces the unread part with newer rows.
+  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
+    time: new Date(start + (100 + index) * 1000).toISOString(),
+    raw: JSON.stringify({ level: "info", subsystem: "gateway", message: `new=${index}` }),
+  }));
+  const second = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+  );
+  assert.equal(second.status, 200);
+  assert.equal(second.data.records.filter(({ type }) => type === "line").length, 80);
+  assert.equal(
+    second.data.records.filter(({ type, reason }) => type === "gap" && reason === "window_exceeded")
+      .length,
+    1,
+  );
 });

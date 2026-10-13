@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-05
-last_updated_session: c0a8f27c-4c0f-42ed-b6e8-be41aff648c7
+updated: 2026-10-09
+last_updated_session: q33-force-delete
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -12,8 +12,8 @@ OCC starts with Installation Backend composition, then creates a
 Namespace-owned account, separately issues its provider-backed credential, and
 deploys an associated dedicated Codex Agent. The API owns the Backend client
 and upstream account calls; worker reconciliation repeats metadata checks before
-Compute projects the account Secret to Codex. This flow stops after Codex starts
-with the projected access token and workspace.
+Compute projects the account token to Codex. This flow stops after Codex starts
+with the projected access token.
 
 ## Entry Points
 
@@ -50,9 +50,9 @@ graph TD
     D --> L["Reauthorize deployment actor"]
     K --> L
     L --> M["Recheck Backend and binding metadata"]
-    M -->|valid dedicated Codex| N["Project account Secret into Codex"]
+    M -->|valid dedicated Codex| N["Project account token into Codex"]
     M -->|mismatch| O["Fail candidate"]
-    N --> P["Codex pins workspace and starts app server"]
+    N --> P["Codex authenticates token and starts app server"]
   end
 ```
 
@@ -97,6 +97,13 @@ provisioning plans through `serviceAccounts.hasReferences`. A conflict returns
 before any Driver call can revoke the credential or remove its Secret. Namespace locking serializes this
 check with draft changes and deployment admission; the PostgreSQL reference
 query observes active pointers and pending work together during worker cutover.
+With no ServiceAccount Driver selected (no ChatGPT Backend), an account holding
+an issued access token answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`
+naming the fix and stays, since nothing can revoke its token. With `?force=true`
+OCC instead reads the binding's Backend, workspace, account, and credential IDs, removes
+the token Secret through `KubernetesComputeDriver.deleteServiceAccountCredential`
+and the account, and audits `revocation: "skipped"`; with a Driver selected,
+force is ignored and revocation runs.
 
 ### 3. Issue the credential and create one account Secret
 
@@ -104,10 +111,14 @@ query observes active pointers and pending work together during worker cutover.
 
 `OpenClawController.createServiceAccountCredential` authorizes account `update`
 before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
-token. `KubernetesComputeDriver.storeServiceAccountCredential` stores it with
-the workspace ID in one account-owned control-plane Secret. The private credential ID, internal
+token. `KubernetesComputeDriver.storeServiceAccountCredential` stores it in one
+account-owned control-plane Secret. The private Backend binding retains workspace
+metadata. The private credential ID, internal
 credential reference, and audit changes commit together;
 confirmed failures compensate created provider and Kubernetes resources.
+With no ServiceAccount Driver selected (no ChatGPT Backend), issuance answers
+`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix after the grant and
+account lookup; a selected Driver that fails stays `503`.
 
 ### 4. Save Agent Backend intent and admit the revision
 
@@ -117,14 +128,15 @@ Agent `backendId` is nullable. Create omission saves `null`; PATCH omission
 preserves the current value; explicit `null` clears it; and a nonnull ID must
 name a configured Backend. Saving or changing the draft Agent reference makes
 no upstream call. The Agent selects the issued account through
-`harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`.
+`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`.
 
 `deployAgent` authorizes the Agent, Configuration, and associated account, then
 validates `access_token` ownership with
 `validateServiceAccountBackendBinding`. Managed access-token deployment requires
 the exact nonnull Backend, selected member Driver, workspace, account, recorded
 credential issuance, and dedicated Codex execution. An account without an issued
-credential cannot deploy. Admission freezes the account identity, exact credential
+credential cannot deploy; without a ChatGPT Backend that refusal is
+`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`. Admission freezes the account identity, exact credential
 reference, private Backend binding, and Agent `backendId` in the revision.
 Supplied API keys use the same [harness binding path](native-service-account-credential-delivery.md)
 through an OCC Secret; native account references are not model-auth selectors.
@@ -141,24 +153,26 @@ and issuance metadata leave the repository; upstream account IDs, admin keys,
 and credential values stay private.
 
 `KubernetesComputeDriver.prepareRevision` uses its internal `prepareHarnessAuth`
-rendering step and explicit login mode, then delivers the selected account fields
+rendering step and `CODEX_LOGIN_MODE=codex_pat`, then delivers the account token
 into a revision-owned data-plane Secret for dedicated Codex. Embedded execution
 is rejected for managed access tokens. The Gateway receives no model credential.
 The trusted worker reads the CP source and manages the DP projection; workload
-ServiceAccounts receive no Secret API permission.
+ServiceAccounts receive no Secret API permission. Workspace ownership remains
+part of control-plane validation, without a runtime workspace override.
 
-### 6. Authenticate Codex under the exact workspace
+### 6. Authenticate Codex with the account token
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
 
-`AGENT_RUNTIME_ENTRYPOINT` authenticates with the projected token and workspace:
+`AGENT_RUNTIME_ENTRYPOINT` uses the same native login for Driver-issued account
+tokens and directly supplied `codex_pat` credentials:
 
 ```sh
-codex -c cli_auth_credentials_store=file \
-  -c forced_chatgpt_workspace_id="<workspace-id>" login --with-access-token
+codex -c cli_auth_credentials_store=file login --with-access-token
 ```
 
-It clears the token environment and starts its authenticated app server.
+Codex derives account identity from the token. The entrypoint clears the token
+environment and starts its authenticated app server.
 Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Debugging and Verification
@@ -192,6 +206,12 @@ Refresh, rotation, and automated reconciliation remain deferred.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 18:30: `DELETE ...?force=true` removes an account whose issued token no ChatGPT Backend can revoke, deletes its token Secret, and audits the token as unrevoked; with a Backend configured, force is ignored. (q33-force-delete, finding 835)
+- 2026-10-08 17:45: Deleting an account that holds an issued access token, with no ChatGPT Backend, answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503`. (fix-816-819)
+- 2026-10-08 13:00: Issuance, and deploying an account without an access token, on an Installation with no ChatGPT Backend answer `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503` or `409`. (fix-780-781/d540)
+
+- 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
 - 2026-10-05 20:51: Trace rejected Backend HTTP response disposal and native HTTPS recovery coverage. (c0a8f27c-4c0f-42ed-b6e8-be41aff648c7 - b5b3ba296f38dd5090c1f4bb1287ed87ae3f9eba)
 

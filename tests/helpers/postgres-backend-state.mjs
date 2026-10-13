@@ -18,6 +18,7 @@ import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
+import { reservedPortArgs } from "./available-port.mjs";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
 
 export { databaseUrl, requiresPostgres };
@@ -140,41 +141,6 @@ export async function cleanupNamespaces(pool, namespaceIds) {
     await client.query("DELETE FROM occ.service_accounts WHERE namespace_id = ANY($1::text[])", [
       namespaceIds,
     ]);
-  });
-}
-
-export async function cleanupBackendFixtures(pool, namespaceId, cleanup) {
-  if (
-    [cleanup.serviceAccountIds, cleanup.agentIds, cleanup.revisionIds].every(
-      (ids) => ids.length === 0,
-    )
-  ) {
-    return;
-  }
-  await inTransaction(pool, async (client) => {
-    await client.query(
-      `UPDATE occ.controller_work
-       SET state = 'failed_permanent',
-           claim_token = NULL,
-           lease_expires_at = NULL,
-           completed_at = clock_timestamp(),
-           reason_code = 'TEST_FIXTURE_CLEANUP',
-           updated_at = clock_timestamp()
-       WHERE namespace_id = $1
-         AND revision_id = ANY($2::text[])
-         AND state IN ('queued', 'claimed')`,
-      [namespaceId, cleanup.revisionIds],
-    );
-    await client.query(
-      `UPDATE occ.agents
-       SET backend_id = NULL, harness_auth = NULL, active_revision_id = NULL
-       WHERE namespace_id = $1 AND id = ANY($2::text[])`,
-      [namespaceId, cleanup.agentIds],
-    );
-    await client.query(
-      "DELETE FROM occ.service_accounts WHERE namespace_id = $1 AND id = ANY($2::text[])",
-      [namespaceId, cleanup.serviceAccountIds],
-    );
   });
 }
 
@@ -311,6 +277,7 @@ export function createBackendController(fixture, options = {}) {
   const controller = new OpenClawController(fixture.installation, {
     state: fixture.state,
     backends,
+    nativeWorkerSupport: options.nativeWorkerSupport,
   });
   registerCoreDrivers(controller, fixture.state, {
     serviceAccountDriverId: backends[0]?.drivers.service_account,
@@ -440,21 +407,27 @@ export async function startBackendlessDevelopmentServer(context, options) {
     context.after(() => rm(configurationRoot, { recursive: true, force: true }));
   }
 
-  const child = spawn(process.execPath, [controllerEntrypoint], {
-    cwd: repository,
-    env: {
-      PATH: process.env.PATH,
-      NODE_ENV: "development",
-      OCC_HOST: "127.0.0.1",
-      OCC_PORT: String(options.port),
-      OCC_DATABASE_URL: databaseUrl,
-      OCC_AUTH_BASE_URL: options.origin,
-      OCC_AUTH_SECRET: options.authSecret,
-      OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
-      OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-backend-repair",
+  // `options.reservation` (from reservePort) holds the API port. This releases it once the
+  // child logs that it is listening; if the child never does, the caller's after-hook must.
+  const child = spawn(
+    process.execPath,
+    [...reservedPortArgs(options.reservation), controllerEntrypoint],
+    {
+      cwd: repository,
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "development",
+        OCC_HOST: "127.0.0.1",
+        OCC_PORT: String(options.reservation.port),
+        OCC_DATABASE_URL: databaseUrl,
+        OCC_AUTH_BASE_URL: options.origin,
+        OCC_AUTH_SECRET: options.authSecret,
+        OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
+        OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-backend-repair",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  );
   context.after(() => stopProcess(child));
 
   let output = "";
@@ -471,5 +444,6 @@ export async function startBackendlessDevelopmentServer(context, options) {
     },
     15_000,
   );
+  await options.reservation.release();
   return { child };
 }

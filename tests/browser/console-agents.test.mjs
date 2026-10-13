@@ -3340,6 +3340,51 @@ for (const collection of ["secrets", "configurations", "agents"]) {
   });
 }
 
+test("Agent creation explains a denied capability check instead of offering a retry", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Capability denial", { ready: true });
+  const { page } = await newPage(t, fixture);
+  let status = 403;
+  await page.route(`${fixture.origin}/installation`, async (route) => {
+    await route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: status === 403 ? "FORBIDDEN" : "DEPENDENCY_UNAVAILABLE",
+          message:
+            status === 403
+              ? "The exact platform operation was not authorized."
+              : "A required platform dependency is unavailable.",
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000002" },
+      }),
+    });
+  });
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page
+    .getByText(
+      "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.",
+    )
+    .waitFor();
+  const retry = page.getByRole("button", { name: "Retry capability check" });
+  assert.equal(await retry.isHidden(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+
+  // A transient failure still offers the retry.
+  status = 503;
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
+  await retry.waitFor();
+});
+
 test("Agent creation withholds Dedicated OpenClaw unless the Installation reports native worker support", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

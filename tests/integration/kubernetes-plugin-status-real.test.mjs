@@ -15,6 +15,9 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   createKubernetesClient,
+  namespaceAlreadyTerminating,
+  retryKubectlRead,
+  retryKubectlWrite,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 
@@ -279,40 +282,52 @@ async function provisionAgentTransportSecret(namespaceName, agentId) {
         writeFile(join(directory, key), value, { mode: 0o600 }),
       ),
     );
-    const owner = JSON.parse(await kubectl("get", "namespace", namespaceName, "-o", "json"));
+    // k3d's API server can drop a request's connection (finding 682: 'Post ...: EOF'
+    // on this create); each call here is retried and converges when repeated.
+    const owner = JSON.parse(
+      await retryKubectlRead(() => kubectl("get", "namespace", namespaceName, "-o", "json")),
+    );
     const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
     assert.ok(namespaceId, "transport source must belong to the tenant Namespace");
     for (const [name, key] of [
       [`${transportSecretPrefix}-${suffix}`, "app-server-token"],
       [`gateway-password-${suffix}`, "gateway-password"],
     ]) {
-      await kubectl(
-        "create",
-        "secret",
-        "generic",
-        name,
-        "--namespace",
-        namespaceName,
-        `--from-file=${key}=${join(directory, key)}`,
+      await retryKubectlWrite(() =>
+        kubectl(
+          "create",
+          "secret",
+          "generic",
+          name,
+          "--namespace",
+          namespaceName,
+          `--from-file=${key}=${join(directory, key)}`,
+        ),
       );
-      await kubectl(
-        "label",
-        "secret",
-        name,
-        "--namespace",
-        namespaceName,
-        "app.kubernetes.io/managed-by=openclaw-enterprise",
-        `openclaw.dev/namespace=${namespaceId}`,
-        `openclaw.dev/agent=${agentId}`,
+      await retryKubectlWrite(() =>
+        kubectl(
+          "label",
+          "secret",
+          name,
+          "--namespace",
+          namespaceName,
+          "--overwrite",
+          "app.kubernetes.io/managed-by=openclaw-enterprise",
+          `openclaw.dev/namespace=${namespaceId}`,
+          `openclaw.dev/agent=${agentId}`,
+        ),
       );
-      await kubectl(
-        "annotate",
-        "secret",
-        name,
-        "--namespace",
-        namespaceName,
-        `openclaw.dev/namespace-id=${namespaceId}`,
-        `openclaw.dev/agent-id=${agentId}`,
+      await retryKubectlWrite(() =>
+        kubectl(
+          "annotate",
+          "secret",
+          name,
+          "--namespace",
+          namespaceName,
+          "--overwrite",
+          `openclaw.dev/namespace-id=${namespaceId}`,
+          `openclaw.dev/agent-id=${agentId}`,
+        ),
       );
     }
   } finally {
@@ -334,7 +349,12 @@ async function createStatusCandidate(label, context) {
     await createDriver()
       .retireRevision(candidate)
       .catch(() => {});
-    await kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false");
+    // Finding 682: 'Unable to connect to the server: EOF' here failed a passing test.
+    await retryKubectlWrite(
+      () =>
+        kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false"),
+      { applied: namespaceAlreadyTerminating },
+    );
   });
   return {
     driver,

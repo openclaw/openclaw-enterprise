@@ -1,30 +1,51 @@
 # Integration tests outside automatic CI
 
-These integration files have no automatic workflow entrypoint.
+These integrations have coverage outside automatic required CI. The QA matrix
+also has an [advisory PR selection](qa-matrix.md#ci-evidence-and-recovery).
 A green `CI Required` check does not establish their coverage. This inventory describes workflow selection, not
 local or hosted test results.
 
+## Choose the matrix or a focused lane
+
+Start with the [QA matrix scenario inventory](qa-matrix.md#coverage-and-applicability)
+for the four shipped installation/preset combinations. Read its
+[scenario outcomes](qa-matrix-results.md#read-scenario-outcomes) to distinguish passed,
+failed, blocked, and unexecuted coverage.
+
+The matrix overlaps ordinary deployment and model checks in `k3d-model`, but
+that lane also tests Pod-replacement continuity, secret rotation and rejection,
+durable startup failures, and first-Agent reuse. Keep those distinct assertions
+when consolidating setup. A model call before and after replacement proves a
+transition that a startup-only call cannot.
+
+Both matrix installation modes use Kubernetes compute. `docker-model` exercises
+Docker Compute instead. Other focused lanes retain routing, sandbox, provider
+provisioning, telemetry, and failure-boundary checks outside the matrix. These
+manual lanes do not run as part of automatic `CI Required`.
+
 ## Manual Full Integration lanes
 
-These ten files run only when selected in
+Full coverage of these files runs when selected in
 [Full Integration](../../.github/workflows/full-integration.yml), using the listed
-lane or `all`. Model/service lanes require configured credentials and infrastructure.
+lane or `all` (`all` excludes `qa-matrix`).
+Model/service lanes require configured credentials and infrastructure.
 `helper-timeout` is separate because it spends five minutes testing the helper deadline.
 
-| Lane               | Integration test file                                                                                                  | Coverage absent from automatic CI                                                                                                                                 |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docker-model`     | [docker-compute-real.test.mjs](../../tests/integration/docker-compute-real.test.mjs)                                   | Docker Compose deployment and real embedded OpenClaw/dedicated Codex model turns.                                                                                 |
-| `k3d-model`        | [harness-topology-k3d-real.test.mjs](../../tests/integration/harness-topology-k3d-real.test.mjs)                       | Dedicated Codex continuity across Pod replacement and embedded model turns with persisted credentials or the Secret API.                                          |
-| `k3d-model`        | [local-first-agent-real.test.mjs](../../tests/integration/local-first-agent-real.test.mjs)                             | Fresh local Agent deployment and reuse with real model replies; external changes block credential replacement.                                                    |
-| `gateway-routing`  | [harness-topology-k3d-routing-real.test.mjs](../../tests/integration/harness-topology-k3d-routing-real.test.mjs)       | Dedicated Codex consumption of workspace files through the real Envoy/OCC route.                                                                                  |
-| `production-tui`   | [production-tui-k3d-real.test.mjs](../../tests/integration/production-tui-k3d-real.test.mjs)                           | Helm-installed production control plane, interactive TUI, and revision cutover.                                                                                   |
-| `slack`            | [harness-topology-k3d-slack-real.test.mjs](../../tests/integration/harness-topology-k3d-slack-real.test.mjs)           | Real Slack ingress and a gateway-authored reply through the approved proxy and Codex Agent.                                                                       |
-| `provider-account` | [service-account-driver-real.test.mjs](../../tests/integration/service-account-driver-real.test.mjs)                   | Actual ChatGPT service-account creation, credential delivery, and a dedicated Codex model turn.                                                                   |
-| `openshell`        | [sandbox-driver-openshell-k3d-real.test.mjs](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider-owned dedicated Codex Harness and real OpenShell sandbox enforcement.                                                                                    |
-| `openshell`        | [local-first-agent-openshell-real.test.mjs](../../tests/integration/local-first-agent-openshell-real.test.mjs)         | The first-Agent command with dedicated Codex in OpenShell and the Compose control plane: real model replies, OpenShell routing, and CredentialSource-only access. |
-| `openshell`        | [local-first-agent-openshell-k3d-real.test.mjs](../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The same first-Agent proof with the API, worker, and PostgreSQL in k3d instead of Compose.                                                                        |
-| `helper-timeout`   | [dev-up-timeout.test.mjs](../../tests/integration/dev-up-timeout.test.mjs)                                             | Full 300-second readiness deadline for a running but unready worker.                                                                                              |
-| `k3d-otel`         | [harness-topology-k3d-otel-real.test.mjs](../../tests/integration/harness-topology-k3d-otel-real.test.mjs)             | Actual OTLP logs emitted during embedded and dedicated runtime model turns.                                                                                       |
+| Lane               | Integration test file                                                                                                  | Coverage absent from automatic CI                                                                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `qa-matrix`        | [qa-matrix-real.test.mjs](../../tests/integration/qa-matrix-real.test.mjs)                                             | [Four shipped installation/preset combinations](qa-matrix.md): full selection includes OpenClaw, Git/PR and Slack beyond the advisory Codex model/UI and Calendar checks. |
+| `docker-model`     | [docker-compute-real.test.mjs](../../tests/integration/docker-compute-real.test.mjs)                                   | Docker Compute networks, containers, workspace persistence, cleanup, and real model turns.                                                                                |
+| `k3d-model`        | [harness-topology-k3d-real.test.mjs](../../tests/integration/harness-topology-k3d-real.test.mjs)                       | Pod-replacement continuity, secret rotation/rejection, and startup-failure durability with real runtimes.                                                                 |
+| `k3d-model`        | [local-first-agent-real.test.mjs](../../tests/integration/local-first-agent-real.test.mjs)                             | Fresh local Agent deployment and reuse with real model replies; external changes block credential replacement.                                                            |
+| `gateway-routing`  | [harness-topology-k3d-routing-real.test.mjs](../../tests/integration/harness-topology-k3d-routing-real.test.mjs)       | Dedicated Codex consumption of workspace files through the real Envoy/OCC route.                                                                                          |
+| `production-tui`   | [production-tui-k3d-real.test.mjs](../../tests/integration/production-tui-k3d-real.test.mjs)                           | Helm-installed production control plane, interactive TUI, and revision cutover.                                                                                           |
+| `slack`            | [harness-topology-k3d-slack-real.test.mjs](../../tests/integration/harness-topology-k3d-slack-real.test.mjs)           | Slack credential isolation, approved proxy boundaries, and authenticated Socket Mode.                                                                                     |
+| `provider-account` | [service-account-driver-real.test.mjs](../../tests/integration/service-account-driver-real.test.mjs)                   | Actual ChatGPT service-account creation, credential delivery, and a dedicated Codex model turn.                                                                           |
+| `openshell`        | [sandbox-driver-openshell-k3d-real.test.mjs](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider-owned dedicated Codex Harness and real OpenShell sandbox enforcement.                                                                                            |
+| `openshell`        | [local-first-agent-openshell-real.test.mjs](../../tests/integration/local-first-agent-openshell-real.test.mjs)         | The first-Agent command with dedicated Codex in OpenShell and the Compose control plane: real model replies, OpenShell routing, and CredentialSource-only access.         |
+| `openshell`        | [local-first-agent-openshell-k3d-real.test.mjs](../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The same first-Agent proof with the API, worker, and PostgreSQL in k3d instead of Compose.                                                                                |
+| `helper-timeout`   | [dev-up-timeout.test.mjs](../../tests/integration/dev-up-timeout.test.mjs)                                             | Full 300-second readiness deadline for a running but unready worker.                                                                                                      |
+| `k3d-otel`         | [harness-topology-k3d-otel-real.test.mjs](../../tests/integration/harness-topology-k3d-otel-real.test.mjs)             | Actual OTLP logs emitted during embedded and dedicated runtime model turns.                                                                                               |
 
 ## No GitHub workflow entrypoint
 

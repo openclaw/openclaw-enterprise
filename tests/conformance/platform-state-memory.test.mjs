@@ -85,6 +85,29 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
   const store = new InMemoryPlatformState({ iamIdentities: [human] });
   const { namespace, configuration, agent, revision } = await seedSessionRevision(store);
   const other = await seedSessionRevision(store);
+  // A second Agent in the same Namespace keeps its bindings, live session and work.
+  const sibling = {
+    ...agent,
+    id: `agt_${randomUUID()}`,
+    name: `Sibling ${randomUUID()}`,
+    servicePrincipalId: `service-agent-${randomUUID()}`,
+  };
+  const siblingRevision = {
+    ...revision,
+    id: `rev_${randomUUID()}`,
+    agentId: sibling.id,
+    servicePrincipalId: sibling.servicePrincipalId,
+  };
+  await store.transact(async (unit) => {
+    await unit.agents.createAgent(sibling);
+    await unit.revisions.createRevision(siblingRevision);
+    await unit.agents.transitionAgentDesiredRuntimeState(
+      namespace.id,
+      sibling.id,
+      "stopped",
+      "running",
+    );
+  });
   const role = {
     id: `role_${randomUUID()}`,
     namespaceId: namespace.id,
@@ -111,6 +134,13 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
     binding(agent.servicePrincipalId, "configuration", configuration.id),
   ];
   const surviving = binding(human.id, "configuration", configuration.id);
+  // Their own Role, so the final deleteRole(role) still proves no removed binding holds role.
+  const siblingRole = { ...role, id: `role_${randomUUID()}` };
+  const siblingBindings = [
+    binding(human.id, "agent", sibling.id),
+    binding(human.id, "agent_revision", siblingRevision.id),
+    binding(sibling.servicePrincipalId, "configuration", configuration.id),
+  ].map((created) => ({ ...created, roleId: siblingRole.id }));
   const otherRole = { ...role, id: `role_${randomUUID()}`, namespaceId: other.namespace.id };
   const otherBinding = {
     ...binding(human.id, "agent", other.agent.id),
@@ -120,7 +150,8 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
   await store.transact(async (unit) => {
     await unit.iamPolicy.createRole(role);
     await unit.iamPolicy.createRole(otherRole);
-    for (const created of [...removed, surviving, otherBinding]) {
+    await unit.iamPolicy.createRole(siblingRole);
+    for (const created of [...removed, surviving, otherBinding, ...siblingBindings]) {
       await unit.iamPolicy.createAccessBinding(created);
     }
   });
@@ -128,6 +159,7 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
   // workspace setup.
   const opening = sessionAttempt(revision);
   const closing = sessionAttempt(revision);
+  const siblingSession = sessionAttempt(siblingRevision);
   await store.transact(async (unit) => {
     // One repository has at most one active attempt, so the first moves on before the next.
     await unit.repositorySessions.createAttempt(closing);
@@ -138,6 +170,7 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
       updatedAt: "2030-03-17T17:46:41.000Z",
     });
     await unit.repositorySessions.createAttempt(opening);
+    await unit.repositorySessions.createAttempt(siblingSession);
     await unit.workspaceSetups.create({
       id: `setup_${randomUUID()}`,
       namespaceId: namespace.id,
@@ -152,6 +185,16 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
   assert.equal(await store.completeAgentDeletion(namespace.id, agent.id), false);
   const actorId = `prn_${randomUUID()}`;
   const promised = await store.transact(async (unit) => {
+    // Stop, then Delete: the Agent's stop work stays pending, because memory never runs work.
+    await unit.operations.append({
+      kind: "agent",
+      action: "reconcile",
+      target: "stopped",
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+      operationId: `op_${randomUUID()}`,
+      actorId,
+    });
     await unit.agents.transitionAgentDesiredRuntimeState(
       namespace.id,
       agent.id,
@@ -171,7 +214,8 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
     sorted(promised),
     sorted(removed.map(({ namespaceId: _namespaceId, ...listed }) => listed)),
   );
-  // A deleting Agent without its recorded teardown work is not an admitted deletion.
+  // A deleting Agent without its recorded teardown work is not an admitted deletion; the stop
+  // work recorded before admission is not that work.
   assert.equal(await store.completeAgentDeletion(namespace.id, agent.id), false);
   const work = {
     kind: "agent",
@@ -188,9 +232,15 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
     resourceId: revision.id,
     actorId,
   };
+  // Other Agent work in the Namespace, which completion leaves pending.
+  const siblingWork = [
+    { ...work, target: "stopped", resourceId: sibling.id, operationId: `op_${randomUUID()}` },
+    { ...revisionWork, resourceId: siblingRevision.id },
+  ];
   await store.transact(async (unit) => {
-    await unit.operations.append(work);
-    await unit.operations.append(revisionWork);
+    for (const appended of [work, revisionWork, ...siblingWork]) {
+      await unit.operations.append(appended);
+    }
   });
 
   assert.equal(await store.completeAgentDeletion(namespace.id, agent.id), true);
@@ -206,12 +256,21 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
       assert.equal(kept.liveRevisionId, null);
     }
     assert.equal(await unit.workspaceSetups.find(namespace.id, agent.id), undefined);
+    const live = await unit.repositorySessions.findAttempt(siblingSession.admissionId);
+    assert.equal(live.liveRevisionId, siblingRevision.id);
   });
   await store.read(async (view) => {
-    assert.deepEqual(await view.iamPolicy.listAccessBindings(namespace.id), [surviving]);
+    assert.deepEqual(
+      sorted(await view.iamPolicy.listAccessBindings(namespace.id)),
+      sorted([surviving, ...siblingBindings]),
+    );
     assert.deepEqual(await view.iamPolicy.listAccessBindings(other.namespace.id), [otherBinding]);
     assert.equal(await view.agents.findAgent(namespace.id, agent.id), undefined);
     assert.deepEqual(await view.revisions.listRevisions(namespace.id, agent.id), []);
+    assert.deepEqual(
+      (await view.revisions.listRevisions(namespace.id, sibling.id)).map(({ id }) => id),
+      [siblingRevision.id],
+    );
     assert.equal(
       (await view.agents.findAgent(other.namespace.id, other.agent.id))?.id,
       other.agent.id,
@@ -237,6 +296,13 @@ test("memory Agent deletion completion removes the AccessBindings the PostgreSQL
       .pendingOperations()
       .filter((operation) => [agent.id, revision.id].includes(operation.resourceId)),
     [],
+  );
+  assert.deepEqual(
+    store
+      .pendingOperations()
+      .filter((operation) => [sibling.id, siblingRevision.id].includes(operation.resourceId))
+      .map(({ kind, resourceId }) => ({ kind, resourceId })),
+    siblingWork.map(({ kind, resourceId }) => ({ kind, resourceId })),
   );
   // Completion is one-shot, and no removed binding still holds the Role.
   assert.equal(await store.completeAgentDeletion(namespace.id, agent.id), false);

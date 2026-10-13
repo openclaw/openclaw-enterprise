@@ -68,7 +68,8 @@ function parseCidr(entry: string): { address: string; prefix: number; family: "i
   const bits = version === 4 ? 32 : 128;
   let prefix = bits;
   if (rawPrefix !== undefined) {
-    prefix = /^[0-9]{1,3}$/.test(rawPrefix) ? Number(rawPrefix) : NaN;
+    // Same no-leading-zero rule as the chart and Compute: no sign, space or `/08`.
+    prefix = /^(?:0|[1-9][0-9]{0,2})$/.test(rawPrefix) ? Number(rawPrefix) : NaN;
   }
   if (extra !== undefined || version === 0 || !Number.isInteger(prefix)) {
     throw new Error(`OCC_AUTH_TRUSTED_PROXY_CIDRS contains an invalid CIDR: ${entry}`);

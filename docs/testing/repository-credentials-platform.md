@@ -40,7 +40,7 @@ revision ownership, immutable attempt inputs, phases and safe recovery identity.
 The `postgres-repository-broker-receipts.test.mjs` case joins the real broker,
 private receipt listener and limited application role to verify confirmed disposal
 and fencing across service restart. The `postgres-restart-recovery.test.mjs` and
-`postgres-worker-agent-revision.test.mjs` cases cover terminal-retirement transfer,
+`postgres-worker-agent-revision*.test.mjs` cases cover terminal-retirement transfer,
 retries and session-only repair.
 These checks do not prove a running Kubernetes Pod or a model turn.
 
@@ -152,13 +152,18 @@ qualification until safe cleanup and its independent ownership are supported.
 
 The [standalone live smoke](repository-credentials.md#run-an-authorized-live-smoke)
 does not exercise OCC admission or a model.
-Use `repository-credentials-k3d-real.test.mjs` for the joined installed path:
-fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
-session, private Kubernetes runtime material and the model's own
-clone/edit/commit/push/native-PR task in both embedded OpenClaw and Dedicated
-Codex. Each case creates a ready-for-review PR. One explicitly authorized disposable
-repository is sufficient; two-repository deterministic coverage remains in the
-controlled platform case.
+Use the [QA matrix](qa-matrix.md) for the full native clone/edit/commit/push/PR
+journey in both presets on both shipped installation paths, with independent
+remote readback and verified session disposal.
+
+`repository-credentials-k3d-real.test.mjs` retains focused installed security proof:
+a fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
+sessions, private Kubernetes runtime material, network and credential isolation,
+and ordinary disposal. Its dedicated read-only case additionally executes a real
+native fetch, sandbox boundary probe, and rejected push. The two full-profile
+security cases do not create PRs; that journey belongs to the matrix. One explicitly
+authorized disposable repository is sufficient; two-repository deterministic
+coverage remains in the controlled platform case.
 
 Prepare the [real Kubernetes runtime prerequisites](kubernetes.md#kubernetes-model-turns-and-secrets).
 Select the `repository-credentials-installed` lane with the same prepare/run/cleanup

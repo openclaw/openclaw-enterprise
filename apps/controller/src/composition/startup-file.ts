@@ -21,6 +21,14 @@ const FORBIDDEN_SECRET_KEY =
 const FORBIDDEN_SECRET_VALUE =
   /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ghp|gho|github_pat)_[A-Za-z0-9_]{12,}|\bAKIA[0-9A-Z]{16}\b/i;
 
+/**
+ * Drops one leading UTF-8 byte order mark from hand-edited JSON, as Node's package.json
+ * reader does. A second mark stays and still fails JSON parsing.
+ */
+export function withoutByteOrderMark(text: string): string {
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
+}
+
 export function object(value: unknown, path: string): ConfigurationRecord {
   const result = asRecord(value);
   if (result === undefined) {

@@ -4,6 +4,7 @@ import { serviceConfigurationData } from "./builders.mjs";
 import { fixtureAppId } from "./github.mjs";
 import { createTlsMaterial } from "./process.mjs";
 import { createResourceScope } from "./resources.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import {
   credentialDriverModule,
   githubProviderModule,
@@ -38,10 +39,12 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
     const maximumDurationSeconds = options.maximumDurationSeconds ?? 172800;
     const profile = options.profile ?? "git-full";
     const definitions = options.repositories ?? defaultRegistryRepositories;
-    const { directory, privateKeyFile, registryFile, keyPair } = await createRegistryMaterial(
-      resources,
-      { definitions, namespaceId, backendId, maximumDurationSeconds },
-    );
+    const { privateKeyFile, registryFile, keyPair } = await createRegistryMaterial(resources, {
+      definitions,
+      namespaceId,
+      backendId,
+      maximumDurationSeconds,
+    });
     const [
       { validateServiceConfig },
       { loadGitHubRepositoryRegistry },
@@ -55,12 +58,13 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       githubProviderModule("registry-factory"),
       githubProviderModule("material"),
     ]);
+    const controlDirectory = await socketDirectory(resources, "rcs-control-");
     const configured = validateServiceConfig(
       serviceConfigurationData({
         gateway: {
           publicOrigin: "https://credentials.example.test",
           listen: "0.0.0.0:443",
-          controlSocket: join(directory, "control.sock"),
+          controlSocket: join(controlDirectory, "control.sock"),
         },
         sessionPolicy: { maximumDurationSeconds },
         limits: options.limits,

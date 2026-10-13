@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-10-03"
-last_updated_session: authoring-run/41ba3c72-c44a-4a26-8285-7d4724f24352
+updated: "2026-10-06"
+last_updated_session: authoring-run/6fa93358-8fd9-4675-9684-511f79da8969
 ---
 
 # Repository credential service flow
@@ -155,7 +155,9 @@ configuration. `apps/controller/src/drivers/repo/github/credentials/client/comma
 checks gh 2.100.0 and the canonical host/port profile.
 `apps/controller/src/drivers/repo/github/credentials/client/launch.ts:launchClient`
 provides single-session stock Git execution, signal forwarding and original child
-exit status, without Git command parsing or temporary-HOME cleanup. The
+exit status. `executeClientCommand` preserves numeric exits and maps signal
+termination to `128 + signal number` (SIGINT 130; SIGTERM 143), without Git
+command parsing or temporary-HOME cleanup. The
 [reference](../reference/repository-credentials.md#client-routing-and-limits)
 owns configuration overrides and generation limits.
 
@@ -346,6 +348,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 19:36: Preserve native child signal exit statuses in the shared client executor. (authoring-run/6fa93358-8fd9-4675-9684-511f79da8969 - 86bf3dd99470b86d4c46568f48455f695daabde5)
 
 - 2026-10-03: Refuse GraphQL bodies that select the provider clone credential before dispatch.
 

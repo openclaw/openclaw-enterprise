@@ -83,6 +83,7 @@ async function createFixture(
   fixture.controller.selectDriver("plugin", driver.id);
   return {
     ...fixture,
+    state,
     namespace,
     calls,
     auditSink,
@@ -616,23 +617,58 @@ test("Saved Agent plugin discovery denies unauthorized callers before reporting 
 test("Saved Agent plugin discovery rejects unsupported Harness authentication or execution mode without reading credentials", async (t) => {
   const fixture = await createFixture(t);
   const { path } = await createSavedAgent(fixture, "api_key");
-  // A Service Accounts Secret the Agent may operate is not enough; the Agent must also run
-  // dedicated. If create-time admission starts refusing this combination, this case is moot.
+  // A Service Accounts Secret on an embedded Agent never reaches stored discovery: Agent save
+  // refuses the pair, as deployment does (finding 1117).
   const secret = await fixture.createSecret(fixture.namespace.id, "Embedded PAT", accessToken);
-  const embedded = await fixture.createAgent(
+  const configuration = await fixture.createConfiguration(
     fixture.namespace.id,
-    `Embedded PAT Agent ${randomUUID()}`,
     createHarnessConfiguration("openclaw", "gpt-5.1"),
-    { executionMode: "embedded", harnessAuth: { method: "codex_pat", source: secret.ref } },
   );
-  grantAgentSecret(fixture, embedded, secret);
-  const embeddedPath = `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/plugins`;
+  const embedded = await fixture.request("POST", `/namespaces/${fixture.namespace.id}/agents`, {
+    body: {
+      name: `Embedded PAT Agent ${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "embedded",
+      harnessAuth: { method: "codex_pat", source: secret.ref },
+    },
+  });
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+  assert.equal(
+    embedded.body.error.message,
+    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
+  );
+  // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
+  // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
+  const account = await fixture.state.transact((unit) =>
+    unit.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: fixture.namespace.id,
+      name: `plugin-discovery-account-${randomUUID().slice(0, 8)}`,
+    }),
+  );
+  const managed = await fixture.createAgent(
+    fixture.namespace.id,
+    `Managed PAT Agent ${randomUUID()}`,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: fixture.namespace.id,
+          id: account.id,
+        },
+      },
+    },
+  );
+  const managedPath = `/namespaces/${fixture.namespace.id}/agents/${managed.id}/plugins`;
   const secretReads = trackSecretValueReads(fixture.secretDriver);
   for (const [prefix, suffix, body] of [
     [path, "", {}],
     [path, "/details", { pluginId: remoteId }],
-    [embeddedPath, "", {}],
-    [embeddedPath, "/details", { pluginId: remoteId }],
+    [managedPath, "", {}],
+    [managedPath, "/details", { pluginId: remoteId }],
   ]) {
     const unsupported = await fixture.request("POST", `${prefix}${suffix}`, { body });
     assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));
@@ -939,7 +975,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
       display_name: "Fixture",
       description: "Hosted fixture",
       interface: {},
-      requires_local_executor: false,
+      requires_local_executor: true,
       app_ids: ["fixture-app"],
       app_manifest: null,
       skills: [{ name: "knowledge-workflow" }],
@@ -1071,6 +1107,14 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   assert.deepEqual(artifact.configuration.apps["fixture-app"].tools, {
     "renamed_123.search": { enabled: true, approval_mode: "prompt" },
   });
+  // Skill-only plugins are available with a known empty tool inventory.
+  plugin.release.app_ids = [];
+  const skillsOnly = await fixture.request("POST", `${fixture.path}/details`, {
+    body: { secretRef: secret.ref, pluginId: "remote-fixture" },
+  });
+  assert.equal(skillsOnly.status, 200);
+  assert.equal(skillsOnly.data.available, true);
+  assert.deepEqual(skillsOnly.data.tools, []);
 
   // Rotation is observed by the next request without persisting the old or new value in discovery state.
   const updatePath = `/namespaces/${fixture.namespace.id}/secrets/${secret.id}`;

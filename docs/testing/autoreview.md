@@ -3,18 +3,21 @@
 For test audits, proof selection, and cleanup before review, see
 [Developer skills](developer-skills.md).
 
-When the user or owning workflow requests independent developer review, read the
-[vendored skill](../../.agents/skills/autoreview/SKILL.md), then run from the
-Enterprise repository root:
+When the user or owning workflow requests independent developer review, follow
+the [shared skill setup](../../.agents/skills/autoreview/SKILL.md) once and read
+the complete installed skill. Run from the Enterprise repository root:
 
 ```sh
-.agents/skills/autoreview/scripts/autoreview --mode local --model codex=gpt-6-astra
+python3 "$HOME/.agents/skills/autoreview/scripts/autoreview" --mode local --model codex=gpt-6-astra
 ```
 
-The helper requires Python 3 and an installed, authenticated reviewer CLI (Codex
-by default). Image review and the helper test suite also require Pillow. Pass `--model codex=gpt-6-astra` to select the Enterprise standard;
-the unchanged upstream helper has its own default when the option is omitted. It
-needs no Enterprise runtime or pnpm dependencies. For a committed branch in a
+Use your selected installation path if it differs from the default. On Windows,
+use Python or the installed `scripts/autoreview.ps1` launcher.
+The helper requires Python 3.10 or newer and an installed, authenticated reviewer
+CLI (Codex by default). Image review also requires Pillow. Pass
+`--model codex=gpt-6-astra` to select the Enterprise standard; the shared helper
+owns its default when the option is omitted. It needs no Enterprise runtime or
+pnpm dependencies. For a committed branch in a
 fork checkout, use `--mode branch --base upstream/main` when `upstream` points
 to `openclaw/openclaw-enterprise`. Verify the remote URL and fetch the intended
 base first; use the actual target branch for an existing or dependent PR.
@@ -30,79 +33,24 @@ authentication, or isolation prerequisite is missing, resolve the reported error
 do not bypass isolation or interpret an absent report as clean. Keep report paths
 outside the repository. Verify findings against the change before applying them.
 This workflow reviews developer changes; it does not configure runtime approvals.
-See the skill for engines, context inputs, exit codes, and result interpretation.
+See the installed skill for engines, context inputs, exit codes, and results.
 
 ## Upstream provenance
 
-The complete `.agents/skills/autoreview` directory is copied without modification
-from [openclaw/agent-skills, `skills/autoreview`](https://github.com/openclaw/agent-skills/tree/6480f6ab50a2a54dce1cfbd33e93b35a7fcd0b81/skills/autoreview)
-at commit `6480f6ab50a2a54dce1cfbd33e93b35a7fcd0b81`.
-The selected commit is on the canonical `agent-skills` main branch.
-The upstream [MIT license](../../.agents/skills/LICENSE.agent-skills) is retained
-beside the copy. Preserve scripts, tests, fixtures, and executable modes together.
+[openclaw/agent-skills](https://github.com/openclaw/agent-skills/tree/main/skills/autoreview)
+owns the implementation, instructions, and tests. Enterprise keeps only a Markdown
+entrypoint. Repository-specific reviewer choices and validation stay on this page.
+The upstream [MIT license](../../.agents/skills/LICENSE.agent-skills) is retained.
 
 ## Sync the skill
 
-Make shared changes in the canonical repository first. Fast-forward a clean
-`openclaw/agent-skills` checkout from `origin/main`, validate the change there,
-and record the selected commit. Do not introduce Enterprise-specific behavior
-inside the vendored directory; keep repository guidance on this page.
+Contribute shared changes to `openclaw/agent-skills` and validate them there first.
+After active reviews finish, update the shared checkout once: symlinked installs
+serve that version to every repository. Copy-mode installs need a reinstall with
+`python3 scripts/install-skills --mode copy --force autoreview` from the updated
+source checkout. Review runs do not download or update code automatically.
 
-From the Enterprise root, export the selected committed directory into a temporary
-directory, using an absolute path to the canonical checkout:
-
-```sh
-(
-set -eu
-upstream_checkout=/absolute/path/to/agent-skills
-upstream_commit=$(git -C "$upstream_checkout" rev-parse HEAD)
-sync_dir=$(mktemp -d)
-git -C "$upstream_checkout" archive "$upstream_commit" skills/autoreview LICENSE > "$sync_dir/archive.tar"
-tar -xf "$sync_dir/archive.tar" -C "$sync_dir"
-rsync -a --delete "$sync_dir/skills/autoreview/" .agents/skills/autoreview/
-cp "$sync_dir/LICENSE" .agents/skills/LICENSE.agent-skills
-diff -r "$sync_dir/skills/autoreview" .agents/skills/autoreview
-)
-```
-
-`rsync --delete` removes downstream-only files inside the vendored skill. Check
-for local changes before running it. Update the provenance commit and link above,
-then validate from the Enterprise root:
-
-```sh
-(
-set -eu
-PYTHONDONTWRITEBYTECODE=1 python3 .agents/skills/autoreview/scripts/autoreview_test.py
-(
-  cd .agents/skills/autoreview
-  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PYTEST'
-import sys
-import types
-import unittest
-from pathlib import Path
-
-# Load the checked-in namespace even if site-packages contains another tests package.
-package = types.ModuleType("tests")
-package.__path__ = [str(Path("tests").resolve())]
-sys.modules["tests"] = package
-modules = [f"tests.{path.stem}" for path in sorted(Path("tests").glob("test_*.py"))]
-if not modules:
-    raise SystemExit("No autoreview test modules found")
-result = unittest.TextTestRunner(verbosity=2).run(
-    unittest.defaultTestLoader.loadTestsFromNames(modules)
-)
-if result.testsRun <= len(result.skipped):
-    raise SystemExit("No autoreview tests completed without being skipped")
-raise SystemExit(not result.wasSuccessful())
-PYTEST
-)
-pnpm check:workspace
-pnpm docs:check-length
-pnpm format:check
-git diff --check
-)
-```
-
-Run documentation and formatting checks with their existing installed dependencies;
-do not install dependencies as a verification side effect. Review the complete
-diff, including deletions and file modes, before committing the sync.
+Do not restore repository-local helper or test copies. If the entrypoint itself
+changes upstream, copy `skills/autoreview/references/repository-entrypoint.md`
+to `.agents/skills/autoreview/SKILL.md`. Run the relevant documentation and
+formatting checks with existing dependencies and inspect `git diff --check`.

@@ -32,6 +32,7 @@ import {
   waitForInputValue,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   createModelCredentialSecret,
@@ -50,6 +51,203 @@ const defaultCodexPreset = JSON.parse(
 // Default Presets also select the filesystem Configuration Driver (native value validation).
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+test("Preset string variables preserve multiline defaults, edits and restored drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Multiline Preset strings", { ready: true });
+  const lf = "# Notes\n- First instruction\n- Second instruction\n";
+  const crlf = lf.replaceAll("\n", "\r\n");
+  const scenarios = [
+    { name: "LF default", value: lf, expected: lf },
+    { name: "CRLF default", value: crlf, expected: crlf },
+    {
+      name: "LF edit",
+      value: lf,
+      edit: "Edited first\nEdited second\n",
+      expected: "Edited first\nEdited second\n",
+    },
+    {
+      name: "CRLF edit",
+      value: crlf,
+      edit: "Edited first\r\nEdited second\r\n",
+      expected: "Edited first\nEdited second\n",
+    },
+    { name: "Empty override", value: lf, edit: "", expected: "" },
+    { name: "Single-line default", value: "One ordinary line", expected: "One ordinary line" },
+    { name: "Unedited restored default", value: crlf, restore: true, expected: crlf },
+    {
+      name: "Edited restored string",
+      value: lf,
+      edit: "Retained first\nRetained second\n",
+      restore: true,
+      expected: "Retained first\nRetained second\n",
+    },
+  ];
+  for (const scenario of scenarios) {
+    const template = {
+      variables: {
+        notes: { type: "string", default: scenario.value },
+        debounce: { type: "number", default: 0 },
+        controlUi: { type: "boolean", default: false },
+        unusedPassword: { type: "password" },
+      },
+      agent: { initialWorkspaceFiles: { "USER.md": "{{ vars.notes }}" } },
+      configuration: {
+        values: {
+          messages: { responsePrefix: "{{ vars.notes }}" },
+          gateway: {
+            reload: { debounceMs: "{{ vars.debounce }}" },
+            controlUi: { enabled: "{{ vars.controlUi }}" },
+          },
+        },
+      },
+    };
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: { name: scenario.name, template },
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+    const notes = page.getByLabel("Notes", { exact: true });
+    await notes.waitFor();
+    if (scenario.edit !== undefined) {
+      await notes.fill(scenario.edit);
+      await notes.press("Tab");
+    }
+    if (scenario.restore) {
+      await page.goBack();
+      await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+      await page.goForward();
+      await notes.waitFor();
+    }
+    // A permitted unreferenced password has no bound Secret selector or saved draft value.
+    // Use only a synthetic placeholder; applying the ordinary template creates no credential.
+    await page.getByLabel("Unused Password", { exact: true }).fill("synthetic-unused-placeholder");
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const values = JSON.parse(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    );
+    assert.equal(values.messages.responsePrefix, scenario.expected, scenario.name);
+    assert.equal(values.gateway.reload.debounceMs, 0, scenario.name);
+    assert.equal(values.gateway.controlUi.enabled, false, scenario.name);
+    // Workspace textarea edits follow the existing browser LF contract.
+    assert.equal(
+      await page.getByLabel("USER.md", { exact: true }).inputValue(),
+      scenario.expected.replaceAll("\r\n", "\n").replaceAll("\r", "\n"),
+      scenario.name,
+    );
+    assert.deepEqual(nonAuthWriteRequests(requests), [], scenario.name);
+    const stored = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/presets/${preset.data.id}`,
+    );
+    assert.equal(stored.data.template.variables.notes.default, scenario.value, scenario.name);
+  }
+});
+
+test("Selecting an existing fallback keeps the referenced model catalog deployable", async (t) => {
+  for (const fullReferenceIds of [false, true]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap("Model selection");
+    const namespace = await fixture.createNamespace("Fallback choices", { ready: true });
+    const ids = ["primary-model", "fallback-one", "fallback-two"];
+    const reference = (id) => `openai/${id}`;
+    const values = {
+      agents: {
+        defaults: {
+          model: { primary: reference(ids[0]), fallbacks: ids.slice(1).map(reference) },
+          models: Object.fromEntries(
+            ids.map((id) => [
+              reference(id),
+              {
+                agentRuntime: { id: "openclaw" },
+                alias: `Saved ${id}`,
+                params: { temperature: 0.3 },
+              },
+            ]),
+          ),
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://models.example.test/v1",
+            api: "openai-responses",
+            models: ids.map((id) => ({
+              id: fullReferenceIds ? reference(id) : id,
+              name: id,
+              contextWindow: 128000,
+              maxTokens: 8192,
+              reasoning: true,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            })),
+          },
+        },
+      },
+    };
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: {
+        name: "Fallback models",
+        template: { configuration: { values }, agent: { executionMode: "embedded" } },
+      },
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const editor = page.locator("#configuration-json");
+    const model = page.getByLabel("Model ID", { exact: true });
+    const checkSelection = async (id, retained) => {
+      await model.fill(id);
+      await model.press("Tab");
+      const selected = JSON.parse(await editor.inputValue());
+      assert.equal(selected.agents.defaults.model.primary, reference(id));
+      assert.deepEqual(selected.agents.defaults.model.fallbacks, ids.slice(1).map(reference));
+      assert.deepEqual(
+        selected.models.providers.openai.models.map((entry) =>
+          entry.id.includes("/") ? entry.id.split("/").slice(1).join("/") : entry.id,
+        ),
+        retained,
+      );
+      for (const fallback of ids.slice(1)) {
+        assert.deepEqual(
+          selected.agents.defaults.models[reference(fallback)],
+          values.agents.defaults.models[reference(fallback)],
+        );
+        assert.deepEqual(
+          selected.models.providers.openai.models.find(
+            (entry) => entry.id === fallback || entry.id === reference(fallback),
+          ),
+          values.models.providers.openai.models.find(
+            (entry) => entry.id === fallback || entry.id === reference(fallback),
+          ),
+        );
+      }
+      const configuration = await fixture.createConfiguration(namespace.id, selected);
+      const reread = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.equal(reread.status, 200);
+      assert.deepEqual(reread.data.values, selected);
+      assert.equal(resolveConfiguredHarnessId(reread.data.values), "openclaw");
+      return selected;
+    };
+    const selected = await checkSelection(ids[1], ids.slice(1));
+    assert.equal(selected.agents.defaults.models[reference(ids[0])], undefined);
+    await checkSelection(ids[2], ids.slice(1));
+    // Clearing a text input is a temporary editor state, not permission to drop a fallback.
+    await model.fill("");
+    await model.press("Tab");
+    await checkSelection("another-model", [...ids.slice(1), "another-model"]);
+  }
+});
 
 test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenAI", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset providers", {
@@ -391,6 +589,32 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     [{ accessToken: "at-browser-plugin-one" }],
   );
   const setup = dialog.locator(".plugin-access-help");
+  // Mobile browsing keeps pagination reachable while full setup guidance remains available by keyboard.
+  const nextPage = dialog.getByRole("button", { name: "Next page", exact: true });
+  for (const height of [844, 640]) {
+    await page.setViewportSize({ width: 390, height });
+    assert.equal(
+      await nextPage.evaluate((node) => {
+        const bounds = node.getBoundingClientRect();
+        const target = node.ownerDocument.elementFromPoint(
+          bounds.x + bounds.width / 2,
+          bounds.y + bounds.height / 2,
+        );
+        return node.contains(target);
+      }),
+      true,
+      "Catalog pagination must be reachable without scrolling the whole dialog",
+    );
+  }
+  const boundary = setup.getByText(
+    "Catalog availability does not verify app connections or grant access. Configure credentials and app access before deployment.",
+    { exact: true },
+  );
+  await boundary.waitFor();
+  assert.equal(await setup.getByText(/Service accounts/).isVisible(), false);
+  const setupDisclosure = setup.locator("summary");
+  await setupDisclosure.focus();
+  await setupDisclosure.press("Enter");
   await setup.getByText(/Service accounts/).waitFor();
   assert.match(await setup.textContent(), /App connection status is not verified/);
   for (const [name, href] of [
@@ -406,6 +630,29 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     assert.equal(await link.getAttribute("target"), "_blank");
     assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
   }
+  // Expanded instructions leave a short browser region; wheel scrolling still reaches its actions.
+  const pluginBrowser = dialog.locator(".plugin-browser");
+  await pluginBrowser.hover();
+  await page.mouse.wheel(0, 320);
+  await page.waitForFunction((node) => node.scrollTop > 0, await pluginBrowser.elementHandle());
+  assert.equal(
+    await nextPage.evaluate((node) => {
+      const bounds = node.getBoundingClientRect();
+      const target = node.ownerDocument.elementFromPoint(
+        bounds.x + bounds.width / 2,
+        bounds.y + bounds.height / 2,
+      );
+      return node.contains(target);
+    }),
+    true,
+    "Catalog pagination must remain reachable with setup instructions expanded",
+  );
+  await setupDisclosure.press("Enter");
+  await setup.getByRole("link", { name: "Service account credentials", exact: true }).waitFor({
+    state: "hidden",
+  });
+  await boundary.waitFor();
+  await page.setViewportSize({ width: 1280, height: 720 });
   // Unavailable guidance stays out of the row layout and is reachable without opening details.
   const unavailableRow = dialog.locator(".plugin-list-row").filter({
     has: page.getByRole("button", { name: "Admin-disabled", exact: true }),
@@ -512,7 +759,9 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
-      .getByText(/^(No plugins were returned\.|Load plugins to browse available choices\.)$/)
+      .getByText(
+        /^(No plugins were returned\.|Load plugins to browse available choices\.|To add a plugin by ID, choose Done and edit Plugin selections JSON\.)$/,
+      )
       .count(),
     0,
   );
@@ -548,7 +797,9 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
-      .getByText(/^(No plugins were returned\.|Load plugins to browse available choices\.)$/)
+      .getByText(
+        /^(No plugins were returned\.|Load plugins to browse available choices\.|To add a plugin by ID, choose Done and edit Plugin selections JSON\.)$/,
+      )
       .count(),
     0,
   );
@@ -662,7 +913,11 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   const clearedSetup = page.locator(".plugin-access-help");
   await clearedSetup.locator("a").first().waitFor({ state: "detached" });
   assert.equal(await clearedSetup.locator("a").count(), 0);
-  assert.equal((await clearedSetup.textContent()).trim(), "");
+  assert.equal(await clearedSetup.isVisible(), false);
+  assert.equal(
+    (await clearedSetup.locator(".plugin-access-instructions").textContent()).trim(),
+    "",
+  );
   assert.equal(await reminder.isVisible(), false);
   assert.equal(await reminder.locator("a").count(), 0);
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
@@ -1114,11 +1369,13 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
   await page.locator(".launch-runtime:not([open]) > summary").click();
   // Changing only topology must not redirect inference or discard provider settings.
-  for (const mode of ["embedded", "dedicated"]) {
+  for (const mode of ["dedicated", "embedded"]) {
     await page.getByLabel("Execution mode").selectOption(mode);
     assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
     assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
   }
+  // Dedicated OpenClaw needs the native model catalog's endpoint, which Agent save checks, so
+  // this custom transport is created embedded.
   const createdResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -1126,9 +1383,9 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await createdResponse;
-  assert.equal(response.status(), 201);
+  assert.equal(response.status(), 201, JSON.stringify(await response.json()));
   const created = (await response.json()).data;
-  assert.equal(created.executionMode, "dedicated");
+  assert.equal(created.executionMode, "embedded");
   assert.deepEqual(created.harnessAuth, harnessAuth);
   const saved = await fixture.request(
     "GET",
@@ -1260,7 +1517,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByLabel("Execution", { exact: true }).fill("invalid");
   await apply.click();
   await page
-    .getByText("Rendered Preset contains invalid Agent fields or Secret bindings.")
+    .getByText(
+      'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
+    )
     .waitFor();
   assert.equal(await save.count(), 0);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
@@ -2309,7 +2568,9 @@ test("invalid Preset application retains chooser edits and preserves the selecte
     await mode.fill("invalid");
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await page
-      .getByText("Rendered Preset contains invalid Agent fields or Secret bindings.")
+      .getByText(
+        'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
+      )
       .waitFor();
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -2696,4 +2957,57 @@ test("The console requires a readable installed default for quick-start and stil
   await page.getByLabel("Preset template", { exact: true }).selectOption(alternative.data.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Custom Agent");
+});
+
+test("Preset with a managed PAT account creates a draft without a Secret grant", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Managed account Preset", { ready: true });
+  // Account issuance is outside this browser test. Association before issuance is
+  // supported; this proves Preset rendering and draft creation, not deployment.
+  const account = await fixture.controller.transact((state) =>
+    state.serviceAccounts.createServiceAccount({
+      id: `sa_${crypto.randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Preset research account",
+    }),
+  );
+  const harnessAuth = {
+    method: "codex_pat",
+    source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+  };
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  delete artifact.template.variables.modelSecret;
+  artifact.template.agent.harnessAuth = harnessAuth;
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Managed PAT Preset Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const created = (await response.json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  assert.deepEqual(created.harnessAuth, harnessAuth);
+  assert.equal(
+    requests.some(
+      (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
+    ),
+    false,
+  );
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });

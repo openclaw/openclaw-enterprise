@@ -145,6 +145,35 @@ and existing revision ownership and bookkeeping remain required. The
 [current harness reference](../../docs/reference/harness-execution.md#harness-authentication)
 owns this behavior; the preceding delivery evidence records the earlier design.
 
+## PAT unification amendment (2026-10-07)
+
+[PR #1648](https://github.com/openclaw/openclaw-enterprise/pull/1648) replaces
+`chatgpt_service_account` with `codex_pat` for managed account credentials.
+Imported PATs and issued account tokens share that method; `source.kind` selects
+their existing Secret or ServiceAccount owner. Managed bindings use
+`{ method: "codex_pat", source: { kind: "service_account", namespaceId, id } }`.
+Exact source authorization, same-Namespace ownership, admitted credential
+references, and Backend/workspace checks remain required. The
+[current binding reference](../../docs/reference/agents.md#harness-authentication)
+owns the complete grammar.
+
+The retired managed binding is unsupported development state. Migration `0049`
+rejects retained legacy bindings atomically, including historical revisions,
+instead of converting them. The binding reference above records the upgrade
+limitation.
+
+Dedicated Codex uses `login --with-access-token` for both PAT sources. This
+supersedes the token/workspace projection and forced-workspace login option in
+the original delivery table: only the token is projected, while managed
+workspace ownership remains checked at admission and dispatch. Provider-backed
+proof of token confinement to the issued workspace remains outstanding; the
+control-plane checks do not establish that provider behavior.
+
+Existing OAuth device login and native token custody are unchanged by this
+amendment. PAT unification requires no new Credential Gateway or token service;
+the OAuth replacement is separate work in
+[PR #1559](https://github.com/openclaw/openclaw-enterprise/pull/1559).
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]

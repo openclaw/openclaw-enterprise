@@ -45,8 +45,12 @@ curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
 
 `occ service-key create --service-principal ID --name NAME --out FILE`, with
 `--namespace` for a Namespace principal, makes the same request and writes the
-response to a new `0600` file without printing the key. For an Installation
-principal, unset `OCC_NAMESPACE`, which the CLI also sends as `namespaceId`.
+response to a new `0600` file without printing the key. The name is 1 to 32
+characters, counted as Unicode code points rather than bytes, and must contain
+a non-whitespace character, the same rule as the API. The CLI refuses any
+other name before it creates the key file or sends the request. For an
+Installation principal, unset `OCC_NAMESPACE`, which the CLI also sends as
+`namespaceId`.
 
 Success returns HTTP `201`. The response contains the credential exactly once in
 `data.key` and a non-secret `data.id` needed to revoke it. Record the key and
@@ -232,10 +236,15 @@ finish. An unknown or removed key returns `404`. Revoking an issuer’s key does
 not revoke other keys issued through it or delete a principal or its bindings.
 
 HTTP issuance and revocation emit [audit events](../../guides/topics/audit-log.md)
-with administrator and non-secret IDs. If issuance audit persistence fails, OCC
-returns `503` without disclosing the key and attempts to remove it; this cleanup
-is best effort. A failed revocation audit returns `503` but does not restore the
-deleted key.
+with the caller, the principal ID, and the key's ID (`serviceKeyId`) and name
+(`serviceKeyName`). Every API route's audit event (change, audited read, or
+denial) for a request made with a service key, including these, names that key
+in `actorServiceKeyId`, so you can tell which of a principal's keys acted.
+Events OCC writes for the work itself, such as `openclaw.agents.provision` and
+worker `reconcile` events, name only the principal. If issuance audit
+persistence fails, OCC returns `503` without disclosing the key and attempts to
+remove it; this cleanup is best effort. A failed revocation audit returns `503`
+but does not restore the deleted key.
 
 ## Service-key failures
 

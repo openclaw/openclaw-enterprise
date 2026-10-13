@@ -217,7 +217,7 @@ one straight after creation.
 
 ## Session and recovery controls
 
-Password and GitHub sessions share admission rules: an eight-hour lifetime without refresh, current account and
+Password, GitHub, Google and OIDC sessions share admission rules: an eight-hour lifetime without refresh, current account and
 method checks, and required audit before a cookie is released or, on logout,
 cleared. Older sessions without account/method binding are rejected; users sign in again.
 An external session authenticates only while its provider instance is configured: removing

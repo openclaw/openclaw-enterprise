@@ -5,6 +5,8 @@ These guides are for contributors verifying Enterprise changes. Run commands
 from the repository root. For installation and supported product settings, use
 the [deployment guide](../guides/deploy.md) and [settings reference](../reference/settings.md).
 
+For all four shipped installation/preset combinations, run the [credentialed QA matrix](qa-matrix.md).
+
 ## Run tests
 
 | Command                 | Tests selected                                                            |
@@ -121,8 +123,9 @@ CI results artifacts also carry a per-file `measurements` array. A test adds one
 with `t.diagnostic("openclaw-ci-measurement <json>")`; the
 [reporter](../../scripts/ci/reporter.mjs) keeps only allowlisted shapes (today
 `kubelet-volume-refresh`, from the
-[volume refresh test](../../tests/integration/kubelet-volume-refresh-k3d.test.mjs))
-and drops other diagnostics.
+[volume refresh test](../../tests/integration/kubelet-volume-refresh-k3d.test.mjs),
+and `runtime-model-probe`, the Gateway model probe's time against its cap, from the
+runtime image model probe and startup probe tests) and drops other diagnostics.
 
 Tests normally clean up their own temporary processes, resources, and files, but
 some suites leave clusters, databases, Slack messages, or provider accounts for

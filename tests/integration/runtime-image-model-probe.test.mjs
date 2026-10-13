@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   modelProbeSettled,
   modelProbeDiagnostic,
+  recordModelProbeMeasurement,
   trackProbeCpuHog,
 } from "../helpers/runtime-model-probe-observation.mjs";
 import {
@@ -72,6 +73,7 @@ test(
     const detail = `\n${output}\n${JSON.stringify(events)}`;
     // CI keeps only a failed assertion's location: each cause fails on its own line.
     const probe = jsonLines(output).find(({ event }) => event === "openclaw.model_probe");
+    recordModelProbeMeasurement(t, "gateway-500m-contended", run);
     try {
       assert.equal(stress.started, 8, "all eight owned CPU hogs reached their loops");
       assert.ok(probe, `the wrapper logged its probe${detail}`);

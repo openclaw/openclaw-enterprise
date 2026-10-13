@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import {
@@ -85,6 +86,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
             typeof error.gatewayCode === "string" &&
             typeof error.retryable === "boolean",
           async callGatewayFromCli(method, rpcOptions, params, extra) {
+            assert.equal(extra.sharedStateMode, "read-only");
             calls.push({ method, params });
             const value = await options.gatewayCall?.(method, extra.signal);
             if (value === undefined) {

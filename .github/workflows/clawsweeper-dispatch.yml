@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   hosted-target-admission:
-    uses: openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@7829cdce71310b549c119c670e7bd69e04f7e242 # reviewed upstream main
+    uses: openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@7b767cc6bf7ed7176a94b1e8732b478ea49012d2 # reviewed upstream main
     with:
       target_repo: ${{ github.repository }}
     secrets:

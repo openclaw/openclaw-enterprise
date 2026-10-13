@@ -670,12 +670,22 @@ test("production embedded replacements preserve their active Service across fail
     desiredRuntimeState: "running",
   };
   const retries = [];
+  const locks = [];
   let compareAndSetAttempts = 0;
   worker.state.transactWithQueue = async (transaction) =>
     transaction(
       {
+        namespaces: {
+          lockNamespace: async (...arguments_) => {
+            locks.push(["namespace", ...arguments_]);
+            return { id: namespaceId };
+          },
+        },
         agents: {
-          lockAgent: async () => activeAgent,
+          lockAgent: async (...arguments_) => {
+            locks.push(["agent", ...arguments_]);
+            return activeAgent;
+          },
           compareAndSetActiveRevision: async (...arguments_) => {
             compareAndSetAttempts++;
             assert.deepEqual(arguments_, [namespaceId, agentId, predecessor.id, candidate.id]);
@@ -689,6 +699,11 @@ test("production embedded replacements preserve their active Service across fail
       },
     );
   await worker.finalizeRevision(claim, observation);
+  // Admission order: the Namespace before the Agent.
+  assert.deepEqual(locks, [
+    ["namespace", namespaceId, { includeDeleted: true }],
+    ["agent", namespaceId, agentId],
+  ]);
   assert.equal(compareAndSetAttempts, 1);
   assert.deepEqual(retries, [{ code: "ACTIVE_REVISION_CHANGED" }]);
   assert.equal(activeAgent.activeRevisionId, predecessor.id);
@@ -1097,7 +1112,12 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
     },
   };
   const relativeConfiguration = installation();
-  relativeConfiguration.presets = { includeDefaults: false, files: ["presets/from-file.json"] };
+  // Entries are trimmed before they resolve, so whitespace inside a quoted YAML entry does not
+  // change the path.
+  relativeConfiguration.presets = {
+    includeDefaults: false,
+    files: ["  presets/from-file.json\t"],
+  };
   const relativePath = await fixture(t, relativeConfiguration);
   const relativeDirectory = dirname(relativePath);
   await mkdir(join(relativeDirectory, "presets"), { recursive: true });
@@ -1128,9 +1148,32 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
   });
   assert.equal(absoluteRuntime.defaultPresets[0].name, "absolute-file");
 
+  // Editors on Windows often save JSON with a UTF-8 byte order mark. Like Driver package
+  // manifests and the startup YAML, a Preset file may carry one leading mark.
+  const markedConfiguration = installation();
+  const markedPreset = join(relativeDirectory, "marked.json");
+  markedConfiguration.presets = { includeDefaults: false, files: [markedPreset] };
+  await writeFile(markedPreset, `\uFEFF${JSON.stringify({ ...validPreset, name: "marked-file" })}`);
+  const markedRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, markedConfiguration) },
+  });
+  assert.equal(markedRuntime.defaultPresets[0].name, "marked-file");
+
   for (const [filename, contents, expected] of [
     ["missing.json", undefined, /Preset file .* is unavailable/],
     ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
+    // Only one leading mark is stripped; a second is not JSON.
+    [
+      "double-mark.json",
+      `\uFEFF\uFEFF${JSON.stringify(validPreset)}`,
+      /Preset file .* must contain valid JSON/,
+    ],
+    [
+      "missing-name.json",
+      JSON.stringify({ template: {} }),
+      /Preset file .*missing-name\.json\.name must be a nonempty string/,
+    ],
     [
       "unsupported.json",
       JSON.stringify({ name: "unsupported", template: {}, unexpected: true }),
@@ -1193,6 +1236,7 @@ test("API and worker name a Preset file failure in their startup error code", as
     ["invalid-name.json", JSON.stringify({ name: "line\u2028break", template: {} })],
     ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
     ["not-a-list.json", undefined, "cases/not-a-list.json"],
+    ["blank-entry", undefined, ["  "]],
   ]) {
     const configuration = installation();
     configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
