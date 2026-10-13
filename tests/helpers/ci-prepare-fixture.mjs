@@ -328,6 +328,18 @@ if (command === "docker" || command === "podman") {
     state[role] = args[2];
     finish();
   }
+  // The warm job's cache export, after that image's build and load.
+  if (equals(args.slice(0, 4), ["buildx", "build", "--output", "type=cacheonly"])) {
+    assert.equal(args.includes("--load") || args.includes("-t"), false);
+    const role = args.includes("--target") ? "controller" : "runtime";
+    assert.ok(state[role], role + " exports after its build");
+    if (role === "controller" && scenario === "controller-cache-export-hung") await hang();
+    if (role === "controller" && scenario === "controller-cache-export-failed") {
+      process.stderr.write("#52 exporting to GitHub Actions Cache\nERROR: synthetic export failure\n");
+      process.exit(1);
+    }
+    finish();
+  }
   if (equals(args.slice(0, 2), ["buildx", "build"]) && args.includes("--target")) {
     assert.equal(args[args.indexOf("--target") + 1], "runtime");
     if (scenario === "controller-build-failed") {

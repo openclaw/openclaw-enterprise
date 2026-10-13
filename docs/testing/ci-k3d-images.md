@@ -95,3 +95,10 @@ and logs it as `runtime-image-kept`; compare that ID with the lanes'
 `runtime-image-reuse` lines. Cleanup does not own that name, nothing pushes it,
 and the cache evicts images unused for 8 days. Without it, the cache keeps
 whichever older image a job happened to leave behind.
+
+That workflow builds and loads each image first, then exports its cache in a
+second build that reuses those steps (`--output type=cacheonly`). The export
+has five minutes (`OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` overrides it). A
+failed or stalled export only logs a warning and a `<role>-cache-export` line:
+the image is kept, and lanes restore the previous cache, which is slower but
+still correct.
