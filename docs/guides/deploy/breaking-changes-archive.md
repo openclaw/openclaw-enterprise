@@ -8,6 +8,21 @@ newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
 
+## 2026-10-12: cluster and execution API ports must be canonical decimals
+
+**What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
+values that are not a canonical decimal from 1 to 65535 with at most five
+digits. `010` and integers Sprig cannot convert, such as
+`9223372036854775808`, no longer render.
+
+**Who is affected.** Installations that set either port with a leading zero.
+
+**How to tell.** Helm names `cluster.port` or `executionCluster.apiPort` and
+says it must be an integer TCP port from 1 to 65535.
+
+**Steps.** Replace a leading-zero value with its effective decimal port (`010`
+becomes `8`) before the next Helm upgrade. _untested_ against a live release.
+
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 
 **What breaks.**

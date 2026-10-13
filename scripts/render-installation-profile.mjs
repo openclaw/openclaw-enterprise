@@ -367,20 +367,40 @@ function isCodexSeccompProfile(value) {
   });
 }
 
-function observabilityDestination(value) {
+function parsedObservabilityUrl(value) {
   let url;
   try {
     url = new URL(value);
   } catch {
+    return undefined;
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.hostname === "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== ""
+  ) {
+    return undefined;
+  }
+  return url;
+}
+
+// ipv4HostKept is the chart and OCC_AUTH_BASE_URL written-host rule. Also refuse
+// an octet above 255, which that pattern's width would otherwise allow.
+function observabilityIpv4HostKept(value, url) {
+  if (!ipv4HostKept(value, url)) {
     return false;
   }
-  return (
-    ["http:", "https:"].includes(url.protocol) &&
-    url.hostname !== "" &&
-    url.username === "" &&
-    url.password === "" &&
-    url.hash === ""
-  );
+  if (isIP(url.hostname) !== 4) {
+    return true;
+  }
+  return url.hostname.split(".").every((octet) => Number(octet) <= 255);
+}
+
+function observabilityDestination(value) {
+  const url = parsedObservabilityUrl(value);
+  return url !== undefined && observabilityIpv4HostKept(value, url);
 }
 
 function validateDatabaseCaMount(values, diagnostics) {
@@ -1456,15 +1476,27 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   // Same rule the controller applies to Installation observability.url at startup.
-  const observabilityUrl = optionalString(
-    controlPlane,
-    ["controlPlane", "observabilityUrl"],
-    diagnostics,
-    {
-      validate: observabilityDestination,
-      description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
-    },
-  );
+  // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
+  // absolute HTTP(S) message from optionalString.
+  const rawObservabilityUrl = controlPlane.observabilityUrl;
+  const parsedObservability =
+    typeof rawObservabilityUrl === "string"
+      ? parsedObservabilityUrl(rawObservabilityUrl)
+      : undefined;
+  const rewrittenObservabilityIpv4 =
+    parsedObservability !== undefined &&
+    !observabilityIpv4HostKept(rawObservabilityUrl, parsedObservability);
+  const observabilityUrl = rewrittenObservabilityIpv4
+    ? undefined
+    : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
+        validate: observabilityDestination,
+        description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
+      });
+  if (rewrittenObservabilityIpv4) {
+    diagnostics.errors.push(
+      "controlPlane.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
 
   const collectorEnabled = asBoolean(
     loggingCollector,

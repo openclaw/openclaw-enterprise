@@ -59,6 +59,9 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
+  if (/observability\.url IPv4 host must be four decimal octets/.test(message)) {
+    return "OBSERVABILITY_URL_INVALID";
+  }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
   }
