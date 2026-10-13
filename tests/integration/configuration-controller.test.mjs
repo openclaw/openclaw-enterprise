@@ -2114,6 +2114,230 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   assert.equal(resaved.body.error.message, message("/proxy/proxyUrl"));
 });
 
+test("Configuration and Preset saves refuse a user name or password in a URL in any environment map, whatever the variable's name", async (t) => {
+  // Findings 1260-1262: the userinfo rule read only `env`, `env.vars` and MCP server `env`, and
+  // only `*_PROXY` names. A skill, hook, local model service, exec secret provider, Docker sandbox
+  // or install policy check starts its process with its own `env`, and pip, npm, git and Go send
+  // the userinfo in `PIP_INDEX_URL`, `npm_config_registry` or `GOPROXY` as Basic auth.
+  const root = await mkdtemp(join(tmpdir(), "occ-env-url-userinfo-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-env-url-userinfo");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-env-url-userinfo-${randomUUID()}`;
+  const message = (field) =>
+    `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const index = `https://u:${sentinel}@pypi.example.test/simple`;
+  const refused = [
+    [
+      { skills: { entries: { docs: { env: { HTTPS_PROXY: index } } } } },
+      "/skills/entries/docs/env/HTTPS_PROXY",
+    ],
+    [
+      { hooks: { internal: { entries: { audit: { env: { PIP_INDEX_URL: index } } } } } },
+      "/hooks/internal/entries/audit/env/PIP_INDEX_URL",
+    ],
+    [
+      {
+        models: {
+          providers: {
+            local: { localService: { command: "/usr/bin/serve", env: { GOPROXY: index } } },
+          },
+        },
+      },
+      "/models/providers/local/localService/env/GOPROXY",
+    ],
+    [
+      {
+        secrets: {
+          providers: {
+            vault: { source: "exec", command: "/usr/bin/vault", env: { VAULT: index } },
+          },
+        },
+      },
+      "/secrets/providers/vault/env/VAULT",
+    ],
+    [
+      { agents: { defaults: { sandbox: { docker: { env: { npm_config_registry: index } } } } } },
+      "/agents/defaults/sandbox/docker/env/npm_config_registry",
+    ],
+    [
+      { agents: { entries: { main: { sandbox: { docker: { env: { HTTP_PROXY: index } } } } } } },
+      "/agents/entries/main/sandbox/docker/env/HTTP_PROXY",
+    ],
+    [
+      {
+        security: {
+          installPolicy: { exec: { command: "/usr/bin/scan", env: { GIT_CONFIG_VALUE_0: index } } },
+        },
+      },
+      "/security/installPolicy/exec/env/GIT_CONFIG_VALUE_0",
+    ],
+    // Any name, in the maps checked before: a URL anywhere in the value, also in a list.
+    [
+      { env: { vars: { GOPROXY: `https://${sentinel}@proxy.example.test,direct` } } },
+      "/env/vars/GOPROXY",
+    ],
+    [{ env: { PIP_INDEX_URL: index } }, "/env/PIP_INDEX_URL"],
+    [
+      { env: { vars: { PIP_EXTRA_INDEX_URL: `https://pypi.example.test ${index}` } } },
+      "/env/vars/PIP_EXTRA_INDEX_URL",
+    ],
+    [
+      {
+        mcp: {
+          servers: {
+            docs: {
+              command: "docs-mcp",
+              env: { NPM_REGISTRY: `\${SCHEME}://u:${sentinel}@npm.test` },
+            },
+          },
+        },
+      },
+      "/mcp/servers/docs/env/NPM_REGISTRY",
+    ],
+    [
+      { env: { vars: { PIP_INDEX_URL: `\${PIP_URL:-https://u:${sentinel}@pypi.example.test}` } } },
+      "/env/vars/PIP_INDEX_URL",
+    ],
+  ];
+  for (const [values, field] of refused) {
+    await t.test(`refuses ${field}`, async () => {
+      for (const [path, body] of [
+        [configurations, { kind: "agent", values }],
+        [presets, { name: "Refused", template: { configuration: { values } } }],
+      ]) {
+        const response = await request(context.app, "POST", path, { body });
+        assert.equal(response.status, 400, `${path}: ${JSON.stringify(response.body)}`);
+        assert.equal(response.body.error.message, message(field), path);
+        assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+      }
+    });
+  }
+
+  // A Preset variable beside the userinfo, in the scheme or between `:` and `//`, is refused at
+  // save; a variable that is the whole URL is checked once filled.
+  const variables = {
+    url: { type: "string" },
+    host: { type: "string" },
+    scheme: { type: "string" },
+  };
+  for (const [env, field] of [
+    [{ PIP_INDEX_URL: "https://{{ vars.url }}@pypi.example.test" }, "PIP_INDEX_URL"],
+    [{ GOPROXY: `{{ vars.scheme }}://u:${sentinel}@{{ vars.host }}` }, "GOPROXY"],
+    [{ REGISTRY: `https:{{ vars.scheme }}//u:${sentinel}@npm.test` }, "REGISTRY"],
+  ]) {
+    await t.test(`refuses a Preset ${field} at save`, async () => {
+      const response = await request(context.app, "POST", presets, {
+        body: {
+          name: "Refused",
+          template: {
+            variables,
+            configuration: { values: { skills: { entries: { x: { env } } } } },
+          },
+        },
+      });
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.message, message(`/skills/entries/x/env/${field}`));
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    });
+  }
+  // Nothing refused was stored.
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+  assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
+
+  const saved = await request(context.app, "POST", presets, {
+    body: {
+      name: "Whole variable",
+      template: {
+        variables,
+        configuration: {
+          values: { skills: { entries: { x: { env: { PIP_INDEX_URL: "{{ vars.url }}" } } } } },
+        },
+      },
+    },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const launch = (url) =>
+    request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate(saved.body.data.template, { url, host: "", scheme: "" })
+          .configuration,
+      },
+    });
+  await t.test("refuses a whole Preset variable at launch", async () => {
+    const filled = await launch(index);
+    assert.equal(filled.status, 400, JSON.stringify(filled.body));
+    assert.equal(filled.body.error.message, message("/skills/entries/x/env/PIP_INDEX_URL"));
+    assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
+  });
+  const plain = await launch("https://pypi.example.test/simple");
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+
+  // Ordinary values, URLs without userinfo, an `@` outside a URL's authority, whole references
+  // and fallbacks without userinfo still save in every map.
+  const env = {
+    PIP_INDEX_URL: "https://pypi.example.test/simple",
+    GOPROXY: "https://proxy.golang.org,direct",
+    NPM_SCOPE_URL: "https://registry.example.test/@scope/pkg",
+    GIT_CONFIG_VALUE_0: "${GIT_URL}",
+    REGISTRY: "${REGISTRY_URL:-https://registry.example.test}",
+    MAINTAINER: "ops@example.test",
+    NOTE: "see https://docs.example.test/help or write to ops@example.test",
+    NO_PROXY: "localhost,.svc,10.0.0.0/8",
+    LOG_LEVEL: "debug",
+  };
+  const accepted = {
+    env: { ...env, vars: env },
+    skills: { entries: { docs: { env } } },
+    hooks: { internal: { entries: { audit: { env } } } },
+    models: { providers: { local: { localService: { command: "/usr/bin/serve", env } } } },
+    secrets: { providers: { vault: { source: "exec", command: "/usr/bin/vault", env } } },
+    agents: {
+      defaults: { sandbox: { docker: { env } } },
+      entries: { main: { sandbox: { docker: { env } } } },
+    },
+    security: { installPolicy: { exec: { command: "/usr/bin/scan", env } } },
+    mcp: { servers: { docs: { command: "docs-mcp", env } } },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: {
+            ...accepted,
+            skills: {
+              entries: {
+                docs: {
+                  env: {
+                    ...env,
+                    PIP_INDEX_URL: "https://{{ vars.host }}/simple",
+                    GOPROXY: "{{ vars.url }}",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
   // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is

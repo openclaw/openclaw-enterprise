@@ -40,7 +40,7 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * deployment checks all slots. A Preset save passes `unresolved`, so a credential header name that
  * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
- * channel proxies, MCP server URLs, proxy environment variables (also an MCP server's), Codex's
+ * channel proxies, MCP server URLs, a URL in any environment value of any environment map, Codex's
  * network proxy and speech and Talk provider proxies.
  */
 export function validateModelCredentialReferences(
@@ -92,6 +92,32 @@ export function validateModelCredentialReferences(
         urlHoldsUserinfo(value, [`http://${head}`, ...tail]))
     ) {
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
+  };
+  // Any environment value that holds `scheme://` is checked from the start of each such scheme,
+  // whatever its name (finding 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`,
+  // `npm_config_registry`, `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as
+  // `GOPROXY` or `PIP_EXTRA_INDEX_URL` holds several. A proxy variable is also read from its
+  // start, without a scheme as http. On a Preset save, a variable may sit anywhere in the scheme
+  // or between `:` and `//`.
+  const refuseEnvironmentUserinfo = (path: SettingPath, value: unknown, proxy: boolean): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    if (proxy) {
+      refuseUrlUserinfo(path, value, true);
+    }
+    // `\0` stands for each unfilled variable: no environment value can hold one.
+    const text = (options.unresolved?.(path) ?? [value]).join("\0");
+    for (const { index } of text.matchAll(/:\0*[/\\]\0*[/\\]/g)) {
+      let start = index;
+      // Back over the scheme, and any variable or `${VAR}` reference in it.
+      while (start > 0 && /[\w+.\-${}\0]/.test(text[start - 1] ?? "")) {
+        start -= 1;
+      }
+      if (urlHoldsUserinfo(value, text.slice(start).split("\0"))) {
+        throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+      }
     }
   };
 
@@ -181,11 +207,11 @@ export function validateModelCredentialReferences(
         );
       }
     }
-    // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
-    // process it starts, and an MCP server's `env` its stdio process (finding 1259). Clients such
-    // as curl and git read a value without a scheme as http. On a Preset save, a name that waits
-    // on a variable is matched as the text around it (`{{ vars.scheme }}_PROXY`), as for
-    // credential header names.
+    // The environment (HTTPS_PROXY, PIP_INDEX_URL, ...) reaches the Gateway and every process it
+    // starts, and an MCP server's `env` its stdio process (finding 1259). Clients such as curl
+    // and git read a proxy without a scheme as http. On a Preset save, a name that waits on a
+    // variable is matched as the text around it (`{{ vars.scheme }}_PROXY`), as for credential
+    // header names.
     const environments: [readonly string[], Record<string, unknown> | undefined][] = [
       [["env"], env],
       [["env", "vars"], asRecord(env?.vars)],
@@ -253,12 +279,33 @@ export function validateModelCredentialReferences(
         refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
       }
     }
+    // Every other environment map OpenClaw starts a process with (findings 1260, 1261): a
+    // skill's, an internal hook's, a provider's local service, an exec secret provider's, the
+    // Docker sandbox's (default and per Agent) and the install policy's exec check.
+    const keyedEnvironments = (path: readonly string[], each: readonly string[]) => {
+      for (const [key, settings] of Object.entries(at(values, path) ?? {})) {
+        environments.push([[...path, key, ...each], at(settings, each)]);
+      }
+    };
+    keyedEnvironments(["skills", "entries"], ["env"]);
+    keyedEnvironments(["hooks", "internal", "entries"], ["env"]);
+    keyedEnvironments(["models", "providers"], ["localService", "env"]);
+    keyedEnvironments(["secrets", "providers"], ["env"]);
+    keyedEnvironments(["agents", "entries"], ["sandbox", "docker", "env"]);
+    for (const path of [
+      ["agents", "defaults", "sandbox", "docker", "env"],
+      ["security", "installPolicy", "exec", "env"],
+    ]) {
+      environments.push([path, at(values, path)]);
+    }
     for (const [prefix, settings] of environments) {
-      for (const name of Object.keys(settings ?? {})) {
+      for (const [name, value] of Object.entries(settings ?? {})) {
         const literal = options.unresolved?.([...prefix, name], true)?.join("");
-        if ([name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text))) {
-          refuseUrlUserinfo([...prefix, name], settings?.[name], true);
-        }
+        refuseEnvironmentUserinfo(
+          [...prefix, name],
+          value,
+          [name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text)),
+        );
       }
     }
   }
