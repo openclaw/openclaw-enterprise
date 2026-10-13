@@ -219,6 +219,21 @@ test("a stuck step is abandoned at its limit", abandonStep);
   assert.match(output, /later after hook failed/);
 });
 
+// Finding 1258: the same when the failing later hook is the one that abandoned the step.
+test("a later root after hook that abandons a step and fails does not keep the file alive", async (t) => {
+  const output = await runFixtureFile(
+    t,
+    `after(async () => {
+  await abandonStep();
+  throw new Error("later after hook failed");
+});
+test("nothing is abandoned during the tests", () => {});
+`,
+    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+  );
+  assert.match(output, /later after hook failed/);
+});
+
 // The worker is serial. A Compute wait that only saves a later pass asks whether
 // other Work is waiting and ends early when it is, so another Agent's deploy
 // runs next instead of queuing behind the wait (D221).
