@@ -13,7 +13,7 @@ import {
   OpenShellSandboxDriver,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
-import { cpuTimeMs } from "../helpers/cpu-time.mjs";
+import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogComputeDriver,
   createRuntimeLogFixture,
@@ -1108,6 +1108,53 @@ test("sandbox sanitization stays linear on hostile 32 KiB OCSF lines", async () 
     assert.equal(records.length, 1);
     assert.ok(elapsed < budgetMs, `${message.slice(0, 24)} took ${elapsed.toFixed(0)} ms of CPU`);
   }
+});
+
+test("a full Sandbox tail is cut for about the cost of sanitizing it once", async () => {
+  // A 1000-line tail of 1 KiB policy decisions is twice what one 512 KiB page may
+  // carry. Choosing the cut must not sanitize the tail again for each candidate
+  // prefix. Both costs are process CPU time, min of 3, so the bound holds on slow
+  // or loaded runners.
+  const { createRuntimeLogCursorCodec, readSandboxLogPage, sanitizeSandboxLogLines } =
+    await import("../../packages/occ/src/runtime-logs/index.ts");
+  const lines = Array.from({ length: 1000 }, (_, index) =>
+    sandboxLine(
+      Math.floor(index / 20),
+      `HTTP:GET [INFO] ALLOWED curl(42) -> GET https://api.example.com/items/${index}?page=${"x".repeat(900)} [policy:web engine:opa]`,
+    ),
+  );
+  const stream = { source: "sandbox", sandbox: "sb-0123" };
+  const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, lines));
+  const binding = {
+    principalId: "synthetic-person",
+    agentId: "agent-test",
+    revisionId: "revision-test",
+    source: "sandbox",
+  };
+  const codec = createRuntimeLogCursorCodec(randomUUID().repeat(2));
+  let page;
+  const cut = await cpuTimeMsAsync(async () => {
+    page = await readSandboxLogPage({
+      description: {
+        revisionId: binding.revisionId,
+        sources: [{ id: "sandbox", kind: "sandbox", available: true }],
+      },
+      query: { source: "sandbox", previous: false, tailLines: 1000 },
+      codec,
+      binding,
+      now: () => Date.parse("2026-09-30T12:10:00Z"),
+      admitView: async () => {},
+      readLogs: async () => ({ sandbox: "sb-0123", lines, bufferTotal: 1000 }),
+    });
+  });
+  const delivered = page.records.filter(({ type }) => type === "line").length;
+  assert.equal(page.truncated, true);
+  assert.ok(delivered > 300 && delivered < 1000, `${delivered} lines delivered`);
+  assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  assert.ok(
+    cut < 2.5 * once,
+    `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
+  );
 });
 
 test("sandbox wire pages include escaped diagnostics and resume without losing records", async () => {

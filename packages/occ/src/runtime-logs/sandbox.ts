@@ -21,6 +21,7 @@ import {
   type RuntimeLogViewAdmission,
 } from "./read.ts";
 import {
+  createRuntimeLogSanitizeMemo,
   runtimeLogGap,
   sanitizeSandboxLogLines,
   type SanitizedRuntimeLogRecord,
@@ -372,6 +373,8 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
   );
   const issuedAt = now();
   const observedAt = new Date(issuedAt).toISOString();
+  // Every build sanitizes a prefix of `lines`; each line is sanitized once.
+  const memo = createRuntimeLogSanitizeMemo();
   return boundedRuntimeLogPage(lines.length, (end) => {
     const delivered = lines.slice(0, end);
     const pageCut = end < lines.length;
@@ -384,7 +387,7 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
             : 0
           : remaining[end - 1]!.index + 1;
     const consumedLines = eligible.filter(({ index }) => index < consumed).map(({ line }) => line);
-    const sanitized = sanitizeSandboxLogLines(stream, delivered);
+    const sanitized = sanitizeSandboxLogLines(stream, delivered, memo);
     const window = overlapWindow(
       [
         ...carried,

@@ -17,6 +17,7 @@ import {
   type RuntimeLogCursorPosition,
 } from "./cursor.ts";
 import {
+  createRuntimeLogSanitizeMemo,
   runtimeLogGap,
   runtimeLogEvidence,
   sanitizeRuntimeLogChunk,
@@ -511,6 +512,8 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         (progressResume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
           ? progressResume.lastHashes.length
           : undefined));
+  // Every build sanitizes a prefix of `lines`; each line is classified and redacted once.
+  const memo = createRuntimeLogSanitizeMemo();
   return boundedRuntimeLogPage(lines.length, (end) => {
     input.signal.throwIfAborted();
     const delivered = lines.slice(0, end);
@@ -596,6 +599,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         evidence: remaining.slice(0, end).map(({ index }) => evidence.masks.get(index)),
         withheld: remaining.slice(0, end).map(({ index }) => evidence.withheld.get(index)),
       },
+      memo,
     );
     let pemAfterTime = pemPrior?.pemAfterTime ?? null;
     if (delivered.length > 0) {

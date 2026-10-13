@@ -12,7 +12,7 @@ import {
   compareRuntimeLogTime,
   readRuntimeLogPage,
 } from "../../packages/occ/src/runtime-logs/read.ts";
-import { cpuTimeMs } from "../helpers/cpu-time.mjs";
+import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
@@ -2450,6 +2450,38 @@ test("runtime container wire budgeting handles empty, single and grouped withhel
     target.logsPath(`source=gateway&cursor=${withheld.data.cursor}`),
   );
   assert.deepEqual(replay.data.records, []);
+});
+
+test("a full 1 MiB container window is cut for about the cost of sanitizing it once", async () => {
+  // With tailLines=1000 a chatty container fills the kubelet's 1 MiB read on every
+  // poll: twice what one 512 KiB page may carry. Choosing the cut must not sanitize
+  // the window again for each candidate prefix (a binary search did about five
+  // window sanitizations per poll). Both costs are process CPU time, min of 3, so
+  // the bound holds on slow or loaded runners.
+  const started = Date.parse("2026-09-30T12:00:00Z");
+  const lines = Array.from({ length: 1000 }, (_, index) => ({
+    time: new Date(started + index).toISOString(),
+    raw: JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `row=${index}; ${"diagnostic detail ".repeat(56)}`,
+    }),
+  }));
+  assert.ok(lines.reduce((sum, { raw }) => sum + Buffer.byteLength(raw), 0) > 1024 * 1024);
+  const stream = { source: "gateway", pod: "gateway-test-0", container: "gateway" };
+  const once = cpuTimeMs(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  let page;
+  const cut = await cpuTimeMsAsync(async () => {
+    page = await pollReader().poll(lines, { truncated: true });
+  });
+  const delivered = page.records.filter(({ type }) => type === "line").length;
+  assert.equal(page.truncated, true);
+  assert.ok(delivered > 300 && delivered < 999, `${delivered} lines delivered`);
+  assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  assert.ok(
+    cut < 2.5 * once,
+    `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
+  );
 });
 
 function wireContainerRows(time, count = 60) {
