@@ -141,8 +141,8 @@ runtime, and a Preset `baseUrl` or `api` that waits on a variable without a
 default is checked once filled. The `400` names the field as a JSON pointer
 within `values`. They also refuse a `models` that is not a list and a `headers`
 or `request.headers` name that is not a valid HTTP field name, naming the
-setting; a Preset header name that waits on such a variable is checked once
-filled, on every Compute.
+setting and the header; a Preset header name that waits on such a variable
+is checked once filled, on every Compute.
 
 Create and update also refuse, with the `400` Kubernetes Compute deployment
 gives, an `agents` roster the pinned OpenClaw Gateway rejects on every topology:

@@ -9,6 +9,7 @@ import {
   configurationSettingMessage,
   keyedSettingPath,
   ModelProviderSettingError,
+  quotedSettingKey,
 } from "./errors.ts";
 
 /**
@@ -124,8 +125,14 @@ export function validateModelProviderSettings(
   }
 }
 
-/** The requirement for a model provider header name that is not an HTTP field name. */
-export const INVALID_HEADER_NAME = "must use valid HTTP header names";
+/**
+ * The requirement for a model provider header name that is not an HTTP field name. It names the
+ * header, as the credential header refusal does, so a name a Preset variable filled is found
+ * (finding 1218); never its value. A header name is not a secret; a long one is cut to fit the cap.
+ */
+export function invalidHeaderNameRequirement(name: string): string {
+  return `must use valid HTTP header names, not ${quotedSettingKey(name, 40)}`;
+}
 
 // Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
 // literal under it is never stored where the credential rules would not recognize it. The
@@ -139,13 +146,12 @@ function validateHeaderNames(
     [`${setting}.headers`, settings.headers],
     [`${setting}.request.headers`, asRecord(settings.request)?.headers],
   ] as const) {
-    if (
-      !Object.keys(asRecord(headers) ?? {}).every((name) =>
-        isAdmittedHeaderName(name, { unresolved }),
-      )
-    ) {
+    const invalid = Object.keys(asRecord(headers) ?? {}).find(
+      (name) => !isAdmittedHeaderName(name, { unresolved }),
+    );
+    if (invalid !== undefined) {
       throw new ConfigurationHarnessError(
-        configurationSettingMessage(headersSetting, INVALID_HEADER_NAME),
+        configurationSettingMessage(headersSetting, invalidHeaderNameRequirement(invalid)),
       );
     }
   }

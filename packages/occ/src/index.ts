@@ -394,7 +394,7 @@ export {
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export {
-  INVALID_HEADER_NAME,
+  invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
   isHttpFieldName,

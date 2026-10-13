@@ -58,7 +58,9 @@ header "X-Upstream-Pwd" (its name marks a credential)`; on Kubernetes a Preset
 header name that waits on a variable saves, checked once filled. A later change
 checks an escaped token (`\{{ vars.name }}`), or a default that reads like a
 token, as written: it stays literal once filled, so such a header name,
-`baseUrl` or `api` is refused at save instead of failing every launch.
+`baseUrl` or `api` is refused at save instead of failing every launch. The
+invalid header name refusal now quotes the header too: `must use valid HTTP
+header names, not "Bad Header"`.
 
 **Who is affected.** Configurations with such a header, or with a `models`
 record, `null` or string on any provider.

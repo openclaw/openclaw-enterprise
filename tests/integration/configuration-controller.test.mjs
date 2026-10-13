@@ -1448,18 +1448,24 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   const presets = `/namespaces/${namespace.id}/presets`;
   const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
   const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
-  const invalidName = (setting) =>
-    `Configuration setting ${setting} must use valid HTTP header names.`;
+  // Finding 1218: the refusal names the header, as the credential header refusal does.
+  const invalidName = (setting, name) =>
+    `Configuration setting ${setting} must use valid HTTP header names, not ${JSON.stringify(name)}.`;
   const listMessage =
     "Configuration setting models.providers.gateway.models must be an array of model entries.";
   const refused = [
     [
       gateway({ headers: { "x-api-key ": sentinel } }),
-      invalidName("models.providers.gateway.headers"),
+      invalidName("models.providers.gateway.headers", "x-api-key "),
+    ],
+    // A name a Preset variable filled is refused here, so the person can find it.
+    [
+      gateway({ headers: { "X-Trace": "t", "Bad Header": "v" } }),
+      invalidName("models.providers.gateway.headers", "Bad Header"),
     ],
     [
       gateway({ models: [{ id: "m", request: { headers: { Authorizatioн: sentinel } } }] }),
-      invalidName("models.providers.gateway.models.0.request.headers"),
+      invalidName("models.providers.gateway.models.0.request.headers", "Authorizatioн"),
     ],
     [gateway({ models: {} }), listMessage],
     // The list first, as on Kubernetes Compute, when a header name is refused too.
@@ -1563,14 +1569,21 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   assert.equal(templated.status, 201, JSON.stringify(templated.body));
   // Finding 1214: an escaped token, or a default that reads like one, stays literal text in the
   // launch render, so it is checked as written: these saved and then failed every launch.
-  const headers = invalidName("models.providers.gateway.headers");
+  const headers = (name) => invalidName("models.providers.gateway.headers", name);
   for (const [values, message, agent] of [
-    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers],
-    [gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }), headers],
-    [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers],
-    [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers],
+    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers("{{ vars.header }}")],
+    [
+      gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }),
+      headers("Authorization{{ vars.header }}"),
+    ],
+    [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers("{{ vars.undeclared }}")],
+    [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers("{{ vars.header }}")],
     // A placeholder outside configuration renders the same text but does not admit it.
-    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers, { name: "{{ vars.header }}" }],
+    [
+      gateway({ headers: { "\\{{ vars.header }}": "v" } }),
+      headers("{{ vars.header }}"),
+      { name: "{{ vars.header }}" },
+    ],
     [
       gateway({ baseUrl: "\\{{ vars.url }}" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
