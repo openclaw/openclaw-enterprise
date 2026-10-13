@@ -5763,6 +5763,39 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
   // message (finding 1116), before any Agent or Configuration is stored.
   computeDriver.validateConfiguration = (...args) => kubernetes.validateConfiguration(...args);
+  // Finding 1207: a Preset header name that waits on a variable without a default saves on
+  // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
+  configurationDriver.validateValues = async () => {};
+  const placeholder = "{{ vars.header }}";
+  const preset = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/presets`,
+    {
+      body: {
+        name: "Header variable",
+        template: {
+          variables: { header: { type: "string" } },
+          configuration: {
+            values: {
+              ...model,
+              models: {
+                providers: {
+                  openai: {
+                    headers: { [placeholder]: "v" },
+                    request: { headers: { [placeholder]: "v" } },
+                    models: [{ id: "m", headers: { [placeholder]: "v" } }],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  delete configurationDriver.validateValues;
   const agentsBefore = (
     await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
   ).length;
@@ -5797,40 +5830,8 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { code: "INVALID_REQUEST", message },
     );
   }
-  // Finding 1207: a Preset header name that waits on a variable without a default saves on
-  // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
-  configurationDriver.validateValues = async () => {};
-  const placeholder = "{{ vars.header }}";
-  const preset = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/presets`,
-    {
-      body: {
-        name: "Header variable",
-        template: {
-          variables: { header: { type: "string" } },
-          configuration: {
-            values: {
-              ...model,
-              models: {
-                providers: {
-                  openai: {
-                    headers: { [placeholder]: "v" },
-                    request: { headers: { [placeholder]: "v" } },
-                    models: [{ id: "m", headers: { [placeholder]: "v" } }],
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  );
-  assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  delete configurationDriver.validateValues;
-  // Finding 1208: the refusal names the header (never its value) whatever word the rule matched.
+  // The filled Preset is checked at provisioning. Finding 1208: the refusal names the header,
+  // never its value, whatever word the rule matched.
   const sentinel = `synthetic-filled-header-${randomUUID()}`;
   for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
     const filled = await injectedRequest(

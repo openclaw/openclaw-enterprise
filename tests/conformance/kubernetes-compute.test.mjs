@@ -8908,6 +8908,41 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
   );
 });
 
+test("a Preset header name that waits on a variable is checked once filled", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
+  const invalidName = "must use valid HTTP header names";
+  const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
+  // Finding 1207: on a Preset save, a header name that waits on an unfilled variable is checked
+  // once filled, as on every Compute; a name the rule matches around it is still refused.
+  const unresolved = (text) => text.includes("{{ vars.");
+  for (const headers of [
+    { headers: { "{{ vars.header }}": "v" } },
+    { request: { headers: { "{{ vars.header }}": "v" } } },
+    { models: [{ id: "m", headers: { "{{ vars.header }}": "v" } }] },
+  ]) {
+    const values = provider("p", headers);
+    driver.validateConfiguration(values, { unresolved });
+    assert.throws(() => driver.validateConfiguration(values), {
+      name: "ConfigurationHarnessError",
+      message: new RegExp(`${invalidName}\\.$`),
+    });
+  }
+  assert.throws(
+    () =>
+      driver.validateConfiguration(
+        provider("p", { headers: { "{{ vars.p }}-Authorization": "v" } }),
+        { unresolved },
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: `Configuration setting models.providers.p.headers ${credentialHeader("{{ vars.p }}-Authorization")}.`,
+    },
+  );
+});
+
 test("model provider credential headers and request auth are refused on every provider and path", () => {
   // Findings 1142 and 1143: OpenClaw also merges request.headers and request.auth into provider
   // requests, and reaches providers the primary model does not select (imageModel, pdfModel,
@@ -9114,34 +9149,6 @@ test("model provider credential headers and request auth are refused on every pr
       error.message.length <= 256 &&
       error.message ===
         `Configuration setting models.providers.p.headers ${credentialHeader(`x-${"a".repeat(37)}…`)}.`,
-  );
-  // Finding 1207: on a Preset save, a header name that waits on an unfilled variable is checked
-  // once filled, as on every Compute; a name the rule matches around it is still refused.
-  const unresolved = (text) => text.includes("{{ vars.");
-  for (const headers of [
-    { headers: { "{{ vars.header }}": "v" } },
-    { request: { headers: { "{{ vars.header }}": "v" } } },
-    { models: [{ id: "m", headers: { "{{ vars.header }}": "v" } }] },
-  ]) {
-    const values = provider("p", headers);
-    driver.validateConfiguration(values, { unresolved });
-    assert.throws(() => driver.validateConfiguration(values), {
-      name: "ConfigurationHarnessError",
-      message: new RegExp(`${invalidName}\\.$`),
-    });
-  }
-  assert.throws(
-    () =>
-      driver.validateConfiguration(
-        provider("p", { headers: { "{{ vars.p }}-Authorization": "v" } }),
-        {
-          unresolved,
-        },
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: `Configuration setting models.providers.p.headers ${credentialHeader("{{ vars.p }}-Authorization")}.`,
-    },
   );
   // Providers reached only through other selection keys are refused too.
   for (const agents of [

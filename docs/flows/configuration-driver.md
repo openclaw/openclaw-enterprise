@@ -213,6 +213,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-13 18:00: Kubernetes credential header refusals quote the header name, not a word list; a Preset header name waiting on a variable saves on Kubernetes too. (findings 1207-1208)
 - 2026-10-13 16:00: The credential header rule also matches authentication, assertion, HMAC, JWT, license, OTP, pass, PIN and pwd words, `-v2` suffixes and `.` separators, and exempts partition, shard, sort and dedup keys; Configuration and Preset saves on every Compute refuse a header name that is not an HTTP field name, and Preset saves run the model provider settings check. (findings 1189-1191)
 - 2026-10-13 14:00: The credential header rule also matches any name ending in `key` or `keys` (not an idempotency or cache key), the words `bearer`, `credential`, `passcode`, `passphrase` and `signature`, and plurals; the Kubernetes message says "any key"; Configuration writes and Kubernetes Compute refuse a model provider `models` that is not a list, which hid its rows from the credential rules. (findings 1185-1186)
 - 2026-10-13 10:00: Kubernetes Compute refuses credential headers and non-default `request.auth` on every model provider, and the Configuration Driver requires references in the request credential slots; a stored document that predates these rules still reads and an edit replaces it, while save and deployment refuse it with the Compute message. (#2265, findings 1142-1143)

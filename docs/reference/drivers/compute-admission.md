@@ -9,7 +9,7 @@ trusted Installation settings, never the backend.
 
 | Method                                                                            | Called at                                                                                                                                                                     | Refusal                                                                                                                                                              |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validateConfiguration(configuration)`                                            | Configuration create and update, Agent provisioning, and Preset create and update (values rendered with defaults)                                                             | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
+| `validateConfiguration(configuration, options?)`                                  | Configuration create and update, Agent provisioning, and Preset create and update (rendered with defaults; `options.unresolved` marks unfilled variables)                     | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
 | `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update, with `null` bindings, when the binding is `runtime` or a Secret and the Configuration selects a model | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
 | `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                                                       | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
 | `validateWorkspaceSetup(harness, configuration, sandboxDriverId?)`                | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files                             | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
@@ -64,6 +64,9 @@ Agent that fails a check still reads; its next update must fix the pair.
   partition, shard or sort key), before any trailing algorithm or version
   word such as `-sha256`, `-ed25519` or `-v2`; the
   [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
+  The refusal quotes the header's name, never its value. On a Preset save, a
+  header name that waits on a variable without a default is checked once
+  filled.
   A `models` that is not a list is refused too: it would hide its rows.
 
 These close the credential slots in a provider's `headers` and `request`.
