@@ -771,7 +771,8 @@ proxy, API calls fail with 403 until it is set.
 {{- else -}}
 NOTE: api.trustedProxy is not set, so failed password sign-ins are limited per
 email only. Set api.trustedProxy when a proxy fronts the API to add the
-per-client-address limit.
+per-client-address limit. Behind an HTTP proxy, API calls fail with 403 until it
+is set.
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -115,8 +115,7 @@ Revoking one account's cookies needs no rotation: reset its password.
 
 ### GitHub sign-in and trusted proxies
 
-These optional variables apply to the API only. The chart never passes them to
-other workloads.
+These optional variables reach only the API, never other workloads.
 
 | Variable                           | Helm value                                 | Behavior                                                                                                                                                                                                                 |
 | ---------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -130,23 +129,24 @@ other workloads.
 | `OCC_AUTH_TRUSTED_PROXY_PRESET`    | `api.trustedProxy.preset`                  | `ingress-nginx` (default), `aws` or `generic`. Named presets read `x-forwarded-for`. Set with the CIDRs.                                                                                                                 |
 | `OCC_AUTH_CLIENT_IP_HEADER`        | `api.trustedProxy.clientAddressHeader`     | Lowercase header name, up to 64 characters, `generic` only. Sign-in limits key on the client address it carries from a trusted peer.                                                                                     |
 
-The chart's API Deployment always uses the `Recreate` strategy: an upgrade stops
-the old API Pod before starting the new one, so two controllers never serve
-together. Activation still requires closed ingress and stopped identity writers.
+The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
+two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
 With `auth.github.enabled`, the chart adds an API-only egress policy on TCP 443
 for `github.com` and `api.github.com`. Empty `auth.github.egressCidrs` allows
 any address except link-local `169.254.0.0/16`. To narrow it, list the `web` and `api`
-IPv4 ranges from `https://api.github.com/meta`, and update them when GitHub changes them.
+IPv4 ranges from `https://api.github.com/meta` and keep them current.
 A non-empty list replaces the default, so an egress proxy on a link-local address is
 reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs carry no
-link-local exception, so keep them narrow.
+link-local exception.
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
 return `403` on API calls (sign-in still works), and the API logs
 `authentication.forwarded-refused-warning` at most once a minute: code
 `TRUSTED_PROXY_NOT_CONFIGURED`, or `TRUSTED_PROXY_PEER_UNTRUSTED` when the sending
-peer is outside `api.trustedProxy.cidrs`. Failed password sign-ins have per-email limits only: browsers behind
+peer is outside `api.trustedProxy.cidrs`. Without a proxy, a client such as a
+scanner sending `X-Forwarded-For` can trigger `TRUSTED_PROXY_NOT_CONFIGURED`;
+ignore it and leave `api.trustedProxy` unset. Failed password sign-ins have per-email limits only: browsers behind
 a proxy share its address. With GitHub, Google or OIDC, start, callback, and result
 key on browser cookies; start has only an active cap and the 1,000-pending-attempt
 cap. Startup logs `authentication.sign-in-limit-warning`; Helm notes and profile

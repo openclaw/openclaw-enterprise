@@ -1335,7 +1335,7 @@ function buildRendered(profile, parsed, diagnostics) {
     diagnostics.warnings.push(
       externalSignIn
         ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and external sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address. Behind an HTTP proxy, API calls fail with 403 until it is set."
-        : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API.",
+        : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API. Behind an HTTP proxy, API calls fail with 403 until it is set.",
     );
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {

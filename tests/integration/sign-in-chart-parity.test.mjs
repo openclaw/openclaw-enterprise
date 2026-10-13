@@ -1133,6 +1133,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         none,
         /^NOTE: api\.trustedProxy is not set, so failed password sign-ins are limited per\nemail only/,
       );
+      assert.match(none, /Behind an HTTP proxy, API calls fail with 403 until it\nis set\.$/);
       assert.equal(quiet.length, proxied.length * 2);
       for (const text of quiet) {
         assert.equal(text, "");

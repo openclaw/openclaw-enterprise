@@ -1683,6 +1683,10 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
     password.preflight.warnings.join("\n"),
     /controlPlane\.trustedProxy is not set: failed password sign-ins are limited per email only/,
   );
+  assert.match(
+    password.preflight.warnings.join("\n"),
+    /trustedProxy is not set: failed password .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
+  );
 });
 
 test("preflight rejects external sign-in Secret names Kubernetes refuses", () => {
