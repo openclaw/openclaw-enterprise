@@ -85,6 +85,7 @@ OCC_TEST_RUNTIME_IMAGE="$OCC_IMAGE_CHECK_RUNTIME" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
@@ -109,6 +110,7 @@ docker build -f deploy/runtime/Dockerfile \
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
   node --test tests/integration/runtime-image-startup.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
@@ -250,6 +252,7 @@ reconciliation, runtime image execution, or a model turn.
 
 [`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs),
 [`runtime-image-startup-probe.test.mjs`](../../tests/integration/runtime-image-startup-probe.test.mjs),
+[`runtime-image-startup-termination.test.mjs`](../../tests/integration/runtime-image-startup-termination.test.mjs),
 [`runtime-image-gateway-peer.test.mjs`](../../tests/integration/runtime-image-gateway-peer.test.mjs),
 [`runtime-image-native-worker.test.mjs`](../../tests/integration/runtime-image-native-worker.test.mjs),
 [`runtime-image-state-migration.test.mjs`](../../tests/integration/runtime-image-state-migration.test.mjs)
