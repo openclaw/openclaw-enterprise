@@ -757,7 +757,8 @@ test("the account menu stays open and focused while the page under it finishes l
   await waitForSettledView(page);
 
   // Hold the Namespaces read so the shell renders its Loading state first and re-renders
-  // with the fresh view only after the reader has opened the account menu.
+  // with the fresh view only after the reader has opened the account menu. A retained
+  // preview followed by a fresh render takes the same path through the shell.
   const namespacesPattern = "**/namespaces";
   const namespacesHold = await holdRoute(t, page, namespacesPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),

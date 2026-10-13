@@ -119,7 +119,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   function accountMenu() {
     // A page load can render the shell twice (a Loading or retained preview, then the
     // fresh view). Keep the same menu so one opened in between stays open and clickable.
-    // reset() drops it, so each navigation still starts with a closed menu.
+    // reset(), publicPanel() and a session-less render drop it, so each navigation
+    // starts with a closed menu.
     if (menuControls) {
       return menuControls.account;
     }
@@ -422,8 +423,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     drawerControls = { shell, sidebar, close: closeDrawer, open: openDrawer };
     app.replaceChildren(shell);
-    if (menuFocus?.isConnected) {
+    if (menuFocus) {
       menuFocus.focus({ preventScroll: true });
+      // A fresh render closes the mobile drawer; don't leave the menu open inside it.
+      if (document.activeElement !== menuFocus) {
+        menuControls?.close();
+      }
     }
     return { view, refresh, diagnostics };
   }
