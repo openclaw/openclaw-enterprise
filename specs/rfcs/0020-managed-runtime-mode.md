@@ -21,73 +21,83 @@ deployment only after both runtime enforcement and execution containment are
 established. AGENTS.md, SOUL.md, IDENTITY.md, USER.md, and other agent documents
 are outside this proposal.
 
-## Actions managed mode should allow or block
+## Action support, calls, and managed-mode gaps
 
-The proposed baseline separates runtime work from administration of the
-deployment. **Block** means denied through model tools and native administration;
-authorized OCE publication remains available. **Allow** preserves existing IAM,
-tool, and topology restrictions.
+**T** = model tool; **R** = authenticated client/admin RPC; **C** = CLI/shell;
+**S** = runtime-to-client request. Tool availability depends on features,
+agent/session type, execution mode, scopes, and configured policy. RPC support does not imply
+model access. “No native API” means none found at the inspected pin; host/MCP
+integrations or shell access may still provide the action.
 
-| Action and examples                                                                                  | Managed mode               | Boundary                                                                                                   |
-| ---------------------------------------------------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Read status, redacted configuration, agent/plugin inventories                                        | Allow                      | Existing read permissions apply.                                                                           |
-| Persist Gateway/Harness settings: `config.set/patch/apply`, Codex configuration writes               | Block                      | OCE owns listeners, provider bindings, default models/routing, and tool/permission policy.                 |
-| Replace protected files or supply alternate runtime config, environment, or CLI overrides            | Block                      | File/shell execution cannot bypass the same ownership boundary.                                            |
-| Create, update, or delete persistent native agents: `agents.create/update/delete`                    | Block                      | OCE owns the complete admitted roster, including multi-agent deployments.                                  |
-| Create/resume sessions, spawn subagents, send delegated work                                         | Allow                      | Use admitted agents and inherited policy; this creates no persistent agent or OCE deployment.              |
-| Select a session model or execution options                                                          | Allow within policy        | Use OCE-admitted models and Harness; permissions cannot exceed OCE's ceiling.                              |
-| Install/remove/enable Gateway/Harness plugins, configure MCP/tool providers, update runtime packages | Block                      | OCE owns loaded runtime plugins, tool bindings, and version; installation requests do not grant authority. |
-| Restart/reload the Gateway or reapply plugins/configuration                                          | OCE-controlled             | Trusted recovery may reapply the admitted generation; model tools cannot replace it.                       |
-| Replace OCE-owned auth profiles/order or referenced credentials                                      | Block                      | Native auth/secret APIs cannot change the admitted provider identity or binding.                           |
-| Expand device/node/channel trust or operator token scopes                                            | Block                      | Preserve trusted OCE enrollment; native pairing cannot expand managed authority.                           |
-| Widen execution approvals, sandbox/write grants, or dynamic tool exposure                            | Block                      | Separate policy stores cannot bypass OCE's ceiling; ordinary task approvals still follow existing policy.  |
-| Refresh credentials or renew an admitted runtime peer                                                | Allow through trusted flow | Preserve the admitted binding and scopes; no model-provided replacement identity.                          |
-| Schedule or run tasks                                                                                | Allow within policy        | Existing automation restrictions apply; scheduled work cannot gain Gateway administration.                 |
-| Write task files, memory, workspace skills, and project dependencies                                 | Allow within policy        | Existing workspace ownership applies. Agent documents are outside this RFC.                                |
-| Create/deploy/stop an OCE Agent or publish an OCE Configuration revision                             | OCE-controlled             | Existing authorized control-plane APIs remain available; managed mode grants no deployment credentials.    |
+OC capabilities remain on the Gateway when Codex is the Harness. Embedded OC
+runs both roles together; dedicated OC is experimental. Dedicated Codex with a
+workspace node and Codex plugin entry excludes selected OC management/file/shell
+dynamic tools. The OC admin UI still relays native RPCs without a command filter.
 
-The same decision applies through the OC Console, RPCs, CLI, dynamic tools, and
-direct filesystem access. Hiding a tool is insufficient. Trusted startup may
-still configure Codex and install admitted plugins; a native `operator.admin`
-session does not become the OCE publisher. Task secrets retain existing policy;
-OCE-owned provider and workload credentials remain protected.
+**Block** denies unapproved changes through native/model paths; trusted OCE
+publication remains available. **Allow** retains existing authorization and
+topology restrictions.
+
+| Action                                               | OC Gateway/Harness support and example calls                                                                                            | Codex support and example calls                                                                                                    | Managed mode                                              | Current OCE coverage / gap                                                                    |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Read configuration/status/catalogs                   | R `config.get`, `agents.list`, `plugins.list`; T `gateway(config.get)`                                                                  | R `config/read`, `configRequirements/read`, `plugin/list`                                                                          | Allow permitted reads                                     | Native read scopes apply; client responses are not automatically model-safe.                  |
+| Persist control settings                             | R `config.set`, `config.patch`, `config.apply`; T `openclaw` delegates system-agent changes; C `openclaw config set`                    | R `config/value/write`, `config/batchWrite`, `externalAgentConfig/import` (CONFIG); C config edits                                 | Block                                                     | OC read-only flag is conditional; Codex checks exact requirements fields.                     |
+| Replace files or override runtime startup            | T `write`, `exec`; C config/environment/launcher overrides                                                                              | T `apply_patch`, `exec_command`; C `codex -c`; R `thread/start` config overrides                                                   | Block managed-state bypass                                | No uniform protection of managed paths is established.                                        |
+| Persist agents/roles                                 | T `openclaw` delegation; R `agents.create`, `agents.update`, `agents.delete`; C `openclaw agents add`                                   | No OC roster CRUD; R `externalAgentConfig/import` (SUBAGENTS), config writes; C role TOML files                                    | Block unadmitted roster/role changes                      | OC config guard is conditional; persistent roles differ from child threads.                   |
+| Start/resume/delegate sessions                       | R `sessions.create`; T `sessions_spawn`                                                                                                 | R `thread/start`, `thread/resume`, `thread/fork`; T `spawn_agent`, `send_input`                                                    | Allow within admitted policy                              | Tool exclusions alone do not qualify inherited policy.                                        |
+| Choose session model/execution options               | R `sessions.patch`; T `session_status(model=…)`; `/model` command                                                                       | R `thread/start`, `thread/resume`, `turn/start` overrides                                                                          | Allow within OCE ceiling                                  | Provider/topology pins and startup checks do not prove later routing.                         |
+| Install/configure runtime plugins and tool providers | T `plugins(install/enable/uninstall)`; R `plugins.install`, `plugins.setEnabled`; C `openclaw plugins update`                           | T `request_plugin_install`; R `plugin/install`, `plugin/uninstall`; C `codex mcp add`                                              | Block unadmitted changes                                  | Trusted startup installs plugins; selected tool hiding is not a mutation barrier.             |
+| Update runtime packages                              | T `gateway(update.run)`; R `update.run`; C `openclaw update`                                                                            | C `codex update`, daemon-only `codex app-server daemon update`; no process-update RPC                                              | OCE upgrade only                                          | OC auto-update is disabled; manual/CLI paths need protection.                                 |
+| Restart/reload admitted runtime                      | T `plugins(reload)`; R `gateway.restart.request`, `plugins.reload`; C `openclaw gateway restart`                                        | R `plugin/reconcile`, `config/mcpServer/reload`; C daemon-only `codex app-server daemon restart`                                   | Trusted recovery only                                     | Pure reload need not write config; OCE uses foreground Codex, not the daemon.                 |
+| Replace provider identity/credentials                | T `secrets(request/delete)` (primary); R `models.authLogin`, `models.authOrderSet`, `secrets.store.set`; C `openclaw models auth login` | R `account/login/start`, `account/logout`; C `codex login`, auth/config files                                                      | Block changing OCE-owned bindings                         | Auth/secret stores need separate controls; task secrets retain existing policy.               |
+| Expand pairing/trust/scopes                          | T `nodes(approve)`; R `device.pair.approve`, `channels.pairing.approve`                                                                 | Experimental R `remoteControl/pairing/start`, `remoteControl/client/revoke` requires a configured handle; no OC node/channel roles | Block authority expansion                                 | OC admin RPCs relay; Codex remote-control exposure is unverified.                             |
+| Widen permissions/approvals/tool exposure            | R `exec.approvals.set`, `sessions.patch`; ordinary approval R `exec.approval.resolve`                                                   | T `request_permissions`; R `thread/start` with `dynamicTools`; S `item/permissions/requestApproval`                                | Block widening; allow bounded approvals                   | OC approval stores are separate; OCE Codex checks are startup-scoped.                         |
+| Refresh admitted credentials/peers                   | R `models.authRefresh`; trusted workspace-node renewal                                                                                  | Internal auth refresh; S `account/chatgptAuthTokens/refresh` for external token ownership                                          | Trusted flow allowed                                      | Preserve admitted identity/scopes; child token filtering alone is not containment.            |
+| Schedule tasks                                       | T `automations`; R `cron.add`, `cron.update`, `cron.run`; C `openclaw cron add`                                                         | No native cron CRUD; host/OC-bridge/MCP scheduling; conditional T `clock.sleep` pauses turns                                       | Allow bounded tasks; block unconstrained Gateway commands | With workspace node + Codex entry, OC triggers are disabled; timed admin command jobs remain. |
+| Edit task files/skills/dependencies                  | T `write`, `edit`, `exec`                                                                                                               | T `exec_command`, `write_stdin`, `apply_patch`                                                                                     | Allow within existing policy                              | Preserve workspace ownership; runtime packages remain protected.                              |
+| Create/deploy/stop an OCE Agent                      | No native OCE API; external HTTP/CLI only                                                                                               | No native OCE API; external HTTP/CLI only                                                                                          | Authorized OCE path                                       | Existing IAM applies; neither Harness gains implicit deployment authority.                    |
+
+Calls are representative source entry points, not live exposure proof. Codex import applies the decision to selected control items; document/task
+imports remain outside this RFC. Native `automations` rejects shell-command
+payloads; admin RPC/CLI timed command jobs are not disabled by
+`cron.triggers.enabled=false` and need execution containment. Codex clock/sleep and plugin schedule metadata do not prove
+persistent scheduling support.
+
+Common OCE calls are `createAgent`, `deployAgent`, `stopAgent`, and
+`updateConfiguration` in the [HTTP contract](../../packages/contracts/src/api/routes.ts).
+Trusted OCE startup uses Codex configuration/plugin RPCs. A native
+`operator.admin` session is not the OCE publisher. OC `openclaw` delegates to a
+system-agent turn; its privileged actions require host state and ownership checks.
+Agent documents remain out of scope.
 
 Inventory sources: [OC mutation handlers](https://github.com/openclaw/openclaw/tree/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/server-methods),
 [OC model tools](https://github.com/openclaw/openclaw/tree/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tools),
-and [Codex client methods](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/app-server-protocol/src/protocol/common.rs).
-These are supported entry points, not proof that OCE exposes each to every model.
+[Codex client/server methods](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/app-server-protocol/src/protocol/common.rs),
+[Codex conditional tools](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/core/src/tools/spec_plan.rs#L1397),
+and [Codex CLI lifecycle](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/cli/src/main.rs#L648).
 
 ## Existing controls and the gap
 
-Codex provides useful mechanisms rather than a flag that freezes every setting:
+OC checks `OPENCLAW_CONFIG_READONLY=1` at its
+[configuration writer](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/config/config-write-guard.ts#L46).
+OCE derives that flag from directory writability; startup can create a writable
+effective copy. Worker maintenance does not compare native configuration/roster.
 
-| Codex mechanism                   | What it gives OCE                                                                                                             |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Administrator `requirements.toml` | Constraints that user, project, and per-turn configuration cannot override, including permitted sandbox and approval choices. |
-| Restricted filesystem permissions | Writable task files with protected configuration paths. Full-access execution requires separate host containment.             |
-| App-server configuration RPCs     | A trusted client write path that rejects changes to fields with exact requirements. These RPCs are not model tools.           |
+Codex supplies administrator constraints and restricted filesystem policy;
+[its configuration writer](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/app-server/src/config_manager_service.rs#L222)
+rejects exact requirements-managed fields. Legacy `managed_config.toml`
+constrains a limited subset at this pin. Full-access execution needs host
+containment. See [administrator configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration)
+and [sandboxing](https://learn.chatgpt.com/docs/sandboxing).
 
-Legacy `managed_config.toml` constrains only a limited subset of settings at this
-Codex version. OCE must protect the actual configuration paths and prevent
-permission grants from bypassing that protection. See [administrator configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration),
-[sandboxing](https://learn.chatgpt.com/docs/sandboxing), and the
-[configuration writer](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/app-server/src/config_manager_service.rs#L222).
-The source comparison uses OCE's packaged Codex `0.163.0-alpha.2`; no runtime
-qualification was performed.
-
-OpenClaw (OC) already checks `OPENCLAW_CONFIG_READONLY=1` at its
-[canonical configuration writer](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/config/config-write-guard.ts#L46).
-OCE currently derives that flag from the effective configuration directory's
-writability, while startup can create a writable private copy. Dedicated Codex
-excludes some management tools, but auth, pairing, approval stores, and lifecycle
-actions also need enforcement. Worker maintenance checks infrastructure and
-readiness without comparing native configuration or roster. These source
-findings use OCE `4cb3db1a8655`; see its [runtime entrypoint](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts),
+OCE publishes Codex user config and validates selected native requirements at
+startup. This does not establish a universal OCE-owned ceiling or future-turn
+enforcement. Sources: [runtime entrypoint](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts),
 [native admin contract](../../docs/reference/agent-native-admin.md), and
 [worker](../../apps/controller/src/worker.ts).
 
-OC's config guard covers part of the inventory. Managed mode needs enforcement
-at each remaining mutation owner and evidence that the baseline is active.
+Reviewed pins: OCE `1a031d2ff908`, OC `90d30a1178a7`, and packaged Codex
+`0.163.0-alpha.2` (`a6274249d587`). No runtime qualification was performed.
 
 ## OCE–runtime interface
 
