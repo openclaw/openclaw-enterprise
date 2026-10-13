@@ -603,7 +603,26 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       guidance:
         /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\./,
       // The runtime's classified cause names why this check failed.
-      cause: "The model provider check reported a failure (rate_limit)",
+      cause:
+        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
+    },
+    {
+      // A cause without its own text keeps the kind label and the detail token.
+      error: {
+        code: "RUNTIME_MODEL_PROBE_FAILED",
+        message: "Deployment runtime startup model check failed.",
+        data: {
+          runtimeFailure: {
+            component: "agent",
+            check: "model-probe",
+            checkedAt: "2026-10-03T08:00:00.000Z",
+            code: "MODEL_PROBE_FAILED",
+            cause: { kind: "PROBE_STATUS", detail: "error-event" },
+          },
+        },
+      },
+      guidance: /^The startup model check failed for a reason other than a rejected credential, /,
+      cause: "The model provider check reported a failure (error-event)",
     },
     {
       error: {

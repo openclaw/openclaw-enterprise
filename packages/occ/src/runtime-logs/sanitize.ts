@@ -35,8 +35,23 @@ const TRUNCATION_MARK = "…[truncated]";
 
 const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "runtime.startup_phase": ["container", "phase", "outcome", "ms", "sinceStartMs", "code"],
-  "openclaw.model_probe": ["elapsedMs", "capMs", "cpuWaitMs", "code"],
-  "codex.model_probe": ["attempt", "elapsedMs", "exitCode", "signal", "code"],
+  "openclaw.model_probe": [
+    "elapsedMs",
+    "capMs",
+    "cpuWaitMs",
+    "code",
+    "providerStatus",
+    "providerCode",
+  ],
+  "codex.model_probe": [
+    "attempt",
+    "elapsedMs",
+    "exitCode",
+    "signal",
+    "code",
+    "providerStatus",
+    "providerCode",
+  ],
   "runtime.workspace_node": ["container", "outcome", "code"],
   "runtime.gateway_settings_overridden": ["container"],
 });

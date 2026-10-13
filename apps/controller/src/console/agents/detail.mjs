@@ -158,7 +158,18 @@ const RUNTIME_FAILURE_CAUSE_LABELS = {
   WRAPPER_ERROR: "The runtime could not run the check",
 };
 
+// Provider refusals the operator fixes at the provider account, not in the Configuration.
+const PROBE_STATUS_DETAIL_TEXT = {
+  rate_limit:
+    "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
+  billing:
+    "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
+};
+
 function runtimeFailureCauseText(cause) {
+  if (cause.kind === "PROBE_STATUS" && Object.hasOwn(PROBE_STATUS_DETAIL_TEXT, cause.detail)) {
+    return PROBE_STATUS_DETAIL_TEXT[cause.detail];
+  }
   const label = Object.hasOwn(RUNTIME_FAILURE_CAUSE_LABELS, cause.kind)
     ? RUNTIME_FAILURE_CAUSE_LABELS[cause.kind]
     : cause.kind;

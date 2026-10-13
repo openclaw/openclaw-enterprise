@@ -392,7 +392,16 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       },
       {
         time: lineTime(2),
-        raw: probe("codex.model_probe", { kind: "PROBE_STATUS", detail: "error-event" }),
+        // The provider's HTTP status and known error code, never its text, are kept.
+        raw: JSON.stringify({
+          event: "codex.model_probe",
+          elapsedMs: 2340,
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+          providerStatus: 429,
+          providerCode: "usage_limit_reached",
+          providerMessage: "You've hit your usage limit.",
+        }),
       },
       { time: lineTime(3), raw: probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }) },
       // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
@@ -443,7 +452,12 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
     records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
     [
       fields("openclaw.model_probe", { causeKind: "PROBE_STATUS", causeDetail: "format" }),
-      fields("codex.model_probe", { causeKind: "PROBE_STATUS", causeDetail: "error-event" }),
+      fields("codex.model_probe", {
+        providerStatus: 429,
+        providerCode: "usage_limit_reached",
+        causeKind: "PROBE_STATUS",
+        causeDetail: "rate_limit",
+      }),
       fields("openclaw.model_probe", { causeKind: "WRAPPER_ERROR" }),
       fields("openclaw.model_probe"),
       fields("openclaw.model_probe"),

@@ -9233,6 +9233,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         "MODEL_PROBE_FAILED",
         { kind: "PROBE_STATUS", detail: "unknown" },
       ],
+      // A provider 429, usage limit or exhausted quota: OpenClaw's "rate_limit" bucket.
+      [
+        "provider rate limit",
+        "rate_limit",
+        "MODEL_PROBE_FAILED",
+        { kind: "PROBE_STATUS", detail: "rate_limit" },
+      ],
       // An unknown model or invalid provider settings: OpenClaw's "format" bucket.
       [
         "provider rejected the request format",
@@ -9589,6 +9596,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
+        // The log line keeps the provider's HTTP status from its error, never the text.
+        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();
