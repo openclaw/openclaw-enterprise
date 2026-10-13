@@ -41,9 +41,9 @@ Keycloak must present a certificate that Node already trusts. Private certificat
 @freeqaz accepted this scope on 2026-10-09 (relayed in
 [this comment](https://github.com/openclaw/openclaw-enterprise/pull/1117#issuecomment-6086953202)).
 That acceptance does not cover production use. Reviewers are asked to accept this scope, the
-proposed rule for when `keycloak-oidc` joins `CI Required`, and the proposal that production
-Keycloak stays not qualified until a maintainer other than the author reviews a recorded
-walk-through. See [Delivery and verification](#delivery-and-verification) and
+proposed rule for when `keycloak-oidc` joins `CI Required`, and the rule that production
+Keycloak stays not qualified until a human maintainer, who may be the author, reviews a
+recorded walk-through. An agent may run and record the walk-through but cannot sign it off. See [Delivery and verification](#delivery-and-verification) and
 [Unresolved questions](#unresolved-questions).
 
 ## Motivation
@@ -288,7 +288,7 @@ State on 2026-10-13:
 - **Production qualification: not done.** It needs a production-mode Keycloak with a
   persistent database and real TLS, an installed OCE, and a recorded test of attaching a user,
   refusing an unattached user, an outage, both rotations, an API restart and offboarding.
-  Proposed: a maintainer other than the author reviews the recording; production stays not
+  A human maintainer, who may be the author, reviews the recording; production stays not
   qualified until then.
 
 <a id="alternatives-and-open-decisions"></a>
