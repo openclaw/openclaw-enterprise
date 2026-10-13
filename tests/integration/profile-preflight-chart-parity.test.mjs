@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { clientAddressConfiguration } from "../../apps/controller/src/auth/client-address.ts";
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -314,6 +315,15 @@ fieldParity("directory proxy URLs get the same verdict from the preflight and th
     ["http://192.0.2.999:3128", false, /must contain valid IPv4 octets/],
     ["http://192.0.2.10:65536", false, /must contain a TCP port from 1 to 65535/],
     ["http://010.0.0.1:3128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    // Both edges of the octet and port ranges, port 0 or a leading zero, a path, and the
+    // unspecified host over HTTPS.
+    ["http://192.0.2.255:3128", true],
+    ["http://192.0.2.256:3128", false, /must contain valid IPv4 octets/],
+    ["http://192.0.2.10:65535", true],
+    ["http://192.0.2.10:0", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    ["http://192.0.2.10:03128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    ["http://192.0.2.10:3128/path", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    ["https://0.0.0.0:443", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
   ],
   controlPlane: () => ({}),
   extraInput: (url) => ({ channels: { managedSlackProxy: false, directoryProxyUrl: url } }),
@@ -384,6 +394,27 @@ test(
       },
     ),
 );
+
+// The header name is at most 64 characters and starts with a letter or digit, checked
+// after lowercasing.
+fieldParity("trusted proxy client address header names get the same length and shape verdict", {
+  cases: [
+    [`x-${"a".repeat(62)}`, true],
+    [`X-${"A".repeat(62)}`, true],
+    [`x-${"a".repeat(63)}`, false],
+    ["-x-real-ip", false],
+  ],
+  controlPlane: (header) => ({
+    trustedProxy: { preset: "generic", cidrs: ["10.42.0.0/16"], clientAddressHeader: header },
+  }),
+  values: (header) => ({
+    api: {
+      trustedProxy: { preset: "generic", cidrs: ["10.42.0.0/16"], clientAddressHeader: header },
+    },
+  }),
+  chartError:
+    /api\.trustedProxy\.clientAddressHeader must be a single HTTP header name of at most 64 characters/,
+});
 
 // A Kubernetes Namespace name is a DNS label of at most 63 characters, with no dots.
 const namespaceCases = [
@@ -691,6 +722,10 @@ const controlPlaneImageCases = [
   ["registry.example.invalid/controller?tag", false],
   ["-registry.example.invalid/controller", false],
   ["_registry.example.invalid/controller", false],
+  // Uppercase is allowed; a second @ and IPv6 brackets are not.
+  ["Registry.Example.invalid/Team/Controller", true],
+  ["registry.example.invalid/controller@extra", false],
+  ["registry.example.invalid/[fd00::1]/controller", false],
 ];
 
 fieldParity("controller image references get the same verdict from preflight and the chart", {
@@ -754,6 +789,29 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
       (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
     ),
     ["https://ex%e2%80%8bample.com:8443", false, invisibleHost],
+    // A joiner may sit inside a label, encoded or not, but not at either end.
+    ["https://\u0915\u094d\u200d\u0937.example", true],
+    ["https://\u0915\u094d%E2%80%8D\u0937.example", true],
+    [
+      "https://example.\u0915\u094d\u200d",
+      false,
+      /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/,
+    ],
+    // Only ::ffff:0:0/96 is IPv4-mapped.
+    ["https://[::1:ffff:c000:201]", true],
+    // An uppercase scheme still gets the IPv4 and percent-escape checks.
+    ["HTTPS://192.0.2.10", true],
+    ["HTTPS://ex%61mple.com", false, /invalid URL escape "%61"/],
+    // Sprig urlParse refuses every ASCII escape in the host, in either hex case.
+    ["https://ex%7Eample.com", false, /invalid URL escape "%7E"/],
+    ["https://example.com%2E", false, /invalid URL escape "%2E"/],
+    // Node reads a backslash as a path separator; the chart refuses it in the host.
+    ["https://console.example.com\\auth", false, /invalid character "\\\\" in host name/],
+    [
+      syntheticCredentialUrl({ username: "", password: "secret", host: "console.example.com" }),
+      false,
+      /auth\.baseUrl must be an absolute HTTP\(S\) origin/,
+    ],
   ],
   label: (url) => url,
   controlPlane: (url) => ({ authBaseUrl: url }),

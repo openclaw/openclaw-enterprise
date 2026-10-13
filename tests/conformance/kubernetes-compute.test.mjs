@@ -4808,6 +4808,8 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     "http://10.42.0.15:3128",
     "http://127.0.0.1:8080",
     " http://192.0.2.10:8080 ",
+    // URL parsing lowercases the scheme; the written IPv4 host is still 10.42.0.15.
+    "HTTP://10.42.0.15:3128",
     "https://[2001:db8::15]:8443",
   ]) {
     const channels = { proxyUrl };

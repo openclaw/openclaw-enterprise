@@ -318,6 +318,8 @@ test("preflight rejects noncanonical SHA-256 image digests", (t) => {
       for (const invalid of [
         image.replace(/(?<=:)[a-f0-9]{64}$/, (digest) => digest.toUpperCase()),
         image.replace("@sha256:", "@SHA256:"),
+        // A 65th hex digit is not a SHA-256 digest.
+        `${image}0`,
       ]) {
         // A failed rerender must revoke the previously successful artifacts.
         assert.equal(render(profile, input, directory).preflight.ok, true);
@@ -1592,6 +1594,10 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     }),
     "https://grafana.example.internal/#fragment",
     "grafana.example.internal",
+    "ftp://grafana.example.internal/d/occ-observability",
+    // Either credential alone is refused too.
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    syntheticCredentialUrl({ username: "", password: "pass", host: "grafana.example.internal" }),
   ]) {
     assertObservabilityPreflight(invalid, genericObservabilityUrl, rewrittenIpv4ObservabilityUrl);
   }
@@ -1603,6 +1609,21 @@ test("profiles pass an optional observability URL to Installation startup YAML",
   ]) {
     assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
   }
+
+  // URL parsing trims C0 controls and spaces and lowercases the scheme, so this is the
+  // written address 192.0.2.10. Preflight and the startup parser must both accept it.
+  const spaced = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...baseInput().controlPlane, observabilityUrl: " HTTP://192.0.2.10 " },
+    }),
+  );
+  assert.equal(spaced.summary.ok, true, spaced.preflight.errors.join("\n"));
+  const spacedSnapshot = await loadStartupConfigurationSnapshot({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: join(spaced.directory, "installation.yaml") },
+  });
+  assert.equal(spacedSnapshot.observability.url, "http://192.0.2.10/");
 });
 
 function externalSignInInput(signIn = {}) {
