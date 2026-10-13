@@ -3059,8 +3059,8 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 
 // `template` (optional) is an OCC_TEST_DATABASE_URL that an earlier prepareFile call
 // returned for this state. The file's database is then a copy of that database
-// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. A suite that
-// prepares a database per test uses it to migrate once per file.
+// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. The worker revision
+// suite copies the database the runner prepared for its file, one copy per test.
 async function prepareFile({ lane, file, statePath, template }) {
   const name = assertLane(lane);
   if (!file) {

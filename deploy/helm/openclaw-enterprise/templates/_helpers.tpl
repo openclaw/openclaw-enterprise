@@ -36,6 +36,10 @@
 {{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $image) -}}
 {{- fail (printf "images.%s must be an approved immutable SHA-256 image reference" $name) -}}
 {{- end -}}
+{{- /* Kubernetes refuses to pull an image whose repository path has an uppercase letter (InvalidImageName). Only the registry host (the first component, when a / follows it) and the tag may use uppercase; the profile renderer applies the same rule. */ -}}
+{{- if regexMatch "^(?:[^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)" $image -}}
+{{- fail (printf "images.%s repository path must be lowercase; Kubernetes refuses to pull an uppercase one" $name) -}}
+{{- end -}}
 {{- end -}}
 {{- if not .Values.auth.baseUrl -}}{{- fail "auth.baseUrl must identify the public Better Auth base URL" -}}{{- end -}}
 {{- /* URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces and invisible characters there (NBSP, U+3000, U+FEFF, U+200B) reach the API's parser, which refuses most of them. Both ends must be a letter, mark, number, punctuation or symbol (not Z or C, including unassigned code points). */ -}}
@@ -424,6 +428,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $credentials := .Values.repositoryCredentials -}}
 {{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $credentials.image) -}}
 {{- fail "repositoryCredentials.image must be an approved immutable SHA-256 image reference" -}}
+{{- end -}}
+{{- if regexMatch "^(?:[^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)" $credentials.image -}}
+{{- fail "repositoryCredentials.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one" -}}
 {{- end -}}
 {{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
 {{- if and .Release.IsUpgrade (not $credentials.serviceName) -}}

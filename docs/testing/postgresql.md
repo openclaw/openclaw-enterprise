@@ -6,12 +6,13 @@ disposable PostgreSQL databases. Start with the [shared requirements](README.md#
 ## Revision-worker tests
 
 The revision-worker suite allocates disposable databases under its run's
-owner so another test cannot consume its queue. It migrates one template database per
-file and gives each test a copy of it (`prepareFile({ template })`). Four cross-Namespace
-cases explicitly share a database within their test. Tests connect as `occ_app`; preparation
-uses the existing administrator and migrator paths. The suite rejects a standalone
-`OCC_TEST_DATABASE_URL` without prepared ownership before changing that database.
-Other suites keep the application-role URL setup below.
+owner so another test cannot consume its queue. Each test gets a copy
+(`prepareFile({ template })`) of the database prepared for its file. Nothing may stay
+connected to that database while the file runs, a `psql` session included: PostgreSQL
+refuses to copy it. Four cross-Namespace cases explicitly share a database within their
+test. Tests connect as `occ_app`; preparation uses the existing administrator and migrator
+paths. The suite rejects a standalone `OCC_TEST_DATABASE_URL` without prepared ownership
+before changing that database. Other suites keep the application-role URL setup below.
 
 From the repository root, run the complete application lane:
 
@@ -34,7 +35,7 @@ From the repository root, run the complete application lane:
 
 For one revision-worker file, use a fresh run directory. The example runs
 `postgres-worker-agent-revision.test.mjs`; its `-credential-sources`, `-health`, `-replacement`,
-`-refused-stop`, `-refused-wait`, `-yielded-redeploy` and `-teardown` siblings run alike:
+`-refused-stop`, `-refused-wait`, `-stop`, `-yielded-redeploy` and `-teardown` siblings run alike:
 
 ```sh
 (

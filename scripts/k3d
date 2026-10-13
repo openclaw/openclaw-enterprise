@@ -9,6 +9,7 @@ cd "$repo_root"
 usage() {
   cat <<'EOF'
 usage: ./scripts/k3d [demo|test|info|reset|down|help] [--harness codex|openclaw]
+                     [--base-url URL] [--model-id ID]
        ./scripts/k3d get <field>
        ./scripts/k3d copy <field>
 
@@ -42,6 +43,13 @@ default; override it with the absolute OCC_K3D_OPENCLAW_SOURCE path.
 demo prompts for OPENAI_API_KEY when it is not already set. test requires the
 variable explicitly; reset does not require it.
 OCC_TEST_OPENAI_MODEL defaults to gpt-4o-mini.
+
+Codex demo/test model options (including the default demo command):
+  --base-url URL  HTTPS Responses endpoint ending in /v1; overrides
+                  OCC_TEST_CODEX_OPENAI_BASE_URL.
+  --model-id ID   Native model ID, including any namespace; overrides
+                  OCC_TEST_OPENAI_MODEL. Do not add an OCE provider prefix.
+Model credentials still come only from OPENAI_API_KEY.
 EOF
 }
 
@@ -141,6 +149,8 @@ select_engine() {
 
 harness="codex"
 harness_explicit="false"
+base_url=""
+model_id=""
 positional=()
 positional_count=0
 while [ "$#" -gt 0 ]; do
@@ -154,6 +164,28 @@ while [ "$#" -gt 0 ]; do
     --harness=*)
       harness="${1#--harness=}"
       harness_explicit="true"
+      shift
+      ;;
+    --base-url)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] ||
+        fail "--base-url requires a nonempty URL"
+      base_url="$2"
+      shift 2
+      ;;
+    --base-url=*)
+      base_url="${1#--base-url=}"
+      [ -n "$base_url" ] || fail "--base-url requires a nonempty URL"
+      shift
+      ;;
+    --model-id)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] ||
+        fail "--model-id requires a nonempty native model ID"
+      model_id="$2"
+      shift 2
+      ;;
+    --model-id=*)
+      model_id="${1#--model-id=}"
+      [ -n "$model_id" ] || fail "--model-id requires a nonempty native model ID"
       shift
       ;;
     *)
@@ -213,6 +245,18 @@ case "${1:-demo}" in
     ;;
 esac
 
+if [ -n "$base_url$model_id" ]; then
+  [ "$harness" = codex ] && { [ "$action" = demo ] || [ "$action" = test ]; } ||
+    fail "--base-url and --model-id are supported only for Codex demo and test"
+fi
+
+apply_model_options() {
+  [ -z "$base_url" ] || export OCC_TEST_CODEX_OPENAI_BASE_URL="$base_url"
+  # The consumer accepts provider-qualified refs. Add the outer virtual provider
+  # explicitly so a native ID beginning with codex/ or openai/ remains intact.
+  [ -z "$model_id" ] || export OCC_TEST_OPENAI_MODEL="codex/$model_id"
+}
+
 [ "$action" != demo ] || prompt_openai_api_key
 
 for command in node k3d kubectl; do
@@ -230,6 +274,7 @@ export OCC_DOCKER_BIN="$container_bin"
 export OPENCLAW_CI_K3D_BIN="$k3d_bin"
 export OCC_KUBECTL_BIN="$kubectl_bin"
 export OCC_TEST_OPENAI_MODEL="${OCC_TEST_OPENAI_MODEL:-gpt-4o-mini}"
+apply_model_options
 
 # This local workflow always builds the current checkout. Do not let selectors
 # exported by an earlier test turn its generated localhost references into
@@ -311,6 +356,8 @@ load_environment() {
       fail "prepared environment contains an invalid assignment"
     export "${environment_record?}"
   done < "$env_file"
+  # Prepared environment records must not override explicit invocation options.
+  apply_model_options
 }
 
 load_state_lane() {

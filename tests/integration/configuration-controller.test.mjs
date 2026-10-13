@@ -2323,7 +2323,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     assert.equal(response.status, 400, JSON.stringify(response.body));
     assert.equal(
       response.body.error.message,
-      "Configuration field /skills/entries/x/env/X10, with the environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
+      "Configuration field /skills/entries/x/env/X10, with the URLs and environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
     );
   });
   // Nothing refused was stored.
@@ -2424,6 +2424,91 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     },
   });
   assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
+test("Configuration and Preset saves check a URL of many ${NAME:-fallback} references in bounded time", async (t) => {
+  // Finding 1265: the userinfo rule renders a URL once per `${NAME:-fallback}` reference and reads
+  // it whole each time, so a body-sized baseUrl of fallbacks held the controller for seconds.
+  // Every URL field now spends the document's work budget, which refuses such a value at once.
+  const root = await mkdtemp(join(tmpdir(), "occ-url-userinfo-cost-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-url-userinfo-cost");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const cost = (field) =>
+    `Configuration field ${field}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
+  // 60 KB of fallbacks, the most the 64 KiB request body holds, in the path and in the authority.
+  const fallbacks = (prefix, suffix) =>
+    `${prefix}${"${A:-x}".repeat(Math.floor((60 * 1024 - prefix.length - suffix.length) / 7))}${suffix}`;
+  const urls = [fallbacks("https://h.example/", ""), fallbacks("https://", "@h.example/v1")];
+  const fields = [
+    [(url) => ({ models: { providers: { p: { baseUrl: url } } } }), "/models/providers/p/baseUrl"],
+    [
+      (url) => ({
+        models: {
+          providers: { p: { baseUrl: "https://h.example/v1", request: { proxy: { url } } } },
+        },
+      }),
+      "/models/providers/p/request/proxy/url",
+    ],
+    [(proxyUrl) => ({ proxy: { proxyUrl } }), "/proxy/proxyUrl"],
+    [(proxy) => ({ channels: { telegram: { proxy } } }), "/channels/telegram/proxy"],
+    [(url) => ({ mcp: { servers: { docs: { url } } } }), "/mcp/servers/docs/url"],
+  ];
+  const timed = async (path, body) => {
+    const start = performance.now();
+    const response = await request(context.app, "POST", path, { body });
+    return { ...response, elapsed: performance.now() - start };
+  };
+  for (const [values, field] of fields) {
+    for (const [index, url] of urls.entries()) {
+      await t.test(
+        `refuses ${field} of fallbacks (${index === 0 ? "path" : "authority"})`,
+        async () => {
+          const response = await timed(configurations, { kind: "agent", values: values(url) });
+          assert.equal(response.status, 400, JSON.stringify(response.body));
+          assert.equal(response.body.error.message, cost(field));
+          // Unbounded, this took 4 to 14 s; bounded, a few milliseconds.
+          assert.ok(response.elapsed < 500, `took ${response.elapsed} ms`);
+        },
+      );
+    }
+  }
+  await t.test("refuses a Preset URL of fallbacks around a variable", async () => {
+    const response = await timed(presets, {
+      name: "Costly",
+      template: {
+        variables: { host: { type: "string" } },
+        configuration: { values: { proxy: { proxyUrl: `${urls[1]}{{ vars.host }}` } } },
+      },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, cost("/proxy/proxyUrl"));
+    assert.ok(response.elapsed < 500, `took ${response.elapsed} ms`);
+  });
+  // A URL with a few fallbacks is still checked whole.
+  await t.test("still refuses userinfo in a fallback and accepts a plain one", async () => {
+    const refused = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: { proxy: { proxyUrl: "http://${HOST:-u:pw@proxy}:3128" } } },
+    });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.equal(
+      refused.body.error.message,
+      "Configuration field /proxy/proxyUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    );
+    const saved = await request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        values: { proxy: { proxyUrl: "http://${HOST:-proxy}:${PORT:-3128}" } },
+      },
+    });
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  });
 });
 
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {

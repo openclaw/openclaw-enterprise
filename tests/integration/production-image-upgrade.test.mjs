@@ -408,7 +408,7 @@ esac
   );
 });
 
-test("production image upgrades refuse uppercase or wrong-length digests before touching the cluster", async (t) => {
+test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   // Image references are checked during argument validation, before any file,
@@ -451,6 +451,27 @@ test("production image upgrades refuse uppercase or wrong-length digests before 
         assert.match(
           error.stderr,
           new RegExp(`${flag} must be an approved immutable SHA-256 image reference`, "u"),
+        );
+        return true;
+      },
+    );
+  }
+  // Kubernetes also rejects an uppercase repository path; only the registry host and the tag
+  // may use uppercase, as in the chart and profile preflight.
+  for (const [flag, image] of [
+    ["--controller-image", "registry.example.invalid/Controller"],
+    ["--broker-image", "registry.example.invalid:5000/team/Repository-credentials:release_1"],
+    ["--runtime-image", "Runtime"],
+  ]) {
+    await assert.rejects(
+      execute(upgradeScript, [...required, flag, `${image}@sha256:${"a".repeat(64)}`], {
+        cwd: repository,
+      }),
+      (error) => {
+        assert.match(
+          error.stderr,
+          new RegExp(`${flag} repository path must be lowercase`, "u"),
+          image,
         );
         return true;
       },

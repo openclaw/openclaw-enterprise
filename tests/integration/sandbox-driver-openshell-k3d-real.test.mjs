@@ -66,8 +66,11 @@ const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).r
   /^(?:openai|codex)\//,
   "",
 );
+const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
 const modelCredentialVariable =
-  process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" ? "OPENAI_API_KEY" : "CODEX_ACCESS_TOKEN";
+  process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" || openShellModelBaseUrl !== undefined
+    ? "OPENAI_API_KEY"
+    : "CODEX_ACCESS_TOKEN";
 const modelCredential = process.env[modelCredentialVariable];
 const modelSourceType = modelCredentialVariable === "CODEX_ACCESS_TOKEN" ? "codex-pat" : "openai";
 const modelSecretField =
@@ -86,6 +89,7 @@ const selected =
     openShellHelmPath,
     openShellHelmChart,
     openShellWorkspaceHelmChart,
+    openShellModelBaseUrl,
   ].some(Boolean);
 const requiresOpenShellK3d = {
   skip: selected
@@ -2351,6 +2355,7 @@ async function prepareProductionInstallation(
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
     type: modelSourceType,
+    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
     secrets: { [modelSecretField]: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
@@ -4221,8 +4226,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(4) touch ${escapedPath}; ` +
       `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
       `(6) curl -fsSI --max-time 10 https://acme.com; ` +
-      `(7) ${deniedConfigCommand}. ` +
-      `Commands 1, 2, and 5 must succeed; commands 3, 4, 6, and 7 must fail. ` +
+      (modelSourceType === "codex-pat" ? `(7) ${deniedConfigCommand}. ` : "") +
+      `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
+      (modelSourceType === "codex-pat" ? "Command 7 must also fail. " : "") +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
@@ -4268,31 +4274,36 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
-  assert.ok(deniedConfigRequest, "the real Codex binary must attempt the unapproved backend path.");
-  assert.notEqual(deniedConfigRequest.exitCode, 0);
-  // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
-  // must record its L7 denial of this exact native-Codex request.
-  await waitFor(
-    "OpenShell denial of an unrelated Codex backend path",
-    async () => {
-      const logs = await kubectl(
-        "logs",
-        topology.harnessPod.metadata.name,
-        "--namespace",
-        topology.placement,
-        "--all-containers=true",
-        "--tail=500",
-      );
-      return logs
-        .split("\n")
-        .some(
-          (line) =>
-            line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
-            line.includes("not permitted by policy"),
+  if (modelSourceType === "codex-pat") {
+    assert.ok(
+      deniedConfigRequest,
+      "the real Codex binary must attempt the unapproved backend path.",
+    );
+    assert.notEqual(deniedConfigRequest.exitCode, 0);
+    // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
+    // must record its L7 denial of this exact native-Codex request.
+    await waitFor(
+      "OpenShell denial of an unrelated Codex backend path",
+      async () => {
+        const logs = await kubectl(
+          "logs",
+          topology.harnessPod.metadata.name,
+          "--namespace",
+          topology.placement,
+          "--all-containers=true",
+          "--tail=500",
         );
-    },
-    30_000,
-  );
+        return logs
+          .split("\n")
+          .some(
+            (line) =>
+              line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
+              line.includes("not permitted by policy"),
+          );
+      },
+      30_000,
+    );
+  }
   assert.match(result.assistant, new RegExp(nonce));
   assert.match(result.assistant, /WORKSPACE_WRITABLE/);
   assert.match(result.assistant, /APPROVED_PATH_READABLE/);

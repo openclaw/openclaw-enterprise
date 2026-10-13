@@ -27,12 +27,25 @@ const urlCredentialMessage = (path: string): string =>
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
-const environmentCostMessage = (path: string): string =>
-  `Configuration field ${path}, with the environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
+const urlCostMessage = (path: string): string =>
+  `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
 
-// The most work `environmentUrls` and the userinfo checks may do on one document's environment
-// values, in characters read (each rendering of each URL counts): about 0.1 s.
-const ENVIRONMENT_URL_BUDGET = 1 << 22;
+// The most work `environmentUrls` and the userinfo checks may do on one document's URL fields and
+// environment values, in characters read (each rendering of each URL counts): about 0.1 s for
+// each check of a document.
+const URL_CHECK_BUDGET = 1 << 22;
+
+// The work `urlHoldsUserinfo` does on `literals`: it renders the text three times plus once per
+// `${VAR:-fallback}` reference, and reads it whole each time (finding 1265). Each unfilled Preset
+// variable between literals costs about as much as a dozen characters in every rendering.
+function userinfoWork(literals: readonly string[]): number {
+  const text = literals.join("\0");
+  let fallbacks = 0;
+  for (const [, escaped, fallback] of text.matchAll(environmentReference)) {
+    fallbacks += escaped === undefined && fallback !== undefined ? 1 : 0;
+  }
+  return (text.length + 12 * literals.length) * (3 + fallbacks);
+}
 
 // Each URL `value` may hold, from its scheme to the end of its authority, where `\0` marks an
 // unfilled Preset variable; `undefined` when checking them would exceed the budget. URL parsers
@@ -45,12 +58,8 @@ const ENVIRONMENT_URL_BUDGET = 1 << 22;
 // reference whose fallback could end that authority. A backslash does not end an authority here:
 // WHATWG parsers read it as a slash after a special scheme, but Python and curl read it as part
 // of the userinfo, so each URL is also checked with it percent-encoded. `spent` carries the work
-// done on the document so far; a proxy variable's whole-value check is charged to it too.
-function environmentUrls(
-  value: string,
-  spent: { work: number },
-  proxy: boolean,
-): string[] | undefined {
+// done on the document so far.
+function environmentUrls(value: string, spent: { work: number }): string[] | undefined {
   const text = value.replaceAll(/[\t\n\r]/g, "");
   // Each reference, by its start and by its end; `inside` marks the start of the one at each
   // index, and `count` how many start before it.
@@ -70,9 +79,6 @@ function environmentUrls(
     count[index] = (count[index] ?? 0) + (count[index - 1] ?? 0);
   }
   let work = spent.work + text.length;
-  if (proxy) {
-    work += 2 * text.length * (3 + (count[text.length] ?? 0));
-  }
   const skip = (from: number): [number, number] => {
     let index = from;
     let slashes = 0;
@@ -89,6 +95,18 @@ function environmentUrls(
         return [index, slashes];
       }
     }
+  };
+  // Whether a reference's text holds a character in `ends`, read once per reference and pattern.
+  const endsIn = new Map<string, boolean>();
+  const holdsEnd = (reference: number, ends: RegExp): boolean => {
+    const key = `${ends.source}${reference}`;
+    const known = endsIn.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const found = ends.test(text.slice(reference, after.get(reference)));
+    endsIn.set(key, found);
+    return found;
   };
   const spans: [number, number][] = [];
   let covered = { from: 0, to: 0, ends: /["/?#]/ };
@@ -116,7 +134,7 @@ function environmentUrls(
     if (
       colon >= covered.from &&
       authority < covered.to &&
-      (reference === -1 || !covered.ends.test(text.slice(reference, after.get(reference))))
+      (reference === -1 || !holdsEnd(reference, covered.ends))
     ) {
       continue;
     }
@@ -138,7 +156,7 @@ function environmentUrls(
     // Each of the two checks renders every fallback in the URL, so its cost grows with each
     // reference.
     work += 2 * (end - start) * (3 + (count[end] ?? 0) - (count[start] ?? 0));
-    if (work > ENVIRONMENT_URL_BUDGET) {
+    if (work > URL_CHECK_BUDGET) {
       return undefined;
     }
     covered = { from: authority, to: end - 1, ends };
@@ -196,6 +214,9 @@ export function validateModelCredentialReferences(
     }
     throw new ModelCredentialValueError(path);
   };
+  // The work the userinfo checks have done on this document: each URL field and environment value
+  // is charged before it is checked, and one past the budget is refused as too costly to check.
+  const spent = { work: 0 };
   // The refusal names the field, never its value. A Preset save passes `unresolved`, the text
   // around each unfilled variable at that path.
   const refuseUrlUserinfo = (
@@ -207,11 +228,17 @@ export function validateModelCredentialReferences(
       return;
     }
     const [head = "", ...tail] = options.unresolved?.(path) ?? [value];
+    const withScheme =
+      schemeless && !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(head)
+        ? [`http://${head}`, ...tail]
+        : undefined;
+    spent.work += userinfoWork([head, ...tail]) + (withScheme ? userinfoWork(withScheme) : 0);
+    if (spent.work > URL_CHECK_BUDGET) {
+      throw new ModelCredentialValueError(pointer(...path), urlCostMessage);
+    }
     if (
       urlHoldsUserinfo(value, [head, ...tail]) ||
-      (schemeless &&
-        !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(head) &&
-        urlHoldsUserinfo(value, [`http://${head}`, ...tail]))
+      (withScheme !== undefined && urlHoldsUserinfo(value, withScheme))
     ) {
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
     }
@@ -220,7 +247,6 @@ export function validateModelCredentialReferences(
   // 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`, `npm_config_registry`,
   // `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as `GOPROXY` holds several.
   // A proxy variable is also read from its start, without a scheme as http.
-  const spent = { work: 0 };
   const refuseEnvironmentUserinfo = (path: SettingPath, value: unknown, proxy: boolean): void => {
     if (typeof value !== "string") {
       return;
@@ -231,10 +257,9 @@ export function validateModelCredentialReferences(
     const urls = environmentUrls(
       proxy && !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(text) ? `http://${text}` : text,
       spent,
-      proxy,
     );
     if (urls === undefined) {
-      throw new ModelCredentialValueError(pointer(...path), environmentCostMessage);
+      throw new ModelCredentialValueError(pointer(...path), urlCostMessage);
     }
     if (proxy) {
       refuseUrlUserinfo(path, value, true);

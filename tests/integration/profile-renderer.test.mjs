@@ -1001,6 +1001,16 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
         ["https://otel.example.invalid"],
         "is not supported by installation profiles.",
       ],
+      // Profiles leave the chart's default Collector image (a values file may override it, and the
+      // chart checks it); this pins that preflight takes no image field.
+      [
+        "controlPlane.loggingCollector.image",
+        [
+          `docker.io/otel/opentelemetry-collector-contrib@sha256:${"d".repeat(64)}`,
+          `docker.io/Otel/opentelemetry-collector-contrib@sha256:${"d".repeat(64)}`,
+        ],
+        "is not supported by installation profiles.",
+      ],
       [
         "controlPlane.loggingCollector.enabled",
         [false],

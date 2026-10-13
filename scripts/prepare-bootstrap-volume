@@ -78,6 +78,14 @@ immutable_image() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
 }
 
+# Kubernetes refuses to pull an image whose repository path has an uppercase letter
+# (InvalidImageName). Only the registry host (the first component, when a / follows
+# it) and the tag may use uppercase, as in the chart and the profile renderer.
+lowercase_image_repository() {
+  local LC_ALL=C
+  ! [[ "$1" =~ ^([^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@) ]]
+}
+
 add_node_selector() {
   local selector=$1
   local key value existing
@@ -156,6 +164,8 @@ is_dns_subdomain "$claim" ||
   die "--claim must be a DNS subdomain."
 immutable_image "$image" ||
   die "--image must be an approved immutable SHA-256 image reference."
+lowercase_image_repository "$image" ||
+  die "--image repository path must be lowercase; Kubernetes refuses to pull an uppercase one."
 
 suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)
 [[ -n "$suffix" ]] || suffix=$$

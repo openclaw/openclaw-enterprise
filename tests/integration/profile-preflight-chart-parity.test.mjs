@@ -737,40 +737,131 @@ fieldParity("controller image references get the same verdict from preflight and
 });
 
 // Kubernetes refuses to pull an image whose repository path has an uppercase letter
-// (InvalidImageName), and the chart renders it. Preflight refuses it in every image field.
-test("images with an uppercase repository path fail preflight", { skip: helmSkip }, () => {
-  const refusal = (field) => new RegExp(`${escape(field)} repository path must be lowercase`);
-  const fields = [
-    ["controlPlane.controllerImage", (image) => input({ controllerImage: image })],
-    ["runtime.image", (image) => ({ ...input({}), runtime: { ...input({}).runtime, image } })],
-    ["repository.image", (image) => ({ ...input({}), repository: { ...repositoryInput, image } })],
-  ];
-  const names = [
-    "registry.example.invalid/Team/controller",
-    "registry.example.invalid:5000/team/Controller:release_1",
-    "Registry.Example.invalid/team/Controller",
-    // Without a registry host, the image is docker.io/library/Controller.
-    "Controller",
-  ];
-  return each(
-    fields.flatMap(([field, profile]) => names.map((name) => [field, profile, name])),
-    ([field, profile, name]) =>
-      withProfile(profile(`${name}@sha256:${"a".repeat(64)}`), async ({ directory, renderer }) => {
-        assert.equal(renderer.ok, false, `${field} ${name}: renderer\n${renderer.output}`);
-        assert.match(renderer.output, refusal(field), `${field} ${name}`);
-        assert.equal(existsSync(join(directory, "values.yaml")), false);
-        if (field === "controlPlane.controllerImage") {
+// (InvalidImageName). Preflight refuses it in every image field, the chart in the images it
+// renders, and Compute in runtime.image, which becomes its images.gateway and images.agent.
+test(
+  "images with an uppercase repository path fail preflight, the chart and Compute",
+  { skip: helmSkip },
+  () => {
+    const refusal = (field) => new RegExp(`${escape(field)} repository path must be lowercase`);
+    const fields = [
+      [
+        "controlPlane.controllerImage",
+        (image) => input({ controllerImage: image }),
+        "images.controller",
+        (image) => ({ images: { controller: image } }),
+      ],
+      ["runtime.image", (image) => ({ ...input({}), runtime: { ...input({}).runtime, image } })],
+      [
+        "repository.image",
+        (image) => ({ ...input({}), repository: { ...repositoryInput, image } }),
+        "repositoryCredentials.image",
+        (image) => ({ repositoryCredentials: { ...repositoryInput, image } }),
+      ],
+    ];
+    const names = [
+      "registry.example.invalid/Team/controller",
+      "registry.example.invalid:5000/team/Controller:release_1",
+      "Registry.Example.invalid/team/Controller",
+      // Without a registry host, the image is docker.io/library/Controller.
+      "Controller",
+    ];
+    return each(
+      fields.flatMap((field) => names.map((name) => [field, name])),
+      ([[field, profile, chartField, values], name]) => {
+        const image = `${name}@sha256:${"a".repeat(64)}`;
+        return withProfile(profile(image), async ({ directory, renderer }) => {
+          assert.equal(renderer.ok, false, `${field} ${name}: renderer\n${renderer.output}`);
+          assert.match(renderer.output, refusal(field), `${field} ${name}`);
+          assert.equal(existsSync(join(directory, "values.yaml")), false);
+          if (chartField === undefined) {
+            assertCompute(
+              { images: { gateway: image, agent: image, requireImmutableDigest: true } },
+              false,
+              /Gateway image repository path must be lowercase/,
+              name,
+            );
+            return;
+          }
           const chart = await helmTemplate([
             await baselineValues(),
-            writeOverride(directory, {
-              images: { controller: `${name}@sha256:${"a".repeat(64)}` },
+            writeOverride(directory, values(image)),
+          ]);
+          assert.equal(chart.ok, false, `${chartField} ${name}: helm template\n${chart.output}`);
+          assert.match(chart.output, refusal(chartField), `${chartField} ${name}`);
+        });
+      },
+    );
+  },
+);
+
+// Profiles take no Collector image: preflight refuses the field and writes none, so the chart
+// renders its default. An operator values file can still set logging.collector.image, and the
+// chart applies the images.* repository path rule to it. Its shape rule stays looser than
+// images.* (the Collector may use an IPv6 registry host).
+test(
+  "logging.collector.image follows the images.* repository path rule; profiles leave the chart default",
+  { skip: helmSkip },
+  async () => {
+    const collector = { enabled: true, exporter: { cidr: "192.0.2.40/32" } };
+    await withProfile(
+      input({
+        loggingCollector: { ...collector, image: `otel/collector@sha256:${"d".repeat(64)}` },
+      }),
+      ({ renderer }) => {
+        assert.equal(renderer.ok, false, renderer.output);
+        assert.match(
+          renderer.output,
+          /controlPlane\.loggingCollector\.image is not supported by installation profiles/,
+        );
+      },
+    );
+    return withProfile(input({ loggingCollector: collector }), async ({ directory, renderer }) => {
+      assert.equal(renderer.ok, true, renderer.output);
+      const values = join(directory, "values.yaml");
+      assert.equal(loadYaml(readFileSync(values, "utf8")).logging.collector.image, undefined);
+      const chart = await helmTemplate([values]);
+      assert.equal(chart.ok, true, chart.output);
+      const chartDefault = loadYaml(
+        readFileSync(join(repository, "deploy/helm/openclaw-enterprise/values.yaml"), "utf8"),
+      ).logging.collector.image;
+      assert.ok(chart.output.includes(`image: ${JSON.stringify(chartDefault)}`), chartDefault);
+      await each(
+        [
+          ["registry.example.invalid/otel/collector", true],
+          ["Registry.Example.invalid/otel/collector:Release_1", true],
+          ["[fd00::1]:5000/otel/collector", true],
+          ["[FD00::1]:5000/otel/collector", true],
+          ["registry.example.invalid/Otel/collector", false],
+          ["registry.example.invalid:5000/otel/Collector:release_1", false],
+          ["Registry.Example.invalid/otel/Collector", false],
+          ["[fd00::1]:5000/otel/Collector", false],
+          // Without a registry host, the image is docker.io/library/Collector.
+          ["Collector", false],
+        ],
+        async ([name, accepted]) => {
+          const image = `${name}@sha256:${"d".repeat(64)}`;
+          const chart = await helmTemplate([
+            values,
+            writeOverride(mkdtempSync(join(directory, "case-")), {
+              logging: { collector: { image } },
             }),
           ]);
-          assert.equal(chart.ok, true, `${name}: helm template\n${chart.output}`);
-        }
-      }),
-  );
-});
+          assert.equal(chart.ok, accepted, `${name}: helm template\n${chart.output}`);
+          if (accepted) {
+            assert.ok(chart.output.includes(`image: ${JSON.stringify(image)}`), name);
+          } else {
+            assert.match(
+              chart.output,
+              /logging\.collector\.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one/,
+              name,
+            );
+          }
+        },
+      );
+    });
+  },
+);
 
 // runtime.image never reaches the chart: it becomes Compute's images.gateway and
 // images.agent. Every reference preflight accepts, including an IPv6 registry host the

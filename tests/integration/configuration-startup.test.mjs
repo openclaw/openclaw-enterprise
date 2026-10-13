@@ -82,6 +82,26 @@ test("Installation startup validates the optional external observability URL", a
       },
     );
   }
+  // URL parsing drops an empty user info and keeps the host alone; profile preflight refuses
+  // any @ before the host, and so does startup.
+  for (const userinfo of [
+    "http://@grafana.example.internal/d",
+    "https://:@grafana.example.internal/d",
+    "http:@grafana.example.internal/d",
+    "http:\t//@grafana.example.internal/d",
+    "http://@192.0.2.10:3000/d",
+  ]) {
+    configuration.observability = { url: userinfo };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain user info or an @ before the host\./,
+      JSON.stringify(userinfo),
+    );
+  }
   for (const shorthand of ["http://192.168.1", "http://2130706433"]) {
     configuration.observability = { url: shorthand };
     await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -107,7 +127,7 @@ test("Installation startup validates the optional external observability URL", a
   assert.equal(new URL(canonical.installation.observability.url).hostname, "192.168.1.1");
 });
 
-test("API and worker refuse a rewritten observability IPv4 host before opening PostgreSQL", async (t) => {
+test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
   const configuration = installation();
   configuration.occ.cluster = "production-west";
   const path = await fixture(t, configuration);
@@ -142,7 +162,14 @@ test("API and worker refuse a rewritten observability IPv4 host before opening P
     assert.ok(!result.stderr.includes(path), result.stderr);
     return startupDiagnostic(result.stderr, event);
   };
-  for (const shorthand of ["http://192.168.1", "http://2130706433"]) {
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://@192.168.1.1",
+    "http://@grafana.example.internal/d",
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    "javascript:alert(1)",
+  ]) {
     configuration.observability = { url: shorthand };
     await writeFile(path, JSON.stringify(configuration), "utf8");
     for (const [script, event, env] of processes) {
@@ -150,6 +177,24 @@ test("API and worker refuse a rewritten observability IPv4 host before opening P
       assert.equal(diagnostic.code, "OBSERVABILITY_URL_INVALID", `${script} ${shorthand}`);
       assert.equal(diagnostic.message, undefined);
     }
+  }
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter.
+  configuration.observability = { url: "http://192.168.1.1" };
+  const images = configuration.drivers.compute.configuration.images;
+  for (const role of ["gateway", "agent"]) {
+    const original = images[role];
+    images[role] = original.replace(
+      /^([^/]*\/)(.)/,
+      (_, host, first) => host + first.toUpperCase(),
+    );
+    assert.notEqual(images[role], original);
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    for (const [script, event, env] of processes) {
+      const diagnostic = boot(script, event, env);
+      assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
+      assert.equal(diagnostic.message, undefined);
+    }
+    images[role] = original;
   }
   configuration.observability = { url: "http://192.168.1.1" };
   await writeFile(path, JSON.stringify(configuration), "utf8");

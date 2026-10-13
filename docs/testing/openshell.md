@@ -317,9 +317,9 @@ scoped environment file for this suite.
 
 | Variable                                  | Requirement or default                                                                                                                                                                                 |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OCC_TEST_OPENSHELL_K3D_REAL`             | Set to `1` to explicitly opt into the real OpenShell integration.                                                                                                                                      |
+| `OCC_TEST_OPENSHELL_K3D_REAL`             | Set to `1` for real OpenShell integration.                                                                                                                                                             |
 | `CODEX_ACCESS_TOKEN`                      | Existing authorized personal access token, including a service-account token, for the Codex source and first-Agent scenarios. The automatic QA lane uses the existing environment secret of this name. |
-| `OPENAI_API_KEY`                          | Existing authorized API key for the optional native OpenClaw scenario.                                                                                                                                 |
+| `OPENAI_API_KEY`                          | Authorized API key for native OpenClaw or custom-endpoint Codex.                                                                                                                                       |
 | `OCC_TEST_OPENSHELL_HARNESS`              | `codex` (default) selects the app-server proof; `openclaw` selects the dedicated native worker without an inbound Harness exposure.                                                                    |
 | `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                                                                                  |
 | `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                                                                     |
@@ -336,6 +336,7 @@ scoped environment file for this suite.
 | `OCC_TEST_OPENSHELL_CHART_VERSION`        | Optional OpenShell chart version; defaults to `0.1.3-pre.2`.                                                                                                                                           |
 | `OCC_TEST_KEYCLOAK_IMAGE`                 | Optional digest-pinned Keycloak image for the OAuth2 refresh proof; defaults to `tests/fixtures/keycloak/image.json`. CI imports it into k3d.                                                          |
 | `OCC_TEST_OPENSHELL_RUNTIME_CLASS`        | Existing RuntimeClass used by Agent Sandbox Pods; CI creates the selected RuntimeClass, defaulting to `openshell-sandbox`, with the `runc` handler.                                                    |
+| `OCC_TEST_OPENSHELL_MODEL_BASE_URL`       | Optional HTTPS Responses-compatible `/v1` endpoint; selects the API-key Codex source instead of PAT.                                                                                                   |
 
 The selected cluster must already expose the Agent Sandbox CRD and a ready Agent
 Sandbox controller. See the

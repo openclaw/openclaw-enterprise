@@ -1,16 +1,14 @@
 # OpenShell Credential Gateway
 
-The bundled OpenShell Credential Gateway stores OCC
-[credential sources](../credential-sources.md) as OpenShell providers. The
-OpenShell supervisor applies them at its egress proxy, so the dedicated Codex
-Harness never receives the real model key. It implements the
+The OpenShell Credential Gateway stores OCC [credential sources](../credential-sources.md)
+as OpenShell providers. Its supervisor substitutes credentials at the egress proxy,
+keeping them outside the Harness. It implements the
 [CredentialGatewayDriver contract](credential-gateway.md) and works only with the
 [OpenShell SandboxDriver](openshell-sandbox.md), through one shared `openshell`
 [Backend](../backends.md#openshell-gateway).
 
-**This Driver does not make OpenShell a supported production path.** It removes
-the model API key from the Harness. Workload identity, writable state, gateway
-authentication, admission, and provider-file proof remain subject to the
+**OpenShell remains unsupported for production.** Workload identity, writable state,
+authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
 
 ## Configure the Driver
@@ -94,16 +92,15 @@ Startup rejects the selection when:
 - `drivers.credential_refresh` is selected without `drivers.credential_gateway`; or
 - the configuration has any key other than `binaries` and `toolBinaries`.
 
-Both the API and the worker connect to the gateway with the Backend's
-credentials. The API registers and deletes providers; the worker creates
-Sandboxes, updates provider profiles, and reads attachment status. Allow both to
-reach the gateway.
+Both API and worker need gateway access with Backend credentials: the API
+registers/deletes providers; the worker creates Sandboxes, updates profiles and
+reads attachment status.
 
 ## Source-type catalog
 
 | Type                        | Secret fields                               | Config fields                                                                   | Rotation  | Harness authentication |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ---------------------- |
-| `openai`                    | `api_key` (required)                        | None                                                                            | `none`    | `openai` / `api_key`   |
+| `openai`                    | `api_key` (required)                        | `base_url` (optional)                                                           | `none`    | `openai` / `api_key`   |
 | `codex-pat`                 | `access_token` (required)                   | None                                                                            | `none`    | `openai` / `codex_pat` |
 | `bearer-token`              | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential) |
 | `oauth2-client-credentials` | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
@@ -123,12 +120,13 @@ Profile, analytics, messaging, cloud-task and credit-mutation APIs remain denied
 
 The Harness stores only an opaque placeholder in native Codex's
 `personal_access_token` auth-file field. Native account validation and the model
-probe gate readiness. OpenShell resolves credentials only for admitted binaries
-and endpoints; withdrawal revokes running placeholders. See the
+probe gate readiness. See the
 [bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
-Config for `bearer-token` and the OAuth2 types is checked before any gateway
-call:
+`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints may have a prefix such as `/api/v1` and must support Responses. Hostname and path wildcards, port `0`, URL credentials, queries, and fragments are rejected before Secret reads or persistence with `400 INVALID_REQUEST`. The Driver also rejects bracketed IPv6 hosts, braces, and empty hostname labels, which OpenShell cannot match. The endpoint is immutable; register a new source to change it.
+
+Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
+reads or persistence:
 
 - `host` is an exact lowercase DNS name, not an IP address or wildcard.
 - `port` is 1 to 65535 and defaults to `443`.
@@ -148,8 +146,7 @@ source's endpoint. Never put a placeholder, or its `openshell:resolve:env:` pref
 OpenShell refuses a model request whose body carries one, so the Agent's turns
 fail until that history is gone.
 
-Other OpenShell provider types are not in the catalog, so registration rejects
-them.
+Registration rejects provider types outside this catalog.
 
 ## OAuth2 refresh sources
 
@@ -178,35 +175,32 @@ registers:
 - **Request IDs.** Configure and rotate calls carry a UUID that OpenShell
   replays for 24 hours, so a retried call is not applied twice.
 
-Each Sandbox receives a stable placeholder for the token. The Sandbox
-supervisor picks up a re-minted token on its provider poll, every 10 seconds by
-default, and running processes then present it. Reconfiguring refresh material
-starts a new OpenShell authorization epoch, which revokes the placeholders of
-running Sandboxes.
+The supervisor picks up re-minted tokens on its provider poll (every 10 seconds
+by default); running processes then present them. Reconfiguring refresh material
+starts a new OpenShell authorization epoch, revoking running Sandboxes’ placeholders.
 
 ## How sources map to OpenShell
 
 Each OCC Namespace maps to an operator-mode Workspace named after its Kubernetes
 namespace. The Driver manages:
 
-- **One provider profile per source.** Its ID equals the source's provider
-  name, and `removeSource` deletes it with the provider. No profile is shared
-  between sources, so removing one source never changes another's. A digest
-  annotation records the profile content; a configuration change updates the
-  profile on the next registration, update, or deployment.
-  - An `openai` source's profile exposes the key as `OPENAI_API_KEY`, inserts
-    it as a bearer `authorization` header, and binds it to `api.openai.com:443`
-    with `rest` protocol and path `/v1/**`, for the configured binaries only.
-  - A `codex-pat` source exposes `CODEX_ACCESS_TOKEN` at the catalog's account-metadata and Codex endpoints.
-  - A `bearer-token` source's profile exposes the token as the source's
-    `env_var` and binds it to the source's `host`, `port`, and `path` with
-    `rest` protocol, for `toolBinaries` only.
+- **One provider profile per source.** Its ID equals the provider name, and
+  removal deletes it with the provider. No source shares a profile. A digest
+  annotation records its content; registration, update, or deployment applies
+  configuration changes. An `openai` source binds its key as a bearer
+  `authorization` header to the configured host, port, and base path followed
+  by `/**`, for the configured binaries only. A `bearer-token` source exposes
+  its token through `env_var` and binds it to its host, port, and path for
+  `toolBinaries`.
+  A `codex-pat` source exposes `CODEX_ACCESS_TOKEN` at the catalog's fixed PAT endpoints.
 - **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
   characters of the SHA-256 digest of the source ID. Labels record OCC
   ownership, the source ID, and the Namespace ID. The provider's
-  `profile_workspace` names its own workspace, where OCC imported the profile. A
-  retried registration adopts an existing provider only when those labels match;
-  otherwise it fails.
+  `profile_workspace` names its own workspace, where OCC imported the profile.
+  Before changing the profile, registration rejects an existing provider whose
+  ownership labels or type do not match the source. It checks again if creation
+  finds an existing provider. These separate calls are not atomic; a provider or
+  orphan profile can change between them.
 - **Workspace.** OCC resolves the Namespace's workspace from Compute's runtime
   placement, so registration uses the same workspace as the paired Sandbox.
 
@@ -221,9 +215,10 @@ rejects an empty value rather than silently keep the old one. OpenShell gives
 the new value only to processes started after the update, so a running Harness
 keeps the previous value until it restarts.
 
-`removeSource` deletes the owned provider and confirms that it is gone. When no
-provider of the profile's type remains, it also deletes the profile, because
-OpenShell cannot delete a Workspace that still holds profiles.
+`removeSource` deletes the owned provider, confirms that it is gone, and deletes
+the source's profile. OpenShell cannot delete a Workspace that still holds profiles.
+
+The source ID identifies its own profile even when the persisted endpoint is invalid. Deletion refuses an unowned provider; unknown source types and gateway errors also remain failures.
 
 For a revision, `attachForRevision` brings each source's profile up to date and
 returns its provider name. It fails when two of the revision's sources would use
@@ -243,10 +238,10 @@ calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
 the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
 and only a listed provider is detached again.
 
-In the running Sandbox, the Harness environment holds only an
-`openshell:resolve:env:` placeholder for `OPENAI_API_KEY` or `CODEX_ACCESS_TOKEN`.
-Native Codex stores it using the source type's authentication path; the supervisor
-substitutes the real credential on matching requests.
+For API-key Codex, Compute selects a named compatible provider with the source endpoint
+and HTTPS Responses transport. Other Harness consumers retain their default endpoint limit.
+The Harness receives an `openshell:resolve:env:` placeholder as `OPENAI_API_KEY`
+or `CODEX_ACCESS_TOKEN`; native Codex stores it using the selected authentication path.
 
 ## Trust requirements
 
@@ -260,11 +255,11 @@ substitutes the real credential on matching requests.
 - **Network enforcement.** The guarantee depends on OpenShell's NetworkPolicy,
   which denies workload-initiated connections. The cluster network plugin must
   enforce NetworkPolicy.
-- **TLS inspection.** The proxy terminates TLS for the profile endpoint, so Codex
-  must trust the Sandbox CA that OpenShell provides through `SSL_CERT_FILE`. The
+- **TLS inspection.** The proxy terminates TLS for the selected profile endpoint,
+  so Codex must trust the Sandbox CA that OpenShell provides through `SSL_CERT_FILE`. The
   Codex startup probe keeps `SSL_CERT_FILE` and `SSL_CERT_DIR` in its otherwise
   minimal environment for this reason. Do not add an uninspected `tls: skip` policy
-  for `api.openai.com` in the Sandbox's `policy.networkPolicies`; it conflicts
+  for the selected model endpoint in the Sandbox's `policy.networkPolicies`; it conflicts
   with the profile.
 - **Namespaces.** Sources never cross OCC Namespaces.
 
@@ -279,7 +274,7 @@ revision:
   OpenShell withholds a static key that has no credential binding. A Sandbox
   policy cannot add a `credential_binding` for a profile that defines endpoints,
   so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
-  `api.openai.com`.
+  the endpoint selected by the source.
 - **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
   any Workspace. A Workspace admin, which includes OCC's gateway principal, can
   update a source's profile to add hosts or binaries while Sandboxes use it,
@@ -306,12 +301,10 @@ revision:
 
 ## Verification
 
-The [OpenShell real Sandbox suite](../../testing/openshell.md#openshell-sandbox)
-registers a source through the API, deploys a dedicated Codex Agent that uses it,
-and checks that every Harness process sees only the placeholder. It also binds a
-`bearer-token` source to an in-cluster endpoint, proves the substituted token
-arrives, and withdraws it from the running Agent while model turns continue. The Sandbox
-Driver startup integration covers Backend membership and selection rules.
+The [real Sandbox suite](../../testing/openshell.md#openshell-sandbox) exercises API
+registration, dedicated Codex deployment, placeholder custody, tool-token
+substitution and withdrawal while model turns continue. Startup integration
+covers Backend membership and selection rules.
 
 ## Troubleshooting
 

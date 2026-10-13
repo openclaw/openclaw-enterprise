@@ -69,6 +69,14 @@ immutable_image() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
 }
 
+# Kubernetes refuses to pull an image whose repository path has an uppercase letter
+# (InvalidImageName). Only the registry host (the first component, when a / follows
+# it) and the tag may use uppercase, as in the chart and the profile renderer.
+lowercase_image_repository() {
+  local LC_ALL=C
+  ! [[ "$1" =~ ^([^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@) ]]
+}
+
 positive_integer() {
   local LC_ALL=C
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
@@ -212,10 +220,16 @@ done
 positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
 [[ -z "$controller_image" ]] || immutable_image "$controller_image" ||
   die "--controller-image must be an approved immutable SHA-256 image reference."
+[[ -z "$controller_image" ]] || lowercase_image_repository "$controller_image" ||
+  die "--controller-image repository path must be lowercase; Kubernetes refuses to pull an uppercase one."
 [[ -z "$broker_image" ]] || immutable_image "$broker_image" ||
   die "--broker-image must be an approved immutable SHA-256 image reference."
+[[ -z "$broker_image" ]] || lowercase_image_repository "$broker_image" ||
+  die "--broker-image repository path must be lowercase; Kubernetes refuses to pull an uppercase one."
 [[ -z "$runtime_image" ]] || immutable_image "$runtime_image" ||
   die "--runtime-image must be an approved immutable SHA-256 image reference."
+[[ -z "$runtime_image" ]] || lowercase_image_repository "$runtime_image" ||
+  die "--runtime-image repository path must be lowercase; Kubernetes refuses to pull an uppercase one."
 full_commit_sha "$source_revision" ||
   die "--source-revision must be a full lowercase Git commit SHA."
 if ((resume)); then

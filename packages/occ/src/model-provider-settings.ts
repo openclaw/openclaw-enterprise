@@ -217,13 +217,20 @@ export function urlHoldsUserinfo(value: string, literals: readonly string[] = [v
 }
 
 // `literals` as the runtime may render its environment references: every reference set, every
-// fallback rendered, and each fallback alone with the rest set.
-function environmentRenderings(literals: readonly string[]): string[][] {
+// fallback rendered, and each of the first `alone` fallbacks alone with the rest set. Each
+// rendering reads the whole text, so all of them cost time quadratic in its length (finding 1265).
+// `writesSchemeSlashes` reads only the text before the first variable, which rendering a later
+// fallback alone leaves as when every reference is set (fallbacks are numbered in order), so it
+// needs only the first fallback alone (`alone` 1).
+function environmentRenderings(literals: readonly string[], alone = Infinity): string[][] {
   const { fallbacks } = splitEnvironmentReferences(literals, () => false);
   return [
     () => false,
     () => true,
-    ...Array.from({ length: fallbacks }, (_, only) => (index: number) => index === only),
+    ...Array.from(
+      { length: Math.min(fallbacks, alone) },
+      (_, only) => (index: number) => index === only,
+    ),
   ].map((fallback) => splitEnvironmentReferences(literals, fallback));
 }
 
@@ -310,7 +317,7 @@ function validateSettings(
     const literals = unresolved([...path, "baseUrl"]);
     if (
       environment(baseUrl)
-        ? !environmentRenderings(literals ?? [String(baseUrl)]).every(writesSchemeSlashes)
+        ? !environmentRenderings(literals ?? [String(baseUrl)], 1).every(writesSchemeSlashes)
         : literals === undefined
           ? !isRuntimeUrl(baseUrl)
           : !fillsAsRuntimeUrl(literals)

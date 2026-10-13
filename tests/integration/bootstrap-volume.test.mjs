@@ -132,6 +132,34 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
     ),
     /--image must be an approved immutable SHA-256 image reference/,
   );
+  // Kubernetes also rejects an uppercase repository path; only the registry host and the tag
+  // may use uppercase, as in the chart and profile preflight.
+  for (const name of [
+    "registry.example.invalid/openclaw/Controller",
+    "registry.example.invalid:5000/Openclaw/controller:release_1",
+    "Controller",
+  ]) {
+    await assert.rejects(
+      execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "ctx",
+          "--namespace",
+          "openclaw-system",
+          "--claim",
+          "claim",
+          "--image",
+          `${name}@sha256:${"a".repeat(64)}`,
+        ],
+        base,
+      ),
+      /--image repository path must be lowercase/,
+      name,
+    );
+  }
   // A digest is exactly 64 hex characters.
   for (const digest of ["a".repeat(63), "a".repeat(65)]) {
     await assert.rejects(
