@@ -1014,7 +1014,7 @@ async function main(options) {
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });
     progress(
-      `Locating the Kubernetes gateway and waiting for a real response from openai/${model}...`,
+      `Locating the Kubernetes gateway and waiting for a real response from ${record.harness === "codex" ? "codex" : "openai"}/${model}...`,
     );
     const proof = await verifyFirstAgentModel(local.kubectl, {
       namespaceId: namespace.id,

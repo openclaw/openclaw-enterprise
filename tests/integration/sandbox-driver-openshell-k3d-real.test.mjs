@@ -3013,8 +3013,8 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
     };
   };
   const clientSecret = await secret(keycloak.clientSecret);
-  // OpenShell refuses a token endpoint without TLS, so OCC refuses one before any gateway call,
-  // with the not-found response it gives every invalid catalog field.
+  // A known source type with an invalid endpoint is a field-specific bad request.
+  // OCC rejects plaintext token transport before reading the Secret or calling OpenShell.
   const plain = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-oauth-plain-${randomUUID()}`,
     type: "oauth2-client-credentials",
@@ -3026,7 +3026,9 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
     },
     secrets: { client_secret: clientSecret },
   });
-  assert.equal(plain.status, 404, JSON.stringify(plain.error ?? plain.data));
+  assert.equal(plain.status, 400, JSON.stringify(plain.error ?? plain.data));
+  assert.equal(plain.error.code, "INVALID_REQUEST");
+  assert.deepEqual(plain.error.details, [{ path: "/config/token_url", code: "INVALID_VALUE" }]);
   return {
     bound: [
       await register(

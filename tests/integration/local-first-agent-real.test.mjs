@@ -4,11 +4,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
+import { failureSecrets, redactOutputLines } from "../../scripts/ci/failure-redaction.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url));
@@ -297,6 +299,59 @@ async function requestLocalApi(origin, serviceKey, method, path, values) {
   return envelope.data;
 }
 
+// Read only the failed command's saved revision through OCC's authorized, redacted log API.
+// The owned stack is still alive here; teardown otherwise erases the Gateway's actual error.
+async function diagnoseFirstAgentFailure(context, { name, stateDirectory, env, serviceKey }) {
+  try {
+    const digest = createHash("sha256").update(name).digest("hex").slice(0, 32);
+    const record = await readPrivateJson(
+      join(stateDirectory, `first-agent-${digest}.json`),
+      "the failed first-Agent record",
+    );
+    if (
+      !/^ns_[A-Za-z0-9_-]+$/.test(record.namespaceId) ||
+      !/^agt_[A-Za-z0-9_-]+$/.test(record.agentId) ||
+      !/^rev_[A-Za-z0-9_-]+$/.test(record.revisionId)
+    ) {
+      context.diagnostic("First-Agent runtime logs unavailable: no saved revision.");
+      return;
+    }
+    const base = `/namespaces/${record.namespaceId}/agents/${record.agentId}/deployments/${record.revisionId}/runtime/logs`;
+    const secrets = failureSecrets([
+      env,
+      { serviceKey },
+      Object.fromEntries(
+        [...sensitiveValues].map((value, index) => [`credential_${index}`, value]),
+      ),
+    ]);
+    for (const source of ["gateway", "agent", "sandbox"]) {
+      // Runtime log reads are limited to two per second for each principal/Agent.
+      await delay(500);
+      try {
+        const logs = await requestLocalApi(
+          env.OCC_URL,
+          serviceKey,
+          "GET",
+          `${base}?source=${source}&tailLines=100`,
+        );
+        const lines = logs.records.map(({ type, time, level, message, fields, reason, count }) =>
+          JSON.stringify({ type, time, level, message, fields, reason, count }),
+        );
+        context.diagnostic(
+          `First-Agent ${source} runtime logs:\n` +
+            redactOutputLines(lines, secrets, repoRoot, 1000).join("\n"),
+        );
+      } catch (error) {
+        context.diagnostic(
+          `First-Agent ${source} runtime logs unavailable: ${redact(error.message)}`,
+        );
+      }
+    }
+  } catch {
+    context.diagnostic("First-Agent runtime logs unavailable: record could not be read.");
+  }
+}
+
 test("the first-Agent command advertises its default and preserves explicit or recorded model selections", async () => {
   const { stdout } = await execFileAsync(process.execPath, [firstAgentScript, "--help"], {
     cwd: repoRoot,
@@ -425,7 +480,15 @@ test(
 
     // The unique Agent remains until the fixture or the owner destroys the selected disposable stack.
     const first = readResult(
-      await runFirstAgent({ name, prompt: promptFor(firstReply), env, signal: context.signal }),
+      await runFirstAgent({
+        name,
+        prompt: promptFor(firstReply),
+        env,
+        signal: context.signal,
+      }).catch(async (error) => {
+        await diagnoseFirstAgentFailure(context, { name, stateDirectory, env, serviceKey });
+        throw error;
+      }),
       firstReply,
     );
 
