@@ -1560,6 +1560,29 @@ test("profiles pass an optional observability URL to Installation startup YAML",
   });
   assert.equal(snapshot.observability.url, url);
 
+  const genericObservabilityUrl =
+    /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/;
+  const rewrittenIpv4ObservabilityUrl =
+    /controlPlane\.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
+  const assertObservabilityPreflight = (observabilityUrl, expected, absent) => {
+    const failure = renderError(() =>
+      render(
+        "openclaw",
+        baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl } }),
+      ),
+    );
+    assert.match(failure.profileRendererOutput, expected);
+    assert.doesNotMatch(failure.profileRendererOutput, absent);
+    const directory = failure.profileRendererDirectory;
+    assert.equal(existsSync(join(directory, "preflight.json")), true);
+    assert.equal(existsSync(join(directory, "values.yaml")), false);
+    assert.equal(existsSync(join(directory, "installation.yaml")), false);
+    const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+    assert.equal(preflight.ok, false);
+    const errors = preflight.errors.join("\n");
+    assert.match(errors, expected);
+    assert.doesNotMatch(errors, absent);
+  };
   for (const invalid of [
     "javascript:alert(1)",
     syntheticCredentialUrl({
@@ -1570,11 +1593,15 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     "https://grafana.example.internal/#fragment",
     "grafana.example.internal",
   ]) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl: invalid } }),
-      /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/,
-    );
+    assertObservabilityPreflight(invalid, genericObservabilityUrl, rewrittenIpv4ObservabilityUrl);
+  }
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://127.1",
+    "http://0177.0.0.1",
+  ]) {
+    assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
   }
 });
 
@@ -2092,11 +2119,11 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
     baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
     message,
   );
-  // Compute refuses an unspecified runtime proxy host, which reaches the gateway Pod itself.
+  // Compute refuses an unspecified runtime proxy host, which names no proxy.
   assertPreflightFailure(
     "openclaw",
     baseInput({ channels: { runtimeProxyUrl: "http://0.0.0.0:3128" } }),
-    /channels\.runtimeProxyUrl must not use host 0\.0\.0\.0, which reaches the gateway Pod itself, not a proxy\./,
+    /channels\.runtimeProxyUrl must not use host 0\.0\.0\.0, which names no proxy address\./,
   );
   const accepted = render(
     "openclaw",

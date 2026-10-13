@@ -12,14 +12,15 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-13: channel proxy IPv4 hosts must be four decimal octets
+## 2026-10-13: channel proxy hosts must name one proxy address
 
 **What breaks.** Startup refuses a channel proxy IPv4 host that is not four
 decimal octets from 0 to 255 with no leading zeros. Shorthand, a single
 integer, hex, and leading zeros used to allow egress to a different address.
-Startup also refuses an unspecified host (`0.0.0.0`, `[::]`) and an IPv4-mapped
-IPv6 host (`[::ffff:10.42.0.15]`), whose egress never reached a proxy; profile
-preflight refuses `0.0.0.0` in `channels.runtimeProxyUrl`.
+Startup also refuses an unspecified host (`0.0.0.0`, `[::]`), which names no
+destination, and an IPv4-mapped IPv6 host (`[::ffff:10.42.0.15]`), whose egress
+never reached the proxy. Profile preflight refuses `0.0.0.0` in
+`channels.runtimeProxyUrl`.
 
 **Who is affected.** Installations whose `channels.proxyUrl` uses one of those
 spellings. Canonical decimals, other IPv6 literals, and a managed Service proxy URL
@@ -29,8 +30,27 @@ still start.
 `Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
 or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.`
 
-**Steps.** Write the host as four decimal octets (`127.0.0.1` for
-`0177.0.0.1`) and restart.
+**Steps.** Write the proxy's own address, an IPv4 host as four decimal octets
+(`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and
+restart.
+
+## 2026-10-13: shorthand observability IPv4 hosts are refused
+
+**What breaks.** An observability URL whose IPv4 host is not four decimal
+octets from 0 to 255, with no leading zeros, is refused. Shorthand, hex, a
+single integer, and leading zeros used to be stored as a different address
+(`192.168.1` became `192.168.0.1`; `2130706433` became `127.0.0.1`).
+
+**Who is affected.** Profiles with `controlPlane.observabilityUrl`, and
+Installations whose startup `observability.url` uses one of those spellings.
+A canonical host such as `192.168.1.1`, and any DNS name, still loads.
+
+**How to tell.** The profile reports `controlPlane.observabilityUrl IPv4 host
+must be four decimal octets from 0 to 255 with no leading zeros; other
+spellings parse as a different address.` API and worker startup log
+`OBSERVABILITY_URL_INVALID`.
+
+**Steps.** Write the four decimal octets you mean, then render or restart.
 
 ## 2026-10-13: IP database hosts are verified against the certificate
 
@@ -205,21 +225,6 @@ the duplicate or reserved policy.
 **Steps.** Rename or merge duplicate `policy.networkPolicies` names. Rename a
 policy called `workspace-node-enrollment`. Keep each policy's binaries and
 endpoints. _untested_ against a live Installation.
-
-## 2026-10-12: cluster and execution API ports must be canonical decimals
-
-**What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
-values that are not a canonical decimal from 1 to 65535 with at most five
-digits. `010` and integers Sprig cannot convert, such as
-`9223372036854775808`, no longer render.
-
-**Who is affected.** Installations that set either port with a leading zero.
-
-**How to tell.** Helm names `cluster.port` or `executionCluster.apiPort` and
-says it must be an integer TCP port from 1 to 65535.
-
-**Steps.** Replace a leading-zero value with its effective decimal port (`010`
-becomes `8`) before the next Helm upgrade. _untested_ against a live release.
 
 ## 2026-10-12: model credentials in provider headers and request auth
 

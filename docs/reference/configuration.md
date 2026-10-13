@@ -63,7 +63,13 @@ observability:
 ```
 
 `url` must be an absolute HTTP or HTTPS URL without embedded credentials or a
-fragment. Unknown fields fail startup. The API exposes the URL only after an
+fragment. An IPv4 host must be four decimal octets from 0 to 255 with no
+leading zeros; shorthand, hex, a single integer, or a leading zero stops API
+and worker startup with log code `OBSERVABILITY_URL_INVALID` until you write
+the four octets and restart. A DNS name is
+unchanged. See the
+[breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
+fail startup. The API exposes the URL only after an
 Installation `administer` check; the console hides the link when unset or
 unauthorized. The destination handles its own authentication. This setting does
 not select an OpenTelemetry exporter or embed a dashboard. Compose development
