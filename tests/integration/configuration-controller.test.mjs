@@ -2511,6 +2511,266 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
   });
 });
 
+test("Configuration and Preset saves read a git config value as a proxy when its key names one", async (t) => {
+  // Finding 1276: git reads `GIT_CONFIG_VALUE_<n>` as the value of the key `GIT_CONFIG_KEY_<n>`
+  // names, and git and curl send a proxy's userinfo, scheme or not, as Proxy-Authorization. The
+  // scheme-less proxy read keyed on the variable name only, so `u:pw@proxy:3128` saved.
+  const root = await mkdtemp(join(tmpdir(), "occ-git-proxy-userinfo-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-git-proxy-userinfo");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-git-proxy-userinfo-${randomUUID()}`;
+  const message = (field) =>
+    `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const proxy = `u:${sentinel}@proxy.example.test:3128`;
+  const pair = (key, index = 0) => ({
+    GIT_CONFIG_COUNT: String(index + 1),
+    [`GIT_CONFIG_KEY_${index}`]: key,
+    [`GIT_CONFIG_VALUE_${index}`]: proxy,
+  });
+  const refused = [
+    [{ env: { vars: pair("http.proxy") } }, "/env/vars/GIT_CONFIG_VALUE_0"],
+    [{ env: pair("https.proxy", 2) }, "/env/GIT_CONFIG_VALUE_2"],
+    // Section and variable names in any case, with a URL or remote subsection.
+    [
+      { skills: { entries: { docs: { env: pair("HTTP.https://github.com/.Proxy", 3) } } } },
+      "/skills/entries/docs/env/GIT_CONFIG_VALUE_3",
+    ],
+    [
+      { agents: { defaults: { sandbox: { docker: { env: pair("remote.origin.proxy", 1) } } } } },
+      "/agents/defaults/sandbox/docker/env/GIT_CONFIG_VALUE_1",
+    ],
+    [
+      { mcp: { servers: { docs: { command: "docs-mcp", env: pair("core.gitProxy") } } } },
+      "/mcp/servers/docs/env/GIT_CONFIG_VALUE_0",
+    ],
+    // `env` and `env.vars` are one environment; a key's environment reference renders its
+    // fallback.
+    [
+      { env: { GIT_CONFIG_KEY_0: "http.proxy", vars: { GIT_CONFIG_VALUE_0: proxy } } },
+      "/env/vars/GIT_CONFIG_VALUE_0",
+    ],
+    [
+      { env: { vars: { GIT_CONFIG_VALUE_0: proxy, GIT_CONFIG_KEY_0: "http.proxy" } } },
+      "/env/vars/GIT_CONFIG_VALUE_0",
+    ],
+    [{ env: { vars: pair("${GIT_KEY:-http.proxy}") } }, "/env/vars/GIT_CONFIG_VALUE_0"],
+  ];
+  for (const [values, field] of refused) {
+    await t.test(`refuses ${field}`, async () => {
+      for (const [path, body] of [
+        [configurations, { kind: "agent", values }],
+        [presets, { name: "Refused", template: { configuration: { values } } }],
+      ]) {
+        const response = await request(context.app, "POST", path, { body });
+        assert.equal(response.status, 400, `${path}: ${JSON.stringify(response.body)}`);
+        assert.equal(response.body.error.message, message(field), path);
+        assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+      }
+    });
+  }
+  // On a Preset save, a key that waits on a variable is matched as the text around it, and a
+  // name whose index waits on one pairs with every index.
+  const variables = { url: { type: "string" }, n: { type: "string" } };
+  for (const [env, field] of [
+    [
+      { GIT_CONFIG_KEY_0: "http.{{ vars.url }}.proxy", GIT_CONFIG_VALUE_0: proxy },
+      "GIT_CONFIG_VALUE_0",
+    ],
+    [
+      { GIT_CONFIG_KEY_0: "http.proxy", "GIT_CONFIG_VALUE_{{ vars.n }}": proxy },
+      "GIT_CONFIG_VALUE_{{ vars.n }}",
+    ],
+    [
+      { "GIT_CONFIG_KEY_{{ vars.n }}": "http.proxy", GIT_CONFIG_VALUE_4: proxy },
+      "GIT_CONFIG_VALUE_4",
+    ],
+  ]) {
+    await t.test(`refuses a Preset ${field} at save`, async () => {
+      const response = await request(context.app, "POST", presets, {
+        body: {
+          name: "Refused",
+          template: {
+            variables,
+            configuration: { values: { skills: { entries: { x: { env } } } } },
+          },
+        },
+      });
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.message, message(`/skills/entries/x/env/${field}`));
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    });
+  }
+  // Nothing refused was stored.
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+  assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
+
+  // Ordinary git config pairs still save: other keys with an `@` in their value, a proxy without
+  // a user name, or one that is a whole reference, and a proxy key in another process's map.
+  const env = {
+    GIT_CONFIG_COUNT: "5",
+    GIT_CONFIG_KEY_0: "user.email",
+    GIT_CONFIG_VALUE_0: "ops@example.test",
+    GIT_CONFIG_KEY_1: "http.proxy",
+    GIT_CONFIG_VALUE_1: "proxy.example.test:3128",
+    GIT_CONFIG_KEY_2: "https.proxy",
+    GIT_CONFIG_VALUE_2: "${GIT_PROXY}",
+    GIT_CONFIG_KEY_3: "url.git@github.com:.insteadOf",
+    GIT_CONFIG_VALUE_3: "gh:",
+    GIT_CONFIG_KEY_4: "http.proxyAuthMethod",
+    GIT_CONFIG_VALUE_4: "basic",
+  };
+  const accepted = {
+    env: { vars: env },
+    skills: {
+      entries: {
+        docs: { env },
+        mail: { env: { GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ops@example.test" } },
+      },
+    },
+    mcp: { servers: { docs: { command: "docs-mcp", env } } },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: {
+            ...accepted,
+            skills: {
+              entries: {
+                docs: {
+                  env: {
+                    ...env,
+                    GIT_CONFIG_KEY_0: "user.{{ vars.n }}",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
+test("Configuration and Preset saves refuse a literal credential in an MCP server header", async (t) => {
+  // Finding 1278: OpenClaw marks MCP server headers sensitive, and a model provider's credential
+  // headers already had to hold references, but an MCP server saved a literal `Authorization`.
+  const root = await mkdtemp(join(tmpdir(), "occ-mcp-header-credential-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-mcp-header-credential");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-mcp-header-${randomUUID()}`;
+  const message = (field) =>
+    `Configuration field ${field} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
+  const server = (headers) => ({ url: "https://mcp.example.test/mcp", headers });
+  const refused = [
+    [
+      { mcp: { servers: { docs: server({ Authorization: `Bearer ${sentinel}` }) } } },
+      "/mcp/servers/docs/headers/Authorization",
+    ],
+    [
+      { nodeHost: { mcp: { servers: { docs: server({ "X-Api-Key": sentinel }) } } } },
+      "/nodeHost/mcp/servers/docs/headers/X-Api-Key",
+    ],
+    // `Bearer ${NAME}` holds a reference only in an Authorization header; a number is a literal.
+    [
+      { mcp: { servers: { docs: server({ "X-Auth-Token": `Bearer \${MCP_TOKEN}` }) } } },
+      "/mcp/servers/docs/headers/X-Auth-Token",
+    ],
+    [
+      { mcp: { servers: { docs: server({ "x-client-secret": 12345 }) } } },
+      "/mcp/servers/docs/headers/x-client-secret",
+    ],
+    [
+      { mcp: { servers: { docs: server({ Authorization: `Bearer ${sentinel}\${SUFFIX}` }) } } },
+      "/mcp/servers/docs/headers/Authorization",
+    ],
+  ];
+  for (const [values, field] of refused) {
+    await t.test(`refuses ${field}`, async () => {
+      for (const [path, body] of [
+        [configurations, { kind: "agent", values }],
+        [presets, { name: "Refused", template: { configuration: { values } } }],
+      ]) {
+        const response = await request(context.app, "POST", path, { body });
+        assert.equal(response.status, 400, `${path}: ${JSON.stringify(response.body)}`);
+        assert.equal(response.body.error.message, message(field), path);
+        assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+      }
+    });
+  }
+  // A Preset header name that waits on a variable is matched as the text around it.
+  await t.test("refuses a Preset header name around a variable at save", async () => {
+    const response = await request(context.app, "POST", presets, {
+      body: {
+        name: "Refused",
+        template: {
+          variables: { suffix: { type: "string" } },
+          configuration: {
+            values: {
+              mcp: { servers: { docs: server({ "Authorization{{ vars.suffix }}": sentinel }) } },
+            },
+          },
+        },
+      },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(
+      response.body.error.message,
+      message("/mcp/servers/docs/headers/Authorization{{ vars.suffix }}"),
+    );
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  });
+  // Nothing refused was stored.
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+  assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
+
+  // Credential headers that hold references, and headers that name no credential, still save.
+  const headers = {
+    Authorization: "Bearer ${MCP_TOKEN}",
+    "X-Api-Key": "${MCP_API_KEY}",
+    "Proxy-Authorization": "${MCP_PROXY_AUTH}",
+    Accept: "application/json",
+    "X-Request-Source": "openclaw",
+    "Idempotency-Key": "fixed",
+    "X-Retry-Count": 3,
+  };
+  const accepted = {
+    mcp: { servers: { docs: server(headers) } },
+    nodeHost: { mcp: { servers: { docs: server(headers) } } },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: { name: "Templated", template: { configuration: { values: accepted } } },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
   // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is

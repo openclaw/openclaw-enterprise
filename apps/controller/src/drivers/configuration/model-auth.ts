@@ -27,6 +27,18 @@ const urlCredentialMessage = (path: string): string =>
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
+// git reads `GIT_CONFIG_VALUE_<n>` as the value of the config key `GIT_CONFIG_KEY_<n>` names.
+// On a Preset save, a name that waits on a variable is matched as the text around it, with any
+// index.
+const GIT_CONFIG_SLOT = /^GIT_CONFIG_(KEY|VALUE)_(\d+)$/i;
+const GIT_CONFIG_SLOT_TEXT = /^GIT_CONFIG_(KEY|VALUE)_\d*$/i;
+// The git config keys whose value git and curl read as a proxy, in any case: `http.proxy`,
+// `https.proxy`, `http.<url>.proxy`, `remote.<name>.proxy` and `core.gitProxy`.
+const GIT_PROXY_KEY = /^\s*(?:(?:https?(?:\..*)?|remote\..*)\.proxy|core\.gitproxy)\s*$/is;
+
+const mcpHeaderMessage = (path: string): string =>
+  `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
+
 const urlCostMessage = (path: string): string =>
   `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
 
@@ -181,7 +193,8 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
  * channel proxies, MCP server URLs, a URL in any environment value of any environment map, Codex's
- * network proxy and speech and Talk provider proxies.
+ * network proxy and speech and Talk provider proxies. MCP server credential headers hold references
+ * too (writes only).
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -190,7 +203,12 @@ export function validateModelCredentialReferences(
     ...options
   }: { readonly stored?: boolean } & ConfigurationValidationOptions = {},
 ): void {
-  const validateReference = (value: unknown, path: string, authorizationHeader = false): void => {
+  const validateReference = (
+    value: unknown,
+    path: string,
+    authorizationHeader = false,
+    message?: (path: string) => string,
+  ): void => {
     if (value === undefined || value === null) {
       return;
     }
@@ -212,7 +230,25 @@ export function validateModelCredentialReferences(
     ) {
       return;
     }
-    throw new ModelCredentialValueError(path);
+    throw new ModelCredentialValueError(path, message);
+  };
+  // Whether a header named `name` in the headers object at `headersPath` carries a credential, and
+  // whether it may hold `Bearer ${NAME}`: some gateways carry the bearer token in an
+  // Authentication header. On a Preset save, the text around a name's variables is matched too,
+  // as for the credential rule.
+  const credentialHeader = (
+    headersPath: readonly (string | number)[],
+    name: string,
+  ): { readonly authorization: boolean } | undefined => {
+    if (!isCredentialHeaderName(name, options, headersPath)) {
+      return undefined;
+    }
+    const literal = options.unresolved?.([...headersPath, name], true)?.join("");
+    return {
+      authorization: [name, literal].some(
+        (text) => text !== undefined && /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(text),
+      ),
+    };
   };
   // The work the userinfo checks have done on this document: each URL field and environment value
   // is charged before it is checked, and one past the budget is refused as too costly to check.
@@ -308,18 +344,9 @@ export function validateModelCredentialReferences(
         [[...path, "request", "headers"], request?.headers],
       ] as const) {
         for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
-          if (isCredentialHeaderName(name, options, headersPath)) {
-            // Some gateways carry the bearer token in an Authentication header. On a Preset save,
-            // the text around a name's variables is matched too, as for the credential rule.
-            const literal = options.unresolved?.([...headersPath, name], true)?.join("");
-            validateReference(
-              value,
-              pointer(...headersPath, name),
-              [name, literal].some(
-                (text) =>
-                  text !== undefined && /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(text),
-              ),
-            );
+          const credential = credentialHeader(headersPath, name);
+          if (credential) {
+            validateReference(value, pointer(...headersPath, name), credential.authorization);
           }
         }
       }
@@ -376,6 +403,20 @@ export function validateModelCredentialReferences(
       );
       for (const [server, settings] of Object.entries(asRecord(mcp?.servers) ?? {})) {
         refuseUrlUserinfo([...at, "servers", server, "url"], asRecord(settings)?.url);
+        // An MCP server's credential headers hold references, as a model provider's do (finding
+        // 1278): OpenClaw marks these headers sensitive.
+        const headersPath = [...at, "servers", server, "headers"];
+        for (const [name, value] of Object.entries(asRecord(asRecord(settings)?.headers) ?? {})) {
+          const credential = credentialHeader(headersPath, name);
+          if (credential) {
+            validateReference(
+              value,
+              pointer(...headersPath, name),
+              credential.authorization,
+              mcpHeaderMessage,
+            );
+          }
+        }
         environments.push([[...at, "servers", server, "env"], asRecord(asRecord(settings)?.env)]);
       }
     }
@@ -451,13 +492,51 @@ export function validateModelCredentialReferences(
     ]) {
       environments.push([path, at(values, path)]);
     }
-    for (const [prefix, settings] of environments) {
+    // A `GIT_CONFIG_VALUE_<n>` whose `GIT_CONFIG_KEY_<n>` names a proxy is a proxy too, read
+    // without a scheme as http: git and curl send its userinfo as Proxy-Authorization (finding
+    // 1276). `env` and `env.vars`, the first two maps, are one environment. On a Preset save, a
+    // key or name that waits on a variable is matched as the text around it, and a name whose
+    // index waits on one pairs with every index.
+    const gitConfigSlot = (prefix: SettingPath, name: string) => {
+      const literal = options.unresolved?.([...prefix, name], true)?.join("");
+      const [, kind = "", index] =
+        (literal === undefined ? GIT_CONFIG_SLOT.exec(name) : GIT_CONFIG_SLOT_TEXT.exec(literal)) ??
+        [];
+      return { kind: kind.toUpperCase(), index };
+    };
+    const gitProxyKeys = environments.map(([prefix, settings]) => {
+      const indices = new Set<string | undefined>();
+      for (const [name, value] of Object.entries(settings ?? {})) {
+        const { kind, index } = gitConfigSlot(prefix, name);
+        if (kind !== "KEY" || typeof value !== "string") {
+          continue;
+        }
+        const text = options.unresolved?.([...prefix, name])?.join("") ?? value;
+        // An environment reference renders its fallback, or nothing.
+        const rendered = text.replaceAll(
+          environmentReference,
+          (reference: string, escaped?: string, fallback?: string) =>
+            escaped === undefined ? (fallback ?? "") : reference.slice(1),
+        );
+        if ([value, text, rendered].some((key) => GIT_PROXY_KEY.test(key))) {
+          indices.add(index);
+        }
+      }
+      return indices;
+    });
+    const gateway = new Set([...(gitProxyKeys[0] ?? []), ...(gitProxyKeys[1] ?? [])]);
+    for (const [position, [prefix, settings]] of environments.entries()) {
+      const proxyKeys = position < 2 ? gateway : (gitProxyKeys[position] ?? new Set());
       for (const [name, value] of Object.entries(settings ?? {})) {
         const literal = options.unresolved?.([...prefix, name], true)?.join("");
+        const { kind, index } = gitConfigSlot(prefix, name);
         refuseEnvironmentUserinfo(
           [...prefix, name],
           value,
-          [name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text)),
+          [name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text)) ||
+            (kind === "VALUE" &&
+              (proxyKeys.has(undefined) ||
+                (index === undefined ? proxyKeys.size > 0 : proxyKeys.has(index)))),
         );
       }
     }

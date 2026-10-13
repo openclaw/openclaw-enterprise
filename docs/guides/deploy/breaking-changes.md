@@ -147,7 +147,9 @@ and a number or boolean variable as the whole `baseUrl` or `api`. A later
 change refuses a `baseUrl` without exactly `//` after `http:` or `https:`
 (`https:/v1`, `https:${HOST}`, `https:{{ vars.host }}`), and a user name or
 password in Codex's network proxy URLs and speech and Talk provider `proxy`
-settings.
+settings. A later change applies the header rule to MCP server `headers`
+(also under `nodeHost`), and reads `GIT_CONFIG_VALUE_<n>` as a proxy when
+`GIT_CONFIG_KEY_<n>` names one, such as `http.proxy`.
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
