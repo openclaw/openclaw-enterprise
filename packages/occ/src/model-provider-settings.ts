@@ -49,11 +49,12 @@ const isRuntimeUrl = (value: unknown): boolean => {
   return url?.protocol === "http:" || url?.protocol === "https:";
 };
 
-// What a variable in a baseUrl may stand for: a host or path segment, a port, or a whole URL.
-// Each combination fills the variables in order; a baseUrl no combination makes a runtime URL
-// (`ftp://{{ vars.host }}`, a space beside the variable) fails every launch, so it is refused at
-// save. Past a few variables the combinations grow quickly, and the URL is checked once filled.
-const URL_STAND_INS = ["x", "1", "https://x"] as const;
+// What a variable in a baseUrl may stand for: a host or path segment, a port, a whole URL,
+// nothing, or an IPv6 address. Each combination fills the variables in order; a baseUrl no
+// combination makes a runtime URL (`ftp://{{ vars.host }}`, a space beside the variable) is
+// refused at save. Past a few variables the combinations grow quickly, and the URL is checked
+// once filled.
+const URL_STAND_INS = ["x", "1", "https://x", "", "::1"] as const;
 const URL_STAND_IN_VARIABLES = 4;
 
 function fillsAsRuntimeUrl(literals: readonly string[]): boolean {

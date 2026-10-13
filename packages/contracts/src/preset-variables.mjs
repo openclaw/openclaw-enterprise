@@ -205,7 +205,7 @@ function walk(value, definitions, inputs, path, keys, partial, placeholders, at)
         keys,
         partial,
         placeholders,
-        at && [...at, index],
+        placeholders && at && [...at, index],
       ),
     );
   }
@@ -236,7 +236,7 @@ function walk(value, definitions, inputs, path, keys, partial, placeholders, at)
         keys || values,
         partial,
         placeholders,
-        values ? [] : at && [...at, nextKey],
+        placeholders && (values ? [] : at && [...at, nextKey]),
       ),
     ]);
   }

@@ -1552,6 +1552,8 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
               { id: "m", baseUrl: "https://{{ vars.url }}/v1" },
               { id: "n", baseUrl: "{{ vars.url }}/v1" },
               { id: "o", baseUrl: "http://localhost:{{ vars.port }}/v1" },
+              { id: "p", baseUrl: "http://[{{ vars.url }}]:8080/v1" },
+              { id: "q", baseUrl: "http{{ vars.port }}://models.example.test" },
             ],
             headers: { "{{ vars.header }}": "v", "X-{{ vars.header }}-Trace": "t" },
           }),
@@ -1610,7 +1612,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
     ],
     [
-      gateway({ models: [{ id: "m", baseUrl: "https://models {{ vars.url }}" }] }),
+      gateway({ models: [{ id: "m", baseUrl: "https://models {{ vars.url }}.test" }] }),
       "Configuration field /models/providers/gateway/models/0/baseUrl must be an absolute http or https URL.",
     ],
   ]) {
