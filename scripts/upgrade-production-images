@@ -305,7 +305,7 @@ values.pop("preparedEvidence", None)
 print(json.dumps(values, sort_keys=True))
 PYTHON
   )
-  [[ "$parameters" == "$original_parameters" ]] || die "resume inputs, kubeconfig, CA, script, chart, or flow changed; investigate before continuing."
+  [[ "$parameters" == "$original_parameters" ]] || die "resume inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; investigate before continuing."
   [[ -f "$evidence_dir/prepared" ]] || die "preparation did not finish; no mutation was started. Start again with a new evidence directory."
 else
   printf '%s\n' "$parameters" >"$evidence_dir/parameters.json"

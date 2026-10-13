@@ -39,8 +39,8 @@ absolute-URL message. API startup logs
 `AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` for
 any refused Gateway or Agent image, or `OBSERVABILITY_URL_INVALID`.
 
-**Steps.** Fix the image reference (lowercase its repository path), or delete
-the `@`, then render or restart again.
+**Steps.** Fix the image reference (lowercase its repository path, drop what
+Kubernetes cannot parse), or delete the `@`, then render or restart again.
 
 ## 2026-10-13: channel proxy hosts must name one proxy address
 
