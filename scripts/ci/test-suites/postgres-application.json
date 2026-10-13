@@ -62,6 +62,7 @@
         "an overdue Agent runtime fails closed without activating its incomplete revision",
         "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
         "the convergence deadline judges work age by the database clock, not the controller clock",
+        "a stop orders the running revision by the database clock, not the controller clock",
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
         "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
         "a lost retirement claim preserves the activated replacement and cannot complete stolen work",

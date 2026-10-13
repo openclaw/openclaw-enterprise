@@ -12,6 +12,29 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: IP database hosts are verified against the certificate
+
+**What breaks.** A PostgreSQL URL whose host is an IP literal and whose TLS
+mode verifies the server (`sslmode=verify-full`; without `uselibpqcompat=true`
+also `prefer`, `require` and `verify-ca`; or `PGSSLMODE` set to one of those)
+now requires the server certificate to list that IP as an IP subjectAltName, as
+libpq does. Before, the check ran against the name `localhost`, so any
+certificate for `localhost` signed by the database CA was accepted.
+
+**Who is affected.** Installations that reach PostgreSQL by IP with a
+certificate issued only for DNS names. DNS hosts, Unix sockets,
+`sslmode=disable`, `no-verify`, and libpq-compatible `prefer`, `require` and
+`verify-ca` are unchanged.
+
+**How to tell.** The API logs `startup-error` and the worker logs
+`worker.startup-error`, both with code `DATABASE_TLS_CERTIFICATE_INVALID` and
+reason `ERR_TLS_CERT_ALTNAME_INVALID`. Bootstrap logs `PERSISTENCE_UNAVAILABLE`
+and the migrator `MIGRATION_FAILED`.
+
+**Steps.** Reissue the server certificate with `IP:<address>` in its
+subjectAltName, or connect by a DNS name the certificate carries, then restart
+the API and worker.
+
 ## 2026-10-13: more model credential header names and provider models lists
 
 **What breaks.** The 2026-10-12 model credential rules (below)
@@ -27,7 +50,9 @@ A later change also matches the words `authentication`, `assertion`, `hmac`,
 `.` separators, but saves partition, shard, sort and dedup keys; on every
 Compute, Configuration and Preset saves refuse a header name that is not a
 valid HTTP field name, and Preset saves check `models`, `baseUrl` and `api`
-(a variable without a default is checked once filled).
+(a variable without a default is checked once filled). A later change skips
+a trailing algorithm word such as `-sha256` or `-ed25519` and a digit glued
+to `key`, and matches `protection-bypass`.
 
 **Who is affected.** Configurations with such a header, or with a `models`
 record, `null` or string on any provider.
@@ -97,6 +122,56 @@ disabled execution cluster is not checked.
 
 **Steps.** Replace `0.0.0.0/0` or `::/0` with the execution API addresses you
 mean to allow. Rewrite `010.44.0.2/32` as `10.44.0.2/32`. Upgrade again.
+
+## 2026-10-13: demo cluster CIDRs must be one canonical IPv4 host
+
+**What breaks.** `helm upgrade` of the observability demo fails when a
+`cluster.cidrs` entry is not one IPv4 address in canonical form with prefix
+`/32`. A saved `010.0.0.1/32` used to install. Kubernetes applied it and named
+`10.0.0.1/32` as the spelling a future release will require. The upgrade now
+stops before it writes that policy.
+
+**Who is affected.** Demo releases whose saved `cluster.cidrs` use a leading
+zero, an octet above 255, or a prefix other than `/32`. A canonical endpoint
+such as `10.43.0.1/32` upgrades unchanged.
+
+**How to tell.** Helm stops in `prometheus.yaml` with
+`cluster.cidrs requires exact IPv4 /32 endpoints`.
+
+**Steps.** Replace the saved value with its canonical spelling (`010.0.0.1/32`
+becomes `10.0.0.1/32`) and upgrade again. The scrape policy then uses that
+`/32`.
+
+## 2026-10-13: OpenShell gateway readiness requires timeoutMs
+
+**What breaks.** Controller startup fails when `gateway.readiness` is set and
+`timeoutMs` is omitted. That configuration starts today. The field must be a
+positive safe integer. Omitted readiness is unchanged.
+
+**Who is affected.** Installations, and the real k3d helper, that set
+`gateway.readiness` with only `serviceName` and `podSelector`.
+
+**How to tell.** Startup logs `startup-error` with code `STARTUP_FAILED`. The
+Installation loader reports `OpenShell gateway readiness timeout must be a
+positive safe integer.` The message does not name `timeoutMs`.
+
+**Steps.** Set `gateway.readiness.timeoutMs` to a positive millisecond window.
+The real helper uses 120000. Then start again.
+
+## 2026-10-12: cluster and execution API ports must be canonical decimals
+
+**What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
+values that are not a canonical decimal from 1 to 65535 with at most five
+digits. `010` and integers Sprig cannot convert, such as
+`9223372036854775808`, no longer render.
+
+**Who is affected.** Installations that set either port with a leading zero.
+
+**How to tell.** Helm names `cluster.port` or `executionCluster.apiPort` and
+says it must be an integer TCP port from 1 to 65535.
+
+**Steps.** Replace a leading-zero value with its effective decimal port (`010`
+becomes `8`) before the next Helm upgrade. _untested_ against a live release.
 
 ## 2026-10-12: model credentials in provider headers and request auth
 

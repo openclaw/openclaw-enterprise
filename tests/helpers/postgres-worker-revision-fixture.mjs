@@ -355,7 +355,16 @@ export function createWorkerRevisionFixtures(testFile) {
     async function revision(
       owner,
       number,
-      { harness, repositoryCredentials, actorId = actor.id, plugins, workAge } = {},
+      {
+        harness,
+        repositoryCredentials,
+        actorId = actor.id,
+        plugins,
+        workAge,
+        // How far the controller clock that stamps the admission runs ahead of PostgreSQL's
+        // (negative: behind). The store restamps admission on its own clock (finding 1195).
+        controllerSkewMs = 0,
+      } = {},
     ) {
       let harnessAuth;
       if (owner.harnessAuth.method === "runtime") {
@@ -418,15 +427,16 @@ export function createWorkerRevisionFixtures(testFile) {
         ...(credentialSources.length === 0 ? {} : { credentialSources }),
         servicePrincipalId: owner.servicePrincipalId,
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
+      let admitted;
       await state.transactWithQueue(async (unit, queue) => {
         // Match production Namespace→Agent admission order so queue foreign keys
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
-        await unit.revisions.createRevision(candidate);
+        admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
           owner.id,
@@ -458,7 +468,7 @@ export function createWorkerRevisionFixtures(testFile) {
           [idempotencyKey, namespace.id, owner.id, candidate.id, actorId, workAge],
         );
       }
-      return { ...candidate, idempotencyKey };
+      return { ...candidate, createdAt: admitted.createdAt, idempotencyKey };
     }
 
     async function work(candidate, expected, timeoutMs) {

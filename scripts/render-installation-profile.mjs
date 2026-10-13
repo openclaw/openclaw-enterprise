@@ -1329,12 +1329,13 @@ function buildRendered(profile, parsed, diagnostics) {
     ? renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics)
     : {};
   // Without a trusted proxy the API sees the ingress as every browser's address. Existing
-  // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails.
+  // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails
+  // (see openclaw.trustedProxy.notice in the chart for why that was re-checked).
   if (controlPlane.trustedProxy === undefined) {
     diagnostics.warnings.push(
       externalSignIn
-        ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and external sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address."
-        : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API.",
+        ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and external sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address. Behind an HTTP proxy, API calls fail with 403 until it is set."
+        : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API. Behind an HTTP proxy, API calls fail with 403 until it is set.",
     );
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {

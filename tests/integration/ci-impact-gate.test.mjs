@@ -28,6 +28,7 @@ const allLanes = [
   "logging-collector",
   "repository-credentials-container",
   "repository-credentials-platform",
+  "keycloak-oidc",
 ];
 
 function needsFor(mode) {
@@ -158,6 +159,19 @@ test("tests mode expands only the selected lanes", (t) => {
     "checks-baseline-1": { result: "success" },
     postgres: { result: "success" },
   });
+  // The Keycloak OIDC lane is a matrix row, so pr-safe carries its result.
+  const keycloak = runTestsGate(t, ["keycloak-oidc"]);
+  assert.equal(keycloak.status, 0, keycloak.stderr);
+  assert.deepEqual(keycloak.expanded, {
+    impact: { result: "success" },
+    audit: { result: "success" },
+    "keycloak-oidc": { result: "success" },
+  });
+  const keycloakFailed = testNeeds(["keycloak-oidc"]);
+  keycloakFailed["pr-safe"].result = "failure";
+  const keycloakResult = runTestsGate(t, ["keycloak-oidc"], keycloakFailed);
+  assert.notEqual(keycloakResult.status, 0);
+  assert.equal(keycloakResult.expanded["keycloak-oidc"].result, "failure");
   const fixture = runTestsGate(t, ["checks-baseline-1", "runtime-image-fixture"]);
   assert.equal(fixture.status, 0, fixture.stderr);
   assert.deepEqual(Object.keys(fixture.expanded).sort(), [

@@ -142,6 +142,7 @@ export function createOpenShellInstallationConfiguration({
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
+          timeoutMs: 120_000,
         },
         // Compute owns ordinary Harness DNS; OpenShell's own `openshell-sandbox-supervisors`
         // policy covers supervisor egress, and the installer scopes gateway DNS/API access below.

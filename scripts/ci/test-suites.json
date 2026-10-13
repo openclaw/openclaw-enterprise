@@ -65,7 +65,8 @@
       "logging-collector",
       "repository-credentials-container",
       "repository-credentials-platform",
-      "k3d-observability"
+      "k3d-observability",
+      "keycloak-oidc"
     ],
     "full": [
       "checks-baseline-1",

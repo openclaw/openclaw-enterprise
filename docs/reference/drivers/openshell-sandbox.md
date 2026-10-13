@@ -139,8 +139,8 @@ gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
 and does not satisfy the per-Agent production requirement below.
 
 Optional readiness observes a Service and Pods in the OCC namespace; a paired
-Gateway normally uses an explicit Backend `endpoint`. Timeouts and polling
-intervals must be positive safe integers. Development sets `startupDelayMs` to
+Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
+positive `timeoutMs`. Development sets `startupDelayMs` to
 30 seconds because v0.1.3-pre.2 exposes its service before the process listens.
 
 Install the OpenShell gateway separately. Required `gateway.workspaceMode`

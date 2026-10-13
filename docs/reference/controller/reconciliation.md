@@ -103,7 +103,10 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer active revision: the worker
-marks it superseded without calling Compute. Sibling Agents have independent
+marks it superseded without calling Compute. A stop or deletion owns the
+revisions admitted before it was requested. PostgreSQL stamps both times on
+its own clock, so controller clock skew cannot exempt a running revision.
+Sibling Agents have independent
 queue lanes, while revisions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
 but rejects harness bindings for Agent deployment; manual

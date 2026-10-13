@@ -55,7 +55,7 @@
         "name": "event",
         "label": "Event",
         "type": "custom",
-        "query": "http.completed,http.unexpected_error,worker.completed,worker.compute-prepare-failed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,worker.repository-cleanup-warning,listening,startup-error,shutdown.started,shutdown.completed,shutdown.failed,database.idle-client-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,device_authorization.start_failed,agent_runtime_credentials.cluster_denied,native_admin.websocket_audit_failed,native_admin.websocket_denial_audit_failed,authentication.sign-in-limit-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,authentication.activation-warning,authentication.password-sign-in-warning,authentication.recovery-seed-warning,presets.bundled-default-shadowed,presets.default-create-skipped,presets.default-refresh-skipped,gateway.operational,gateway.startup_failed,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
+        "query": "http.completed,http.unexpected_error,worker.completed,worker.compute-prepare-failed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,worker.repository-cleanup-warning,listening,startup-error,shutdown.started,shutdown.completed,shutdown.failed,database.idle-client-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,device_authorization.start_failed,agent_runtime_credentials.cluster_denied,native_admin.websocket_audit_failed,native_admin.websocket_denial_audit_failed,authentication.sign-in-limit-warning,authentication.forwarded-refused-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,authentication.activation-warning,authentication.password-sign-in-warning,authentication.recovery-seed-warning,presets.bundled-default-shadowed,presets.default-create-skipped,presets.default-refresh-skipped,gateway.operational,gateway.startup_failed,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
         "includeAll": true,
         "allValue": ".*",
         "multi": false,
@@ -202,6 +202,11 @@
           {
             "text": "authentication.sign-in-limit-warning",
             "value": "authentication.sign-in-limit-warning",
+            "selected": false
+          },
+          {
+            "text": "authentication.forwarded-refused-warning",
+            "value": "authentication.forwarded-refused-warning",
             "selected": false
           },
           {

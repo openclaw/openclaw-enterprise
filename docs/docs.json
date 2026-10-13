@@ -503,6 +503,10 @@
                     "label": "OIDC Sign-in"
                   },
                   {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
+                  },
+                  {
                     "page": "guides/deploy/oidc-keycloak",
                     "label": "Keycloak Sign-in"
                   },
@@ -623,7 +627,8 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
-              "guides/deploy/production-tui"
+              "guides/deploy/production-tui",
+              "reference/settings/oidc"
             ]
           },
           {

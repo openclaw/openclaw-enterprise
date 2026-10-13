@@ -140,21 +140,23 @@ Sandboxes, and Agent Pods use separate OCC-owned `oce-*` Namespaces. Startup
 exposes a loopback-only proxy, waits for bootstrap Namespace/Workspace readiness,
 and writes kubeconfig and the administrator service key to private state.
 
-To keep PostgreSQL, the OCC API, and the Kubernetes worker in Compose, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` with the same OpenShell selection. This
-profile also installs the pinned private Envoy route in k3d. It mounts the
-route's service key and public CA only into the Compose controller and
-`worker-kubernetes`, then records the k3d node hostname and Envoy NodePort in
-the Installation. Do not run the separate manual hybrid-routing procedure for
-this OpenShell profile.
+If Agent Sandbox rollout fails, startup tries to print bounded controller status,
+image identities and Warning reasons before the unchanged rollback; messages,
+environment values and logs are excluded.
 
-The first start requires network access. To use reviewed local assets instead,
+Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL, OCC and its
+Kubernetes worker in Compose. This OpenShell profile installs the pinned private
+Envoy route in k3d, mounts its service key and public CA only into the Compose
+controller and `worker-kubernetes`, and records the node hostname and Envoy
+NodePort in the Installation; skip manual hybrid routing.
+
+First startup requires network access. To use reviewed local assets instead,
 set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
-To choose the host engine explicitly:
+To choose the host engine:
 
 ```bash
 export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman

@@ -356,7 +356,11 @@ test(
         });
         assert.equal(callbackProxy.observedCommit, true);
         assert.equal(unknownCallback.statusCode, 302);
-        assert.equal(unknownCallback.headers.location, "/console/?authError=github");
+        // The outcome is unknown inside OCE, so the Console reports an outage, not a refusal.
+        assert.equal(
+          unknownCallback.headers.location,
+          "/console/?authError=github&authReason=unavailable",
+        );
         assert.equal(unknownCallback.headers["set-cookie"], undefined);
         assert.equal(exchanges, 1, "the uncertain operation is not replayed");
         assert.deepEqual(await counts(), {
