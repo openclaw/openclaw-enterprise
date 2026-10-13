@@ -29,8 +29,8 @@ still start.
 `Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
 or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.`
 
-**Steps.** Write the proxy's own address, as four decimal octets for IPv4
-(`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and restart.
+**Steps.** Write the host as four decimal octets (`127.0.0.1` for
+`0177.0.0.1`) and restart.
 
 ## 2026-10-13: IP database hosts are verified against the certificate
 
