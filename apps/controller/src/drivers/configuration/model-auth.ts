@@ -99,7 +99,8 @@ export function validateModelCredentialReferences(
   // `npm_config_registry`, `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as
   // `GOPROXY` or `PIP_EXTRA_INDEX_URL` holds several. A proxy variable is also read from its
   // start, without a scheme as http. On a Preset save, a variable may sit anywhere in the scheme
-  // or between `:` and `//`.
+  // or between `:` and `//`, and so may a `${VAR}` reference. URL parsers (WHATWG, Python's)
+  // drop tabs and newlines, and read an http(s), ws(s) or ftp URL with fewer slashes, or none.
   const refuseEnvironmentUserinfo = (path: SettingPath, value: unknown, proxy: boolean): void => {
     if (typeof value !== "string") {
       return;
@@ -107,10 +108,12 @@ export function validateModelCredentialReferences(
     if (proxy) {
       refuseUrlUserinfo(path, value, true);
     }
-    // `\0` stands for each unfilled variable: no environment value can hold one.
-    const text = (options.unresolved?.(path) ?? [value]).join("\0");
-    for (const { index } of text.matchAll(/:\0*[/\\]\0*[/\\]/g)) {
-      let start = index;
+    // `\0` stands for each unfilled variable: a process environment cannot hold one.
+    const text = (options.unresolved?.(path) ?? [value]).join("\0").replaceAll(/[\t\n\r]/g, "");
+    const gap = String.raw`(?:\0|\$\{[^{}$]*\})*`;
+    const schemes = new RegExp(String.raw`:${gap}[/\\]${gap}[/\\]|(?:https?|wss?|ftp):(?! )`, "gi");
+    for (const { index, 0: match } of text.matchAll(schemes)) {
+      let start = match.startsWith(":") ? index : index + match.length - 1;
       // Back over the scheme, and any variable or `${VAR}` reference in it.
       while (start > 0 && /[\w+.\-${}\0]/.test(text[start - 1] ?? "")) {
         start -= 1;

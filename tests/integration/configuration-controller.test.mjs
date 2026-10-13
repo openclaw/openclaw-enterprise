@@ -2205,6 +2205,24 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       { env: { vars: { PIP_INDEX_URL: `\${PIP_URL:-https://u:${sentinel}@pypi.example.test}` } } },
       "/env/vars/PIP_INDEX_URL",
     ],
+    // URL parsers drop a tab or newline, a reference may render empty between `:` and `//`, and
+    // an http(s) URL reads userinfo with one slash or none.
+    [
+      { skills: { entries: { tab: { env: { PIP_INDEX_URL: `https:\t//u:${sentinel}@pypi` } } } } },
+      "/skills/entries/tab/env/PIP_INDEX_URL",
+    ],
+    [
+      { skills: { entries: { gap: { env: { INDEX: `https:\${GAP:-}//u:${sentinel}@pypi` } } } } },
+      "/skills/entries/gap/env/INDEX",
+    ],
+    [
+      { skills: { entries: { slash: { env: { INDEX: `https:/u:${sentinel}@pypi` } } } } },
+      "/skills/entries/slash/env/INDEX",
+    ],
+    [
+      { skills: { entries: { none: { env: { INDEX: `HTTPS:u:${sentinel}@pypi` } } } } },
+      "/skills/entries/none/env/INDEX",
+    ],
   ];
   for (const [values, field] of refused) {
     await t.test(`refuses ${field}`, async () => {
@@ -2290,6 +2308,9 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     REGISTRY: "${REGISTRY_URL:-https://registry.example.test}",
     MAINTAINER: "ops@example.test",
     NOTE: "see https://docs.example.test/help or write to ops@example.test",
+    ARTIFACT: "s3://bucket/key@v1",
+    JDBC: "jdbc:postgresql://db.example.test/app?user=ops@example.test",
+    PLAIN: "use https: everywhere, ask ops@example.test",
     NO_PROXY: "localhost,.svc,10.0.0.0/8",
     LOG_LEVEL: "debug",
   };
