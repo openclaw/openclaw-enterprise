@@ -31,12 +31,10 @@ const administratorPermissions = [
   { action: "read", resourceKind: "agent_revision" },
 ];
 
-// Building a controller app and creating and signing in two accounts cost far more than a
-// case, so the cases share one bootstrapped app, its administrator and its tenant reader.
-// Cases run one at a time. Each gets a new Namespace and Agent, its own workspace file
-// provider (the app's provider forwards to the running case's) and only the audit events
-// recorded after it started. An app with a shorter workspace file deadline is built once per
-// deadline over the same controller.
+// An app and two signed-in accounts cost far more than a case, so cases share one bootstrapped
+// app and run one at a time. Each gets a new Namespace and Agent, its own workspace file
+// provider (the app's forwards to the running case's) and the audit events since it started.
+// An app with a shorter workspace file deadline is built once per deadline, on the same controller.
 const running = {};
 const deadlineApps = new Map();
 let shared;
@@ -65,7 +63,10 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
       publicOrigin,
     }),
   }).then(async (fixture) => {
-    await bootstrap(fixture);
+    const result = await request(fixture.app, "/installation/bootstrap", {
+      body: { name: "Workspace file test installation" },
+    });
+    assert.equal(result.response.status, 201);
     return fixture;
   });
   const fixture = await shared;
@@ -82,17 +83,12 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
   });
 }
 
-// Replaces `object[key]` for this case only; the shared object gets its own method back.
+// Replaces `object[key]` until the returned restore runs, at the latest when the case ends.
 function replaceForCase(context, object, key, value) {
   object[key] = value;
-  context.after(() => delete object[key]);
-}
-
-async function bootstrap(fixture) {
-  const result = await request(fixture.app, "/installation/bootstrap", {
-    body: { name: "Workspace file test installation" },
-  });
-  assert.equal(result.response.status, 201);
+  const restore = () => delete object[key];
+  context.after(restore);
+  return restore;
 }
 
 async function createNamespace(fixture, name) {
@@ -530,9 +526,12 @@ test("Agent workspace file requests are bounded before and during provider acces
   });
   const preNamespace = await createNamespace(preAccess, "Pre-access deadline tenant");
   const preAgent = await createAgent(preAccess, preNamespace, "Pre-access deadline Agent");
-  replaceForCase(context, preAccess.controller, "getReadableActiveAgentRevision", async () => {
-    return new Promise(() => {});
-  });
+  const restoreLookup = replaceForCase(
+    context,
+    preAccess.controller,
+    "getReadableActiveAgentRevision",
+    async () => new Promise(() => {}),
+  );
 
   const startedBeforeRead = Date.now();
   const read = await request(
@@ -540,6 +539,8 @@ test("Agent workspace file requests are bounded before and during provider acces
     `/namespaces/${preNamespace.id}/agents/${preAgent.agent.id}/workspace/files/AGENTS.md`,
   );
   const readElapsedMs = Date.now() - startedBeforeRead;
+  // The provider half had a controller of its own, with the real lookup.
+  restoreLookup();
   assert.equal(read.response.status, 503);
   assert.equal(read.payload.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.ok(readElapsedMs < 2_000, `expected pre-access deadline, took ${readElapsedMs}ms`);
