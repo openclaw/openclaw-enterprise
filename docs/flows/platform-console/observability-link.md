@@ -40,8 +40,12 @@ graph TD
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 accepts an optional closed `observability` block in trusted Installation YAML.
-It rejects malformed URLs, unsupported schemes, credentials, fragments, and
-unknown fields. Production and configured PostgreSQL development pass the
+It rejects malformed URLs, unsupported schemes, credentials, fragments, an IPv4
+host that is not four decimal octets from 0 to 255 with no leading zeros, and
+unknown fields. Shorthand and integer hosts stop API and worker startup with
+log code `OBSERVABILITY_URL_INVALID`; correct the URL and restart. The
+[breaking-change notice](../../guides/deploy/breaking-changes.md) has the
+wording. Production and configured PostgreSQL development pass the
 validated URL to `createFastifyApp`. Compose development also accepts an
 observability-only YAML with its default Drivers. Changing it requires API restart; it is
 not persisted as an Installation resource or used as an OTLP export target.
@@ -72,6 +76,8 @@ The console settles the read once per session owner: an allowed response or a `4
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 22:10: Startup refuses an observability IPv4 host that is not four decimal octets. (2329)
 
 - 2026-10-05 01:30: A navigation joins the in-flight probe instead of repeating it. (flake-hunt-8)
 

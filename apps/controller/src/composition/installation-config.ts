@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
+import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -277,7 +278,38 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
       "observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.",
     );
   }
+  refuseRewrittenObservabilityIpv4Host(raw, url);
   return Object.freeze({ url: url.href });
+}
+
+// Same written-host extraction and strict decimal pattern as an auth origin.
+// Other IPv4 spellings parse as a different address, so startup must not store url.href.
+function refuseRewrittenObservabilityIpv4Host(raw: string, parsed: URL): void {
+  if (isIP(parsed.hostname) !== 4) {
+    return;
+  }
+  let start = 0;
+  let end = raw.length;
+  while (start < end && raw.charCodeAt(start) <= 0x20) {
+    start += 1;
+  }
+  while (end > start && raw.charCodeAt(end - 1) <= 0x20) {
+    end -= 1;
+  }
+  const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(
+    raw.slice(start, end),
+  )?.[1];
+  const octets = parsed.hostname.split(".");
+  if (
+    written === parsed.hostname &&
+    /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(parsed.hostname) &&
+    octets.every((octet) => Number(octet) <= 255)
+  ) {
+    return;
+  }
+  throw new Error(
+    "observability.url IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+  );
 }
 
 function backendConfiguration(

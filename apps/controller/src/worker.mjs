@@ -65,6 +65,9 @@ function workerStartupFailureCode(error) {
   if (/PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
+  if (/observability\.url IPv4 host must be four decimal octets/.test(message)) {
+    return "OBSERVABILITY_URL_INVALID";
+  }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
   }
