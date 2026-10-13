@@ -1415,8 +1415,9 @@ test("A stored Configuration with request credentials an older release accepted 
   const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
   const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, API key, token, secret, password or cookie): ${binding}.`;
 
-  for (const [stale, message] of [
+  for (const [label, stale, message] of [
     [
+      "request.auth authorization-bearer",
       {
         ...valid,
         models: {
@@ -1428,6 +1429,7 @@ test("A stored Configuration with request credentials an older release accepted 
       requestAuth,
     ],
     [
+      "request.auth header",
       {
         ...valid,
         models: {
@@ -1439,6 +1441,7 @@ test("A stored Configuration with request credentials an older release accepted 
       requestAuth,
     ],
     [
+      "request.headers",
       {
         ...valid,
         models: {
@@ -1448,7 +1451,6 @@ test("A stored Configuration with request credentials an older release accepted 
       credentialHeader,
     ],
   ]) {
-    const label = Object.keys(stale.models.providers.openai.request).join();
     // Seed the document the older release stored, directly in the Driver's storage.
     const current = JSON.parse(await readFile(path, "utf8"));
     await writeFile(path, JSON.stringify({ ...current, values: stale }));

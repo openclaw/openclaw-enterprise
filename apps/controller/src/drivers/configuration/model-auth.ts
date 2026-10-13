@@ -28,9 +28,10 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  *
  * `stored` checks a document read back from storage: only the slots refused before the
  * 2026-10-12 notice (the provider `apiKey`, its `authorization`, `api-key` and `x-api-key`
- * headers, and the model credential environment), which no stored document can hold. A
- * document an older release saved with a literal in a slot refused since still reads, so its
- * operator can see and replace it; every write and deployment checks all slots.
+ * headers, and the model credential environment); no release stored a literal there, so the
+ * Driver refuses to read one. A document an older release saved with a literal in a slot
+ * refused since still reads, so its operator can see and replace it; every write and
+ * deployment checks all slots.
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,

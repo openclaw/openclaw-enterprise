@@ -48,7 +48,8 @@ The Configuration Driver's names a JSON pointer, such as
 
 **Steps.** Read the Configuration, then save it without the refused setting.
 The Agent's Harness authentication is the only supported path for model
-credentials; select the credential there.
+credentials; select the credential there after that save, since an Agent save
+that names the Configuration is refused with the same message until then.
 
 - On Kubernetes Compute, remove every credential header and any `request.auth`
   other than `{mode: "provider-default"}`. A `${NAME}` reference is refused
