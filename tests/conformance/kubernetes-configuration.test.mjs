@@ -520,6 +520,9 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     `http://user:${sentinel}@proxy.example:3128`,
     `http://${sentinel}@proxy`,
     `http://:${sentinel}@proxy`,
+    // Finding 1250: an environment reference in the port leaves the URL unparsable as
+    // written, but the user name and password are literal.
+    `http://user:${sentinel}@proxy.example:\${PROXY_PORT}`,
   ]) {
     const unsafe = {
       ...configuration,

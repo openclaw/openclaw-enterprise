@@ -108,7 +108,11 @@ password, like `request.proxy.url`, and checks a `baseUrl` or `api` that holds
 only a `$${VAR}` escape as written: it is no reference. Preset saves match a
 header name as the text around its variables (`Authorization{{ vars.suffix }}`)
 and refuse a literal `baseUrl` scheme other than `http` or `https` however many
-variables follow.
+variables follow. A later change finds a user name or password in a `baseUrl`
+or `request.proxy.url` whose host or port is a variable or `${VAR}` (or in its
+`:-` fallback), refuses a variable as the whole user name, and names an invalid
+first header character by code point: `not one that starts with U+007B`. A
+Preset saved with one still reads but cannot launch: edit it.
 
 **Who is affected.** Configurations with such a header, a `baseUrl` with a
 user name or password, or a `models` record, `null` or string on any provider.

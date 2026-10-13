@@ -42,7 +42,7 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
 // escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
 // (`src/config/env-substitution.ts`).
-const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/g;
+const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
 
 const holdsEnvironmentReference = (value: unknown): boolean =>
   typeof value === "string" &&
@@ -92,9 +92,9 @@ function fillsAsRuntimeUrl(literals: readonly string[]): boolean {
 }
 
 // The text after an http(s) scheme's colon with each variable between `literals` filled.
-function fillUrl(literals: readonly string[], hostToken: string): string {
+function fillUrl(literals: readonly string[], hostToken: string, slashesToken = hostToken): string {
   const tokens: Readonly<Record<Exclude<UrlPart, "brackets">, string>> = {
-    slashes: hostToken,
+    slashes: slashesToken,
     host: hostToken,
     port: "",
     path: "x",
@@ -141,6 +141,124 @@ function fillUrl(literals: readonly string[], hostToken: string): string {
     }
   }
   return text;
+}
+
+// `literals` with each unescaped environment reference in them split out as one more variable:
+// the runtime fills it before it uses the value. A reference with a `:-fallback` for whose index
+// among those `fallback` is true is its fallback text instead, as the runtime renders it when the
+// variable is unset. `split.fallbacks` counts the references with a fallback.
+function splitEnvironmentReferences(
+  literals: readonly string[],
+  fallback: (index: number) => boolean,
+): string[] & { fallbacks: number } {
+  const split = Object.assign([""], { fallbacks: 0 });
+  for (const [index, literal] of literals.entries()) {
+    if (index > 0) {
+      split.push("");
+    }
+    let position = 0;
+    for (const match of literal.matchAll(environmentReference)) {
+      split[split.length - 1] += literal.slice(position, match.index);
+      if (match[1] !== undefined) {
+        split[split.length - 1] += match[0];
+      } else if (match[2] !== undefined && fallback(split.fallbacks++)) {
+        split[split.length - 1] += match[2];
+      } else {
+        split.push("");
+      }
+      position = match.index + match[0].length;
+    }
+    split[split.length - 1] += literal.slice(position);
+  }
+  return split;
+}
+
+/**
+ * Whether a URL carries a user name or password: a credential in the URL (finding 1244). On a
+ * Preset save, `literals` is the text around its unfilled variables (`unresolved`), and an
+ * environment reference is a variable too (or its `:-fallback` text, as the runtime renders it
+ * when unset), so the URL need not parse as written (finding 1250).
+ * - Each variable is filled with the token for where it sits, as for the baseUrl rule, so literal
+ *   text before an `@` in the authority, or a variable that is the whole user name or password,
+ *   is found whatever fills the host, the port or the path. A variable right after the scheme's
+ *   colon is also tried empty, as the slashes may follow it.
+ * - A variable before the scheme's colon fills the scheme; one that leads the URL with no colon
+ *   after it fills a scheme and a host.
+ * - The authority is also read as the URL parser does, with each variable a letter: the last `@`
+ *   before its end splits off userinfo, whatever brackets surround it, and a backslash ends it
+ *   only on a special scheme (either way when a variable fills the scheme). A literal port that
+ *   only a variable supplying an `@` could make parse (`user:pass{{ vars.host }}`) counts too.
+ * A whole reference or variable is no credential: it is checked once filled. Nor is an all-digit
+ * password a variable could turn a port into (`{{ vars.u }}:4242{{ vars.host }}`). A special
+ * scheme with no slashes then an `@` after an empty variable reads as userinfo
+ * (`https:{{ vars.host }}/v1@beta`).
+ */
+export function urlHoldsUserinfo(value: string, literals: readonly string[] = [value]): boolean {
+  // Every reference set, every fallback rendered, and each fallback alone with the rest set.
+  const { fallbacks } = splitEnvironmentReferences(literals, () => false);
+  return [
+    () => false,
+    () => true,
+    ...Array.from({ length: fallbacks }, (_, only) => (index: number) => index === only),
+  ].some((fallback) => holdsUserinfo(splitEnvironmentReferences(literals, fallback)));
+}
+
+function holdsUserinfo(literals: readonly string[]): boolean {
+  const [head = "", ...tail] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
+  const parts = [head.slice(head.search(/[^\0- ]|$/)), ...tail];
+  // The scheme ends at the first colon that comes before any slash, query, fragment or `@`.
+  const index = parts.findIndex((part) => /[:/\\?#@]/.test(part));
+  const part = parts[index] ?? "";
+  const at = part.search(/[:/\\?#@]/);
+  let scheme: string;
+  let rest: string[];
+  if (part[at] === ":") {
+    scheme = index === 0 ? part.slice(0, at + 1) : "";
+    rest = [part.slice(at + 1), ...parts.slice(index + 1)];
+  } else if (index !== 0 && parts.length > 1) {
+    // A variable leads the URL: an origin, or a scheme and the start of a host.
+    scheme = "";
+    rest = [`//${parts[0]}`, ...parts.slice(1)];
+  } else {
+    return false;
+  }
+  let parsed = false;
+  const fills = [
+    ["x", "x"],
+    ["1", "1"],
+  ];
+  // A variable right after the scheme's colon may be empty, with the slashes after it.
+  if (rest[0] === "") {
+    fills.push(["x", ""]);
+  }
+  for (const [hostToken = "x", slashesToken] of fills) {
+    const text = (scheme || "https:") + fillUrl(rest, hostToken, slashesToken);
+    if (URL.canParse(text)) {
+      const url = new URL(text);
+      if (url.username !== "" || url.password !== "") {
+        return true;
+      }
+      parsed = true;
+    }
+  }
+  // The authority as the URL parser reads it: a special scheme also ends it at a backslash. A
+  // scheme a variable fills (empty here) may be either.
+  const authority = (text: string, special: boolean): string =>
+    text
+      .slice(text.search(special ? /[^/\\]|$/ : /[^/]|$/))
+      .split(special ? /[/\\?#]/ : /[/?#]/, 1)[0] ?? "";
+  const special = /^(?:https?|wss?|ftp|file):$/i.test(scheme);
+  const port = (text: string, each: boolean): string | undefined =>
+    /^(?:\[[^\]]*\]|[^:[\]]*):(.*)$/.exec(authority(text, each))?.[1];
+  return (scheme === "" ? [true, false] : [special]).some((each) => {
+    const written = authority(rest.join("x"), each);
+    const sign = written.lastIndexOf("@");
+    if (sign !== -1) {
+      return !["", ":"].includes(written.slice(0, sign));
+    }
+    const filled = port(fillUrl(rest, "x"), each);
+    return !parsed && rest.length > 1 && filled !== undefined && /\D/.test(filled);
+  });
 }
 
 function validateSettings(
@@ -238,11 +356,35 @@ export function validateModelProviderSettings(
  * header, as the credential header refusal does, so a name a Preset variable filled is found
  * (finding 1218), but only up to its first invalid character and at most 23 characters: a value
  * pasted into the name ("Authorization: Bearer …", or a bare token and a newline) is never
- * echoed whole (finding 1222), and the cut shows where the name went wrong.
+ * echoed whole (finding 1222), and the cut shows where the name went wrong. On a Preset save,
+ * `literals` is the text around the name's unfilled variables, whose placeholders are shown as
+ * written. A name whose first character is invalid is named by that character's code point
+ * instead of an empty quote (finding 1251).
  */
-export function invalidHeaderNameRequirement(name: string): string {
-  const valid = HTTP_FIELD_NAME_START.exec(name)?.[0] ?? "";
-  return `must use valid HTTP header names, not ${quotedSettingKey(valid.length < name.length ? `${valid}…` : valid, 24)}`;
+export function invalidHeaderNameRequirement(
+  name: string,
+  literals: readonly string[] = [name],
+): string {
+  let shown = "";
+  let rest = name;
+  for (const [index, literal] of literals.entries()) {
+    if (index > 0) {
+      const placeholder = /^\{\{ vars\.[^}]*\}\}/.exec(rest)?.[0] ?? "";
+      shown += placeholder;
+      rest = rest.slice(placeholder.length);
+    }
+    const valid = HTTP_FIELD_NAME_START.exec(literal)?.[0] ?? "";
+    if (valid.length < literal.length) {
+      if (shown === "" && valid === "") {
+        const point = literal.codePointAt(0) ?? 0;
+        return `must use valid HTTP header names, not one that starts with U+${point.toString(16).toUpperCase().padStart(4, "0")}`;
+      }
+      return `must use valid HTTP header names, not ${quotedSettingKey(`${shown}${valid}…`, 24)}`;
+    }
+    shown += valid;
+    rest = rest.slice(literal.length);
+  }
+  return `must use valid HTTP header names, not ${quotedSettingKey(shown, 24)}`;
 }
 
 // Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
@@ -267,7 +409,10 @@ function validateHeaderNames(
     );
     if (invalid !== undefined) {
       throw new ConfigurationHarnessError(
-        configurationSettingMessage(headersSetting, invalidHeaderNameRequirement(invalid)),
+        configurationSettingMessage(
+          headersSetting,
+          invalidHeaderNameRequirement(invalid, unresolved([...headersPath, invalid], true)),
+        ),
       );
     }
   }

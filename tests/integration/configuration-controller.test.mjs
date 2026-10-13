@@ -1476,6 +1476,46 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       }),
       "Configuration field /models/providers/gateway/models/0/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
     ],
+    // Finding 1250: an environment reference the runtime fills in the host or port, where the URL
+    // does not parse as written, leaves the user name and password a literal.
+    [
+      gateway({ baseUrl: `https://user:${sentinel}@models.example.test:\${MODEL_PORT}/v1` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    [
+      gateway({
+        request: {
+          proxy: {
+            mode: "explicit-proxy",
+            url: `http://u:${sentinel}@\${PROXY_HOST}:\${PROXY_PORT}`,
+          },
+        },
+      }),
+      "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // The runtime renders a reference's fallback when the variable is unset.
+    [
+      gateway({ baseUrl: `https://\${MODEL_HOST:-user:${sentinel}@models.example.test}/v1` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    [
+      gateway({
+        request: {
+          proxy: { mode: "explicit-proxy", url: `\${PROXY_URL:-http://u:${sentinel}@proxy:3128}` },
+        },
+      }),
+      "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // One reference set and another unset: https://setu:<password>@models.example.test.
+    [
+      gateway({ baseUrl: `https://\${A_HOST:-h/}\${B_USER:-u:${sentinel}@models.example.test}` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // The URL parser ends the user name at the last `@`, inside brackets too.
+    [
+      gateway({ baseUrl: `https://[\${MODEL_HOST}user:${sentinel}@models.example.test/]` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
   ];
   for (const [values, message] of refused) {
     for (const [collection, body] of [
@@ -1535,6 +1575,9 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       "x-api-key-version": "2",
     },
     models: [{ id: "m", request: { headers: { "x.trace.id": "t" } } }],
+    // Finding 1250: an environment reference with a fallback that holds no user name.
+    baseUrl: "https://${MODEL_HOST:-models.example.test}/v1",
+    request: { proxy: { mode: "explicit-proxy", url: "${PROXY_URL:-http://proxy.example:3128}" } },
   });
   const created = await request(context.app, "POST", configurations, {
     body: { kind: "agent", values: accepted },
@@ -1576,6 +1619,14 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
                 baseUrl:
                   "https://{{ vars.url }}.{{ vars.api }}.{{ vars.header }}.{{ vars.port }}.test:{{ vars.port }}/{{ vars.url }}",
               },
+              // Finding 1250: an `@` in the path, query or fragment is no user name.
+              { id: "u", baseUrl: "https://{{ vars.url }}/models/m@2024?at=a@b#c@d" },
+              {
+                id: "v",
+                request: {
+                  proxy: { mode: "explicit-proxy", url: "http://{{ vars.url }}:{{ vars.port }}" },
+                },
+              },
             ],
             headers: {
               "{{ vars.header }}": "v",
@@ -1592,15 +1643,28 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   // Finding 1214: an escaped token, or a default that reads like one, stays literal text in the
   // launch render, so it is checked as written: these saved and then failed every launch.
   const headers = (name) => invalidName("models.providers.gateway.headers", name);
+  // Finding 1251: a name whose first character is invalid is named by that character's code
+  // point, not an empty quote.
+  const startsWith = (setting, point) =>
+    `Configuration setting ${setting} must use valid HTTP header names, not one that starts with ${point}.`;
   for (const [values, message, agent] of [
-    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers("…")],
+    [
+      gateway({ headers: { "\\{{ vars.header }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
     [gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }), headers("Authorization…")],
-    [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers("…")],
-    [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers("…")],
+    [
+      gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
+    [
+      gateway({ headers: { "{{ vars.literal }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
     // A placeholder outside configuration renders the same text but does not admit it.
     [
       gateway({ headers: { "\\{{ vars.header }}": "v" } }),
-      headers("…"),
+      startsWith("models.providers.gateway.headers", "U+007B"),
       { name: "{{ vars.header }}" },
     ],
     [
@@ -1617,7 +1681,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
           },
         },
       },
-      invalidName("models.providers.other.headers", "…"),
+      startsWith("models.providers.other.headers", "U+007B"),
     ],
     [
       gateway({
@@ -1630,10 +1694,14 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ headers: { "{{ vars.header }}": "v" }, api: "{{ vars.literal }}" }),
       "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.",
     ],
-    // Finding 1221: the text around a variable is checked with a stand-in for it.
-    [gateway({ headers: { "{{ vars.header }} ": "v" } }), headers("…")],
-    [gateway({ headers: { "X-{{ vars.header }}\u200b": "v" } }), headers("X-…")],
-    [gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }), headers("…")],
+    // Finding 1221: the text around a variable is checked with a stand-in for it. The refusal shows
+    // the variable's placeholder up to the first invalid literal character.
+    [gateway({ headers: { "{{ vars.header }} ": "v" } }), headers("{{ vars.header }}…")],
+    [gateway({ headers: { "X-{{ vars.header }}\u200b": "v" } }), headers("X-{{ vars.header }}…")],
+    [
+      gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
     [
       gateway({ baseUrl: "ftp://{{ vars.url }}" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
@@ -1659,6 +1727,67 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ baseUrl: "https://user:{{ vars.url }}@models.example.test/v1" }),
       "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
     ],
+    // Finding 1250: so is literal userinfo, or a variable that is the whole of it, where a variable
+    // fills the host or port and the URL does not parse until filled.
+    ...[
+      ["baseUrl", { baseUrl: `https://user:${sentinel}@{{ vars.url }}/v1` }],
+      ["baseUrl", { baseUrl: "https://{{ vars.header }}@{{ vars.url }}/v1" }],
+      ["baseUrl", { baseUrl: `{{ vars.url }}://user:${sentinel}@{{ vars.api }}/v1` }],
+      ["baseUrl", { baseUrl: `https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1` }],
+      ["baseUrl", { baseUrl: `https://[{{ vars.url }}user:${sentinel}@models.test/]` }],
+      [
+        "models/0/baseUrl",
+        {
+          models: [{ id: "m", baseUrl: `https://user:${sentinel}@models.test:{{ vars.port }}/v1` }],
+        },
+      ],
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: { mode: "explicit-proxy", url: `http://u:${sentinel}@{{ vars.url }}` },
+          },
+        },
+      ],
+      // A variable scheme may be socks5, where a backslash stays in the user name.
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: {
+              mode: "explicit-proxy",
+              url: `{{ vars.api }}://u\\x:${sentinel}@{{ vars.url }}:{{ vars.port }}`,
+            },
+          },
+        },
+      ],
+      [
+        "models/0/request/proxy/url",
+        {
+          models: [
+            {
+              id: "m",
+              request: {
+                proxy: {
+                  mode: "explicit-proxy",
+                  url: `http://u:${sentinel}@proxy:{{ vars.port }}`,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    ].map(([field, settings]) => [
+      gateway(settings),
+      `Configuration field /models/providers/gateway/${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`,
+    ]),
+    // A model row's credential header is matched as the text around its variables too.
+    [
+      gateway({
+        models: [{ id: "m", headers: { "Authorization{{ vars.header }}": "Bearer synthetic" } }],
+      }),
+      "Configuration field /models/providers/gateway/models/0/headers/Authorization{{ vars.header }} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+    ],
   ]) {
     const escaped = await request(context.app, "POST", presets, {
       body: {
@@ -1672,6 +1801,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     });
     assert.equal(escaped.status, 400, JSON.stringify(escaped.body));
     assert.equal(escaped.body.error.message, message);
+    assert.equal(JSON.stringify(escaped.body).includes(sentinel), false);
   }
   // A default that fills a header name is a literal name: a credential name takes no literal.
   const filledCredential = await request(context.app, "POST", presets, {

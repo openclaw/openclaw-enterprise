@@ -228,7 +228,10 @@ export function requireHarnessCredentialBinding(
       ] as const) {
         for (const name of Object.keys(asRecord(headers) ?? {})) {
           if (!isAdmittedHeaderName(name, options, headersAt)) {
-            throw createError(headersSetting, invalidHeaderNameRequirement(name));
+            throw createError(
+              headersSetting,
+              invalidHeaderNameRequirement(name, options?.unresolved?.([...headersAt, name], true)),
+            );
           }
           if (isCredentialHeaderName(name, options, headersAt)) {
             throw createError(headersSetting, credentialHeaderRequirement(name));
