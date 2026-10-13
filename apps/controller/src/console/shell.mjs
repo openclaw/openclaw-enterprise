@@ -71,8 +71,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let drawerControls = null;
   let namespaceSelect = null;
   let namespaceAdmissionPending = true;
+  const mobileLayout = window.matchMedia("(max-width: 760px)");
 
-  window.matchMedia("(max-width: 760px)").addEventListener("change", (event) => {
+  mobileLayout.addEventListener("change", (event) => {
     if (!event.matches) {
       drawerControls?.close(false);
     }
@@ -99,6 +100,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
 
   function publicPanel(title, description, actionLabel, action) {
     menuControls = null;
+    drawerControls = null;
     app.replaceChildren(
       element(
         "main",
@@ -260,6 +262,16 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const menuFocus = menuControls?.account.contains(document.activeElement)
       ? document.activeElement
       : null;
+    // Like the menu, a mobile drawer opened between a page load's two renders stays open.
+    // reset(), publicPanel() and a session-less render close it.
+    const drawerOpen =
+      Boolean(session) &&
+      mobileLayout.matches &&
+      Boolean(drawerControls?.shell.classList.contains("drawer-open"));
+    const drawerFocus =
+      drawerOpen && !menuFocus && drawerControls.sidebar.contains(document.activeElement)
+        ? document.activeElement
+        : null;
     if (!session) {
       menuControls = null;
     }
@@ -408,11 +420,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         mobileToggle.focus();
       }
     }
-    function openDrawer() {
+    function openDrawer(focus = true) {
       shell.classList.add("drawer-open");
       main.inert = true;
       mobileToggle.setAttribute("aria-expanded", "true");
-      nav.querySelector("a").focus();
+      if (focus) {
+        nav.querySelector("a").focus();
+      }
     }
     sidebar.prepend(button("Close navigation", () => closeDrawer(), { className: "drawer-close" }));
     shell.append(
@@ -423,14 +437,35 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     drawerControls = { shell, sidebar, close: closeDrawer, open: openDrawer };
     app.replaceChildren(shell);
+    if (drawerOpen) {
+      // Focus moves to the same control in the new drawer; close if it has none.
+      const target = drawerFocus && sameControl(drawerFocus, sidebar);
+      if (drawerFocus && !target) {
+        closeDrawer();
+      } else {
+        openDrawer(false);
+        target?.focus({ preventScroll: true });
+      }
+    }
     if (menuFocus) {
       menuFocus.focus({ preventScroll: true });
-      // A fresh render closes the mobile drawer; don't leave the menu open inside it.
+      // If focus can't return (the menu is hidden), don't leave it open out of sight.
       if (document.activeElement !== menuFocus) {
         menuControls?.close();
       }
     }
     return { view, refresh, diagnostics };
+  }
+
+  function sameControl(node, root) {
+    return (
+      [...root.querySelectorAll(node.localName)].find(
+        (candidate) =>
+          candidate.className === node.className &&
+          candidate.getAttribute("href") === node.getAttribute("href") &&
+          candidate.textContent === node.textContent,
+      ) ?? null
+    );
   }
 
   function renderRows(view, feature, items) {

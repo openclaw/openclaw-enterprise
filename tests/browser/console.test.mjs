@@ -786,6 +786,60 @@ test("the account menu stays open and focused while the page under it finishes l
   assert.equal(await settings.isVisible(), false, "Navigating closes the menu");
 });
 
+for (const focus of ["navigation link", "account menu"]) {
+  test(`an open mobile drawer keeps its ${focus} focused while the page under it finishes loading`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Open drawer", { ready: true });
+    await fixture.createAgent(namespace.id, "Open drawer Agent");
+    const { page } = await newPage(t, fixture, mobile);
+    await trackSettledFetches(page);
+    await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+    await page.getByText("Open drawer Agent", { exact: true }).waitFor();
+    await waitForSettledView(page);
+
+    // Hold the Namespaces read so the shell renders its Loading state first and re-renders
+    // with the fresh view only after the reader has reopened the drawer.
+    const namespacesPattern = "**/namespaces";
+    const namespacesHold = await holdRoute(t, page, namespacesPattern, (route, response) =>
+      response ? route.fulfill({ response }) : route.continue(),
+    );
+    t.after(() => namespacesHold.release());
+    const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+    await toggle.click();
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await namespacesHold.waitForRelease();
+    await toggle.click();
+    const agents = page.getByRole("link", { name: "Agents", exact: true });
+    let focused = agents;
+    if (focus === "account menu") {
+      await openShellMenu(page);
+      focused = page.getByRole("menuitem", { name: "Settings", exact: true });
+    }
+    await focused.waitFor();
+    assert.equal(
+      await focused.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+    );
+    await releaseHeldRoute(page, namespacesPattern, namespacesHold);
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+
+    assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
+    assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+    assert.equal(
+      await focused.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+      `The re-rendered drawer keeps focus on its ${focus}`,
+    );
+    await focused.click();
+    const destination = focus === "account menu" ? "Settings" : "Agents";
+    await page.getByRole("heading", { name: destination, exact: true }).waitFor();
+    assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Navigating closes it");
+    assert.equal(await page.locator("main").evaluate((node) => node.inert), false);
+  });
+}
+
 test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
