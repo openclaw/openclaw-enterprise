@@ -27,7 +27,9 @@ A later change also matches the words `authentication`, `assertion`, `hmac`,
 `.` separators, but saves partition, shard, sort and dedup keys; on every
 Compute, Configuration and Preset saves refuse a header name that is not a
 valid HTTP field name, and Preset saves check `models`, `baseUrl` and `api`
-(a variable without a default is checked once filled).
+(a variable without a default is checked once filled). A later change skips
+a trailing algorithm word such as `-sha256` or `-ed25519` and a digit glued
+to `key`, and matches `protection-bypass`.
 
 **Who is affected.** Configurations with such a header, or with a `models`
 record, `null` or string on any provider.

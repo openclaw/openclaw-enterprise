@@ -1249,6 +1249,83 @@ test(
 );
 
 test(
+  "refused admissions whose fence did not commit are fenced again and forgotten past their window",
+  { timeout: 15000 },
+  async (t) => {
+    // Capacity is two admission records. A repository has one active attempt, so each
+    // admission that reaches the journal uses its own repository.
+    const fixture = await boundControlFixture(t, { sessions: 1 }, [
+      ...defaultRegistryRepositories,
+      { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
+    ]);
+    const { inputFor, send, freshId, clock, receipts } = fixture;
+    const receipt = async (id) =>
+      receipts.state.read((view) => view.repositorySessions.findBrokerReceipt(id));
+    const prepared = async (input) => {
+      const id = freshId();
+      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+      return id;
+    };
+    const transact = receipts.state.transact;
+    // Each entry decides one transaction: true fails it. Past the plan, `down` decides.
+    let plan = [];
+    let down = false;
+    receipts.state.transact = async function (work) {
+      if (plan.length > 0 ? plan.shift() : down) {
+        throw new Error("fixture-unavailable");
+      }
+      return transact.call(this, work);
+    };
+    t.after(() => {
+      receipts.state.transact = transact;
+    });
+    const refused = [];
+    for (const repositoryRef of ["repo-a", "repo-b"]) {
+      const invalid = { ...inputFor(repositoryRef), durationSeconds: 172_801 };
+      const id = await prepared(invalid);
+      // The reservation commits, then the fence transaction fails.
+      plan = [false, true];
+      assert.deepEqual(await send(invalid, id), {
+        status: 400,
+        body: { error: "invalid-request" },
+      });
+      assert.equal((await receipt(id)).state, "reserved");
+      refused.push([invalid, id]);
+    }
+    const valid = inputFor("repo-c");
+    // Both records fill capacity inside their admission window.
+    plan = [];
+    assert.deepEqual(await send(valid, freshId()), {
+      status: 503,
+      body: { error: "overloaded" },
+    });
+    await clock.advance(60_001);
+    // Past the window the sweep fences them again. While the journal stays away the
+    // fences fail and the records still count.
+    down = true;
+    assert.deepEqual(await send(valid, freshId()), {
+      status: 503,
+      body: { error: "overloaded" },
+    });
+    for (const [, id] of refused) {
+      assert.equal((await receipt(id)).state, "reserved");
+    }
+    // Once a fence commits, its record is forgotten and the next admission opens.
+    down = false;
+    const opened = await send(valid, await prepared(valid));
+    assert.equal(opened.status, 201);
+    assert.equal(opened.body.session.state, "OPEN");
+    for (const [invalid, id] of refused) {
+      assert.equal((await receipt(id)).state, "fenced");
+      assert.deepEqual(await send(invalid, id), {
+        status: 404,
+        body: { error: "admission-missing" },
+      });
+    }
+  },
+);
+
+test(
   "admission recovery retains unresolved cleanup beyond freshness and session expiry",
   { timeout: 20000 },
   async (t) => {

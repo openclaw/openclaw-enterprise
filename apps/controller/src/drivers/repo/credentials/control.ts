@@ -56,6 +56,8 @@ export function createControlAdmission(
     string,
     Promise<{ result: unknown; sessionId: string; created: boolean }>
   >();
+  // Fences that sweep retries for refused admissions; an open of the same id waits on them.
+  const refencing = new Map<string, Promise<boolean>>();
   const journal = durableRequired
     ? new RepositoryReceiptClient(config.gateway.controlSocket, randomUUID())
     : undefined;
@@ -73,6 +75,18 @@ export function createControlAdmission(
   };
   const sweep = () => {
     for (const [id, record] of records) {
+      // A refused admission whose fence did not commit has no session to save its
+      // record. Past its window, fence it again and forget it once the fence commits,
+      // so it stops counting toward capacity. A fence that fails is retried next sweep.
+      if (record.sessionId === undefined && record.unbound) {
+        if (clock.monotonicNow() >= record.forgetAt && !refencing.has(id) && !operations.has(id)) {
+          refencing.set(
+            id,
+            fenced(id, record).finally(() => refencing.delete(id)),
+          );
+        }
+        continue;
+      }
       const status = record.sessionId === undefined ? undefined : service.status(record.sessionId);
       if (
         (status === undefined || status.state === "DISPOSED") &&
@@ -173,6 +187,10 @@ export function createControlAdmission(
       throw new Error("INVALID_ADMISSION");
     }
     sweep();
+    const refence = refencing.get(id);
+    if (refence) {
+      await refence;
+    }
     const previous = records.get(id);
     if (previous) {
       if (!sameSessionInput(previous.input, admittedInput)) {
@@ -209,6 +227,13 @@ export function createControlAdmission(
     const age = timestamp ? now() - Number(timestamp[1]) : -1;
     if (age < 0) {
       throw new Error("INVALID_ADMISSION");
+    }
+    if (records.size >= 2 * config.limits.sessions && refencing.size > 0) {
+      // Refused admissions being fenced again free their records once the fence commits.
+      await Promise.all(refencing.values());
+      if (disposed) {
+        throw new Error("CONTROL_CLOSED");
+      }
     }
     if (records.size >= 2 * config.limits.sessions) {
       throw new Error("SESSION_CAPACITY");
@@ -415,6 +440,7 @@ export function createControlAdmission(
       records.clear();
       sessions.clear();
       unrecorded.clear();
+      refencing.clear();
     },
   };
 }
