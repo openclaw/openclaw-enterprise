@@ -700,6 +700,7 @@ test(
           : undefined;
       },
     );
+    // A poll can see "queued" just before the pending event stops the worker; this stop covers it.
     await handoffWorkerStop;
     await fixture.stopWorker();
     assert.equal(provisioned.status, "queued");
