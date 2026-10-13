@@ -177,12 +177,13 @@ adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
 plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
 requirements and removes their ConfigMap paths from the remaining environment.
 
-For PAT sources, `prepareHarnessAuth` selects provider-managed storage.
+`prepareHarnessAuth` selects provider-managed PAT storage.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
-writes the opaque token into private `auth.json` field `personal_access_token`,
-removes the child environment override and invokes `codex login status` with file
-storage. Native account validation precedes the model probe; either failure
-keeps the revision inactive. Only the placeholder reaches disk.
+writes only the opaque `personal_access_token` to private `auth.json`, clears
+the child environment override and runs `codex login status` using file storage.
+Account validation, configuration loading and the model probe gate readiness.
+The PAT profile admits exact `/backend-api/wham/config/bundle`
+(`apps/controller/src/drivers/credential-gateway/openshell.ts`).
 
 ### 3. Validate and serialize the Sandbox
 
@@ -364,6 +365,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 21:36: Admit the exact Codex managed-configuration route. (01a136ee-8824-7043-b9e2-49eccacac3bd - 822d00a55)
 
 - 2026-10-13 20:30: Document provider-managed Codex PAT authentication. (01a136ee-8824-7043-b9e2-49eccacac3bd - ed9018c09)
 

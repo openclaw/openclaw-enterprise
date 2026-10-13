@@ -142,10 +142,10 @@ the second Agent still receives its token. The scenario then checks that:
 - deployment diagnostics, runtime status and logs, and the Namespace's audit
   events hold neither a credential nor an OpenShell placeholder.
 
-The Codex scenario updates and withdraws the source, waits for `revoked`, then
-expects a failed model turn. It does not distinguish credential rejection from
-transport failure or process restart. Trusted PR QA runs this proof with the
-`integration-qa-pr` credential.
+The Codex case requires a supervisor L7 denial for an unrelated native-Codex
+backend request. After source update and revocation, any failed model turn
+satisfies withdrawal proof; credential, transport and restart failures are not
+distinguished. Trusted PR QA uses `integration-qa-pr`.
 
 `OCC_TEST_OPENSHELL_HARNESS` defaults to `codex`. Select `openclaw` to verify
 that the native Harness requests no inbound OpenShell service exposure and

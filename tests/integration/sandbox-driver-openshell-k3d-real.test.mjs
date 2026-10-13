@@ -4202,6 +4202,12 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   const approvedRead = `head -c 1 ${approvedPath} > /dev/null`;
   const readonlyPath = approvedPath;
   const escapedPath = `${providerWorkspace}/../${nonce}-escape.txt`;
+  // Use native Codex, which is allowed to reach this host, so the refusal proves
+  // path enforcement rather than curl's separate binary restriction. A fresh home
+  // references the same opaque auth file without reusing cached cloud configuration.
+  const deniedBackend = `https://chatgpt.com/backend-api/wham/${nonce}`;
+  const deniedConfigPath = `/backend-api/wham/${nonce}/wham/config/bundle`;
+  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -rf "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -4214,8 +4220,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(3) touch ${readonlyPath}; ` +
       `(4) touch ${escapedPath}; ` +
       `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
-      `(6) curl -fsSI --max-time 10 https://acme.com. ` +
-      `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
+      `(6) curl -fsSI --max-time 10 https://acme.com; ` +
+      `(7) ${deniedConfigCommand}. ` +
+      `Commands 1, 2, and 5 must succeed; commands 3, 4, 6, and 7 must fail. ` +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
@@ -4229,6 +4236,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   );
   const deniedCommand = completedCommands.find(({ command }) =>
     String(command).includes("acme.com"),
+  );
+  const deniedConfigRequest = completedCommands.find(({ command }) =>
+    String(command).includes(deniedBackend),
   );
   const workspaceCommand = completedCommands.find(({ command }) =>
     String(command).includes(writablePath),
@@ -4258,6 +4268,31 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
+  assert.ok(deniedConfigRequest, "the real Codex binary must attempt the unapproved backend path.");
+  assert.notEqual(deniedConfigRequest.exitCode, 0);
+  // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
+  // must record its L7 denial of this exact native-Codex request.
+  await waitFor(
+    "OpenShell denial of an unrelated Codex backend path",
+    async () => {
+      const logs = await kubectl(
+        "logs",
+        topology.harnessPod.metadata.name,
+        "--namespace",
+        topology.placement,
+        "--all-containers=true",
+        "--tail=500",
+      );
+      return logs
+        .split("\n")
+        .some(
+          (line) =>
+            line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
+            line.includes("not permitted by policy"),
+        );
+    },
+    30_000,
+  );
   assert.match(result.assistant, new RegExp(nonce));
   assert.match(result.assistant, /WORKSPACE_WRITABLE/);
   assert.match(result.assistant, /APPROVED_PATH_READABLE/);

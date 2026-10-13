@@ -109,12 +109,15 @@ reach the gateway.
 | `oauth2-client-credentials` | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 | `oauth2-refresh-token`      | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 
-`codex-pat` supports personal access tokens, including service-account tokens, for
-dedicated Codex. It binds `CODEX_ACCESS_TOKEN` to the configured model binaries
-and permits only `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`
-and `chatgpt.com/backend-api/codex/**` over HTTPS. The first endpoint validates
-account metadata; the second serves Codex models and Responses. Native OpenClaw
-does not support this source as Harness authentication.
+`codex-pat` supports personal access tokens, including service-account tokens,
+for dedicated Codex only. Its configured binaries can use `CODEX_ACCESS_TOKEN`
+over HTTPS at these routes:
+
+- `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`: account metadata.
+- `chatgpt.com/backend-api/codex/**`: models and Responses.
+- `chatgpt.com/backend-api/wham/config/bundle`: required startup configuration.
+
+Other backend paths remain denied.
 
 The Harness stores only an opaque placeholder in native Codex's
 `personal_access_token` auth-file field. Native account validation and the model

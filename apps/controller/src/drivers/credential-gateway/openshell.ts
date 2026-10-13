@@ -306,6 +306,13 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           path: "/api/accounts/v1/user-auth-credential/whoami",
         },
         { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/codex/**" },
+        // Native PAT startup loads managed configuration before any model turn.
+        {
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path: "/backend-api/wham/config/bundle",
+        },
       ],
       binaries: options.binaries,
       inferenceCapable: true,
