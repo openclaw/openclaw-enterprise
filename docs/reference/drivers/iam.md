@@ -33,6 +33,16 @@ and Restrictions. OCC uses it to attribute audit records. The worker rejects
 malformed decisions, including a mismatched Driver identity; an invalid result
 cannot grant permission.
 
+### Namespace policy operations
+
+Optional Namespace policy methods list, read, create, or delete Roles and
+AccessBindings, and list, read, or create ServicePrincipals. OCC supplies their
+policy repository. Writes require the Driver to declare
+`namespacePolicyTransaction: "platform-unit-of-work"` and participate in that
+original transaction; policy and audit must commit or roll back together.
+OCC rejects a write before invoking a Driver without that declaration. Reads
+remain available when their methods are implemented.
+
 ## IAM
 
 The authentication system verifies credentials; the IAM Driver resolves the
@@ -51,8 +61,8 @@ a denied request or unavailable authority cannot become an allow. See
 
 Startup creates the selected IAM Driver. The API and worker use it for later
 lookups and decisions; policy remains persisted platform state and is not frozen
-in Installation YAML or a deployment. The shared interface has no startup,
-disposal, identity-provisioning, or policy-mutation method.
+in Installation YAML or a deployment. The shared interface has no startup or
+disposal hook.
 
 ### Native IAM behavior
 

@@ -178,6 +178,10 @@ binding additionally identifies the resource kind and ID.
 
 ## Manage Namespace policy
 
+Namespace policy writes require an IAM Driver that declares
+`namespacePolicyTransaction: "platform-unit-of-work"`. Otherwise OCC rejects the
+write before calling the Driver, so a later denial cannot leave an external grant.
+
 Human-session policy mutations retain the assigning session through the transaction.
 Completed revocation prevents a pending write. PostgreSQL validates session expiry
 during COMMIT and rolls back policy and its success audit if the session expired.

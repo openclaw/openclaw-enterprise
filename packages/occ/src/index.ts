@@ -9923,6 +9923,11 @@ export class OpenClawController {
     namespaceId: string,
     target?: ResourceRef,
   ): Promise<void> {
+    if (this.selectedDriver("iam").namespacePolicyTransaction !== "platform-unit-of-work") {
+      throw new DependencyUnavailableError(
+        "Namespace policy mutations require transactional IAM Driver support.",
+      );
+    }
     await this.lockNamespace(state, namespaceId);
     if (!(await state.installations.holdPrincipalAccount(principalId))) {
       throw new AuthorizationDeniedError("The acting account is disabled.");
