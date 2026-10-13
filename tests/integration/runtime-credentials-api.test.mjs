@@ -17,7 +17,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
@@ -39,7 +39,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
   const statusOf = (binding) => statusByAgent.get(keyOf(binding)) ?? emptyStatus;
 
   return createReadyComputeDriver(options.id ?? "runtime-credential-compute", {
-    implementation: "in-memory-runtime-credential-test",
+    implementation: options.implementation ?? "in-memory-runtime-credential-test",
     requiresAgentRuntimeCredentials: true,
     calls,
     setStatus(namespaceId, agentId, status) {
@@ -312,16 +312,14 @@ async function createSharedApp(implementation) {
   }
 
   // A controller restarted on the same state with another Compute Driver, as after the
-  // Installation's Driver configuration changed.
+  // Installation's Driver configuration changed. Unlike the app's, this Driver is selected
+  // directly, so its own id and implementation reach OCC.
   function restartController(computeDriver) {
     const restarted = new OpenClawController(controller.installation, {
       state: platformState,
       recordOperations: false,
     });
-    for (const driver of [iamDriver, computeDriver]) {
-      restarted.registerDriver(driver);
-      restarted.selectDriver(driver.capability, driver.id);
-    }
+    registerAndSelectDrivers(restarted, [iamDriver, computeDriver]);
     return restarted;
   }
 
@@ -964,23 +962,22 @@ test("deployment diagnostics refuse a Compute Driver with the deployment's id bu
   const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
   const revision = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(revision.status, 202);
-  const replacement = {
-    ...createRuntimeCredentialComputeDriver(),
+  const diagnose = (computeDriver) =>
+    fixture
+      .restartController(computeDriver)
+      .diagnoseAgentDeployment(fixture.administratorId, namespace.id, agent.id, revision.data.id);
+  // The same id and implementation still diagnose after the restart.
+  const unchanged = createRuntimeCredentialComputeDriver();
+  assert.equal((await diagnose(unchanged)).revisionId, revision.data.id);
+  assert.equal(unchanged.calls.length, 1);
+  const replacement = createRuntimeCredentialComputeDriver({
     implementation: "replacement-runtime-credential-test",
-  };
-  const restarted = fixture.restartController(replacement);
-  await assert.rejects(
-    restarted.diagnoseAgentDeployment(
-      fixture.administratorId,
-      namespace.id,
-      agent.id,
-      revision.data.id,
-    ),
-    {
-      name: "DependencyUnavailableError",
-      message: "The deployment's Compute Driver is unavailable.",
-    },
-  );
+  });
+  assert.equal(replacement.id, unchanged.id);
+  await assert.rejects(diagnose(replacement), {
+    name: "DependencyUnavailableError",
+    message: "The deployment's Compute Driver is unavailable.",
+  });
   assert.deepEqual(replacement.calls, []);
 });
 
