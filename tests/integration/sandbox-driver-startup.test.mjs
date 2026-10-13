@@ -28,6 +28,7 @@ import {
 import { serviceTarget } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  CredentialSourceConfigError,
   CredentialSourceRevisionError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
@@ -2158,6 +2159,10 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
     },
     async importProviderProfile(_workspace, profile) {
       profileWrites.push(["import", profile.id]);
+      // Pinned OpenShell imports use MustCreate; they cannot overwrite a collision.
+      if (profiles.has(profile.id)) {
+        throw new Error("provider profile already exists");
+      }
       profiles.set(profile.id, { ...profile, resourceVersion: String(++resourceVersion) });
     },
     // Like OpenShell, an update applies only over the version the writer last read.
@@ -2246,8 +2251,17 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
 }
 
 test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
-  const { calls, context, driver, input, providers, revisionContext, source } =
-    credentialGatewayOverProviders();
+  const {
+    calls,
+    context,
+    driver,
+    input,
+    profiles,
+    profileWrites,
+    providers,
+    revisionContext,
+    source,
+  } = credentialGatewayOverProviders();
   const owner = "cs_00000000-0000-4000-8000-0000000000b1";
   const other = "cs_00000000-0000-4000-8000-0000000000b2";
   assert.deepEqual(await driver.registerSource(context(owner), input()), { state: "ready" });
@@ -2258,8 +2272,23 @@ test("the OpenShell Credential Gateway acts only on its own source's provider", 
     ...stored,
     labels: { ...stored.labels, "openclaw.dev/credential-source-id": other },
   });
+  // The colliding profile differs from the requested endpoint, so reconciliation would write.
+  const foreignProfile = {
+    ...profiles.get(stored.name),
+    endpoints: [{ host: "foreign.example.test", port: 443, path: "/v1/**", protocol: "rest" }],
+    annotations: { "openclaw.dev/profile-digest": "foreign-digest" },
+  };
+  profiles.set(stored.name, structuredClone(foreignProfile));
   calls.length = 0;
-  await assert.rejects(driver.registerSource(context(owner), input()), ScopeViolationError);
+  profileWrites.length = 0;
+  const requested = { ...input(), config: { base_url: "https://requested.example.test/v1" } };
+  await assert.rejects(driver.registerSource(context(owner), requested), ScopeViolationError);
+  assert.deepEqual(
+    profiles.get(stored.name),
+    foreignProfile,
+    "foreign profile contents and version stay unchanged",
+  );
+  assert.deepEqual(profileWrites, []);
   await assert.rejects(
     driver.updateSource(context(owner), input("replacement")),
     ScopeViolationError,
@@ -2270,12 +2299,197 @@ test("the OpenShell Credential Gateway acts only on its own source's provider", 
     driver.attachForRevision(revisionContext([source(owner)])),
     /provider for a bound credential source is unavailable/,
   );
-  // Only the replayed create reached the store, and it was refused; nothing was overwritten.
-  assert.deepEqual(
-    calls.map(([operation]) => operation),
-    ["createProvider"],
-  );
+  // Ownership refusal happens before any provider or profile mutation.
+  assert.deepEqual(calls, []);
   assert.deepEqual(providers.get(stored.name).credentials, stored.credentials);
+});
+
+test("OpenShell preserves the main-era owned profile lifecycle without a migration", async () => {
+  const f = credentialGatewayOverProviders();
+  const context = f.context("cs_main-era");
+  const otherContext = f.context("cs_main-era-other");
+  for (const owner of [context, otherContext]) {
+    await f.driver.registerSource(owner, f.input("original-key"));
+  }
+  // Main stored only the digest annotation. Keep genuine provider ownership and profile content.
+  for (const [id, profile] of f.profiles) {
+    f.profiles.set(id, {
+      ...profile,
+      annotations: {
+        "openclaw.dev/profile-digest": profile.annotations["openclaw.dev/profile-digest"],
+      },
+    });
+  }
+  const [provider, otherProvider] = f.providers.values();
+  const original = structuredClone(f.profiles.get(provider.name));
+  const otherProfile = structuredClone(f.profiles.get(otherProvider.name));
+  f.profileWrites.length = 0;
+  const restarted = f.driverWith();
+  assert.deepEqual(await restarted.sourceStatus(context), { state: "ready" });
+  assert.deepEqual(await restarted.attachForRevision(f.revisionContext([context.source])), [
+    { sourceId: context.source.id, ref: provider.name },
+  ]);
+  assert.deepEqual(await restarted.updateSource(context, f.input("rotated-key")), {
+    state: "ready",
+  });
+  assert.deepEqual(await f.driverWith().registerSource(context, f.input("replay-key")), {
+    state: "ready",
+  });
+  assert.equal(f.providers.get(provider.name).credentials.OPENAI_API_KEY, "rotated-key");
+  assert.deepEqual(f.profiles.get(provider.name), original);
+  assert.deepEqual(f.profileWrites, [], "unchanged main-era profiles need no marker-only write");
+
+  // A normal binary-policy change reconciles the owned profile using its resource version.
+  const narrowed = f.driverWith({ binaries: ["/opt/codex"] });
+  await narrowed.attachForRevision(f.revisionContext([context.source]));
+  assert.deepEqual(f.profiles.get(provider.name).binaries, ["/opt/codex"]);
+  assert.notEqual(f.profiles.get(provider.name).resourceVersion, original.resourceVersion);
+  assert.deepEqual(f.profiles.get(otherProvider.name), otherProfile);
+  assert.deepEqual(f.providers.get(otherProvider.name), otherProvider);
+  await narrowed.removeSource(context);
+  assert.equal(f.providers.has(provider.name), false);
+  assert.equal(f.profiles.has(provider.name), false);
+  assert.deepEqual(f.profiles.get(otherProvider.name), otherProfile);
+
+  // Deletion also works directly on an unmarked profile, without a prior reconciliation.
+  await f.driverWith().removeSource(otherContext);
+  await f.driverWith().removeSource(otherContext);
+  assert.equal(f.providers.size, 0);
+  assert.equal(f.profiles.size, 0);
+});
+
+test("OpenShell main-era interrupted registration survives restart without replaying credentials", async () => {
+  const f = credentialGatewayOverProviders();
+  const context = f.context("cs_owned-retry");
+  const create = f.client.createProvider;
+  const unavailable = new Error("create provider unavailable");
+  f.client.createProvider = async () => {
+    throw unavailable;
+  };
+  // The import succeeded but provider creation did not. Main can resume without new annotations.
+  await assert.rejects(
+    f.driver.registerSource(context, f.input()),
+    (error) => error === unavailable,
+  );
+  assert.equal(f.profiles.size, 1);
+  assert.equal(f.providers.size, 0);
+  for (const [id, profile] of f.profiles) {
+    f.profiles.set(id, {
+      ...profile,
+      annotations: {
+        "openclaw.dev/profile-digest": profile.annotations["openclaw.dev/profile-digest"],
+      },
+    });
+  }
+  f.client.createProvider = create;
+  f.profileWrites.length = 0;
+  const restarted = f.driverWith();
+  assert.deepEqual(await restarted.registerSource(context, f.input("first-key")), {
+    state: "ready",
+  });
+  assert.deepEqual(await restarted.registerSource(context, f.input("retry-key")), {
+    state: "ready",
+  });
+  assert.deepEqual(f.profileWrites, []);
+  const [provider] = f.providers.values();
+  assert.equal(provider.credentials.OPENAI_API_KEY, "first-key");
+  // Owned reconciliation still applies new binary configuration through registration.
+  await f.driverWith({ binaries: ["/opt/codex"] }).registerSource(context, f.input("retry-key"));
+  assert.deepEqual(f.profiles.get(provider.name).binaries, ["/opt/codex"]);
+  assert.equal(f.providers.get(provider.name).credentials.OPENAI_API_KEY, "first-key");
+  // Legacy cleanup can remove this orphan, and repeated deletion stays idempotent.
+  f.providers.delete(provider.name);
+  await restarted.removeSource(context);
+  await restarted.removeSource(context);
+  assert.equal(f.profiles.size, 0);
+});
+
+test("OpenShell main-era cleanup resumes after provider deletion without losing another source", async () => {
+  const f = credentialGatewayOverProviders();
+  const context = f.context("cs_interrupted-delete");
+  const other = f.context("cs_delete-survivor");
+  await f.driver.registerSource(context, f.input());
+  await f.driver.registerSource(other, f.input("other-key"));
+  const [provider, survivor] = f.providers.values();
+  const profile = f.profiles.get(provider.name);
+  const unmarked = {
+    ...profile,
+    annotations: {
+      "openclaw.dev/profile-digest": profile.annotations["openclaw.dev/profile-digest"],
+    },
+  };
+  f.profiles.set(provider.name, unmarked);
+  const survivorProfile = structuredClone(f.profiles.get(survivor.name));
+  const deleteProfile = f.client.deleteProviderProfile;
+  const crash = new Error("controller stopped before deleting profile");
+  f.client.deleteProviderProfile = async () => {
+    throw crash;
+  };
+  // Provider deletion has committed when the process loses the profile deletion attempt.
+  await assert.rejects(f.driver.removeSource(context), (error) => error === crash);
+  assert.equal(f.providers.has(provider.name), false);
+  assert.deepEqual(f.profiles.get(provider.name), unmarked);
+  f.client.deleteProviderProfile = deleteProfile;
+  await f.driverWith().removeSource(context);
+  assert.equal(f.profiles.has(provider.name), false);
+  assert.deepEqual(f.providers.get(survivor.name), survivor);
+  assert.deepEqual(f.profiles.get(survivor.name), survivorProfile);
+});
+
+test("OpenShell concurrent registrations preserve the first provider's credentials", async () => {
+  const f = credentialGatewayOverProviders();
+  const context = f.context("cs_concurrent-registration");
+  const read = f.client.getProviderProfile;
+  // Both registrations observe profile absence. Import's create-only contract refuses
+  // the stale writer; readback recognizes the already stored configuration.
+  f.client.getProviderProfile = async (...args) => {
+    const stale = await read(...args);
+    f.client.getProviderProfile = read;
+    await f.driverWith().registerSource(context, f.input("winner-key"));
+    return stale;
+  };
+  assert.deepEqual(await f.driver.registerSource(context, f.input("retry-key")), {
+    state: "ready",
+  });
+  assert.equal(f.providers.size, 1);
+  assert.equal(f.profiles.size, 1);
+  assert.equal([...f.providers.values()][0].credentials.OPENAI_API_KEY, "winner-key");
+});
+
+test("OpenShell rejects a foreign provider appearing after preflight without erasing the profile", async () => {
+  const f = credentialGatewayOverProviders();
+  const context = f.context("cs_provider-race");
+  const create = f.client.createProvider;
+  let foreign;
+  f.client.createProvider = async (provider) => {
+    // Separate RPCs leave a window after profile import. The final duplicate check is required.
+    foreign = {
+      ...provider,
+      labels: { ...provider.labels, "openclaw.dev/credential-source-id": "cs_other" },
+    };
+    f.providers.set(provider.name, foreign);
+    return create(provider);
+  };
+  await assert.rejects(f.driver.registerSource(context, f.input()), ScopeViolationError);
+  await assert.rejects(f.driver.removeSource(context), ScopeViolationError);
+  assert.deepEqual([...f.providers.values()], [foreign]);
+  assert.equal(f.profiles.size, 1, "a separate profile import cannot be rolled back atomically");
+  assert.deepEqual(f.deletedProfiles, []);
+});
+
+test("OpenShell registration does not adopt an unknown provider create outcome", async () => {
+  const f = credentialGatewayOverProviders();
+  const context = f.context("cs_unknown-create");
+  const create = f.client.createProvider;
+  const failure = new Error("transport lost after provider create");
+  f.client.createProvider = async (provider) => {
+    await create(provider);
+    throw failure;
+  };
+  // Even a persisted owned provider cannot turn an unknown create outcome into success.
+  await assert.rejects(f.driver.registerSource(context, f.input()), (error) => error === failure);
+  assert.equal(f.providers.size, 1);
+  assert.equal(f.calls.length, 1);
 });
 
 test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
@@ -2367,7 +2581,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   ]) {
     await assert.rejects(
       driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000f1"), tokenInput(config)),
-      ScopeViolationError,
+      CredentialSourceConfigError,
       JSON.stringify(config),
     );
   }

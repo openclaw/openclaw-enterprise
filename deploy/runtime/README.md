@@ -39,6 +39,12 @@ the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
 The source archive and patch hashes identify the resulting custom build.
 
+The Codex adapter preserves namespaced IDs with an explicit native
+provider. For a custom endpoint, OCE compiles its private Gateway model references
+to include that provider while keeping the admitted Configuration unchanged.
+See
+[native runtime selection](../../docs/reference/harness-execution.md#native-runtime-selection).
+
 Dedicated native OpenClaw requires both required worker placement
 (`cloudWorkers.requiredProfile`) and node-local inference from canonical
 `models.providers` configuration. The node snapshots its model credentials and
