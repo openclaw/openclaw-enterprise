@@ -73,9 +73,11 @@ function runProgram(program, statePath, env, timeout) {
   });
 }
 
+// prepare.mjs appends to $GITHUB_ENV when no --github-env is given, and in CI that is the job's
+// own file, so a case passes GITHUB_ENV or GITHUB_OUTPUT on only when it sets them (finding 1216).
 function runPrepare(args, env = {}) {
   return spawnResult(process.execPath, [preparePath, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
   });
 }
 

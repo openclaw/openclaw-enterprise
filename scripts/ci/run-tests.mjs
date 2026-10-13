@@ -439,15 +439,17 @@ function laneDeadlineMs() {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+// Past the deadline, or too close to it (under minStepMs) for a file to start: a test process
+// started then would be stopped before it ran anything (finding 1215).
 function laneDeadlinePassed() {
   const deadline = laneDeadlineMs();
-  return deadline !== undefined && Date.now() >= deadline;
+  return deadline !== undefined && deadline - Date.now() < minStepMs;
 }
 
 function laneDeadlineIssue(relativePath) {
   return issue(
     "lane-deadline",
-    `the lane deadline passed before this file started: ${relativePath}`,
+    `the lane deadline passed, or was under ${minStepMs} ms away, before this file started: ${relativePath}`,
     {
       file: relativePath,
     },
@@ -527,14 +529,19 @@ function withinLimit(step, limitMs) {
   });
 }
 
-// The file's timeout: the per-file limit, cut to what is left before the lane deadline.
+// The file's timeout: the per-file limit, cut to what is left before the lane deadline, but
+// never under minStepMs. A file starts only with at least that much left (laneDeadlinePassed),
+// so the floor only absorbs the moments between that check and the start. A file started with a
+// second or two left can still be stopped during Node's startup; its timeout then says no test
+// was running.
 function fileTimeout() {
   const limitMs = testTimeoutMs();
   const deadline = laneDeadlineMs();
   if (deadline === undefined || deadline - Date.now() >= limitMs) {
     return { timeoutMs: limitMs, laneDeadline: false };
   }
-  return { timeoutMs: Math.max(1, deadline - Date.now()), laneDeadline: true };
+  const timeoutMs = Math.min(limitMs, Math.max(minStepMs, deadline - Date.now()));
+  return { timeoutMs, laneDeadline: timeoutMs < limitMs };
 }
 
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
@@ -1218,7 +1225,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     issues.push(
       issue(
         "test-timeout",
-        `selected file exceeded the runner timeout (${timeout.timeoutMs} ms${timeout.laneDeadline ? ", cut to the lane deadline" : ""}): ${relativePath}${running.length === 0 ? "" : ` while running ${running.join(", ")}`}`,
+        `selected file exceeded the runner timeout (${timeout.timeoutMs} ms${timeout.laneDeadline ? ", cut to the lane deadline" : ""}): ${relativePath}${running.length === 0 ? "; no test was running (stopped in a hook, teardown or top-level code)" : ` while running ${running.join(", ")}`}`,
         { file: relativePath },
       ),
     );

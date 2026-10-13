@@ -1448,18 +1448,29 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   const presets = `/namespaces/${namespace.id}/presets`;
   const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
   const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
-  const invalidName = (setting) =>
-    `Configuration setting ${setting} must use valid HTTP header names.`;
+  // Finding 1218: the refusal names the header up to its first invalid character, never past it.
+  const invalidName = (setting, name) =>
+    `Configuration setting ${setting} must use valid HTTP header names, not ${JSON.stringify(name)}.`;
   const listMessage =
     "Configuration setting models.providers.gateway.models must be an array of model entries.";
   const refused = [
     [
       gateway({ headers: { "x-api-key ": sentinel } }),
-      invalidName("models.providers.gateway.headers"),
+      invalidName("models.providers.gateway.headers", "x-api-key…"),
+    ],
+    // A name a Preset variable filled is refused here, so the person can find it.
+    [
+      gateway({ headers: { "X-Trace": "t", "Bad Header": "v" } }),
+      invalidName("models.providers.gateway.headers", "Bad…"),
+    ],
+    // A credential pasted into the name is never echoed.
+    [
+      gateway({ headers: { [`Authorization: Bearer ${sentinel}`]: "v" } }),
+      invalidName("models.providers.gateway.headers", "Authorization…"),
     ],
     [
       gateway({ models: [{ id: "m", request: { headers: { Authorizatioн: sentinel } } }] }),
-      invalidName("models.providers.gateway.models.0.request.headers"),
+      invalidName("models.providers.gateway.models.0.request.headers", "Authorizatio…"),
     ],
     [gateway({ models: {} }), listMessage],
     // The list first, as on Kubernetes Compute, when a header name is refused too.
@@ -1561,6 +1572,51 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     },
   });
   assert.equal(templated.status, 201, JSON.stringify(templated.body));
+  // Finding 1214: an escaped token, or a default that reads like one, stays literal text in the
+  // launch render, so it is checked as written: these saved and then failed every launch.
+  const headers = (name) => invalidName("models.providers.gateway.headers", name);
+  for (const [values, message, agent] of [
+    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers("…")],
+    [gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }), headers("Authorization…")],
+    [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers("…")],
+    [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers("…")],
+    // A placeholder outside configuration renders the same text but does not admit it.
+    [
+      gateway({ headers: { "\\{{ vars.header }}": "v" } }),
+      headers("…"),
+      { name: "{{ vars.header }}" },
+    ],
+    [
+      gateway({ baseUrl: "\\{{ vars.url }}" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+  ]) {
+    const escaped = await request(context.app, "POST", presets, {
+      body: {
+        name: "Escaped",
+        template: {
+          variables: { ...variables, literal: { type: "string", default: "{{ vars.header }}" } },
+          ...(agent ? { agent } : {}),
+          configuration: { values },
+        },
+      },
+    });
+    assert.equal(escaped.status, 400, JSON.stringify(escaped.body));
+    assert.equal(escaped.body.error.message, message);
+  }
+  // A default that fills a header name is a literal name: a credential name takes no literal.
+  const filledCredential = await request(context.app, "POST", presets, {
+    body: {
+      name: "Filled credential",
+      template: {
+        variables: { header: { type: "string", default: "x-api-key" } },
+        configuration: { values: gateway({ headers: { "{{ vars.header }}": sentinel } }) },
+      },
+    },
+  });
+  assert.equal(filledCredential.status, 400, JSON.stringify(filledCredential.body));
+  assert.match(filledCredential.body.error.message, /holds a credential value inline/);
+  assert.equal(JSON.stringify(filledCredential.body).includes(sentinel), false);
   // A default is checked like any value.
   const defaulted = await request(context.app, "POST", presets, {
     body: {
