@@ -34,76 +34,65 @@ const administratorPermissions = [
 // Building a controller app and creating and signing in two accounts cost far more than a
 // case, so the cases share one bootstrapped app, its administrator and its tenant reader.
 // Cases run one at a time. Each gets a new Namespace and Agent, its own workspace file
-// provider (the app's provider forwards to the running case's) and the audit events recorded
-// after it started. Apps with a shorter workspace file deadline are built once per deadline
-// over the same controller.
+// provider (the app's provider forwards to the running case's) and only the audit events
+// recorded after it started. An app with a shorter workspace file deadline is built once per
+// deadline over the same controller.
 const running = {};
+const deadlineApps = new Map();
 let shared;
 
-function sharedFixture() {
-  shared ??= (async () => {
-    const fixture = await createTenantReaderFixture({
-      installationId,
-      label: "workspace-files",
-      administratorName: "Workspace file administrator",
-      readerName: "Workspace file reader",
-      administratorPermissions,
-      computeDriver: {
-        ...createDevelopmentComputeDriver(),
-        id: "compute-workspace-files",
-        implementation: "deterministic-test",
+async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeoutMs: deadline }) {
+  shared ??= createTenantReaderFixture({
+    installationId,
+    label: "workspace-files",
+    administratorName: "Workspace file administrator",
+    readerName: "Workspace file reader",
+    administratorPermissions,
+    computeDriver: {
+      ...createDevelopmentComputeDriver(),
+      id: "compute-workspace-files",
+      implementation: "deterministic-test",
+    },
+    secretDriver: createTestSecretDriver(),
+    appOptions: (overrides) => ({
+      workspaceFilesAccess: {
+        read: (read) => running.workspaceFilesAccess.read(read),
+        write: (write) => running.workspaceFilesAccess.write(write),
       },
-      secretDriver: createTestSecretDriver(),
-      appOptions: (overrides) => ({
-        workspaceFilesAccess: {
-          read: (read) => running.workspaceFilesAccess.read(read),
-          write: (write) => running.workspaceFilesAccess.write(write),
-        },
-        ...(overrides.workspaceFileRequestTimeoutMs === undefined
-          ? {}
-          : { workspaceFileRequestTimeoutMs: overrides.workspaceFileRequestTimeoutMs }),
-        publicOrigin,
-      }),
-    });
-    const result = await request(fixture.app, "/installation/bootstrap", {
-      body: { name: "Workspace file test installation" },
-    });
-    assert.equal(result.response.status, 201);
-    return { fixture, deadlineApps: new Map() };
-  })();
-  return shared;
-}
-
-async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeoutMs }) {
-  const { fixture, deadlineApps } = await sharedFixture();
+      ...(overrides.workspaceFileRequestTimeoutMs === undefined
+        ? {}
+        : { workspaceFileRequestTimeoutMs: overrides.workspaceFileRequestTimeoutMs }),
+      publicOrigin,
+    }),
+  }).then(async (fixture) => {
+    await bootstrap(fixture);
+    return fixture;
+  });
+  const fixture = await shared;
   running.workspaceFilesAccess = workspaceFilesAccess;
-  if (
-    workspaceFileRequestTimeoutMs !== undefined &&
-    !deadlineApps.has(workspaceFileRequestTimeoutMs)
-  ) {
-    deadlineApps.set(
-      workspaceFileRequestTimeoutMs,
-      fixture.createApp(fixture.administrator, { workspaceFileRequestTimeoutMs }),
-    );
+  if (deadline !== undefined && !deadlineApps.has(deadline)) {
+    const app = fixture.createApp(fixture.administrator, {
+      workspaceFileRequestTimeoutMs: deadline,
+    });
+    deadlineApps.set(deadline, app);
   }
-  return {
-    app: deadlineApps.get(workspaceFileRequestTimeoutMs) ?? fixture.app,
-    administrator: fixture.administrator,
-    tenantAReader: fixture.tenantAReader,
-    auditSink: fixture.auditSink,
-    createApp: fixture.createApp,
-    state: fixture.state,
-    controller: fixture.controller,
+  return Object.assign(Object.create(fixture), {
+    app: deadlineApps.get(deadline) ?? fixture.app,
     firstAuditEvent: fixture.auditSink.events.length,
-  };
+  });
 }
 
 // Replaces `object[key]` for this case only; the shared object gets its own method back.
 function replaceForCase(context, object, key, value) {
   object[key] = value;
-  context.after(() => {
-    delete object[key];
+  context.after(() => delete object[key]);
+}
+
+async function bootstrap(fixture) {
+  const result = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Workspace file test installation" },
   });
+  assert.equal(result.response.status, 201);
 }
 
 async function createNamespace(fixture, name) {
@@ -172,24 +161,9 @@ async function createAgent(fixture, namespace, name) {
   return { agent: created.payload.data, revision: deployed.payload.data };
 }
 
-// The tenant reader's read grant, on this case's Namespace (the shared app's first Namespace
-// belongs to whichever case ran first).
-function grantTenantReader(fixture, namespace) {
-  const roleId = `tenant-reader-${namespace.id}`;
-  fixture.state.roles.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    permissions: [
-      { action: "read", resourceKind: "namespace" },
-      { action: "read", resourceKind: "agent" },
-      { action: "read", resourceKind: "agent_revision" },
-    ],
-  });
-  bindRole(fixture.state, fixture.tenantAReader.id, {
-    id: roleId,
-    roleId,
-    namespaceId: namespace.id,
-  });
+// A workspace file PUT from the public origin.
+function put(app, path, body, headers = {}) {
+  return request(app, path, { method: "PUT", headers: { origin: publicOrigin, ...headers }, body });
 }
 
 function fileAudits(fixture) {
@@ -233,14 +207,10 @@ test("Agent workspace file routes read and replace fixed files through the selec
     content: `content from ${second.agent.id}\n`,
   });
 
-  const write = await request(
+  const write = await put(
     fixture.app,
     `/namespaces/${namespace.id}/agents/${second.agent.id}/workspace/files/SOUL.md`,
-    {
-      method: "PUT",
-      headers: { origin: publicOrigin },
-      body: { content: "new soul\n" },
-    },
+    { content: "new soul\n" },
   );
   assert.equal(write.response.status, 200);
   assert.deepEqual(write.payload.data, { name: "SOUL.md", size: 9 });
@@ -293,7 +263,12 @@ test("Agent workspace file routes enforce read and operate permissions separatel
   const fixture = await createFixture({ workspaceFilesAccess });
   const namespace = await createNamespace(fixture, "Reader tenant");
   const { agent } = await createAgent(fixture, namespace, "Reader visible Agent");
-  grantTenantReader(fixture, namespace);
+  // The reader's tenant A grant names the first Namespace; this case's is the one to read.
+  for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
+    if (grant.id.endsWith("-tenant-a-reader")) {
+      grant.namespaceId = namespace.id;
+    }
+  }
   const reader = fixture.createApp(fixture.tenantAReader);
 
   const readable = await request(
@@ -303,14 +278,10 @@ test("Agent workspace file routes enforce read and operate permissions separatel
   assert.equal(readable.response.status, 200);
   assert.deepEqual(readable.payload.data, { name: "AGENTS.md", content: "readable\n" });
 
-  const denied = await request(
+  const denied = await put(
     reader,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`,
-    {
-      method: "PUT",
-      headers: { origin: publicOrigin },
-      body: { content: "cannot write\n" },
-    },
+    { content: "cannot write\n" },
   );
   assert.equal(denied.response.status, 403);
   assert.equal(denied.payload.error.code, "FORBIDDEN");
@@ -345,11 +316,12 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
   assert.equal(invalidName.response.status, 400);
   assert.equal(invalidName.payload.error.code, "INVALID_REQUEST");
 
-  const crossSite = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin, "sec-fetch-site": "cross-site" },
-    body: { content: "blocked\n" },
-  });
+  const crossSite = await put(
+    fixture.app,
+    `${path}/USER.md`,
+    { content: "blocked\n" },
+    { "sec-fetch-site": "cross-site" },
+  );
   assert.equal(crossSite.response.status, 403);
   assert.equal(crossSite.payload.error.code, "FORBIDDEN");
   // Session admission refuses cross-site writes too; for reads the route's own check is the
@@ -362,43 +334,30 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
     assert.equal(crossSiteRead.payload.error.code, "FORBIDDEN", site);
   }
 
-  const missingContent = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin },
-    body: {},
-  });
+  const missingContent = await put(fixture.app, `${path}/USER.md`, {});
   assert.equal(missingContent.response.status, 400);
 
-  const unknownField = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin },
-    body: { content: "ok\n", agentId: "caller-selected-native-id" },
+  const unknownField = await put(fixture.app, `${path}/USER.md`, {
+    content: "ok\n",
+    agentId: "caller-selected-native-id",
   });
   assert.equal(unknownField.response.status, 400);
 
-  const nul = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin },
-    body: { content: "bad\u0000value" },
-  });
+  const nul = await put(fixture.app, `${path}/USER.md`, { content: "bad\u0000value" });
   assert.equal(nul.response.status, 400);
   assert.deepEqual(nul.payload.error.details, [{ path: "/content", code: "INVALID_FORMAT" }]);
 
-  const unpairedSurrogate = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin },
-    body: String.raw`{"content":"\ud800"}`,
-  });
+  const unpairedSurrogate = await put(
+    fixture.app,
+    `${path}/USER.md`,
+    String.raw`{"content":"\ud800"}`,
+  );
   assert.equal(unpairedSurrogate.response.status, 400);
   assert.deepEqual(unpairedSurrogate.payload.error.details, [
     { path: "/content", code: "INVALID_VALUE" },
   ]);
 
-  const tooLong = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin },
-    body: { content: "x".repeat(16 * 1024 + 1) },
-  });
+  const tooLong = await put(fixture.app, `${path}/USER.md`, { content: "x".repeat(16 * 1024 + 1) });
   assert.equal(tooLong.response.status, 400);
   assert.equal(
     tooLong.payload.error.details.some((detail) => detail.code === "TOO_LONG"),
@@ -407,11 +366,11 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
 
   // 16 KiB of content, every byte a six-byte escape, then whitespace: one byte over the limit.
   const escapedMaximum = `{"content":"${String.raw`\u0061`.repeat(16 * 1024)}"}`;
-  const encodedTooLarge = await request(fixture.app, `${path}/USER.md`, {
-    method: "PUT",
-    headers: { origin: publicOrigin },
-    body: escapedMaximum + " ".repeat(6 * 16 * 1024 + 1024 + 1 - escapedMaximum.length),
-  });
+  const encodedTooLarge = await put(
+    fixture.app,
+    `${path}/USER.md`,
+    escapedMaximum + " ".repeat(6 * 16 * 1024 + 1024 + 1 - escapedMaximum.length),
+  );
   assert.equal(encodedTooLarge.response.status, 413);
   assert.equal(encodedTooLarge.payload.error.code, "PAYLOAD_TOO_LARGE");
   assert.deepEqual(calls, []);
@@ -447,11 +406,7 @@ test("Agent workspace file PUT admits 16 KiB of content in any JSON encoding", a
       escapeAll === undefined
         ? { content }
         : `{"content":"${[...content].map((character) => escapeAll(character)).join("")}"}`;
-    const write = await request(fixture.app, path, {
-      method: "PUT",
-      headers: { origin: publicOrigin },
-      body,
-    });
+    const write = await put(fixture.app, path, body);
     assert.equal(write.response.status, 200, `${label}: ${JSON.stringify(write.payload)}`);
     assert.equal(writes.at(-1), content, label);
   }
@@ -489,14 +444,10 @@ test("Agent workspace file routes map provider file states without leaking conte
   assert.equal(readUnavailable.response.status, 503);
   assert.equal(readUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
 
-  const writeUnavailable = await request(
+  const writeUnavailable = await put(
     fixture.app,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`,
-    {
-      method: "PUT",
-      headers: { origin: publicOrigin },
-      body: { content: "secret-ish replacement\n" },
-    },
+    { content: "secret-ish replacement\n" },
   );
   assert.equal(writeUnavailable.response.status, 503);
   assert.equal(writeUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -543,14 +494,10 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
   });
 
   const startedAt = Date.now();
-  const result = await request(
+  const result = await put(
     fixture.app,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`,
-    {
-      method: "PUT",
-      headers: { origin: publicOrigin },
-      body: { content: "sent once\n" },
-    },
+    { content: "sent once\n" },
   );
   const elapsedMs = Date.now() - startedAt;
 
@@ -583,19 +530,15 @@ test("Agent workspace file requests are bounded before and during provider acces
   });
   const preNamespace = await createNamespace(preAccess, "Pre-access deadline tenant");
   const preAgent = await createAgent(preAccess, preNamespace, "Pre-access deadline Agent");
-  preAccess.controller.getReadableActiveAgentRevision = async () => new Promise(() => {});
+  replaceForCase(context, preAccess.controller, "getReadableActiveAgentRevision", async () => {
+    return new Promise(() => {});
+  });
 
   const startedBeforeRead = Date.now();
-  let read;
-  try {
-    read = await request(
-      preAccess.app,
-      `/namespaces/${preNamespace.id}/agents/${preAgent.agent.id}/workspace/files/AGENTS.md`,
-    );
-  } finally {
-    // The shared controller looks up active revisions again for the provider half below.
-    delete preAccess.controller.getReadableActiveAgentRevision;
-  }
+  const read = await request(
+    preAccess.app,
+    `/namespaces/${preNamespace.id}/agents/${preAgent.agent.id}/workspace/files/AGENTS.md`,
+  );
   const readElapsedMs = Date.now() - startedBeforeRead;
   assert.equal(read.response.status, 503);
   assert.equal(read.payload.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -631,14 +574,10 @@ test("Agent workspace file requests are bounded before and during provider acces
   });
 
   const startedBeforeWrite = Date.now();
-  const write = await request(
+  const write = await put(
     providerAccess.app,
     `/namespaces/${providerNamespace.id}/agents/${providerAgent.agent.id}/workspace/files/USER.md`,
-    {
-      method: "PUT",
-      headers: { origin: publicOrigin },
-      body: { content: "deadline write\n" },
-    },
+    { content: "deadline write\n" },
   );
   const writeElapsedMs = Date.now() - startedBeforeWrite;
   assert.equal(write.response.status, 503);
