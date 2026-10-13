@@ -20,8 +20,9 @@ integer, hex, and leading zeros used to allow egress to a different address.
 Startup also refuses an unspecified host (`0.0.0.0`, `[::]`), which names no
 destination, and an IPv4-mapped IPv6 host (`[::ffff:10.42.0.15]`), whose egress
 never reached the proxy. Profile preflight refuses `0.0.0.0` in
-`channels.runtimeProxyUrl`. Preflight, the chart and API startup
-(`CHANNEL_DIRECTORY_PROXY_INVALID`) also refuse it as the Slack directory proxy.
+`channels.runtimeProxyUrl`. Preflight, the chart and API startup also refuse it in the
+Slack directory proxy (`channels.directoryProxyUrl`, `api.channelDirectoryProxyUrl`) with
+`... must not use host 0.0.0.0, which names no proxy address`.
 
 **Who is affected.** Installations whose `channels.proxyUrl` uses one of those
 spellings. Canonical decimals, other IPv6 literals, and a managed Service proxy URL
