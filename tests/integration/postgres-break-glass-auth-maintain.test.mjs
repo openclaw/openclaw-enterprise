@@ -213,7 +213,10 @@ test(
         );
         assert.equal((await currentSession(app, signedIn.cookie)).user.id, admin.id);
         const { callback } = await githubSignIn(app, origin, memberSubject, address());
-        assert.equal(callback.headers.location, "/console/?authError=github");
+        assert.equal(
+          callback.headers.location,
+          "/console/?authError=github&authReason=provider-unavailable",
+        );
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 200);
         await app.close();
         app = undefined;

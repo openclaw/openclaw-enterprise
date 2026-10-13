@@ -207,8 +207,9 @@ Denials after `consumeAttempt` matches are audited as
 `EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
 `apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
-lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`, whose response code the
-callback route turns into the Console's `authReason`;
+lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
+the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
+`authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for

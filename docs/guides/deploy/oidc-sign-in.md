@@ -196,30 +196,20 @@ afterwards. To add someone who should sign in only through the IdP, follow
   new instance: attach every identity again, then detach the old methods. Sessions
   signed in through the old instance, or through OIDC once it is removed, end on their
   next request. Detaching an old method ends every session of that account.
-- To rotate the client secret, close ingress and stop writers using the
-  [stopped-maintenance procedure](auth-maintenance.md#stop-every-writer). Coordinate
-  the replacement secret in the IdP and the protected OCE Secret, then restart the
-  single API controller to load its environment. Verify new OIDC sign-in and recovery
-  password sign-in through restricted access before restoring ingress. Once the changed configuration
-  loads, attachments remain and pending sign-ins are invalidated.
-- The API reads the JWKS on every callback, so IdP key rotation needs no restart.
-- OCE does not learn when the IdP disables someone: that person's OCE sessions continue
-  until they expire (at most 8 hours). For offboarding, disable the OCE account to end
-  its sessions and prevent further human sign-in. Separately revoke applicable
-  [service keys](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key).
-- Sign-out is local: while the IdP session lives, one click signs in again.
-- An IdP outage, blocked egress or a rejected ID token fails that sign-in closed and
-  returns the browser to `/console/?authError=oidc`; the recovery account's password
-  still signs in. OIDC shares the external sign-in budgets with GitHub and Google.
-  An IdP that cannot answer, or that refuses the configured client
-  (`cause: client_rejected`), also logs `authentication.provider-unavailable-warning`
-  with the failing step and cause; see the
-  [external sign-in reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+- Rotating only the client secret needs one API restart and keeps attachments; signing-key
+  rotation needs none. See [Rotate the client secret](oidc-operations.md#rotate-the-client-secret).
+- An IdP outage fails sign-in closed while sessions and the recovery password keep
+  working. When the IdP is down before the person reaches it, OCE sees nothing; when it
+  fails after, the Console says sign-in is unavailable. OIDC shares the external sign-in
+  budgets with GitHub and Google. See [Read an outage](oidc-operations.md#read-an-outage).
+- OCE does not learn when the IdP disables someone, and sign-out is local. For
+  offboarding, see [Offboard a person](oidc-operations.md#offboard-a-person).
 
 ## Related
 
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
 - [Google sign-in](google-sign-in.md)
+- [Operate OIDC sign-in](oidc-operations.md)
 - [Keycloak for OIDC sign-in](oidc-keycloak.md)
 - [Sign-in maintenance](auth-maintenance.md)
 - [Production settings](../../reference/settings/production.md#oidc-sign-in)

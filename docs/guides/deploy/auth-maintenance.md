@@ -63,6 +63,27 @@ kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
 Close ingress first so users see a maintenance response rather than errors, and
 pause anything that would scale the Deployments back up.
 
+## Close ingress and use restricted access
+
+Sign-in procedures say to close ingress and to verify through restricted access. The
+chart does not own the public route to the Console; your Gateway, Ingress controller
+or load balancer does.
+
+- **Close ingress:** stop serving ordinary users at that layer, for example by
+  answering the Console host with a maintenance page or `503`, or by removing its
+  route. Leave the API Service alone.
+- **Restricted access:** a path only operators can use that still reaches the
+  canonical HTTPS origin (`OCC_AUTH_BASE_URL`): the same host name on port 443, with
+  the same certificate. For example, keep the route but admit only operator source
+  addresses, or serve the same host name on a private listener and point operator
+  machines at it with a DNS override (a hosts entry, or `curl --resolve`).
+
+A `kubectl port-forward` to the API cannot verify sign-in. The API Service speaks plain
+HTTP behind your ingress, the session cookie is `Secure` with the `__Host-` prefix, the
+API compares `Origin` exactly, and an IdP returns the browser to the registered
+redirect URI on the canonical host, never to a forwarded port. Use a port-forward only
+for reads that need no session, such as `GET /api/auth/providers`.
+
 ## Run the command
 
 Run it from the installed controller image as a one-off Pod. The labels and
@@ -92,7 +113,8 @@ the Secret after verifying sign-in. The password never appears in arguments,
 output, or audit.
 
 After a change, run `status`, scale the worker and API back to one replica,
-verify sign-in through restricted access, and reopen ingress.
+verify sign-in through [restricted access](#close-ingress-and-use-restricted-access),
+and reopen ingress.
 
 ## Deactivate external sign-in
 
