@@ -8916,7 +8916,8 @@ test("a Preset header name that waits on a variable is checked once filled", () 
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
-  const invalidName = /^Configuration setting \S+ must use valid HTTP header names, not "[\w-]*…"\.$/;
+  const invalidName =
+    /^Configuration setting \S+ must use valid HTTP header names, not "[\w-]*…"\.$/;
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
   // The Preset save's render: the values with defaults, and where it left placeholders.
   const preset = (values) => {
