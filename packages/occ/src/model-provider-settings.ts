@@ -159,23 +159,35 @@ export function isHttpFieldName(name: string): boolean {
 
 // A header whose last hyphen-, underscore- or dot-separated word names a credential:
 // Authorization, Authentication, Proxy-Authorization, x-auth-token, cookie, x-client-secret,
-// x-credentials, x-passphrase, x-signature, x-bearer, X-JWT-Assertion, x-otp, x-pin, x-pwd and
-// the like, in the singular or the plurals listed. Vendors and gateways each pick their own
+// x-credentials, x-passphrase, x-signature, x-bearer, X-JWT-Assertion, x-otp, x-pin, x-pwd,
+// x-vercel-protection-bypass and the like, in the singular or the plurals listed. Vendors and gateways each pick their own
 // credential header, so a fixed list would miss the next one; matching the whole last word
 // keeps names such as x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry
 // no credential, out.
-// A trailing version word, as in x-hub-signature-256 or x-api-key-v2, is skipped.
-const CREDENTIAL_HEADER_WORD =
-  /(?:^|[-_.])(?:assertions?|auths?|authentications?|authorizations?|bearers?|cookies?|credentials?|hmacs?|jwts?|licen[cs]es?|otps?|pass|passcode|passphrase|passwords?|pin|pwd|secrets?|signatures?|tokens?)(?:[-_.]v?\d+)?$/i;
+// Up to two trailing algorithm words and a trailing version word, as in x-hub-signature-256,
+// X-Signature-Ed25519, X-HMAC-SHA256, X-Signature-RS256 or x-api-key-v2, are skipped.
+const CREDENTIAL_HEADER_SUFFIX = String.raw`(?:[-_.](?:sha[-_.]?\d+|[ehpr]s\d{3}|ed25519|ed448|rsa|ecdsa|md5|blake2[bs]?)){0,2}(?:[-_.]v?\d+)?$`;
+const CREDENTIAL_HEADER_WORD = new RegExp(
+  String.raw`(?:^|[-_.])(?:assertions?|auths?|authentications?|authorizations?|bearers?|cookies?|credentials?|hmacs?|jwts?|licen[cs]es?|otps?|pass|passcode|passphrase|passwords?|pin|protection[-_.]bypass|pwd|secrets?|signatures?|tokens?)` +
+    CREDENTIAL_HEADER_SUFFIX,
+  "i",
+);
 // Any name ending in `key` or `keys` is a credential too (x-api-key, apikey, x-auth-key,
 // dd-application-key, x-portkey-virtual-key, a bare key): vendors name keys too freely to
-// list. A key's id or name (x-api-key-id) ends in another word.
-const CREDENTIAL_HEADER_KEY = /keys?(?:[-_.]v?\d+)?$/i;
+// list. A version glued to the key (x-api-key2, x-api-keyv2) is skipped too. A key's id or name
+// (x-api-key-id) ends in another word.
+const CREDENTIAL_HEADER_KEY = new RegExp(
+  String.raw`(?:key(?:v?\d+)?|keys)` + CREDENTIAL_HEADER_SUFFIX,
+  "i",
+);
 // Keys that name no credential: idempotency, cache, deduplication, partition, shard and sort
 // keys. A request or routing key can be a credential (an events API routing key is), so it is
 // refused like any other key.
-const NON_CREDENTIAL_KEY =
-  /(?:^|[-_.])(?:cache|dedup(?:e|lication)?|idempoten(?:cy|t)|partition|shard|sort)[-_.]?keys?(?:[-_.]v?\d+)?$/i;
+const NON_CREDENTIAL_KEY = new RegExp(
+  String.raw`(?:^|[-_.])(?:cache|dedup(?:e|lication)?|idempoten(?:cy|t)|partition|shard|sort)[-_.]?(?:key(?:v?\d+)?|keys)` +
+    CREDENTIAL_HEADER_SUFFIX,
+  "i",
+);
 
 /** Whether a model provider header with this name carries a credential. */
 export function isCredentialHeaderName(name: string): boolean {

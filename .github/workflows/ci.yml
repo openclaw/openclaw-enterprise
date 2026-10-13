@@ -21,6 +21,10 @@ concurrency:
 env:
   CI: "1"
   NODE_VERSION: "24.16.0"
+  # CI Impact and CI Required only run the impact and aggregation scripts, so
+  # they take the runner's cached Node 24 instead of downloading NODE_VERSION
+  # (about 5 s each, on the critical path at both ends of the run).
+  GATE_NODE_VERSION: "24"
 
 jobs:
   impact:
@@ -38,7 +42,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.GATE_NODE_VERSION }}
       - id: select
         env:
           IMPACT_ACTION: select
@@ -114,11 +118,12 @@ jobs:
       # K3s policy enforcement disabled, production-network-access fails
       # every deny case there. It ran these lanes about a minute faster than
       # ubuntu-22.04 (4 CPUs). Both Image Runtime Startup lanes use 32vcpu
-      # too: their preparation is faster there, and Startup 2 runs its three
+      # too: their preparation is faster there, and Startup 2 runs its four
       # files at once. Image Model Probes stays on 16vcpu: its one case waits
       # out the 110 s model probe cap at 500m on any runner. PostgreSQL
       # Application uses 32vcpu too: it runs up to eight of its nine files at
-      # once, one per CPU (16vcpu caps it at four). The other lanes
+      # once, one per CPU (16vcpu caps it at four). Keycloak OIDC stays on
+      # 8vcpu, the runner it soaked on before joining CI Required. The other lanes
       # use blacksmith 16vcpu, which exposes 4 CPUs to the job (8vcpu exposes
       # 2) and rarely waits for a runner (on 10-08/09, 15 % of 8vcpu jobs
       # waited over a minute, none on 16vcpu). A label no runner serves
@@ -149,7 +154,8 @@ jobs:
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"}
+              {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"}
             ]
         run: |
           table=$(jq -ce 'if type == "array" and length > 0 then . else error("invalid lane table") end' <<<"$LANE_TABLE")
@@ -380,25 +386,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
 
-  # Real Keycloak OIDC proof in full-mode PR CI and on pushes to main.
-  # Deliberately not a CI Required dependency until it has soaked on main.
-  keycloak-oidc:
-    name: Keycloak OIDC
-    needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/run-ci-lane
-        with:
-          lane: keycloak-oidc
-          profile: postgres
-          node-version: ${{ env.NODE_VERSION }}
-          artifact-prefix: keycloak-results
-
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
   first-agent-smoke:
@@ -500,7 +487,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.GATE_NODE_VERSION }}
       - name: Verify selected mode
         env:
           IMPACT_ACTION: verify

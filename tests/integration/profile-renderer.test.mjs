@@ -1672,12 +1672,20 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
     github.preflight.warnings.join("\n"),
     /controlPlane\.trustedProxy is not set: .*external sign-in starts have no per-client limit/,
   );
+  assert.match(
+    github.preflight.warnings.join("\n"),
+    /trustedProxy is not set: .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
+  );
   assert.doesNotMatch(github.values, /trustedProxy:/);
   const password = render("openclaw", baseInput());
   assert.equal(password.summary.ok, true);
   assert.match(
     password.preflight.warnings.join("\n"),
     /controlPlane\.trustedProxy is not set: failed password sign-ins are limited per email only/,
+  );
+  assert.match(
+    password.preflight.warnings.join("\n"),
+    /trustedProxy is not set: failed password .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
   );
 });
 

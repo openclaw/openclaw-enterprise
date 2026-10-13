@@ -346,7 +346,9 @@ overlapping old/new public trust bundle and restart the API to load it before
 switching Envoy's certificate. Remove the old root only after no serving
 certificate depends on it, including after a move to an external issuer, which
 leaves the generated root Secret behind. Any private root bundle change requires an API
-restart because Node reads `NODE_EXTRA_CA_CERTS` only at process startup. This
+restart because Node reads `NODE_EXTRA_CA_CERTS` only at process startup.
+With [private IdP trust](oidc-sign-in.md#trust-a-private-idp-ca), replace the API Pod
+to rebuild its combined bundle. This
 integration uses API-key authentication over WSS; the pinned native client does
 not expose mTLS client-certificate options.
 
