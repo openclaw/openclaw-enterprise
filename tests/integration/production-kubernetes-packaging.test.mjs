@@ -697,6 +697,51 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
   );
 });
 
+test(
+  "the chart refuses cluster and execution API ports NetworkPolicy cannot use",
+  tooling,
+  async () => {
+    for (const port of ["0", "010", "65536", "9.5"]) {
+      await assert.rejects(
+        render({ "cluster.port": port }),
+        /cluster\.port must be an integer TCP port/,
+      );
+    }
+    const executionValues = {
+      "executionCluster.enabled": "true",
+      "executionCluster.apiKubeconfigSecretName": "execution-api",
+      "executionCluster.workerKubeconfigSecretName": "execution-worker",
+      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    };
+    for (const port of ["0", "010", "65536", "9.5"]) {
+      await assert.rejects(
+        render({ ...executionValues, "executionCluster.apiPort": port }),
+        /executionCluster\.apiPort must be an integer TCP port/,
+      );
+    }
+    await assert.rejects(
+      render({}, { strings: { "cluster.port": "9223372036854775808" } }),
+      /cluster\.port must be an integer TCP port/,
+    );
+    await assert.rejects(
+      render(
+        { ...executionValues },
+        { strings: { "executionCluster.apiPort": "99999999999999999999" } },
+      ),
+      /executionCluster\.apiPort must be an integer TCP port/,
+    );
+    const objects = await resources(
+      (await render({ ...executionValues, "executionCluster.apiPort": "6443" })).stdout,
+    );
+    const policy = objects.find(
+      (item) =>
+        item.kind === "NetworkPolicy" &&
+        item.metadata.name === "openclaw-enterprise-execution-api-egress",
+    );
+    assert.equal(policy.spec.egress[0].ports[0].port, 6443);
+  },
+);
+
 function routeNamespaceLabel(namespace, gatewayName) {
   return createHash("sha256").update(`${namespace}/${gatewayName}`).digest("hex").slice(0, 12);
 }

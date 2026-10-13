@@ -10,8 +10,8 @@ last_updated_session: "authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93"
 
 Prepare a fresh protected bootstrap PVC; install Helm with approved images,
 PostgreSQL/authentication credentials, trusted Installation YAML and network
-policies. Wait for private API/worker readiness, then authenticate `/installation`
-with the retrieved service key. Tenant deployment/model-backed TUI proof remains separate.
+policies. Wait for private API/worker readiness; authenticate `/installation`
+with the service key. Tenant deployment/model-backed TUI proof remains separate.
 
 Commands: [deployment guide](../guides/deploy.md).
 
@@ -112,9 +112,9 @@ installs initialization isolation before the Job. It and later workload policies
 grant configured DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` validates routing ports and hostnames against Compute. `database.port`
-must be decimal 1–65535 without leading zeros. Empty hostnames retain Service DNS
-for Gateway listeners and Certificate SANs.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` validates routing ports and hostnames against Compute. `database.port`,
+`cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
+Empty hostnames retain Service DNS for Gateway listeners and Certificate SANs.
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 

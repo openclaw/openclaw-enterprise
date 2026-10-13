@@ -1210,6 +1210,45 @@ test(
 );
 
 test(
+  "a refused admission keeps a reservation whose fence did not commit and the next recovery fences it",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = await boundControlFixture(t, {}, defaultRegistryRepositories);
+    const { inputFor, send, freshId, receipts } = fixture;
+    const receipt = async (id) =>
+      receipts.state.read((view) => view.repositorySessions.findBrokerReceipt(id));
+    const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
+    const id = freshId();
+    await receipts.prepare(id, invalid.repositoryRef, invalid.durationSeconds);
+    const transact = receipts.state.transact;
+    let calls = 0;
+    receipts.state.transact = async function (work) {
+      calls += 1;
+      // The first transaction reserves the receipt. The second is the fence.
+      if (calls === 2) {
+        throw new Error("fixture-unavailable");
+      }
+      return transact.call(this, work);
+    };
+    t.after(() => {
+      receipts.state.transact = transact;
+    });
+    // Reservation commits, then the fence transaction fails. The refusal is still
+    // invalid input, and the receipt must stay reserved for a later fence.
+    const missing = { status: 404, body: { error: "admission-missing" } };
+    assert.deepEqual(await send(invalid, id), {
+      status: 400,
+      body: { error: "invalid-request" },
+    });
+    assert.equal((await receipt(id)).state, "reserved");
+    receipts.state.transact = transact;
+    assert.deepEqual(await send({ ...invalid, recoverOnly: true }, id), missing);
+    assert.equal((await receipt(id)).state, "fenced");
+    assert.deepEqual(await send(invalid, id), missing);
+  },
+);
+
+test(
   "admission recovery retains unresolved cleanup beyond freshness and session expiry",
   { timeout: 20000 },
   async (t) => {
