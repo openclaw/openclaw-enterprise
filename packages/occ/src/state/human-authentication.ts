@@ -248,10 +248,14 @@ export class PostgresHumanAuthentication {
     return (await this.state.queryInTransaction(unit, sql, parameters)).rows as Row[];
   }
 
-  private async lockUser(unit: PlatformUnitOfWork, userId: string): Promise<Row> {
+  private async lockUser(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    mode: "update" | "share" = "update",
+  ): Promise<Row> {
     const [user] = await this.query(
       unit,
-      `SELECT ${userColumns} FROM occ."user" u WHERE u.id = $1 FOR UPDATE`,
+      `SELECT ${userColumns} FROM occ."user" u WHERE u.id = $1 FOR ${mode === "share" ? "SHARE" : "UPDATE"}`,
       [userId],
     );
     if (user === undefined) {
@@ -859,11 +863,16 @@ export class PostgresHumanAuthentication {
     unit: PlatformUnitOfWork,
     actor: HumanAuthenticationActor,
     userIds: readonly string[],
+    intent: "account-operation" | "session-hold" = "account-operation",
   ): Promise<void> {
-    await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
-    await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
+    // Account operations own bounded acquisition. A session hold borrows the
+    // caller's transaction limits and shares the user against revocation.
+    if (intent === "account-operation") {
+      await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
+      await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
+    }
     for (const id of [...new Set([...userIds, actor.userId])].sort()) {
-      await this.lockUser(unit, id);
+      await this.lockUser(unit, id, intent === "session-hold" ? "share" : "update");
     }
     const [current] = await this.query(
       unit,
@@ -900,6 +909,7 @@ export class PostgresHumanAuthentication {
         principalId: await this.principal(unit, userId),
       },
       [],
+      "session-hold",
     );
   }
 

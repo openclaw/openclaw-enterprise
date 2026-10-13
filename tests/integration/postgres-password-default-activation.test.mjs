@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import {
   composeProductionSignIn,
@@ -203,9 +204,18 @@ test(
       });
       assert.equal(createdNamespace.statusCode, 201, createdNamespace.body);
       const namespaceId = createdNamespace.json().data.id;
+      const independentNamespace = await app.inject({
+        method: "POST",
+        url: "/namespaces",
+        headers: revoking,
+        payload: { name: "Independent guarded IAM commit" },
+      });
+      assert.equal(independentNamespace.statusCode, 201, independentNamespace.body);
+      const independentId = independentNamespace.json().data.id;
       const blocker = await pool.connect();
       let released = false;
       let policy;
+      let settledPolicy;
       let revoke;
       try {
         await blocker.query("BEGIN");
@@ -213,15 +223,20 @@ test(
           rows: [{ pid }],
         } = await blocker.query("SELECT pg_backend_pid() AS pid");
         await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
-        policy = app.inject({
-          method: "POST",
-          url: `/namespaces/${namespaceId}/iam/roles`,
-          headers: assigning,
-          payload: {
-            name: "Guarded commit",
-            permissions: [{ action: "read", resourceKind: "agent" }],
-          },
-        });
+        policy = app
+          .inject({
+            method: "POST",
+            url: `/namespaces/${namespaceId}/iam/roles`,
+            headers: assigning,
+            payload: {
+              name: "Guarded commit",
+              permissions: [{ action: "read", resourceKind: "agent" }],
+            },
+          })
+          .then((response) => {
+            settledPolicy = response;
+            return response;
+          });
         const protectedPid = await waitFor(
           "the guarded policy transaction waiting for its Namespace",
           async () => {
@@ -232,6 +247,22 @@ test(
             return waiting.rowCount > 0 ? waiting.rows[0].pid : undefined;
           },
         );
+        // The retained session must not impose authentication's five-second
+        // lock limit on an otherwise valid Namespace policy transaction.
+        await delay(5_500);
+        assert.equal(settledPolicy?.statusCode, undefined, settledPolicy?.body);
+        // A different session of the same person can write another Namespace.
+        // Both user shares still exclude account/method revocation.
+        const independent = await app.inject({
+          method: "POST",
+          url: `/namespaces/${independentId}/iam/roles`,
+          headers: revoking,
+          payload: {
+            name: "Independent commit",
+            permissions: [{ action: "read", resourceKind: "agent" }],
+          },
+        });
+        assert.equal(independent.statusCode, 201, independent.body);
         // The account owner validates method/account versions and locks the same
         // user. Revocation must not invalidate either admitted session mid-commit.
         revoke = app.inject({
@@ -265,6 +296,25 @@ test(
           headers: adminHeaders,
         });
         assert.equal(removed.statusCode, 204, removed.body);
+        assert.equal(
+          (
+            await app.inject({
+              method: "DELETE",
+              url: `/namespaces/${independentId}/iam/roles/${independent.json().data.id}`,
+              headers: adminHeaders,
+            })
+          ).statusCode,
+          204,
+        );
+        t.diagnostic(
+          JSON.stringify({
+            scenario: "guarded-retention",
+            namespaceWaitMs: 5500,
+            independentSessionWrite: independent.statusCode,
+            policyCommit: committed.statusCode,
+            accountRevocation: revoked.statusCode,
+          }),
+        );
       } finally {
         if (!released) {
           await blocker.query("ROLLBACK");
