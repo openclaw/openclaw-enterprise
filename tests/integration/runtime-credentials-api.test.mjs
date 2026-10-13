@@ -99,7 +99,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
 
 // Namespace setup is outside these admission cases; no Kubernetes cluster is contacted.
 function createKubernetesComputeDriver() {
-  const computeDriver = createTestKubernetesComputeDriver("runtime-credential-kubernetes");
+  const computeDriver = createTestKubernetesComputeDriver("runtime-credential-compute");
   computeDriver.ensureNamespace = async (namespace) => ({
     namespaceId: namespace.id,
     namespaceReady: true,
@@ -117,8 +117,8 @@ function createKubernetesComputeDriver() {
 // Driver's own id never reaches OCC.
 const running = {};
 const apps = new Map();
-const listening = [];
-after(() => Promise.all(listening.map((app) => app.close())));
+const cleanup = [];
+after(() => Promise.all(cleanup.map((step) => step())));
 
 function forwarder(identity, target) {
   return new Proxy(identity, {
@@ -138,6 +138,7 @@ async function createSharedApp(implementation) {
   // The port is part of the auth base URL and origin, so hold it until the app binds it; a
   // released probe port can be taken by another socket while the account and app are built.
   const reservation = await reservePort();
+  cleanup.push(reservation.release);
   const origin = `http://127.0.0.1:${reservation.port}`;
   const auth = createControllerAuth({
     installationId,
@@ -224,7 +225,7 @@ async function createSharedApp(implementation) {
       port: reservation.port,
       reusePort: reservation.reusePort,
     });
-    listening.push(app);
+    cleanup.push(() => app.close());
   } finally {
     await reservation.release();
   }
