@@ -4482,6 +4482,111 @@ revisionTest(
   },
 );
 
+revisionTest(
+  "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
+  async (fixture) => {
+    // Two OAuth deployments see their bootstrap running, then the Kubernetes API fails on every
+    // pass until the deadline. The pass that expires sees only the outage, so the work's latest
+    // readiness evidence decides: a bootstrap last seen running is retired with the failure
+    // (finding 1165), while a deployment that got past it keeps its runtime for diagnosis.
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
+    // Readiness each pass reports, in order; once exhausted, every pass fails transiently.
+    const script = new Map([
+      [running.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [progressed.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", undefined]],
+    ]);
+    const passes = new Map([
+      [running.candidate.idempotencyKey, []],
+      [progressed.candidate.idempotencyKey, []],
+    ]);
+    const timeoutMs = 5_000;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          const steps = script.get(revision.id);
+          if (steps === undefined) {
+            return fixture.compute.prepareRevision(revision);
+          }
+          if (steps.length === 0) {
+            throw new TransientDependencyError(
+              "kubernetes_api",
+              "unavailable",
+              "The Kubernetes API answered HTTP 503.",
+            );
+          }
+          const pendingReason = steps.shift();
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            ...(pendingReason === undefined ? {} : { pendingReason }),
+          };
+        },
+      },
+      {
+        convergenceTimeoutMs: timeoutMs,
+        emit: (event) => {
+          if (event.event === "worker.completed" && passes.has(event.workId)) {
+            passes.get(event.workId).push({ outcome: event.outcome, code: event.code });
+          }
+        },
+      },
+    );
+    const cleanupRows = async (candidate) =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+
+    for (const { candidate } of [running, progressed]) {
+      await fixture.work(candidate, "failed_permanent", 30_000);
+    }
+    // Every pass before the last waited; the scripted readiness came before the deadline, so
+    // the outage, not the deadline, ends each deployment.
+    for (const [{ candidate }, readiness] of [
+      [running, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [progressed, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", "REVISION_INCOMPLETE"]],
+    ]) {
+      const seen = passes.get(candidate.idempotencyKey);
+      assert.deepEqual(
+        seen.slice(0, readiness.length),
+        readiness.map((code) => ({ outcome: "pending", code })),
+      );
+      assert.ok(seen.length > readiness.length + 1, "the outage spans several passes");
+      assert.ok(
+        seen
+          .slice(readiness.length, -1)
+          .every(
+            ({ outcome, code }) => outcome === "pending" && code === "KUBERNETES_API_UNAVAILABLE",
+          ),
+      );
+      assert.deepEqual(seen.at(-1), {
+        outcome: "permanent",
+        code: "KUBERNETES_API_UNAVAILABLE",
+      });
+    }
+    const failedStatus = await fixture.deploymentStatus(running.owner, running.candidate);
+    assert.equal(failedStatus.status, "failed");
+    assert.equal(failedStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
+    // The bootstrap last seen running goes with the failure: its Job and seed Secret (the OAuth
+    // token bundle) cannot outlive the failed revision.
+    assert.equal((await cleanupRows(running.candidate)).length, 1);
+    assert.notEqual(failedStatus.cleanup, null);
+    await waitFor("the expired bootstrap's revision cleanup", async () => {
+      const [row] = await cleanupRows(running.candidate);
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    // A deployment whose bootstrap finished keeps its runtime, as at a plain deadline.
+    assert.deepEqual(await cleanupRows(progressed.candidate), []);
+    const keptStatus = await fixture.deploymentStatus(progressed.owner, progressed.candidate);
+    assert.equal(keptStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
+    assert.equal(keptStatus.cleanup, null);
+  },
+);
+
 // The default 900-second deadline stays in force: an unready runtime without
 // failure evidence remains pending, and the held rejection ends the deployment.
 for (const scenario of [

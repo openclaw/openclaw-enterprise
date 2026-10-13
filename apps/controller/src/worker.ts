@@ -169,6 +169,12 @@ const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   ...Object.values(REVISION_PENDING_CODES),
 ]);
 
+// A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
+// An active revision's source is already consumed.
+function isCandidateDeployment(claim: ClaimedWork): boolean {
+  return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
+}
+
 // A refused candidate whose stop keeps failing waits on that stop, which can block the serial
 // worker for minutes (Kubernetes waits for gateway and Agent Pods to terminate). Each failed stop
 // doubles its recheck from the readiness cadence up to 5 minutes, and waits at least four times
@@ -4356,6 +4362,23 @@ export class ControllerWorker {
     });
   }
 
+  /**
+   * Whether a candidate's deployment work last saw its OAuth bootstrap still running: of its
+   * readiness evidence, the newest is HARNESS_CREDENTIAL_BOOTSTRAP_PENDING. Transient dependency
+   * failures, retries and lost claims say nothing about the bootstrap and are skipped. A later
+   * readiness code wins, as it would for a pass that saw the deployment at the deadline: a
+   * runtime that failed by itself stays for diagnosis.
+   */
+  private async bootstrapLastPending(claim: ClaimedWork): Promise<boolean> {
+    if (!isCandidateDeployment(claim)) {
+      return false;
+    }
+    const latest = await this.queue.findWorkAttempt(claim.idempotencyKey, [
+      ...REVISION_READINESS_CODES,
+    ]);
+    return latest?.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
+  }
+
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
@@ -4398,7 +4421,16 @@ export class ControllerWorker {
       };
     } else if (expired && result.dependencyFailure !== undefined) {
       // The dependency was still failing at the deadline: name it, not the deadline.
-      resolved = { outcome: "permanent", code: result.code };
+      resolved = {
+        outcome: "permanent",
+        code: result.code,
+        // This pass could not see the bootstrap, so the work's latest readiness evidence
+        // stands in: a bootstrap last seen running is retired with the failure, as below
+        // (finding 1165).
+        ...((await this.bootstrapLastPending(claim))
+          ? { cleanupFailedPreparation: true as const }
+          : {}),
+      };
     } else if (expired) {
       resolved = {
         ...result,
@@ -4409,8 +4441,7 @@ export class ControllerWorker {
         // its bootstrap Job and seed Secret (the OAuth token bundle) go with the failure. Only
         // a candidate's own deployment work can observe a bootstrap; an active revision's
         // source is already consumed.
-        ...(result.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" &&
-        claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`
+        ...(result.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" && isCandidateDeployment(claim)
           ? { cleanupFailedPreparation: true as const }
           : {}),
       };
