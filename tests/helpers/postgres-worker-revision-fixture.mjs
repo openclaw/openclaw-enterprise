@@ -134,37 +134,17 @@ export async function disposeStep(step, limitMs, work) {
   }
 }
 
-// One template per owning test file; importing this helper registers no tests or hooks.
+// Importing this helper registers no tests or hooks.
 // `exitBackstopMs` replaces the abandoned-step backstop for the fixture's own exit tests.
 export function createWorkerRevisionFixtures(
   testFile,
   { exitBackstopMs: backstopMs = abandonedExitBackstopMs } = {},
 ) {
-  // Each test owns a database (Work claims span one), copied from one migrated template
-  // per file rather than migrated again. Nothing connects to the template itself. A failed
-  // template preparation is not cached: the next test retries it, and cleanup ignores it.
-  // The first test that runs prepares the template within its own timeout: a migration, plus
-  // waits for the CI state lock behind the other files' migrations, which grow with the number
-  // of files that start together. A 4 s test took 10-30 s on CI as a file's first test (finding
-  // 1209), so give a file's first test 60 s or more.
-  let template;
   // The owning file registers this as a root after hook: `after(cleanup)`.
-  async function cleanup(context) {
-    let failed = true;
-    try {
-      const prepared = await template?.catch(() => undefined);
-      if (prepared !== undefined) {
-        const limitMs = disposeLimitsMs["drop database"];
-        await disposeStep("drop template database", limitMs, () =>
-          prepared.cleanup({ lockTimeoutMs: limitMs }),
-        );
-      }
-      failed = false;
-    } finally {
-      exitBackstopMs ??= backstopMs;
-      exitAfterBackstop();
-      exitAfterRootHooks(failed ? undefined : context);
-    }
+  function cleanup(context) {
+    exitBackstopMs ??= backstopMs;
+    exitAfterBackstop();
+    exitAfterRootHooks(context);
   }
 
   async function prepareDatabase(context, limitsMs = {}) {
@@ -173,18 +153,22 @@ export function createWorkerRevisionFixtures(
       process.env.OPENCLAW_ENTERPRISE_CI_STATE,
       "Worker tests require an owned PostgreSQL fixture; see docs/testing/postgresql.md.",
     );
-    const fixture = {
+    // Each test owns a database (Work claims span one), a copy of the migrated database prepared
+    // for this file (OCC_TEST_DATABASE_URL), its template. Nothing in a revision file connects to
+    // that database: PostgreSQL refuses to copy a database that has sessions, and a write to it
+    // would reach every later copy. Whoever prepared it drops it after the file. A copy holds the
+    // CI state lock briefly, but a file's first test still waits for that lock while the runner
+    // migrates the files that start with it. Before, each file migrated a template of its own
+    // under the lock as well, and a 4 s first test took 10-30 s on CI (findings 1209, 1270).
+    assert.ok(
+      process.env.OCC_TEST_DATABASE_URL,
+      "Worker tests copy the database prepared for their file; see docs/testing/postgresql.md.",
+    );
+    const prepared = await prepareFile({
       lane: "postgres-application",
       file: fileURLToPath(testFile),
       statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
-    };
-    template ??= prepareFile(fixture).catch((error) => {
-      template = undefined;
-      throw error;
-    });
-    const prepared = await prepareFile({
-      ...fixture,
-      template: (await template).env.OCC_TEST_DATABASE_URL,
+      template: process.env.OCC_TEST_DATABASE_URL,
     });
     const pools = new Set();
     const workers = new Set();
