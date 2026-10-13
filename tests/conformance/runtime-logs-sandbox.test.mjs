@@ -475,6 +475,31 @@ test("sandbox follow after an empty first window reads no older lines", async ()
   assert.equal(gateway.requests.at(-1).sinceTime, windowStart);
 });
 
+test("sandbox follow delivers a remembered line rewritten in place, with no gap, while older lines remain", async () => {
+  const { gateway, read } = await sandboxFixture();
+  gateway.state.lines = [allowed(1, "a"), allowed(9, "b")];
+  const first = await read("source=sandbox");
+  assert.equal(first.status, 200, first.text);
+  // The ring still holds the older line, so a rewritten newest line is new, not a lost buffer.
+  gateway.state.lines[1] = allowed(9, "c");
+  const next = await read("source=sandbox", first.data.cursor);
+  assert.equal(next.status, 200, next.text);
+  assert.deepEqual(hosts(next.data), ["c.example.com"]);
+});
+
+test("a first sandbox read of a full tail in one millisecond leads with a window notice", async () => {
+  const { gateway, read } = await sandboxFixture();
+  // The rule fires on any full single-time tail: identical occurrences could roll through it
+  // without a visible change.
+  gateway.state.lines = Array.from({ length: 5 }, (_, index) => allowed(8, `s${index}`));
+  const first = await read("source=sandbox&tailLines=5");
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(
+    first.data.records.map((record) => record.reason ?? record.type),
+    ["window_exceeded", "line", "line", "line", "line", "line"],
+  );
+});
+
 test("sandbox follow delivers late-stamped lines and counts repeats in one millisecond", async () => {
   const { gateway, read } = await sandboxFixture();
   const page = async (cursor) => {
@@ -864,6 +889,7 @@ test("a Harness the gateway restarts is told apart from a first start", () => {
     { phase: "SANDBOX_PHASE_STARTING" },
     { phase: "SANDBOX_PHASE_STARTING", exitCode: 1 },
     { phase: "SANDBOX_PHASE_STARTING", restartCount: 2 },
+    { phase: "SANDBOX_PHASE_STARTING", exitCode: 1, restartCount: 0 },
     { phase: "SANDBOX_PHASE_PROVISIONING", exitCode: 1, restartCount: 2 },
   ]) {
     assert.deepEqual(harnessObservation(record), { state: "starting" }, JSON.stringify(record));
@@ -1319,7 +1345,8 @@ test("sandbox byte-window checkpoints preserve the pre-cut overlap baseline", as
 });
 
 test("sandbox byte-window changes report a gap before a fresh value snapshot", async () => {
-  for (const changed of ["prefix", "clipped size", "query tail"]) {
+  // A changed tail resets the checkpoint even when both tails cover the whole buffer.
+  for (const changed of ["prefix", "clipped size", "query tail", "covering query tail"]) {
     const fixture = await sandboxFixture();
     fixture.gateway.state.lines = range(150).map((index) =>
       wireRow(`row=${index}; quoted diagnostic ${QUOTED}`),
@@ -1333,10 +1360,8 @@ test("sandbox byte-window changes report a gap before a fresh value snapshot", a
     if (changed === "clipped size") {
       fixture.gateway.state.lines.splice(99);
     }
-    const next = await fixture.read(
-      `source=sandbox&tailLines=${changed === "query tail" ? 100 : tail}`,
-      first.data.cursor,
-    );
+    const nextTail = { "query tail": 100, "covering query tail": 180 }[changed] ?? tail;
+    const next = await fixture.read(`source=sandbox&tailLines=${nextTail}`, first.data.cursor);
     assert.equal(next.status, 200);
     withinPageBudget(next);
     assert.ok(hasGap(next, "buffer_lost", "window_exceeded"), changed);

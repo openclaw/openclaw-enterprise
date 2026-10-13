@@ -51,31 +51,38 @@ function createConfigurationBackend() {
   };
 }
 
-async function fixture({
-  permissions,
-  configurationDriver = createConfigurationBackend(),
-  computeDriver,
-  auditSink = new InMemoryAuditSink(),
-} = {}) {
-  const authFixture = await createTestAuthPrincipal({
-    name: "Configuration Integration Administrator",
+// Building a controller app and signing in to it cost more than most cases, so the cases share
+// one administrator and one session, and one app per Driver shape: with or without a Compute
+// Driver and a Configuration Driver. Cases run one at a time. Each gets a new Namespace and its
+// own Drivers, audit sink and IAM grants: the app's Drivers and sink forward to the running
+// case's. A forwarding Driver keeps one identity, because OCC rechecks it on every selection,
+// so a case Driver's own id and implementation never reach OCC.
+const running = {};
+const apps = new Map();
+let administrator;
+let session;
+
+function forwarder(identity, target) {
+  return new Proxy(identity, {
+    get(pinned, key) {
+      if (Object.hasOwn(pinned, key)) {
+        return pinned[key];
+      }
+      const value = target()[key];
+      return typeof value === "function" ? value.bind(target()) : value;
+    },
+    has: (pinned, key) => Object.hasOwn(pinned, key) || key in target(),
   });
+}
+
+async function sharedApp(withCompute, withConfiguration) {
+  const authFixture = await (administrator ??= createTestAuthPrincipal({
+    name: "Configuration Integration Administrator",
+  }));
   const principal = authFixture.seed.principal;
-  const roles = [
-    {
-      id: "role-configuration-integration",
-      permissions: permissions ?? authFixture.seed.roles[0].permissions,
-    },
-  ];
-  const identities = [principal];
-  const bindings = [
-    {
-      id: "binding-configuration-integration",
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-configuration-integration",
-    },
-  ];
+  const identities = [];
+  const roles = [];
+  const bindings = [];
   const iam = new NativeIAMDriver({
     loadNativeIAMState: async () => ({
       identities,
@@ -86,6 +93,7 @@ async function fixture({
       restrictions: [],
     }),
   });
+  const auditSink = forwarder({}, () => running.auditSink);
   let controller;
   const app = createControllerApp({
     createController(installation) {
@@ -97,8 +105,30 @@ async function fixture({
     },
     iamDriver: iam,
     secretDriver: createTestSecretDriver(),
-    ...(configurationDriver === null ? {} : { configurationDriver }),
-    ...(computeDriver === undefined ? {} : { computeDriver }),
+    ...(withConfiguration
+      ? {
+          configurationDriver: forwarder(
+            {
+              id: "configuration-integration",
+              capability: "configuration",
+              implementation: "integration-memory-substrate",
+            },
+            () => running.configurationDriver,
+          ),
+        }
+      : {}),
+    ...(withCompute
+      ? {
+          computeDriver: forwarder(
+            {
+              id: "compute-configuration-integration",
+              capability: "compute",
+              implementation: "integration-compute-substrate",
+            },
+            () => running.computeDriver,
+          ),
+        }
+      : {}),
     resolveHarness: resolveApprovedDevelopmentHarness,
     auditSink,
     development: {
@@ -110,19 +140,52 @@ async function fixture({
     },
     auth: authFixture.auth,
   });
-  app.defaultSession = await signInToControllerApp(app, authFixture);
+  // Each case starts from the administrator's grants alone, or the permissions it names.
+  const grant = (permissions = authFixture.seed.roles[0].permissions) => {
+    identities.splice(0, Infinity, principal);
+    roles.splice(0, Infinity, { id: "role-configuration-integration", permissions });
+    bindings.splice(0, Infinity, {
+      id: "binding-configuration-integration",
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-configuration-integration",
+    });
+  };
+  grant();
+  session ??= await signInToControllerApp(app, authFixture);
+  app.defaultSession = session;
+  const installed = await request(app, "POST", "/installation/bootstrap", {
+    body: { name: "Configuration integration" },
+  });
+  assert.equal(installed.status, 201);
+  return { app, principal, identities, roles, bindings, controller, grant };
+}
 
+let namespaces = 0;
+
+async function fixture({
+  permissions,
+  configurationDriver = createConfigurationBackend(),
+  computeDriver,
+  auditSink = new InMemoryAuditSink(),
+} = {}) {
+  Object.assign(running, { configurationDriver, computeDriver, auditSink });
+  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}`;
+  if (!apps.has(shape)) {
+    apps.set(shape, sharedApp(computeDriver !== undefined, configurationDriver !== null));
+  }
+  const { grant, ...context } = await apps.get(shape);
+  grant(permissions);
+  namespaces += 1;
+  const namespace = await request(context.app, "POST", "/namespaces", {
+    body: { name: `Configuration tenant ${namespaces}` },
+  });
+  assert.equal(namespace.status, 201);
   return {
-    app,
-    principal,
-    identities,
-    roles,
-    bindings,
-    session: app.defaultSession,
+    ...context,
     auditSink,
-    get controller() {
-      return controller;
-    },
+    namespace: namespace.body.data,
+    collection: `/namespaces/${namespace.body.data.id}/configurations`,
   };
 }
 
@@ -147,18 +210,6 @@ async function request(
     status: response.status,
     body: response.status === 204 ? undefined : await response.json(),
   };
-}
-
-async function bootstrapAndCreateNamespace(context) {
-  const installed = await request(context.app, "POST", "/installation/bootstrap", {
-    body: { name: "Configuration integration" },
-  });
-  assert.equal(installed.status, 201);
-  const namespace = await request(context.app, "POST", "/namespaces", {
-    body: { name: "Configuration tenant" },
-  });
-  assert.equal(namespace.status, 201);
-  return namespace.body.data;
 }
 
 function createOpenClawConfiguration() {
@@ -195,7 +246,35 @@ function createOpenClawConfiguration() {
   };
 }
 
-async function configureAgentHarnessSecret(context, namespace, agent, configurationId, secretName) {
+// A model and runtime selection, so deployment reaches the Configuration rules.
+const runtimeDefaults = {
+  model: "openai/gpt-4.1",
+  models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+};
+const runtimeSelected = { agents: { defaults: runtimeDefaults } };
+
+const configurationRules = [
+  "validateConfiguration",
+  "validateHarnessAuth",
+  "validateGatewaySettings",
+];
+
+// A Compute Driver that runs the named real Kubernetes Compute admission rules, as production
+// admission does.
+function kubernetesRules(id, ...rules) {
+  const kubernetes = createTestKubernetesComputeDriver(id);
+  return createReadyComputeDriver(id, {
+    implementation: "integration-compute-substrate",
+    ...Object.fromEntries(rules.map((rule) => [rule, (...args) => kubernetes[rule](...args)])),
+  });
+}
+
+// Readies the Namespace and binds the Agent's Harness authentication to a new Secret, so
+// deployment admission reaches the Configuration.
+async function readyAgent(context, namespace, agentId, configurationId, secretName) {
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
   const harnessSecret = await context.controller.createSecret(context.principal.id, {
     namespaceId: namespace.id,
     name: secretName,
@@ -203,7 +282,7 @@ async function configureAgentHarnessSecret(context, namespace, agent, configurat
   });
   const admittedAgent = await context.controller.updateAgent(context.principal.id, {
     namespaceId: namespace.id,
-    agentId: agent.body.data.id,
+    agentId,
     configurationId,
     harnessAuth: { method: "api_key", source: harnessSecret.ref },
   });
@@ -225,11 +304,38 @@ async function configureAgentHarnessSecret(context, namespace, agent, configurat
   });
 }
 
+// Creates a Configuration with `values` and a ready Agent that uses it.
+async function deployableAgent(context, namespace, { values, name, secretName }) {
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name, configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await readyAgent(context, namespace, agent.body.data.id, configurationId, secretName);
+  return {
+    created,
+    configurationId,
+    item: `${collection}/${configurationId}`,
+    agentPath: `/namespaces/${namespace.id}/agents/${agent.body.data.id}`,
+  };
+}
+
+// Writes a row past OCC, as an older release's create would have stored it.
+async function writePastOcc(configurationDriver, configurationId, values) {
+  const stored = configurationDriver
+    .storedConfigurations()
+    .find(({ id }) => id === configurationId);
+  await configurationDriver.update({ ...stored, values });
+}
+
 test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, exact scope, and audit", async () => {
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture({ configurationDriver });
   const values = createOpenClawConfiguration();
 
   const created = await request(context.app, "POST", collection, {
@@ -290,9 +396,7 @@ test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, e
 
 test("Configuration HTTP requires native supported requests and rejects immutable metadata changes", async () => {
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture({ configurationDriver });
 
   for (const values of [null, [], "not-an-openclaw-document", 42]) {
     const invalid = await request(context.app, "POST", collection, {
@@ -365,9 +469,7 @@ test("Configuration HTTP requires native supported requests and rejects immutabl
 
 test("Configuration HTTP names a model provider baseUrl or api the runtime cannot use", async () => {
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture({ configurationDriver });
   const provider = (settings) => ({ models: { providers: { openai: settings } } });
   const baseUrlMessage = (field) =>
     `Configuration field ${field} must be an absolute http or https URL.`;
@@ -455,9 +557,7 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   // carried a literal credential header past them into storage, and OpenClaw refused the
   // document only when the Gateway started. Every provider is checked, selected or not.
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture({ configurationDriver });
   const sentinel = "synthetic-model-credential-not-for-configuration";
   const message = (key) => `Configuration setting ${key}.models must be an array of model entries.`;
   for (const [values, setting] of [
@@ -506,46 +606,22 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
 });
 
 test("Configuration save refuses an agents roster every deployment refuses, with deployment's text", async () => {
-  // Deployment runs the real Kubernetes Compute roster rules, as production admission does.
-  const kubernetes = createTestKubernetesComputeDriver("compute-roster-integration");
-  const computeDriver = createReadyComputeDriver("compute-configuration-integration", {
-    implementation: "integration-compute-substrate",
-    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
-  });
+  // Deployment runs the real Kubernetes Compute roster rules.
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver, computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
-  // A selected model and runtime, so deployment reaches the roster rules.
-  const defaults = {
-    model: "openai/gpt-4.1",
-    models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-  };
-  const withAgents = (agents) => ({ agents: { defaults, ...agents } });
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-roster-integration", "validateHarnessAuth"),
+  });
+  const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
   const valid = withAgents({});
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: valid },
+  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Roster consumer",
+    secretName: "roster-key",
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const configurationId = created.body.data.id;
-  const item = `${collection}/${configurationId}`;
-  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "Roster consumer", configurationId },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "roster-key");
-  const deploy = () =>
-    request(context.app, "POST", `/namespaces/${namespace.id}/agents/${agent.body.data.id}/deploy`);
-  // A row an older release saved, written past OCC as that release's create would have.
-  const storeAsOlderRelease = async (values) => {
-    const stored = configurationDriver
-      .storedConfigurations()
-      .find(({ id }) => id === configurationId);
-    await configurationDriver.update({ ...stored, values });
-  };
+  const deploy = () => request(context.app, "POST", `${agentPath}/deploy`);
+  const storeAsOlderRelease = (values) =>
+    writePastOcc(configurationDriver, configurationId, values);
 
   const gatewayId = (path) =>
     `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
@@ -636,7 +712,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     withAgents({
       ownership: "explicit",
       entries: { main: {}, helper: {} },
-      defaults: { ...defaults, sessionStore: { agentId: "helper" } },
+      defaults: { ...runtimeDefaults, sessionStore: { agentId: "helper" } },
     }),
     withAgents({ list: [] }),
   ]) {
@@ -649,49 +725,26 @@ test("Configuration save refuses an agents roster every deployment refuses, with
 });
 
 test("Configuration save and Kubernetes deployment admission refuse settings preparation would refuse", async () => {
-  // Deployment runs the real Kubernetes Compute admission rules, as production admission does.
-  // On a dedicated Agent, a refusal in preparation came after the running revision stopped,
-  // with no rollback (findings 1113-1115); admission now names the setting first.
-  const kubernetes = createTestKubernetesComputeDriver("compute-settings-integration");
-  const computeDriver = createReadyComputeDriver("compute-settings-integration", {
-    implementation: "integration-compute-substrate",
-    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
-    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
-  });
+  // Deployment runs the real Kubernetes Compute admission rules. On a dedicated Agent, a refusal
+  // in preparation came after the running revision stopped, with no rollback (findings
+  // 1113-1115); admission now names the setting first.
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver, computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
-  const valid = {
-    agents: {
-      defaults: {
-        model: "openai/gpt-4.1",
-        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-      },
-    },
-  };
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: valid },
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules(
+      "compute-settings-integration",
+      "validateHarnessAuth",
+      "validateGatewaySettings",
+    ),
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const configurationId = created.body.data.id;
-  const item = `${collection}/${configurationId}`;
-  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "Settings consumer", configurationId },
+  const valid = runtimeSelected;
+  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Settings consumer",
+    secretName: "settings-key",
   });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "settings-key");
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
-  // A row an older release saved, written past OCC as that release's create would have.
-  const storeAsOlderRelease = async (values) => {
-    const stored = configurationDriver
-      .storedConfigurations()
-      .find(({ id }) => id === configurationId);
-    await configurationDriver.update({ ...stored, values });
-  };
+  const storeAsOlderRelease = (values) =>
+    writePastOcc(configurationDriver, configurationId, values);
   const policy = (approvalPolicy) => ({
     ...valid,
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy } } } } },
@@ -797,46 +850,19 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
 test("Configuration save and Kubernetes deployment refuse caller-owned credentials and channels with one named message", async () => {
   // Finding 1116: deployment refused these with an unnamed 409; Configuration save accepted them.
   // Both now run the Kubernetes Compute rule module and name the setting.
-  const kubernetes = createTestKubernetesComputeDriver("compute-caller-settings");
-  const computeDriver = createReadyComputeDriver("compute-caller-settings", {
-    implementation: "integration-compute-substrate",
-    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
-    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
-    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
-  });
   const configurationDriver = createConfigurationBackend();
-  const context = await fixture({ configurationDriver, computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
-  const valid = {
-    agents: {
-      defaults: {
-        model: "openai/gpt-4.1",
-        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-      },
-    },
-  };
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: valid },
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-caller-settings", ...configurationRules),
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const configurationId = created.body.data.id;
-  const item = `${collection}/${configurationId}`;
-  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "Caller settings consumer", configurationId },
+  const valid = runtimeSelected;
+  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Caller settings consumer",
+    secretName: "caller-key",
   });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "caller-key");
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
-  const storeAsOlderRelease = async (values) => {
-    const stored = configurationDriver
-      .storedConfigurations()
-      .find(({ id }) => id === configurationId);
-    await configurationDriver.update({ ...stored, values });
-  };
+  const storeAsOlderRelease = (values) =>
+    writePastOcc(configurationDriver, configurationId, values);
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential)`;
@@ -1014,9 +1040,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
 });
 
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
-  const context = await fixture();
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture();
   const ids = [];
   for (let index = 0; index < 3; index += 1) {
     const created = await request(context.app, "POST", collection, {
@@ -1045,9 +1069,7 @@ test("Namespace deletion names the Configuration IDs that keep it occupied", asy
 });
 
 test("Configuration HTTP routes reject foreign Namespace ownership and missing admission", async () => {
-  const context = await fixture();
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture();
 
   const created = await request(context.app, "POST", collection, {
     body: { kind: "agent", values: createOpenClawConfiguration() },
@@ -1072,14 +1094,12 @@ test("Configuration HTTP routes reject foreign Namespace ownership and missing a
 });
 
 test("Configuration authorization failures target the exact Configuration resource", async () => {
-  const context = await fixture({
+  const { namespace, ...context } = await fixture({
     permissions: [
-      { action: "administer", resourceKind: "installation" },
       { action: "create", resourceKind: "namespace" },
       { action: "create", resourceKind: "configuration" },
     ],
   });
-  const namespace = await bootstrapAndCreateNamespace(context);
   const created = await request(context.app, "POST", `/namespaces/${namespace.id}/configurations`, {
     body: { kind: "agent", values: { model: "gpt-test" } },
   });
@@ -1104,9 +1124,7 @@ for (const runtimeLogging of [undefined, "driver"]) {
       validateHarnessAuth() {},
       ...(runtimeLogging === undefined ? {} : { runtimeLogging }),
     });
-    const context = await fixture({ computeDriver });
-    const namespace = await bootstrapAndCreateNamespace(context);
-    const collection = `/namespaces/${namespace.id}/configurations`;
+    const { namespace, collection, ...context } = await fixture({ computeDriver });
     // Existing managed runtimes can own native export; only the selected Driver, not
     // tenant configuration, decides whether admission preserves that policy.
     const initialValues = {
@@ -1124,6 +1142,7 @@ for (const runtimeLogging of [undefined, "driver"]) {
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.body));
     assert.equal(agent.body.data.configurationId, configurationId);
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
 
     // A referenced Configuration cannot be deleted and leave an Agent with a dangling reference.
     const referenced = await request(context.app, "DELETE", `${collection}/${configurationId}`);
@@ -1131,21 +1150,14 @@ for (const runtimeLogging of [undefined, "driver"]) {
     assert.equal(referenced.body.error.code, "RESOURCE_CONFLICT");
 
     // Admission requires a ready Namespace; revision snapshots remain immutable independently.
-    await context.controller.transact((state) =>
-      state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-    );
-    await configureAgentHarnessSecret(
+    await readyAgent(
       context,
       namespace,
-      agent,
+      agent.body.data.id,
       configurationId,
       "configuration-model-key",
     );
-    const deployed = await request(
-      context.app,
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.body.data.id}/deploy`,
-    );
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
     assert.equal(deployed.body.data.configurationId, configurationId);
     assert.equal(deployed.body.data.configurationKind, "agent");
@@ -1178,7 +1190,7 @@ for (const runtimeLogging of [undefined, "driver"]) {
     const historical = await request(
       context.app,
       "GET",
-      `/namespaces/${namespace.id}/agents/${agent.body.data.id}/revisions/${deployed.body.data.id}`,
+      `${agentPath}/revisions/${deployed.body.data.id}`,
     );
     assert.equal(historical.status, 200);
     assert.equal(historical.body.data.configurationGeneration, 1);
@@ -1191,38 +1203,15 @@ test("Deploy rejects Configuration content that selects no supported Harness run
     implementation: "integration-compute-substrate",
     validateHarnessAuth() {},
   });
-  const context = await fixture({ computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, ...context } = await fixture({ computeDriver });
   // An OpenAI model with no agentRuntime policy is valid to store but cannot select a Harness.
-  const created = await request(context.app, "POST", collection, {
-    body: {
-      kind: "agent",
-      values: { agents: { defaults: { model: "openai/gpt-4.1" } } },
-    },
+  const { agentPath } = await deployableAgent(context, namespace, {
+    values: { agents: { defaults: { model: "openai/gpt-4.1" } } },
+    name: "Runtime-less consumer",
+    secretName: "runtime-less-model-key",
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const configurationId = created.body.data.id;
-  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "Runtime-less consumer", configurationId },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  await configureAgentHarnessSecret(
-    context,
-    namespace,
-    agent,
-    configurationId,
-    "runtime-less-model-key",
-  );
 
-  const deployed = await request(
-    context.app,
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.body.data.id}/deploy`,
-  );
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
   // The Agent exists and is visible, so a Configuration content problem is not a 404.
   assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
   assert.equal(deployed.body.error.code, "INVALID_REQUEST");
@@ -1230,17 +1219,12 @@ test("Deploy rejects Configuration content that selects no supported Harness run
     deployed.body.error.message,
     "The configured Agent model requires an explicit supported Harness runtime.",
   );
-  const unchanged = await request(
-    context.app,
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.body.data.id}`,
-  );
+  const unchanged = await request(context.app, "GET", agentPath);
   assert.equal(unchanged.status, 200);
 });
 
 test("Configuration operations fail closed when no ConfigurationDriver is selected", async () => {
-  const context = await fixture({ configurationDriver: null });
-  const namespace = await bootstrapAndCreateNamespace(context);
+  const { namespace, ...context } = await fixture({ configurationDriver: null });
   const unavailable = await request(
     context.app,
     "POST",
@@ -1264,8 +1248,7 @@ test("Configuration creation rolls back its external substrate when its required
 
   const configurationDriver = createConfigurationBackend();
   const auditSink = new FailingConfigurationAuditSink();
-  const context = await fixture({ configurationDriver, auditSink });
-  const namespace = await bootstrapAndCreateNamespace(context);
+  const { namespace, ...context } = await fixture({ configurationDriver, auditSink });
 
   // The genuine Fastify/OCC transaction must compensate the external write after audit failure.
   const rejected = await request(
@@ -1298,12 +1281,10 @@ for (const [method, action] of [
     }
 
     const configurationDriver = createConfigurationBackend();
-    const context = await fixture({
+    const { namespace, collection, ...context } = await fixture({
       configurationDriver,
       auditSink: new FailingConfigurationAuditSink(),
     });
-    const namespace = await bootstrapAndCreateNamespace(context);
-    const collection = `/namespaces/${namespace.id}/configurations`;
     const created = await request(context.app, "POST", collection, {
       body: { kind: "agent", values: { model: "gpt-original", region: "west" } },
     });
@@ -1342,9 +1323,7 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   const root = await mkdtemp(join(tmpdir(), "occ-model-configuration-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const configurationDriver = new FilesystemConfigurationDriver(root);
-  const context = await fixture({ configurationDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
+  const { namespace, collection, ...context } = await fixture({ configurationDriver });
   const sentinel = `synthetic-configuration-credential-${randomUUID()}`;
   const unsafe = { models: { providers: { openai: { apiKey: sentinel } } } };
   const rejected = await request(context.app, "POST", collection, {
@@ -1439,8 +1418,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   const configurationDriver = new FilesystemConfigurationDriver(root);
   // Like Docker Compute: ready Namespaces, no validateConfiguration.
   const computeDriver = createReadyComputeDriver("compute-without-configuration-rules");
-  const context = await fixture({ configurationDriver, computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
@@ -1642,39 +1620,16 @@ test("A stored Configuration with request credentials an older release accepted 
   const root = await mkdtemp(join(tmpdir(), "occ-upgrade-configuration-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const configurationDriver = new FilesystemConfigurationDriver(root);
-  const kubernetes = createTestKubernetesComputeDriver("compute-upgrade-repair");
-  const computeDriver = createReadyComputeDriver("compute-upgrade-repair", {
-    implementation: "integration-compute-substrate",
-    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
-    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
-    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  const { namespace, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-upgrade-repair", ...configurationRules),
   });
-  const context = await fixture({ configurationDriver, computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
-  const valid = {
-    agents: {
-      defaults: {
-        model: "openai/gpt-4.1",
-        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-      },
-    },
-  };
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: valid },
+  const valid = runtimeSelected;
+  const { configurationId, item, agentPath } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Upgraded Configuration consumer",
+    secretName: "upgrade-key",
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const configurationId = created.body.data.id;
-  const item = `${collection}/${configurationId}`;
-  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "Upgraded Configuration consumer", configurationId },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "upgrade-key");
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
   const path = join(root, namespace.id, `${configurationId}.json`);
   const sentinel = `synthetic-request-credential-${randomUUID()}`;
   const binding = "model credentials come from the Agent's Harness authentication binding";
