@@ -488,7 +488,7 @@ jobs:
     # CI Required, never a skipped (passing) one.
     if: always()
     steps:
-      # A push that supersedes this run waits until this run has finished
+      # A PR push that supersedes this run waits until this run has finished
       # cancelling. cancelled() is false in a job that starts after the
       # cancellation, so test the dependencies: fail at once instead of checking
       # out and verifying jobs that never finished. Later steps then skip.

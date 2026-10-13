@@ -259,6 +259,7 @@ function cacheArguments(role) {
 // value no step after an image's first WORKDIR matched their cache, so every
 // smoke run reinstalled both images' packages (finding 1273). It sets only
 // timestamps (image config, history, WORKDIR); the smoke reads none of them.
+// RUN steps do not see it: an `ARG SOURCE_DATE_EPOCH` would change their keys.
 const cacheBuildArguments = ["--build-arg", "SOURCE_DATE_EPOCH=0"];
 
 async function pushedDigest(tag) {
