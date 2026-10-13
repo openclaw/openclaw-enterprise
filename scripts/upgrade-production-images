@@ -99,6 +99,37 @@ matches_yaml() {
   cmp -s "$evidence_dir/compare-actual.json" "$evidence_dir/compare-expected.json"
 }
 
+# Lists the first ten inventory Agents that FILTER selects, with their names,
+# so an inventory refusal tells the operator which Agents to act on. FILTER
+# binds $namespace. Names are read-only lookups with the same OCC credentials;
+# a failed lookup keeps the ID and says the name is unavailable.
+list_inventory_agents() {
+  local inventory=$1
+  local filter=$2
+  local limit=10
+  local total namespace_id agent_id agent_name
+  local listed_namespace='' namespace_name=''
+  # tojson escapes C0 controls and DEL; C1 controls are replaced too, so a name
+  # cannot forge lines or terminal sequences.
+  local name='if (.name | type) == "string" then .name | tojson | gsub("[\u0080-\u009f]"; "?") else empty end'
+  total=$(jq "[$filter] | length" "$inventory")
+  while IFS=$'\t' read -r namespace_id agent_id; do
+    if [[ "$namespace_id" != "$listed_namespace" ]]; then
+      listed_namespace=$namespace_id
+      namespace_name=$("${occ_json[@]}" namespace get "$namespace_id" </dev/null 2>/dev/null |
+        jq -r "$name" 2>/dev/null) || namespace_name=
+    fi
+    agent_name=$("${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null 2>/dev/null |
+      jq -r "$name" 2>/dev/null) || agent_name=
+    printf '  - Agent %s %s in Namespace %s %s\n' \
+      "$agent_id" "${agent_name:-(name unavailable)}" \
+      "$namespace_id" "${namespace_name:-(name unavailable)}"
+  done < <(jq -r --argjson limit "$limit" "limit(\$limit; $filter | [\$namespace.id, .id]) | @tsv" "$inventory")
+  if ((total > limit)); then
+    printf '  - and %d more; see %s\n' "$((total - limit))" "$inventory"
+  fi
+}
+
 install_atomically() {
   local source=$1
   local destination=$2
@@ -491,10 +522,13 @@ if [[ -n "$runtime_image" ]]; then
   if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$inventory" >/dev/null; then
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
-  if jq -e \
-    '.namespaces[].agents[] | select(.status == "active" and .desiredRuntimeState == "running" and (.activeRevisionId == null))' \
-    "$inventory" >/dev/null; then
-    die "the deployment inventory contains a running Agent without an active revision; resolve its initial deployment first."
+  # shellcheck disable=SC2016 # $namespace is a jq variable.
+  unrevisioned_agents='.namespaces[] as $namespace | $namespace.agents[] |
+    select(.status == "active" and .desiredRuntimeState == "running" and (.activeRevisionId == null))'
+  if jq -e "$unrevisioned_agents" "$inventory" >/dev/null; then
+    die "the deployment inventory contains a running Agent without an active revision; resolve its initial deployment first. No cluster changes were made.
+$(list_inventory_agents "$inventory" "$unrevisioned_agents")
+Stop or delete each running Agent without an active revision (occ --namespace NAMESPACE_ID agent stop AGENT_ID), or deploy it until it succeeds (occ --namespace NAMESPACE_ID agent deploy AGENT_ID), then start again with a new evidence directory. See docs/guides/deploy/production-upgrade.md#upgrade-agent-runtimes."
   fi
   if jq -e \
     '.namespaces[] | select(.status != "ready") | .agents[] | select(.status == "active" and .desiredRuntimeState == "running")' \

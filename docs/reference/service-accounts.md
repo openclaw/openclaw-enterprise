@@ -97,6 +97,31 @@ grant and the account lookup, and keeps the account: configure the same
 ChatGPT Backend again (same `backendId`), then retry. Native deletion removes OCC account
 state; the operator owns the referenced source Secret.
 
+### Force-delete when the Backend is gone
+
+If that Backend is retired for good and the Installation has no ChatGPT
+Backend, force the delete with the same `delete` grant:
+`DELETE .../service-accounts/:serviceAccountId?force=true`, or
+`occ service-account delete ID --force`. OCC removes the account, its
+access-token Secret, and its private Backend binding, and answers `200` with
+`revocation: "skipped"`. The token and the provider account (named
+`<name>-<serviceAccountId>`, credential `occ-<serviceAccountId>`) stay at the
+provider until an administrator deletes them there or the token expires. The
+audit event records `force: true`, `revocation: "skipped"`, the actor, and the
+binding's `backendId`, `workspaceId`, `externalAccountId`, and provider
+`credentialId`, never the token.
+
+Force changes nothing else. With a ChatGPT Backend configured it is ignored
+(the audit event still records `force: true`): the token is revoked and the
+answer is the usual `204`, so retried scripts stay safe. If a different ChatGPT
+Backend replaced the old one, deletion still answers `503` because the binding
+names another Backend; configure the old Backend again, or remove the ChatGPT
+Backend, before deleting. Accounts without an issued token, and referenced accounts, behave as
+without force. Callers without `delete` get the same `403` or `404`. The
+choice is made on the locked account row, so a token issued meanwhile is
+reported, not missed. An API Pod still running without the Backend during a
+rollout that re-adds it can force-delete; avoid forcing until the rollout ends.
+
 ## Revision snapshots and credential delivery
 
 Deploying an Agent freezes the account ID, credential kind, Secret reference,
@@ -163,7 +188,8 @@ provider, not IAM, Compute, OCC, or the Harness.
 - `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The Installation has no ChatGPT
   Backend, so issuance, deploying an Agent bound to an account without an
   access token, and deleting an account that holds one cannot succeed. Configure the
-  [ChatGPT Backend](../guides/integrations/chatgpt.md).
+  [ChatGPT Backend](../guides/integrations/chatgpt.md), or
+  [force the delete](#force-delete-when-the-backend-is-gone).
 - Provider denial or Kubernetes failure: Creation fails closed; compensation deletes
   only the newly created exact provider account, provider credential, or
   account-owned Secret when durable state confirms it was not committed.

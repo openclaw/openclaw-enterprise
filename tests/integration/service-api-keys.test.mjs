@@ -585,6 +585,55 @@ test("service API keys authenticate scoped automation without replacing sessions
       /failed to create key file/,
     );
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // An explicit zero is invalid, not the API's omitted 30-day default.
+    const zeroExpiryFile = join(directory, "zero-expiry-key.json");
+    await assert.rejects(
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          "zero-expiry",
+          "--out",
+          zeroExpiryFile,
+          "--expires-in-days=0",
+        ],
+        { env: installationEnv },
+      ),
+      { stderr: /between 1 and 365/ },
+    );
+    await assert.rejects(open(zeroExpiryFile), { code: "ENOENT" });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    for (const days of [1, 365]) {
+      const before = Date.now();
+      const created = JSON.parse(
+        (
+          await run(
+            occCli,
+            [
+              "service-key",
+              "create",
+              "--service-principal",
+              installationPrincipal.id,
+              "--name",
+              `expiry-${days}`,
+              "--out",
+              join(directory, `expiry-${days}.json`),
+              `--expires-in-days=${days}`,
+              "-o",
+              "json",
+            ],
+            { env: installationEnv },
+          )
+        ).stdout,
+      );
+      assert.ok(Math.abs(Date.parse(created.expiresAt) - before - days * 86_400_000) < 10_000);
+      await run(occCli, ["service-key", "revoke", created.id], { env: adminEnv });
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
     // The CLI counts the name as the API does: 32 emoji are issued, 33 never leave the CLI.
     const emojiKeyFile = join(directory, "emoji-key.json");
     const emojiCreate = (name, out) =>

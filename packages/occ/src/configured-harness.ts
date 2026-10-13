@@ -2,6 +2,7 @@ import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contrac
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
+import { providerModelsListError } from "./model-provider-settings.ts";
 
 function configuredRuntime(value: unknown): string | undefined {
   const runtimeValue = asRecord(value)?.agentRuntime;
@@ -76,9 +77,6 @@ function isCatalogModelId(id: unknown, reference: string): boolean {
   return id === reference || id === splitModelRef(reference).id;
 }
 
-const providerModelsArrayMessage = (path: string): string =>
-  `Configuration setting ${path}.models must be an array of model entries.`;
-
 function providerModelEntry(
   providerId: string,
   provider: Readonly<Record<string, unknown>>,
@@ -89,9 +87,7 @@ function providerModelEntry(
     return undefined;
   }
   if (!Array.isArray(configured)) {
-    throw new ConfigurationHarnessError(
-      modelProviderMessage(providerId, providerModelsArrayMessage),
-    );
+    throw providerModelsListError(providerId);
   }
   const matches = configured.filter((candidate) =>
     isCatalogModelId(asRecord(candidate)?.id, model),
@@ -108,18 +104,18 @@ function providerModelEntry(
   return asRecord(matches[0]);
 }
 
-/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
-export function resolveConfiguredHarnessId(
-  values: Readonly<OpenClawConfigurationDocument>,
-): string {
-  // Shape refusals come first: a non-object agents, agents.defaults or agents.entries would
-  // otherwise read as absent and surface as an unrelated model-policy refusal below.
+/**
+ * The agents shape rules resolveConfiguredHarnessId checks first. They hold for every topology,
+ * so Configuration create and update check them too (requireDeployableRoster).
+ */
+export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocument>): void {
+  // A non-object agents, agents.defaults, agents.entries or entry would otherwise read as absent
+  // and surface as an unrelated model-policy refusal.
   const agents = asRecord(values.agents);
   if (values.agents !== undefined && agents === undefined) {
     throw new ConfigurationHarnessError("Configuration setting agents must be an object.");
   }
-  const defaults = asRecord(agents?.defaults);
-  if (agents?.defaults !== undefined && defaults === undefined) {
+  if (agents?.defaults !== undefined && asRecord(agents.defaults) === undefined) {
     throw new ConfigurationHarnessError("Configuration setting agents.defaults must be an object.");
   }
   const entries = asRecord(agents?.entries);
@@ -133,6 +129,24 @@ export function resolveConfiguredHarnessId(
       "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
     );
   }
+  for (const [key, value] of Object.entries(entries ?? {})) {
+    if (asRecord(value) === undefined) {
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(key, (path) => `Configuration setting ${path} must be an object.`),
+      );
+    }
+  }
+}
+
+/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
+export function resolveConfiguredHarnessId(
+  values: Readonly<OpenClawConfigurationDocument>,
+): string {
+  // Shape refusals come first.
+  requireAgentsShape(values);
+  const agents = asRecord(values.agents);
+  const defaults = asRecord(agents?.defaults);
+  const entries = asRecord(agents?.entries);
   const providerConfigurations = asRecord(asRecord(values.models)?.providers);
   const defaultSelection = configuredModels(defaults?.model);
   const defaultModels = asRecord(defaults?.models);
@@ -140,12 +154,8 @@ export function resolveConfiguredHarnessId(
     defaultSelection.map((model) => ({ model }));
 
   for (const [key, value] of Object.entries(entries ?? {})) {
-    const entry = asRecord(value);
-    if (entry === undefined) {
-      throw new ConfigurationHarnessError(
-        agentEntryMessage(key, (path) => `Configuration setting ${path} must be an object.`),
-      );
-    }
+    // requireAgentsShape refused every entry that is not an object.
+    const entry = asRecord(value)!;
     const selection = entry.model === undefined ? defaultSelection : configuredModels(entry.model);
     const model = selection[0];
     if (model === undefined) {
@@ -200,9 +210,7 @@ export function resolveConfiguredHarnessId(
       continue;
     }
     if (!Array.isArray(provider.models)) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(providerId, providerModelsArrayMessage),
-      );
+      throw providerModelsListError(providerId);
     }
     if (
       provider.models.some((value) => {

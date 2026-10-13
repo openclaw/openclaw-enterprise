@@ -355,7 +355,7 @@ export function createWorkerRevisionFixtures(testFile) {
     async function revision(
       owner,
       number,
-      { harness, repositoryCredentials, actorId = actor.id, plugins } = {},
+      { harness, repositoryCredentials, actorId = actor.id, plugins, workAge } = {},
     ) {
       let harnessAuth;
       if (owner.harnessAuth.method === "runtime") {
@@ -433,15 +433,31 @@ export function createWorkerRevisionFixtures(testFile) {
           ["stopped", "running"],
           "running",
         );
-        await queue.enqueue({
-          idempotencyKey,
-          namespaceId: namespace.id,
-          agentId: owner.id,
-          revisionId: candidate.id,
-          actorId,
-          availableAt: new Date(0),
-        });
+        if (workAge === undefined) {
+          await queue.enqueue({
+            idempotencyKey,
+            namespaceId: namespace.id,
+            agentId: owner.id,
+            revisionId: candidate.id,
+            actorId,
+            availableAt: new Date(0),
+          });
+        }
       });
+      if (workAge !== undefined) {
+        // Work admitted `workAge` (a PostgreSQL interval) ago by the database clock, which
+        // the worker judges work age by. The application role cannot rewrite created_at.
+        await observerPool.query(
+          `INSERT INTO occ.controller_work (
+             idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+             state, available_at, attempt_count, created_at, updated_at
+           ) VALUES (
+             $1, $2, $3, $4, $5, 'queued', to_timestamp(0), 0,
+             clock_timestamp() - $6::interval, clock_timestamp()
+           )`,
+          [idempotencyKey, namespace.id, owner.id, candidate.id, actorId, workAge],
+        );
+      }
       return { ...candidate, idempotencyKey };
     }
 

@@ -1559,6 +1559,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "recoverStale",
       "findWork",
       "findWorkAttempt",
+      "countRefusedStopWaits",
     ]);
   }
 
@@ -2947,6 +2948,28 @@ export class PostgresPlatformState implements PlatformStateStore {
         await deleteResourceAccessBindings("service_account", serviceAccountId);
         return true;
       },
+      findIssuedCredentialBinding: async (namespaceId, serviceAccountId) => {
+        const found = rows(
+          (
+            await client.query(
+              `SELECT b.backend_id, b.workspace_id, b.external_account_id, b.external_credential_id
+               FROM occ.service_account_driver_bindings AS b
+               JOIN occ.namespaces AS n ON n.id = b.namespace_id AND n.deleted_at IS NULL
+               WHERE b.namespace_id = $1 AND b.service_account_id = $2
+                 AND b.external_credential_id IS NOT NULL`,
+              [namespaceId, serviceAccountId],
+            )
+          ).rows,
+        )[0];
+        return found === undefined
+          ? undefined
+          : immutableCopy({
+              backendId: text(found, "backend_id"),
+              workspaceId: text(found, "workspace_id"),
+              externalAccountId: text(found, "external_account_id"),
+              credentialId: text(found, "external_credential_id"),
+            });
+      },
     };
 
     const findAgentRow = async (
@@ -3799,10 +3822,16 @@ export class PostgresPlatformState implements PlatformStateStore {
         findWithWork: async (workId) => {
           // One statement, one snapshot: separate reads under READ COMMITTED can pair a
           // job with a queue row from a later commit (a failed queue row, a running job).
+          // PostgreSQL judges lease liveness on its own clock, as findWork does; a missing
+          // queue row stays null because NULL || jsonb is NULL.
           const found = rows(
             (
               await client.query(
-                `SELECT provisioning.*, to_jsonb(work) AS controller_work
+                `SELECT provisioning.*,
+                        to_jsonb(work) || jsonb_build_object(
+                          'lease_active',
+                          work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()
+                        ) AS controller_work
                  FROM occ.agent_provisioning_work AS provisioning
                  LEFT JOIN occ.controller_work AS work
                    ON work.idempotency_key = provisioning.work_id

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createServer } from "node:https";
@@ -10,7 +9,7 @@ import { connect } from "node:net";
 // network namespace a runtime wrapper joins, with api.openai.com mapped to
 // loopback, and it also observes the wrapper from outside: when the native
 // process accepts connections, what the private runtime and plugin status
-// report, and what the real readiness program decides. The first-Agent smoke
+// report, and what the runtime's HTTP readiness endpoint decides. The first-Agent smoke
 // (scripts/ci/first-agent-smoke.mjs) runs it without observation on an address
 // the cluster resolves api.openai.com to. Every line it prints is one JSON event
 // with an epoch timestamp.
@@ -26,8 +25,6 @@ const echoPattern =
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
-const readinessEnvironment = JSON.parse(process.env.PROBE_OBSERVE_READINESS_ENV ?? "{}");
-const readinessProgram = observing ? readFileSync("/fixture/readiness.cjs", "utf8") : "";
 // Codex opens the Responses API over a WebSocket first and falls back to HTTPS.
 // Use the WebSocket implementation the runtime image already ships.
 const { WebSocketServer } = createRequire("/app/node_modules/ws/package.json")("ws");
@@ -304,23 +301,25 @@ function readStatus(path) {
   });
 }
 
-// The real readiness entrypoint, with the wrapper container's environment.
-// Its output is what kubelet shows after "Readiness probe failed:".
 function ready() {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["-e", readinessProgram], {
-      env: { ...process.env, ...readinessEnvironment },
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-    });
-    child.once("close", (code) =>
-      resolve({ ready: code === 0, reason: output.trim() === "" ? null : output.trim() }),
+    let settled = false;
+    const settle = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    };
+    const request = httpGet(
+      { host: "127.0.0.1", port: statusPort, path: "/readyz", timeout: 1_000 },
+      (response) => {
+        response.resume();
+        response.once("end", () => settle({ ready: response.statusCode === 200 }));
+      },
     );
-    child.once("error", () => resolve({ ready: false, reason: null }));
+    request.on("error", () => settle({ ready: false }));
+    request.on("timeout", () => request.destroy());
   });
 }
 
@@ -351,7 +350,6 @@ server.listen(443, listenHost, () => {
       observe("runtimeFailure", runtime?.runtimeFailure?.code ?? null);
       observe("plugin", plugin?.phase ?? null);
       observe("ready", readiness.ready);
-      observe("readinessReason", readiness.reason);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   })();

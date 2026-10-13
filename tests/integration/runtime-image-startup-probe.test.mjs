@@ -11,9 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
-  AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
-  GATEWAY_READINESS_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -32,13 +30,14 @@ import {
   waitForDockerLog,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
+  failureTail,
   runGatewaySmoke,
   temporaryGatewayConfiguration,
 } from "../helpers/runtime-image-startup.mjs";
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
 // and embedded Gateway wrappers, the image's own Codex and OpenClaw probes and
-// processes, and the real readiness programs. Only the model provider is
+// processes, and the real HTTP readiness endpoints. Only the model provider is
 // substituted: a sidecar in the runtime image owns the network namespace,
 // answers the Responses API as api.openai.com (mapped to loopback, trusted
 // through a private CA), and observes the wrapper from outside.
@@ -52,7 +51,7 @@ const startupProbeMemoryLimit = "2g";
 const startupProbeModel = runtimeImageModel;
 const startupProbeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
-async function createStartupProbeMaterial(t, readinessProgram) {
+async function createStartupProbeMaterial(t) {
   const directory = await mkdtemp(join(tmpdir(), "oce-runtime-startup-probe-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = (name) => join(directory, name);
@@ -70,17 +69,8 @@ async function createStartupProbeMaterial(t, readinessProgram) {
     file("endpoint.mjs"),
     await readFile(new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url)),
   );
-  await writeFile(file("readiness.cjs"), readinessProgram);
   await chmod(directory, 0o755);
-  for (const name of [
-    "ca.pem",
-    "cert.pem",
-    "key.pem",
-    "hosts",
-    "resolv.conf",
-    "endpoint.mjs",
-    "readiness.cjs",
-  ]) {
+  for (const name of ["ca.pem", "cert.pem", "key.pem", "hosts", "resolv.conf", "endpoint.mjs"]) {
     await chmod(file(name), 0o644);
   }
   return directory;
@@ -110,7 +100,6 @@ function startupProbeWrapper(kind) {
   if (kind === "codex") {
     return {
       entrypoint: AGENT_RUNTIME_ENTRYPOINT,
-      readiness: AGENT_READINESS_ENTRYPOINT,
       cpus: startupProbeCpuLimit,
       nativePort: 4500,
       environment: [
@@ -141,7 +130,6 @@ function startupProbeWrapper(kind) {
     };
     return {
       entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      readiness: GATEWAY_READINESS_ENTRYPOINT,
       cpus: startupProbeCpuLimit,
       nativePort: 8080,
       configuration,
@@ -186,7 +174,6 @@ function startupProbeWrapper(kind) {
   };
   return {
     entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-    readiness: GATEWAY_READINESS_ENTRYPOINT,
     cpus: gatewayStartupProbeCpuLimit,
     nativePort: 8080,
     configuration,
@@ -301,7 +288,7 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
 function startupProbeFailure(headline, reason, evidence, snapshot) {
   const error = new assert.AssertionError({
     message:
-      `${headline}\nevidence: ${JSON.stringify(evidence)}\n${snapshot.output}\n` +
+      `${headline}\nevidence: ${JSON.stringify(evidence)}\n${failureTail(snapshot.output)}\n` +
       JSON.stringify(snapshot.events),
   });
   // Locate the failure at the caller's throw, not inside this helper.
@@ -317,7 +304,7 @@ function startupProbeFailure(headline, reason, evidence, snapshot) {
 async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act }) {
   const scenarioStartedAt = Date.now();
   const wrapper = startupProbeWrapper(kind);
-  const material = await createStartupProbeMaterial(t, wrapper.readiness);
+  const material = await createStartupProbeMaterial(t);
   if (wrapper.configuration !== undefined) {
     await writeFile(join(material, "openclaw.json"), JSON.stringify(wrapper.configuration));
     await chmod(join(material, "openclaw.json"), 0o644);
@@ -329,12 +316,6 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
     await runDocker(["rm", "-f", containerName]).catch(() => {});
     await runDocker(["rm", "-f", sidecar]).catch(() => {});
   });
-  const readinessEnvironment = Object.fromEntries(
-    wrapper.environment.map((entry) => [
-      entry.slice(0, entry.indexOf("=")),
-      entry.slice(entry.indexOf("=") + 1),
-    ]),
-  );
   await runDocker([
     "run",
     "--name",
@@ -363,8 +344,6 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
     `PROBE_OBSERVE_NATIVE_PORT=${wrapper.nativePort}`,
     "-e",
     "PROBE_OBSERVE_STATUS_PORT=18791",
-    "-e",
-    `PROBE_OBSERVE_READINESS_ENV=${JSON.stringify(readinessEnvironment)}`,
     "--entrypoint",
     "node",
     image,
@@ -509,7 +488,7 @@ const heldFailure =
 // stand-in provider should not cause fails on its own line.
 function assertStartupReady(run) {
   const failure = run.snapshot.events.find(isRuntimeFailure)?.value;
-  const detail = `${run.snapshot.output}\n${JSON.stringify(run.snapshot.events)}`;
+  const detail = `${failureTail(run.snapshot.output)}\n${JSON.stringify(run.snapshot.events)}`;
   if (failure === "MODEL_PROBE_TIMEOUT") {
     assert.fail(`the model probe timed out\n${detail}`);
   }
@@ -553,9 +532,13 @@ async function withStartupProbeEvidence(run, check) {
     await check();
   } catch (error) {
     // Keep the original error, and so its location, which is all CI records.
-    const evidence =
-      `\nendpoint events:\n${run.snapshot.events.map((event) => JSON.stringify(event)).join("\n")}` +
-      `\nwrapper output:\n${run.snapshot.output}`;
+    // Node's assertion message may already hold much of the output; size the
+    // tail so the end of the output still lands inside CI's 16 KiB cut.
+    const events = `\nendpoint events:\n${run.snapshot.events.map((event) => JSON.stringify(event)).join("\n")}`;
+    const evidence = `${events}\nwrapper output:\n${failureTail(
+      run.snapshot.output,
+      Math.max(2048, 15 * 1024 - error.message.length - events.length),
+    )}`;
     error.message += evidence;
     if (typeof error.stack === "string") {
       error.stack += evidence;
@@ -565,7 +548,7 @@ async function withStartupProbeEvidence(run, check) {
 }
 
 // The probe gates native startup: the provider answered the model turn before
-// the native process listened or the real readiness program passed.
+// the native process listened or the HTTP readiness endpoint passed.
 async function assertProbeGatesStartup(t, kind, delayMs) {
   const run = await runStartupProbeScenario(t, {
     kind,
@@ -611,23 +594,14 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
   });
 }
 
-// Kubelet shows this readiness output after "Readiness probe failed:".
-const heldFailureReason = /; startup check [a-z-]+ failed with AUTHENTICATION_FAILED$/;
-const isHeldFailureReason = (event) =>
-  event.event === "observe" &&
-  event.key === "readinessReason" &&
-  heldFailureReason.test(event.value ?? "");
-
 // A rejected credential reports AUTHENTICATION_FAILED for #583's prompt
 // deployment failure, starts no native process, the wrapper holds that
-// evidence until it is terminated, and readiness output names it.
+// evidence until it is terminated, and HTTP readiness stays unavailable.
 async function assertRejectedCredentialFailsFast(t, kind) {
   const run = await runStartupProbeScenario(t, {
     kind,
     mode: "reject",
-    // Readiness runs beside the status read, so it can report the held failure a poll later.
-    until: (snapshot) =>
-      heldFailure("AUTHENTICATION_FAILED")(snapshot) && snapshot.events.some(isHeldFailureReason),
+    until: heldFailure("AUTHENTICATION_FAILED"),
   });
   await withStartupProbeEvidence(run, async () => {
     const { events, phases, output } = run.snapshot;
@@ -637,7 +611,6 @@ async function assertRejectedCredentialFailsFast(t, kind) {
     assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed");
     assert.equal(phaseAt(phases, "native-spawn"), undefined, "a failed probe starts nothing");
     assert.match(output, /Harness model authentication probe failed\./);
-    assert.ok(events.some(isHeldFailureReason), "readiness output names the held failure");
     assert.doesNotMatch(output, new RegExp(startupProbeApiKey));
     const failure = run.first(events, observedValue("runtimeFailure", "AUTHENTICATION_FAILED"));
     // Far inside the 900-second convergence deadline #583 cuts short.
@@ -710,7 +683,7 @@ async function assertPromptTermination(t, { containerName, collect }, descriptio
   );
   if (state.running) {
     assert.fail(
-      `${description}: SIGTERM did not stop the wrapper in ${elapsedMs} ms.\n${state.output}`,
+      `${description}: SIGTERM did not stop the wrapper in ${elapsedMs} ms.\n${failureTail(state.output)}`,
     );
   }
   // A terminated wrapper exits cleanly in every phase, as it does once running.

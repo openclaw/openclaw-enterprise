@@ -1,33 +1,39 @@
 # GitHub Actions testing
 
-Choose automated or manual test lanes and understand their coverage.
+Select test lanes and interpret results.
 
 ## GitHub Actions
 
-Metrics HTTP/persistence coverage belongs to the `postgres-application` lane, including a
-separate migrator-role connection for test-only table contention. The
-`logging-collector` lane also runs real Prometheus/Grafana collection and
-dashboard provisioning. See [metrics testing](metrics.md) for local setup.
+The `postgres-application` lane tests metrics HTTP/persistence with a separate
+migrator-role connection for table contention. `logging-collector` tests real
+Prometheus/Grafana collection and dashboard provisioning. See [metrics testing](metrics.md) for setup.
 
-The [suite index](../../scripts/ci/test-suites.json) holds lane references and coverage groups. Each `scripts/ci/test-suites/<lane>.json` owns its files, inputs, environment and resources; edit it for test changes, or the index for lane or group changes. The [loader](../../scripts/ci/test-suites.mjs) assembles them. Check that every test file under `tests/conformance`, `tests/integration`, `tests/browser` and `tests/docs` has one lane owner:
+The [suite index](../../scripts/ci/test-suites.json) defines lanes and coverage groups. The [loader](../../scripts/ci/test-suites.mjs) reads each `scripts/ci/test-suites/<lane>.json`, which owns its files, inputs, environment and resources. Audit unique ownership of all conformance, integration, browser and docs tests:
 
 ```sh
 node scripts/ci/run-tests.mjs audit
 ```
 
-CI uses [run-ci-lane](../../.github/actions/run-ci-lane/action.yml) for setup, tests, cleanup and job isolation.
+[run-ci-lane](../../.github/actions/run-ci-lane/action.yml) handles setup, tests, cleanup and isolation.
+The runner clears inherited test selectors and keep/debug flags. `requiredEnv`
+forwards required inputs, rejecting missing or empty values; `optionalEnv` forwards
+present values, including empty strings. Lane `env` and prepared values override both.
 
 The non-required [First Agent smoke](first-agent-smoke.md) installs Local Setup and deploys two Agents against a stand-in model provider on every run.
 
-Full CI has twenty required lanes. `checks-baseline-1` and `checks-baseline-2` split the baseline conformance and local integration files by measured file durations. Only part 1 runs the type and Go CLI checks and installs the docs site its docs tests need; part 2 builds the workspace output its tests read. Register new baseline files in either part, keeping job times close. Lanes with `fileConcurrency` run `parallelFiles` up to that many at once, longest first; other files, including `serialFiles`, run alone first. `checks-browser` and `checks-browser-2` split browser tests likewise, plus some baseline files (only part 1 installs the docs site); `postgres-auth` owns sign-in, session and account authentication tests and its own PostgreSQL server; `images-model-probes` builds only the runtime image and runs the CPU-contention model probe without a cluster; `images-runtime-startup` and `images-runtime-startup-2` each build the runtime image and run startup smoke files apart from packaging (part 2 also the other model probes); `runtime-image-startup.test.mjs`, `runtime-image-startup-probe.test.mjs`, `runtime-image-gateway-peer.test.mjs` and `runtime-image-native-worker.test.mjs` are split by measured case durations and share `tests/helpers/runtime-image-startup.mjs`.
+Stop observation defaults to 17 minutes; explicit deadlines and 40-minute job limits apply.
 
-Hosted image builds use separate controller/runtime caches. Packaging exports on main pushes; model probes, runtime startup and the repository credential platform restore. A never-cancelled main [cache workflow](../../.github/workflows/ci-image-cache.yml) also exports; pull requests only read main's cache. The platform lane loads its cached runtime image into the Docker engine and derives its fixture from it with the default builder. Transfers time out after one minute, export failures are ignored, and builds load locally. Cache credentials stay in preparation. Local builds remain unchanged.
+The non-required [`keycloak-oidc` lane](keycloak.md) runs in full-mode PR CI and on main. It belongs to the `full` suite group.
+
+Full CI has twenty required lanes. `checks-baseline-1` and `checks-baseline-2` split the baseline conformance and local integration files by measured file durations. Only part 1 runs the type and Go CLI checks and installs the docs site its docs tests need; part 2 builds the workspace output its tests read. Register new baseline files in either part, keeping job times close. Lanes with `fileConcurrency` run `parallelFiles` up to that many at once, longest first; other files, including `serialFiles`, run alone first. `checks-browser` and `checks-browser-2` split browser tests likewise, plus some baseline files (only part 1 installs the docs site); `postgres-auth` owns sign-in, session and account authentication tests and its own PostgreSQL server; `images-model-probes` builds only the runtime image and runs the CPU-contention model probe without a cluster; `images-runtime-startup` and `images-runtime-startup-2` each build the runtime image and run startup smoke files apart from packaging (part 2 also the other model probes); their startup smoke files are split by measured case durations and share `tests/helpers/runtime-image-startup.mjs`.
+
+Hosted image builds use separate controller/runtime caches. Packaging, model probes, runtime startup and the repository credential platform only restore. Only a never-cancelled main [cache workflow](../../.github/workflows/ci-image-cache.yml) exports, so pull requests read main's newest cache. The platform lane loads its cached runtime image into the Docker engine and derives its fixture from it with the default builder. Restores time out after one minute, and builds load locally. Cache credentials stay in preparation. Local builds remain unchanged.
 
 Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases and Actions timestamps for slow setup or tests. [k3d image preparation](ci-k3d-images.md) covers how images reach the cluster nodes.
 
 `static-checks` runs `pnpm docs:check` and the [dependency policy](repository-boundaries.md). Pages above 1,500 visible words require review; above 2,500 fail except the approved [API reference](../reference/api.md) and `AGENTS.md` files. The generated API, site build, navigation, and links must pass. The [specification check](../contributing/specifications.md#status-and-review) also validates non-archived RFC metadata and spec link targets. Run `pnpm docs:check-length` for word counts alone.
 
-CI Impact and Suite Audit start independently. Full mode runs the nineteen-lane matrix and `runtime-image-fixture`; `CI Required` requires their outcomes and same-source artifacts. Kubernetes fixture, observability and runtime image startup lanes use `blacksmith-32vcpu-ubuntu-2404` (8 CPUs), whose kernel enforces the NetworkPolicy checks; `runtime-image-fixture` and `CI Required` use `ubuntu-22.04`. Each lane-table row in `ci.yml` names its runner. Other lanes, Static Checks and the audit use `blacksmith-16vcpu-ubuntu-2404`: 4 CPUs (8vcpu exposes 2), and its jobs rarely wait for a runner.
+CI Impact and Suite Audit start independently. Full mode runs the nineteen-lane matrix and `runtime-image-fixture`; `CI Required` requires their outcomes and same-source artifacts. Runtime image startup and PostgreSQL Application lanes use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs; Kubernetes fixture and observability lanes for its kernel, which enforces NetworkPolicy. `runtime-image-fixture` and `CI Required` use `ubuntu-22.04`; `ci.yml` names each lane's runner. Other lanes, Static Checks and the audit use `blacksmith-16vcpu-ubuntu-2404` (4 CPUs; 8vcpu exposes 2), which rarely queues.
 
 In every mode, `static-checks` verifies checkout identity and runs the workspace, lint, format, OpenAPI and docs checks beside the lanes. The docs check covers word limits, site links and navigation, but not outgoing links in root or `specs/` Markdown. Docs mode (a verified documentation-only PR merge tree) runs no product tests. `CI Required` verifies the mode and requires successful impact, audit and static checks, with docs mode's test jobs skipped. Missing, failed, cancelled or unexpectedly skipped selected jobs fail. Docs mode does not run the test-result aggregator or require test artifacts.
 
@@ -62,9 +68,9 @@ bootstrap, wire-up, platform-state, restart and password sign-in limit tests and
 remaining PostgreSQL files. Each has a disposable PostgreSQL server. The split
 follows measured file durations, so add a new file to `postgres-platform` or
 `postgres-auth`, keeping the job times close.
-Kubernetes fixture files run in `k3d-fixture-configuration`,
-`k3d-fixture-state`, and `k3d-fixture-plugins`, each with independent cluster,
-database, image, and cleanup state. Each lane runs its audited `parallelFiles` two at a time. The audit requires one owner per file; Full Integration aggregates its selected `full` group or targeted lane.
+Kubernetes fixture lanes `k3d-fixture-configuration`, `k3d-fixture-state`,
+`k3d-fixture-plugins`, and `k3d-fixture-oauth` each have independent cluster,
+database, image, and cleanup state; the first three run audited `parallelFiles` two at a time. The audit requires one owner per file; Full Integration aggregates its selected `full` group or targeted lane.
 
 The `repository-credentials-container` lane builds
 `.build/repository-credentials/{service,client}` with Dockerfiles under
@@ -207,7 +213,7 @@ replacement after external changes. Ordinary fixture CI does not run these tests
 
 ### Integration tests outside automatic CI
 
-Some integration files have no automatic workflow entrypoint, so a green `CI Required` check does not establish their coverage. [Integration tests outside automatic CI](ci-manual-integration.md) lists the manual Full Integration lanes and the CLI-only lanes.
+The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI and Calendar checks outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
 
 #### Manual Full Integration lanes
 

@@ -1,12 +1,19 @@
 ARG OPENCLAW_COMMIT=90d30a1178a79dddd92e6190b66b95d89dfb3ca8
-ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
-ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
-# The credential client build needs only Node and pnpm. The slim runtime base
-# is already in the final image, so a CI build whose controller sources changed
+# Refresh installed Debian packages; the pinned upstream images can predate
+# security updates. Keep the full toolchain out of the final runtime.
+FROM ${NODE_BASE_IMAGE} AS node-build-base
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
+FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
+# The credential builds need only Node and pnpm. The slim runtime base is
+# already in the final image, so a CI build whose controller sources changed
 # does not also fetch the full build base from the layer cache.
-FROM ${NODE_RUNTIME_BASE_IMAGE} AS repository-client-build
-
+FROM node-runtime-base AS repository-credentials-deps
 WORKDIR /build
 COPY LICENSE package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/controller/package.json apps/controller/package.json
@@ -18,13 +25,26 @@ COPY packages/utils/package.json packages/utils/package.json
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     corepack pnpm install --frozen-lockfile --ignore-scripts --store-dir=/tmp/pnpm-store \
     && rm -rf /tmp/pnpm-store
-COPY tsconfig.base.json tsconfig.json ./
-COPY packages packages
-COPY apps/controller apps/controller
+
+# The runtime's credential client compiles from its own sources only: the
+# client directory and client-contracts.ts, the only modules the client
+# closure in scripts/build-repository-credentials.mjs accepts. Other controller
+# and package changes then keep this stage cached. tsconfig.client.json keeps
+# the controller's compiler options and turns off only project build outputs
+# (declarations, build info) and the type check; Static Checks and the service
+# build below check types. The emitted files match the full build's
+# (tests/integration/repository-credentials-package.test.mjs).
+FROM repository-credentials-deps AS repository-client-build
+COPY tsconfig.base.json ./
+COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
+COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
+COPY apps/controller/src/drivers/repo/credentials/client-contracts.ts apps/controller/src/drivers/repo/credentials/client-contracts.ts
+COPY apps/controller/src/drivers/repo/github/credentials/client apps/controller/src/drivers/repo/github/credentials/client
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
-RUN corepack pnpm credentials:build
+RUN node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.client.json --pretty false \
+    && node scripts/build-repository-credentials.mjs --client-only
 # Assemble the runtime's credential client as one tree with fixed modes and
 # timestamps. The runtime copies it onto / as its last layer, so a client change
 # rebuilds only that layer and every builder writes the same bytes. With a fixed
@@ -42,17 +62,27 @@ RUN set -eu; \
     test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
     find .build/runtime-client -exec touch -h -d @0 {} +
 
-# Build the service from the same checkout as the runtime client. Keep the
-# service closure separate from the Agent runtime and its unprivileged client.
-FROM ${NODE_BASE_IMAGE} AS repository-credentials-service
+# Build the service from the full, type-checked workspace of the same checkout.
+# Keep the service closure separate from the Agent runtime and its unprivileged
+# client.
+FROM repository-credentials-deps AS repository-credentials-build
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages packages
+COPY apps/controller apps/controller
+COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
+COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
+COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
+RUN corepack pnpm credentials:build
+
+FROM node-build-base AS repository-credentials-service
 WORKDIR /app
-COPY --from=repository-client-build /build/.build/repository-credentials/service/package.json ./package.json
-COPY --from=repository-client-build /build/.build/repository-credentials/service/dist ./dist
+COPY --from=repository-credentials-build /build/.build/repository-credentials/service/package.json ./package.json
+COPY --from=repository-credentials-build /build/.build/repository-credentials/service/dist ./dist
 RUN chmod -R a=rX /app
 USER node
 ENTRYPOINT ["node", "/app/dist/repository-credentials.js"]
 
-FROM ${NODE_BASE_IMAGE} AS openclaw-source
+FROM node-build-base AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
@@ -77,13 +107,17 @@ RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
 RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
+# TODO: Remove this dependency pin when the selected OpenClaw source supports plugin defaults.
+COPY deploy/runtime/stock-codex-0.163.0-alpha.2-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
+RUN echo '7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \
+    && git apply --unidiff-zero /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
 # install, with no retry or checksum. Fetch the pinned library with the retrying,
 # checksum-verifying helper; both installs below get it from a loopback server.
-FROM ${NODE_BASE_IMAGE} AS matrix-sdk-crypto
+FROM node-build-base AS matrix-sdk-crypto
 COPY scripts/ci/download-pinned.sh /tmp/download-pinned.sh
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
@@ -98,7 +132,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
       "https://github.com/matrix-org/matrix-rust-sdk-crypto-nodejs/releases/download/v0.6.6/${library}" \
       "/out/v0.6.6/${library}" "$sha256"
 
-FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
+FROM node-build-base AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
 ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-07T22:05:23Z
@@ -188,10 +222,10 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
     node /tmp/build-runtime-assets.mjs package /source /out \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
-FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
+FROM node-runtime-base AS runtime
 
 ARG TARGETARCH
-ENV OPENAI_CODEX_VERSION=0.160.0
+ENV OPENAI_CODEX_VERSION=0.163.0-alpha.2
 
 ENV NODE_ENV=production
 # Keep local npm commands from issuing unrelated background update requests.
@@ -205,14 +239,16 @@ RUN node -e 'const [major, minor] = process.versions.node.split(".").map(Number)
 RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
+# --retry rides out GitHub's transient release-download errors (HTTP 408, 429,
+# 500, 502, 503, 504); --no-progress-meter keeps curl's retry notices in the log.
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     architecture="${TARGETARCH:-amd64}"; \
     case "$architecture" in amd64|arm64) ;; *) exit 1 ;; esac; \
     cd /tmp; \
-    curl --fail --location --silent --show-error -O "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_${architecture}.tar.gz"; \
-    curl --fail --location --silent --show-error -O "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_checksums.txt"; \
+    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_${architecture}.tar.gz"; \
+    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_checksums.txt"; \
     grep " gh_2.100.0_linux_${architecture}.tar.gz$" gh_2.100.0_checksums.txt | sha256sum --check --strict; \
     tar -xzf "gh_2.100.0_linux_${architecture}.tar.gz"; \
     install -m 0755 "gh_2.100.0_linux_${architecture}/bin/gh" /usr/local/bin/gh; \

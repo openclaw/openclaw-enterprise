@@ -2,14 +2,14 @@
 
 **Status:** Implemented and locally verified; PR pending.
 **Issue:** [#94](https://github.com/openclaw/openclaw-enterprise/issues/94) (M3.4).
-**Sequencing:** [Agent stop](29-agent-stop.md) ([#93](https://github.com/openclaw/openclaw-enterprise/issues/93))
+**Sequencing:** [Agent stop](../29-agent-stop.md) ([#93](https://github.com/openclaw/openclaw-enterprise/issues/93))
 landed first and owns the shared Agent runtime-state and queue model. This work
 is rebased onto it.
-**Current reference this will change:** [Agents](../../docs/reference/agents.md),
-[Namespaces](../../docs/reference/namespaces.md),
-[Controller reconciliation](../../docs/reference/controller.md),
-[controller worker flow](../../docs/flows/controller-worker.md), and the generated
-[API reference](../../docs/reference/api.md).
+**Current reference this will change:** [Agents](../../../docs/reference/agents.md),
+[Namespaces](../../../docs/reference/namespaces.md),
+[Controller reconciliation](../../../docs/reference/controller.md),
+[controller worker flow](../../../docs/flows/controller-worker.md), and the generated
+[API reference](../../../docs/reference/api.md).
 
 ## Goal
 
@@ -38,7 +38,7 @@ atomically while preserving lifecycle audit evidence.
 ## Current state
 
 Before this work, the contracts and OCC exposed no Agent deletion operation;
-the [Agents reference](../../docs/reference/agents.md#current-limitations) recorded
+the [Agents reference](../../../docs/reference/agents.md#current-limitations) recorded
 this limitation.
 
 `deleteNamespace` rejects any Namespace that still has an Agent through
@@ -68,7 +68,7 @@ trigger; `iam_group_memberships` carries one too, but needs no cleanup.
 
 The teardown primitives exist. `ComputeDriver.retireRevision` is implemented by
 all three bundled Drivers and, per the
-[Compute contract](../../docs/reference/drivers/compute.md), already delegates
+[Compute contract](../../../docs/reference/drivers/compute.md), already delegates
 provider-owned Sandbox cleanup during retirement. Kubernetes waits for exact
 revision Pods, then deletes owned gateway, route, ConfigMaps, claims, Services,
 ServiceAccount, and NetworkPolicies with ownership and observed-UID checks.
@@ -179,7 +179,7 @@ runtime credential failure leaves the Agent `deleting` and retryable rather than
 deleting the rows that identify the leaked Secrets.
 
 Removing credentials contradicts the current documented Kubernetes behavior, so
-[Compute](../../docs/reference/drivers/compute.md) must be corrected in the
+[Compute](../../../docs/reference/drivers/compute.md) must be corrected in the
 implementing PR.
 
 The worker must not call `SandboxDriver.cleanup` itself. `retireRevision` already
@@ -311,39 +311,10 @@ and is out of scope.
 
 ## Verification
 
-- Conformance: delete an Agent with no revisions, with an admitted but undeployed
-  revision, and with a deployed active revision. Assert `202`, the audit events,
-  repeat deletion while work is nonterminal, and denial without `delete` permission.
-- Credentials and k3d: assert zero-revision credential deletion; directly delete
-  running embedded and dedicated Agents with an immutable runtime image. Assert
-  finalization waits for exact Pods, and credential Secrets,
-  PVCs, Services, ServiceAccounts, revision ConfigMaps, and Agent NetworkPolicies
-  are gone while sibling resources survive. Assert idempotent absence and
-  fail-closed unsupported Drivers.
-- Race: attempt update, deploy, credential provisioning, and a workspace write
-  against a `deleting` Agent and assert each is rejected; assert no revision can
-  be admitted after teardown enumerates revisions.
-- Retry: fail `retireRevision` once, then assert the retry completes and the rows
-  are gone; restart the worker with a fresh SSH Driver and prove binding precedes
-  retirement.
-- Isolation: assert a sibling Agent, its revisions, and its ServicePrincipal
-  survive, and that the Namespace's Configurations and Secrets are untouched.
-- Privilege and immutability: assert `occ_app` cannot delete an Agent, revision,
-  or identity directly, that revision `UPDATE` is still rejected after the
-  trigger change, and that `EXECUTE` on the function is denied to `PUBLIC`.
-- Finalization: assert an expired or stolen lease deletes nothing, and that
-  success evidence is recorded even though the work row is removed.
-- Orphan checks: assert no `iam_access_bindings` or `iam_restrictions` rows
-  reference the deleted Agent or its revisions, and no `occ.apikey` row
-  references its ServicePrincipal.
-- Namespace: delete the last Agent and its Configurations, then assert
-  `deleteNamespace` reaches the tombstone through the lifecycle trigger.
-- PostgreSQL integration per [database setup](../../docs/testing/postgresql.md),
-  migrating with the migrator role and running as the limited application role, to
-  prove the privilege model is sufficient.
-- Real-runtime Kubernetes teardown per
-  [cluster setup](../../docs/testing/kubernetes.md), asserting the workload, gateway,
-  route, and claims are gone while operator-owned Namespace resources remain.
+The [verification plan](verification.md) covers conformance, k3d credential and
+workload teardown, races, retries, isolation, privilege and immutability,
+finalization, orphan checks, Namespace offboarding, PostgreSQL integration, and
+real-runtime Kubernetes teardown.
 
 ## Dependencies
 

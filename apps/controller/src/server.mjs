@@ -65,6 +65,9 @@ function startupFailureCode(error) {
   if (/OCC_DATABASE_URL|PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
+  if (/SQLite-compatible gateway storage class/.test(message)) {
+    return "GATEWAY_STORAGE_CLASS_INVALID";
+  }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
   }

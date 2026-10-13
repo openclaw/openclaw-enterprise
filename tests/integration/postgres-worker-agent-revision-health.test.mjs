@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,12 +7,14 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
 
-// Worker health, readiness, leases and outages, and exclusive replacement. Withdrawal,
-// deployment and dispatch cases are in postgres-worker-agent-revision.test.mjs; repository
-// sessions, Agent stop and deletion, and Namespace teardown are in
-// postgres-worker-agent-revision-teardown.test.mjs. The lane runs the three files at once.
+// Worker health, readiness, leases and outages. Withdrawal, deployment and dispatch cases are
+// in postgres-worker-agent-revision.test.mjs; repository sessions, Agent stop and deletion, and
+// Namespace teardown are in postgres-worker-agent-revision-teardown.test.mjs; exclusive
+// replacement and refused candidates are in the -replacement sibling, a refused candidate's stop
+// and its wait in the -refused-stop and -refused-wait siblings, and redeploys whose predecessor
+// stop yields in the -yielded-redeploy sibling. The lane runs the revision files at once.
 
-const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
+const { setup, cleanup } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
 test(
@@ -115,213 +116,6 @@ test(
     assert.ok(wait.ms < 5_000, `the wait ended early (${wait.ms} ms)`);
     // The pending first pass ended and the second Agent's pass ran next.
     assert.deepEqual(prepared.slice(0, 2), [first.id, second.id]);
-  },
-);
-
-revisionTest(
-  "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
-  async (fixture) => {
-    const owner = await fixture.agent("exclusive-workspace", { executionMode: "dedicated" });
-    const running = new Set();
-    const prepared = [];
-    let rejectStop = true;
-    let stopFailures = 0;
-    const compute = {
-      ...fixture.compute,
-      requiresStoppedPredecessors: () => true,
-      async prepareRevision(revision) {
-        // This Driver boundary represents a resource which cannot be held by
-        // two revisions. PostgreSQL and the real worker own ordering and retries.
-        assert.deepEqual(
-          [...running].filter((id) => id !== revision.id),
-          [],
-        );
-        running.add(revision.id);
-        prepared.push(revision.id);
-        return {
-          ...(await fixture.compute.prepareRevision(revision)),
-          ready: revision.revision !== 2,
-        };
-      },
-      async stopRevision(revision) {
-        if (rejectStop && running.has(revision.id)) {
-          rejectStop = false;
-          stopFailures += 1;
-          throw new Error("resource release temporarily unavailable");
-        }
-        running.delete(revision.id);
-      },
-      async retireRevision(revision) {
-        running.delete(revision.id);
-      },
-    };
-    await fixture.start(compute, { convergenceTimeoutMs: 3_000 });
-    const first = await fixture.revision(owner, 1);
-    await fixture.work(first, "succeeded");
-    const replacement = await fixture.revision(owner, 2);
-    await waitFor("replacement preparation after predecessor release", async () =>
-      running.has(replacement.id) ? true : undefined,
-    );
-    assert.equal(stopFailures, 1);
-    const firstPreparations = prepared.filter((id) => id === first.id).length;
-    const maintenance = {
-      id: first.id,
-      idempotencyKey: `agent_revision:${first.id}:maintenance:${randomUUID()}`,
-    };
-    await fixture.state.transactWithQueue((_unit, queue) =>
-      queue.enqueue({
-        idempotencyKey: maintenance.idempotencyKey,
-        namespaceId: fixture.namespace.id,
-        agentId: owner.id,
-        revisionId: first.id,
-        actorId: fixture.actor.id,
-        availableAt: new Date(0),
-      }),
-    );
-    await fixture.work(maintenance, "succeeded");
-    assert.equal(prepared.filter((id) => id === first.id).length, firstPreparations);
-    await fixture.work(replacement, "failed_permanent");
-    assert.deepEqual([...running], [replacement.id]);
-    const recovery = await fixture.revision(owner, 3);
-    await fixture.work(recovery, "succeeded");
-    assert.deepEqual([...running], [recovery.id]);
-    const current = await fixture.currentAgent(owner);
-    assert.equal(current.activeRevisionId, recovery.id);
-  },
-  { timeout: 30_000 },
-);
-
-function countingExclusiveCompute(fixture, { ready, onPrepare } = {}) {
-  const running = new Set();
-  const prepared = [];
-  const stops = new Map();
-  const compute = {
-    ...fixture.compute,
-    requiresStoppedPredecessors: () => true,
-    async prepareRevision(revision) {
-      const overlap = [...running].filter((id) => id !== revision.id);
-      running.add(revision.id);
-      prepared.push(revision.id);
-      await onPrepare?.(revision, overlap);
-      // The candidate cannot become ready while any predecessor still runs.
-      const exclusive = [...running].every((id) => id === revision.id);
-      return {
-        ...(await fixture.compute.prepareRevision(revision)),
-        ready: exclusive && (ready?.(revision) ?? true),
-      };
-    },
-    async stopRevision(revision) {
-      stops.set(revision.id, (stops.get(revision.id) ?? 0) + 1);
-      running.delete(revision.id);
-    },
-    async retireRevision(revision) {
-      running.delete(revision.id);
-    },
-  };
-  const count = (revision) => stops.get(revision.id) ?? 0;
-  const preparations = (revision) => prepared.filter((id) => id === revision.id).length;
-  return { compute, running, count, preparations };
-}
-
-async function enqueueMaintenance(fixture, owner, revision) {
-  const maintenance = {
-    id: revision.id,
-    idempotencyKey: `agent_revision:${revision.id}:maintenance:${randomUUID()}`,
-  };
-  await fixture.state.transactWithQueue((_unit, queue) =>
-    queue.enqueue({
-      idempotencyKey: maintenance.idempotencyKey,
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      revisionId: revision.id,
-      actorId: fixture.actor.id,
-      availableAt: new Date(0),
-    }),
-  );
-  return maintenance;
-}
-
-revisionTest(
-  "exclusive replacement stops each predecessor once across pending passes and maintenance",
-  async (fixture) => {
-    const owner = await fixture.agent("exclusive-sweep-once", { executionMode: "dedicated" });
-    let pendingPasses = 4;
-    const driver = countingExclusiveCompute(fixture, {
-      ready: (revision) => revision.revision !== 2 || pendingPasses-- <= 0,
-    });
-    await fixture.start(driver.compute);
-    const first = await fixture.revision(owner, 1);
-    await fixture.work(first, "succeeded");
-    const replacement = await fixture.revision(owner, 2);
-    await fixture.work(replacement, "succeeded", 30_000);
-    assert.ok(driver.preparations(replacement) >= 5, "the replacement must repeat pending passes");
-    // Exactly one stop holds because the fixture lease (30 s) outlasts this pending
-    // window; with a shorter lease the scheduled re-stop would add more.
-    assert.equal(driver.count(first), 1, "pending passes must not repeat the predecessor stop");
-
-    for (let index = 0; index < 2; index += 1) {
-      await fixture.work(await enqueueMaintenance(fixture, owner, replacement), "succeeded");
-    }
-    assert.equal(driver.count(first), 1, "maintenance must not repeat the predecessor stop");
-
-    const recovery = await fixture.revision(owner, 3);
-    await fixture.work(recovery, "succeeded");
-    assert.equal(driver.count(replacement), 1);
-    assert.equal(driver.count(first), 1, "a recorded predecessor is skipped by later sweeps");
-    assert.deepEqual([...driver.running], [recovery.id]);
-  },
-  { timeout: 60_000 },
-);
-
-test(
-  "a predecessor that comes back after the sweep is stopped again",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    for (const { leaseDurationMs, label, returns } of [
-      // A late Compute effect makes the next pass fail, which forgets the record.
-      { leaseDurationMs: 30_000, label: "failed-pass", returns: 1 },
-      // A late effect keeps the candidate pending until one lease has elapsed.
-      { leaseDurationMs: 1_000, label: "lease-restop", returns: 1 },
-      // It comes back again after that re-stop; the next one follows two leases later.
-      { leaseDurationMs: 1_000, label: "repeated-restop", returns: 2 },
-    ]) {
-      const fixture = await setup(context, { leaseDurationMs });
-      const owner = await fixture.agent(`exclusive-resurrection-${label}`, {
-        executionMode: "dedicated",
-      });
-      let first;
-      let resurrections = 0;
-      const driver = countingExclusiveCompute(fixture, {
-        async onPrepare(revision, overlap) {
-          if (revision.revision !== 2) {
-            return;
-          }
-          if (resurrections < returns && driver.count(first) > resurrections) {
-            // Model a lost claim's late Compute write landing after each stop.
-            resurrections += 1;
-            driver.running.add(first.id);
-          } else if (overlap.length > 0 && label === "failed-pass") {
-            driver.running.delete(revision.id);
-            throw new Error("predecessor still holds the exclusive resource");
-          }
-        },
-      });
-      await fixture.start(driver.compute);
-      first = await fixture.revision(owner, 1);
-      await fixture.work(first, "succeeded");
-      const replacement = await fixture.revision(owner, 2);
-      await fixture.work(replacement, "succeeded", 30_000);
-      assert.equal(resurrections, returns);
-      assert.equal(
-        driver.count(first),
-        returns + 1,
-        `${label}: the returned predecessor is stopped again`,
-      );
-      assert.deepEqual([...driver.running], [replacement.id]);
-      const current = await fixture.currentAgent(owner);
-      assert.equal(current.activeRevisionId, replacement.id);
-      await fixture.stop();
-    }
   },
 );
 

@@ -19,10 +19,11 @@ var namespaceName = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
 // validateClusterName names the rejected OCC_DEVELOPMENT_KUBERNETES_CLUSTER
 // value and the rule it broke, so an operator can pick a valid name.
 func validateClusterName(name string) error {
-	if clusterName.MatchString(name) && len(name) <= 63 {
+	// k3d v5.8.3 CheckName limits new names; keep the saved-state predicate unchanged.
+	if clusterName.MatchString(name) && len(name) <= 32 && !strings.HasSuffix(name, "-") {
 		return nil
 	}
-	return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_CLUSTER %q: the name must start with occ-dev-, use only lowercase letters, digits, and hyphens (%s), and be at most 63 characters", name, clusterName)
+	return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_CLUSTER %q: the name must start with occ-dev-, use only lowercase letters, digits, and hyphens (%s), end with a lowercase letter or digit, and be at most 32 characters", name, clusterName)
 }
 
 type developmentState struct {

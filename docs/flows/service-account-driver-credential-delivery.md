@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-08
-last_updated_session: fix-780-781
+updated: 2026-10-09
+last_updated_session: q33-force-delete
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -99,7 +99,11 @@ check with draft changes and deployment admission; the PostgreSQL reference
 query observes active pointers and pending work together during worker cutover.
 With no ServiceAccount Driver selected (no ChatGPT Backend), an account holding
 an issued access token answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`
-naming the fix and stays, since nothing can revoke its token.
+naming the fix and stays, since nothing can revoke its token. With `?force=true`
+OCC instead reads the binding's Backend, workspace, account, and credential IDs, removes
+the token Secret through `KubernetesComputeDriver.deleteServiceAccountCredential`
+and the account, and audits `revocation: "skipped"`; with a Driver selected,
+force is ignored and revocation runs.
 
 ### 3. Issue the credential and create one account Secret
 
@@ -203,6 +207,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-10-09 18:30: `DELETE ...?force=true` removes an account whose issued token no ChatGPT Backend can revoke, deletes its token Secret, and audits the token as unrevoked; with a Backend configured, force is ignored. (q33-force-delete, finding 835)
 - 2026-10-08 17:45: Deleting an account that holds an issued access token, with no ChatGPT Backend, answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503`. (fix-816-819)
 - 2026-10-08 13:00: Issuance, and deploying an account without an access token, on an Installation with no ChatGPT Backend answer `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503` or `409`. (fix-780-781/d540)
 

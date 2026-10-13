@@ -32,7 +32,7 @@ Build and import the images:
 
 ```bash
 docker build --target runtime \
-  --build-arg NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584 \
+  --build-arg NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
   -t "localhost/$CLUSTER/controller:local" .
 docker build -f deploy/runtime/Dockerfile \
   -t "localhost/$CLUSTER/runtime:local" .

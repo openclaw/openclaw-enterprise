@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { startController, request } from "../helpers/postgres-platform-state.mjs";
 
 const identifier = (kind) => `${kind}_${randomUUID()}`;
 
@@ -136,6 +137,53 @@ async function exercisePresets(store, reopened = store) {
 test("in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries", async () => {
   await exercisePresets(new InMemoryPlatformState());
 });
+
+test(
+  "shipped Preset API preserves contract-sized templates through PostgreSQL",
+  requiresPostgres,
+  async (context) => {
+    const api = await startController(context);
+    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const namespace = {
+      id: identifier("ns"),
+      name: `Preset HTTP fixture ${randomUUID()}`,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    // Storage fixtures isolate HTTP/template persistence from Compute provisioning.
+    await state.transact((store) => store.namespaces.createNamespace(namespace));
+    const content = (
+      "# Workspace guidance\n" + "Routine fixture instructions.\n".repeat(600)
+    ).slice(0, 16 * 1024);
+    const template = {
+      agent: {
+        initialWorkspaceFiles: Object.fromEntries(
+          ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => [name, content]),
+        ),
+      },
+    };
+    const path = `/namespaces/${namespace.id}/presets`;
+    const created = await request(api, "POST", path, { name: "Full workspace", template });
+    assert.equal(created.status, 201, JSON.stringify(created.error));
+    const replacement = await request(api, "POST", path, { name: "Replacement", template: {} });
+    assert.equal(replacement.status, 201);
+    const updated = await request(api, "PATCH", `${path}/${replacement.data.id}`, { template });
+    assert.equal(updated.status, 200, JSON.stringify(updated.error));
+    const readback = await request(api, "GET", `${path}/${replacement.data.id}`);
+    assert.equal(readback.status, 200);
+    assert.deepEqual(readback.data.template, template);
+    const persisted = await state.read((store) =>
+      store.presets.findPreset(namespace.id, created.data.id),
+    );
+    assert.deepEqual(persisted.template, template);
+  },
+);
 
 test(
   "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",

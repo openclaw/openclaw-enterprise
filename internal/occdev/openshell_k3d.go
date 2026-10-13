@@ -23,7 +23,7 @@ import (
 const (
 	developmentAPINodePort = 30080
 	developmentController  = "openclaw-enterprise-controller:kubernetes-quickstart"
-	developmentNodeBase    = "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+	developmentNodeBase    = "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0"
 	developmentPostgres    = "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
 )
 
@@ -35,7 +35,7 @@ const (
 // so repeating the version would only let the two drift apart on the next bump.
 // This checks the shape of an untrusted subprocess result: a relative path under
 // `openclaw/` naming a reviewed version and the profile's content digest.
-var developmentCodexProfile = regexp.MustCompile(`^openclaw/codex-[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]{64}\.json$`)
+var developmentCodexProfile = regexp.MustCompile(`^openclaw/codex-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?-[a-f0-9]{64}\.json$`)
 
 // validDevelopmentCodexSeccompResult reports whether the preparation script
 // returned a result the lifecycle can act on: either the node's RuntimeDefault

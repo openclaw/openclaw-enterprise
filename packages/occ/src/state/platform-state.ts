@@ -438,6 +438,22 @@ export interface ServiceAccountRepository extends ServiceAccountReadRepository {
   ): Promise<Readonly<ServiceAccount> | undefined>;
   deleteServiceAccount(namespaceId: string, serviceAccountId: string): Promise<boolean>;
   hasReferences(namespaceId: string, serviceAccountId: string): Promise<boolean>;
+  /**
+   * The Backend binding of an issued provider credential, for the audit record of a forced
+   * deletion that cannot revoke it. Credential and upstream IDs otherwise stay private.
+   */
+  findIssuedCredentialBinding(
+    namespaceId: string,
+    serviceAccountId: string,
+  ): Promise<
+    | Readonly<{
+        readonly backendId: string;
+        readonly workspaceId: string;
+        readonly externalAccountId: string;
+        readonly credentialId: string;
+      }>
+    | undefined
+  >;
 }
 
 const serviceAccountIdentifier =
@@ -2104,6 +2120,8 @@ function repositories(
       deleteResourceAccessBindings("service_account", serviceAccountId);
       return true;
     },
+    // Backend bindings are PostgreSQL-only, as findServiceAccountBackendBinding.
+    findIssuedCredentialBinding: async () => undefined,
   };
 
   const workspaceSetups: WorkspaceSetupRepository = {

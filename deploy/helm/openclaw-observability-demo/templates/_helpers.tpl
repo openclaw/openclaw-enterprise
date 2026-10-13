@@ -21,9 +21,28 @@ app.kubernetes.io/component: {{ .component }}
 {{- if or (empty $client.namespace) (empty $client.podLabels) }}{{ fail "grafana.clients requires namespace and nonempty podLabels" }}{{ end -}}
 {{- include "demo.namespaceName" (dict "value" $client.namespace "path" (printf "grafana.clients[%d].namespace" $index)) -}}
 {{- end -}}
+{{- /* NetworkPolicy ports. Sprig int returns 0 past int64, so a longer digit string must fail before that conversion. */ -}}
+{{- range $path, $port := dict "cluster.port" .Values.cluster.port "occ.metricsPort" .Values.occ.metricsPort -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $port))) (gt (int $port) 65535) -}}
+{{- fail (printf "%s must be an integer TCP port from 1 to 65535" $path) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- define "demo.namespaceName" -}}
 {{- if or (gt (len (toString .value)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .value))) -}}
 {{- fail (printf "%s must be a Kubernetes namespace name (a DNS label of at most 63 characters)" .path) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Service names are DNS labels, while Helm permits dots and leading digits in release names. Keep admissible short names stable and hash the original release whenever normalization or shortening is needed. */ -}}
+{{- define "demo.serviceName" -}}
+{{- $name := printf "%s-%s" .root.Release.Name .component -}}
+{{- if and (le (len $name) 63) (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $name) -}}
+{{- $name -}}
+{{- else -}}
+{{- /* End with the hash: a fallback cannot alias an unchanged name ending in -prometheus, -loki or -grafana. */ -}}
+{{- $prefix := printf "%s-%s" .component (replace "." "-" .root.Release.Name) -}}
+{{- $suffix := printf "-%s" (.root.Release.Name | sha256sum | trunc 12) -}}
+{{- printf "%s%s" ($prefix | trunc (int (sub 63 (len $suffix))) | trimSuffix "-") $suffix -}}
 {{- end -}}
 {{- end -}}

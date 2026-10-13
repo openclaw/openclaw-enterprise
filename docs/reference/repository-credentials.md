@@ -313,10 +313,13 @@ workflows are unsupported.
 
 The generated defaults scope helper reset, `credential.useHttpPath=true`, verified
 TLS, optional CA trust and disabled redirects to the exact gateway HTTPS origin.
-The helper checks effective protocol, host/port, username and repository path;
-escaped paths, dot segments, extra components and unmatched names receive no
-bearer. A literal name ending in `.git` can overlap another admitted identity;
-the helper compares both spellings and refuses ambiguity or alternate grants.
+The helper checks effective protocol, host/port, username and repository path.
+Git decodes percent-escapes in the host, username and path first, so an escaped
+spelling of an admitted gateway host and repository receives a bearer; it can
+reach no other host, and the gateway refuses any `%` in a request path. Dot
+segments, extra components and unmatched names receive no bearer. A literal
+name ending in `.git` can overlap another admitted identity; the helper compares
+both spellings and refuses ambiguity or alternate grants.
 
 Duplicate repository bindings remain valid. Select one with `OCE_REPOSITORY_REF`;
 gh also propagates `OCE_REPOSITORY_SELECTION` containing generation, repository

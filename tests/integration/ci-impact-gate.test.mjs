@@ -23,6 +23,7 @@ const allLanes = [
   "k3d-fixture-configuration",
   "k3d-fixture-state",
   "k3d-fixture-plugins",
+  "k3d-fixture-oauth",
   "k3d-observability",
   "logging-collector",
   "repository-credentials-container",

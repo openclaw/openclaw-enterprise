@@ -20,4 +20,6 @@ export const GoogleLogin = { ...story("googleLogin") };
 export const GoogleUnavailable = { ...story("googleUnavailable") };
 export const GoogleCallbackRejected = { ...story("googleCallbackRejected") };
 export const GoogleResultRejected = { ...story("googleResultRejected") };
+export const GoogleAccountDisabled = { ...story("googleAccountDisabled") };
+export const RecoveryOnlyAccountDisabled = { ...story("recoveryOnlyAccountDisabled") };
 export const ProviderDiscoveryUnavailable = { ...story("providerDiscoveryUnavailable") };

@@ -113,6 +113,7 @@
       "path": "tests/integration/postgres-presets.test.mjs",
       "expectedTests": [
         "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
+        "shipped Preset API preserves contract-sized templates through PostgreSQL",
         "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
       ]
     },
@@ -126,13 +127,15 @@
     {
       "path": "tests/integration/postgres-service-account-deletion.test.mjs",
       "expectedTests": [
-        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects"
+        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
+        "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account"
       ]
     },
     {
       "path": "tests/integration/postgres-agent-provisioning.test.mjs",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
+        "provisioning status judges claim liveness by the database clock, not the controller clock",
         "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",

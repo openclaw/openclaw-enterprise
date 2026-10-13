@@ -80,6 +80,7 @@ export function bindPlatformUnitOfWork(
       "updateCredential",
       "deleteServiceAccount",
       "hasReferences",
+      "findIssuedCredentialBinding",
     ]),
     workspaceSetups: bindRepository(repositories.workspaceSetups, lifetime, [
       "find",

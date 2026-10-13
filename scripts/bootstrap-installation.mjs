@@ -83,8 +83,7 @@ function authBaseURL(raw, mode) {
   if (
     mode === "production" &&
     parsed.protocol !== "https:" &&
-    parsed.hostname !== "127.0.0.1" &&
-    parsed.hostname !== "localhost"
+    !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname)
   ) {
     throw new Error("OCC_AUTH_BASE_URL must be HTTPS except for loopback development tests.");
   }

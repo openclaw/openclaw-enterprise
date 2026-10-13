@@ -61,7 +61,7 @@ OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
 Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.160.0`. If the node's `RuntimeDefault`
+imported runtime image and Codex `0.163.0-alpha.2`. If the node's `RuntimeDefault`
 blocks it, the launcher derives the
 [reviewed compatibility profile](codex-sandbox.md) from that node's actual
 policy, installs it only on the owned k3d node, and verifies workspace and
@@ -98,8 +98,8 @@ requires [hybrid private routing](local-compose-kubernetes.md), configured
 before creating Agent Namespaces; that page also covers Compose repository and
 Slack service connections.
 
-If the K3s channel lookup times out, follow
-[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-times-out).
+If the K3s channel lookup fails or times out, follow
+[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-fails).
 
 ### Start the OpenShell fail-closed profile
 
@@ -127,17 +127,15 @@ The CLI creates one k3d cluster, then:
 Agent Sandbox runs in `agent-sandbox-system`; OCC creates tenant Workspaces,
 Sandbox resources and Agent Pods in separate OCC-owned `oce-*` Namespaces.
 
-If Agent Sandbox rollout fails, startup attempts to write bounded operational metadata
-on error output before rollback: controller-owned status, image identities and
-Warning reasons. Failures are marked; messages, environment values and logs are
-excluded. The original error and cleanup remain unchanged. This neither
-diagnoses nor repairs the failure.
+If Agent Sandbox rollout fails, startup tries to print bounded controller status,
+image identities and Warning reasons before the unchanged rollback; messages,
+environment values and logs are excluded.
 
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL, OCC and its
 Kubernetes worker in Compose. This OpenShell profile installs the pinned private
 Envoy route in k3d, mounts its service key and public CA only into the Compose
 controller and `worker-kubernetes`, and records the node hostname and Envoy
-NodePort in the Installation. Do not also run manual hybrid routing.
+NodePort in the Installation; skip manual hybrid routing.
 
 First startup requires network access. To use reviewed local assets instead,
 set

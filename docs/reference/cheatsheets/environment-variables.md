@@ -38,7 +38,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
-- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
+- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
 - `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
 - `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
 - `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
@@ -52,7 +52,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
-- `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC or gateway CA; read at process startup.
+- `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC, gateway or OIDC IdP CA; read at process startup.
 
 ## PostgreSQL and migrations
 

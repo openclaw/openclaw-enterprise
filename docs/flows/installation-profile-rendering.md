@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-09
-last_updated_session: authoring-run/9a3fd823-79af-431c-b422-44c0ba255013
+updated: 2026-10-11
+last_updated_session: authoring-run/a792f860-0966-4b83-8955-7d864ba96f61
 ---
 
 # Installation Profile Rendering Flow
@@ -76,16 +76,14 @@ registry names, so the same profile and input always render the same output.
 
 `scripts/render-installation-profile.mjs:buildInput`
 
-Every input section is closed: an unknown field is a preflight error, not
-ignored, so the renderer never accepts an unused readiness flag. The OpenClaw
+Every input section is closed: an unknown field is a preflight error, so the renderer never accepts an unused readiness flag. The OpenClaw
 profile rejects Codex-only inputs.
 
 The input schema has no field for the hosted discovery and `codex_pat` runtime
 token because Installation startup configuration does not consume it.
 `preflight.json` tells the operator to add that credential later as a
 same-Namespace Secret or through the Console. Managed ServiceAccount
-provisioning for `codex_pat` is optional and renders only when `codex.managedServiceAccounts` is
-supplied.
+provisioning for `codex_pat` is optional and renders only with `codex.managedServiceAccounts`.
 
 Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
 syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
@@ -96,14 +94,13 @@ same rule to `gatewayNamespace` and `envoyNamespace`, and the chart to
 `controlPlane.dns.namespace` follow the same rule, as the chart does for
 `api.clients` and `dns`: NetworkPolicies select those peers by
 `kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a
-slash, an uppercase letter, or a longer name fails before any deployable file
-is written. The shared `digestImage` check in `buildRendered`
-requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
-`controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
-`controllerDigestImage` additionally applies the chart and bootstrap-volume
-helper's reference rule to `controlPlane.controllerImage`: a letter or digit
-first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
-This controller-specific rule does not change runtime or repository image inputs.
+slash, an uppercase letter, or a longer name fails preflight.
+
+`buildRendered` requires the literal `sha256` algorithm and 64 lowercase
+hexadecimal characters for `controlPlane.controllerImage`, `runtime.image`, and
+enabled `repository.image`. The controller and repository images also follow
+the chart's control-plane image rule (`controlPlaneDigestImage` here): a letter
+or digit first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
 
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.
@@ -112,21 +109,20 @@ branch writes only `preflight.json`, leaving no deployable artifacts.
 already apply to `installation.name`: 1 to 200 characters, with no leading or
 trailing whitespace and no control characters or line or paragraph separators.
 
-Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
-hostnames and their shared cookie parent domain (not a public suffix, checked
-with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), repository Service names, and paired metrics
-scraper selectors. Invalid values therefore fail before `values.yaml` or
-`installation.yaml` is written.
+Preflight applies downstream contracts for IPv4 CIDRs, native-admin hostnames
+and shared cookie parent (not a public suffix under `tldts`), Google hosted
+domains, GatewayClass, gateway API key, database CA, ChatGPT admin and sign-in
+Secrets, gateway StorageClass, repository ConfigMap, Secret and Service names,
+and paired metrics selectors. Invalid values fail preflight.
 
-`scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
-and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
-`client-id` and `client-secret` defaults when only one key is overridden, so those
-collisions also fail before deployment files are written.
-`signInSecretsDedicated` applies the chart's dedicated-Secret rule: each enabled
-provider's Secret, default or explicit, must differ from the installation,
-database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
-repository broker Secrets when enabled, and every provider checked before it.
+`signInProvider` validates GitHub, Google and OIDC Secret names and keys, and
+refuses equal client-ID and client-secret keys after applying chart defaults.
+`dedicatedSecrets` applies the chart's ordering: ChatGPT admin, database CA,
+gateway API key, sign-in and repository Secrets must differ from
+`occ-installation-startup`, `occ-database`, `occ-auth`, and generated Gateway Secrets
+(`chartGatewaySecretNames`), the enabled log collector's Secrets and every Secret
+listed before each one; only the two public CA Secrets may share one. A collision fails
+preflight.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
@@ -134,17 +130,33 @@ repository broker Secrets when enabled, and every provider checked before it.
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
 the runtime selectors into Pod specs, where Kubernetes applies the same rule.
 Invalid placement labels fail preflight without deployment files; legal YAML
-lookalike values remain strings. The bootstrap password claim name must be a DNS
-subdomain, and a repository Backend ID must follow the Backend ID rule within
-200 UTF-16 code units, as in the chart.
+lookalike values remain strings. `peerSelector` applies Compute's `validatePeer`
+rule to DNS, API client and metrics scraper selectors. Both selector kinds use
+Kubernetes label keys and values, including empty values. Their qualified
+prefixes and bootstrap password claim names are DNS subdomains of at most 253
+characters total, without a per-segment cap. Namespace names and unqualified
+label names/values retain their 63 limit. The chart and
+`scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
+rule; the chart checks peers only for nonempty maps. Repository Backend IDs
+follow their rule within 200 UTF-16 code units, as in the chart.
 
 ### 4. Build Helm values
 
 `scripts/render-installation-profile.mjs:buildRendered`
 
-An optional `controlPlane.databaseCa.key` must be a simple basename. The chart
-refuses `.`, `..`, and any other key that is not letters, digits, `.`, `_`, or
-`-`. Omit the key to use `ca.pem`.
+An optional `controlPlane.databaseCa.key` must be a Kubernetes Secret key of at
+most 253 characters: not `.`, not a `..` prefix, and only letters, digits, `.`,
+`_`, or `-`. Preflight uses that same rule, so `..ca.pem` and a 254-character
+key fail before Helm. Omit the key to use `ca.pem`.
+
+`validateDatabaseCaMount` checks the generated values against the chart's active
+database-client mounts. With a database CA Secret, `mountPath` cannot equal the
+Installation, worker runtime, bootstrap, gateway key, or private gateway CA mount.
+Repository mounts are reserved only when repository credentials are enabled;
+the ChatGPT mount is reserved only when managed service accounts are configured.
+Profiles do not enable execution-cluster mounts. No CA configuration adds no
+restriction; an omitted path keeps `/etc/openclaw/database-ca`. A collision adds
+a field-specific preflight error and prevents both deployable files.
 
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
@@ -265,6 +277,27 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 18:12: Validate sign-in and ChatGPT admin Secret references before rendering deployment files. (authoring-run/a792f860-0966-4b83-8955-7d864ba96f61 - ec6d41d1ac7f4cbe889ff7cdf45b60ebef99ffb7)
+
+- 2026-10-10: Public CA Secrets may share one Secret, as in the chart.
+
+- 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
+
+- 2026-10-10: Refuse gateway API key Secret names that Kubernetes refuses.
+- 2026-10-11: Refuse Gateway StorageClass, repository ConfigMap and Secret, database CA Secret, and ChatGPT admin Secret names that Kubernetes refuses.
+
+- 2026-10-10 02:33: Merge current main while retaining selector owners and Kubernetes DNS-subdomain parity. (authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c - db4ccbdea96a752cd99a66cf4cf02c195f5fe3ba)
+
+- 2026-10-10 01:15: Retain the CA mount and incoming peer-selector changelog entries when merging the latest main at maintainer request. (authoring-run/2a354440-5009-424f-8f64-47a48128bd1c - 0ebf6ef99f547dab45923cf459bf96242723e845)
+
+- 2026-10-10 00:58: Merge current profile preflight rules while retaining database CA mount validation and its independent parity coverage. (authoring-run/3bc71672-b18b-4cc7-9189-6d0d77957cc4 - ba439186dbd131073c038eba4645d255cc8c128b)
+
+- 2026-10-10 00:30: Match Kubernetes DNS-subdomain limits in the accompanying setup validation change. (authoring-run/4a617af9-0745-4870-a679-848dba61de53 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
+
+- 2026-10-09 23:58: Reject database CA mount collisions with the active mounts selected by installation profiles. (authoring-run/19832129-1f67-41f2-8961-d10c648012fd - e6d0571907da6bc6d40eed3e1f8125f7dd332e99)
+
+- 2026-10-09: Check DNS, API client and metrics scraper selectors with Compute's peer label rule, allowing empty values.
 
 - 2026-10-09: Apply the chart's sign-in Secret, runtime node selector, claim name and Backend ID rules, and escape characters Helm's YAML parser changes.
 

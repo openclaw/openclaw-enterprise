@@ -17,6 +17,7 @@ import {
   PluginDriverIdentitySchema,
   PluginToolDefaultsSchema,
   PluginToolPolicySchema,
+  PRESET_JSON_MAX_BYTES,
   SecretResponse,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
@@ -112,6 +113,7 @@ import {
   unstorableTextFailure,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
+import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
@@ -218,8 +220,16 @@ const resourceHandlers: ResourceHandlers = {
 const DEFAULT_BODY_LIMIT = 64 * 1024;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
-const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
+// A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
+const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
+// The bundled Kubernetes Configuration Driver stores values up to 1 MiB of JSON (its ConfigMap
+// cap). A Configuration write must admit that plus the envelope (`kind` and up to 64 Secret
+// bindings, each a 253-character name and a reference: under 32 KiB), all written with
+// six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
+const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
+// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
+const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -390,10 +400,9 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
-  if (depth > 24) {
-    throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path: cappedPath(path), code: "TOO_DEEP" },
-    ]);
+  // The JSON body parser already refuses deeper bodies; this keeps the rule for any other input.
+  if (depth > MAX_JSON_BODY_DEPTH) {
+    throw tooDeepFailure(path);
   }
   if (value === null || typeof value !== "object") {
     return;
@@ -412,6 +421,16 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
   }
+}
+
+/** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
+function authorizesBeforeBody(operation: OccApiRoute): boolean {
+  return (
+    operation.operationId === "createPreset" ||
+    operation.operationId === "updatePreset" ||
+    operation.operationId === "createConfiguration" ||
+    operation.operationId === "updateConfiguration"
+  );
 }
 
 function operationTarget(
@@ -1148,6 +1167,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.removeContentTypeParser("text/plain");
+  // Refuse a body nested deeper than any document the API stores before it is parsed: parsing
+  // allocates every level, and schema validation recurses through them (a 6 MB body of nested
+  // arrays cost about 300 MB of heap, then overflowed the stack into a 500).
+  const parseJson = app.getDefaultJsonParser(
+    app.initialConfig.onProtoPoisoning ?? "error",
+    app.initialConfig.onConstructorPoisoning ?? "error",
+  );
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const tooDeep = tooDeepJsonPath(body as string);
+    if (tooDeep !== undefined) {
+      done(tooDeepFailure(tooDeep), undefined);
+      return;
+    }
+    parseJson(request, body as string, done);
+  });
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
   app.addSchema(PluginApproversSchema);
@@ -1657,7 +1691,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
-      operation.operationId !== "getAgentDeploymentRuntimeLogs"
+      operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
+      operation.operationId !== "deleteServiceAccount"
     ) {
       throw failure(
         400,
@@ -1836,6 +1871,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       await denial(operation, request, "authorization_denial", context);
       throw failure(403, "FORBIDDEN", "The admitted Namespace does not match.");
     }
+  }
+
+  /**
+   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
+   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * path and the caller, so it runs here, in onRequest, before the body is read: a caller
+   * without the grant gets the same 403 or 404 and audit row as when the check ran in the
+   * handler, and the controller never buffers the body. The handler repeats the check in its
+   * transaction, with the Secret binding checks that need the body.
+   */
+  async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    if (!controller) {
+      throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+    const params = request.params as Record<string, string>;
+    if (
+      operation.operationId === "createConfiguration" ||
+      operation.operationId === "updateConfiguration"
+    ) {
+      await controller.authorizeConfigurationWrite(
+        context.actorId,
+        params.namespaceId as string,
+        operation.operationId === "updateConfiguration" ? params.configurationId : undefined,
+      );
+      return;
+    }
+    await controller.authorizePresetWrite(
+      context.actorId,
+      params.namespaceId as string,
+      operation.operationId === "updatePreset" ? params.presetId : undefined,
+    );
   }
 
   async function perform(
@@ -2197,7 +2267,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
-        mutationEvent: (resource, details, authorization) => {
+        mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
             request,
@@ -2205,7 +2275,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             "mutation",
             context,
             undefined,
-            undefined,
+            failure === undefined
+              ? undefined
+              : { outcome: "failure", reasonCode: failure.reasonCode },
             undefined,
             authorization,
           );
@@ -2559,6 +2631,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       413: { description: "Payload Too Large", ...error },
       415: { description: "Unsupported Media Type", ...error },
     };
+    // Refuse request text that cannot be stored unchanged, as on OCC API routes.
+    const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
+      const unstorable =
+        unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", body);
+      if (unstorable !== undefined) {
+        throw unstorable;
+      }
+    };
     const accountBody = (
       createAuthAccountOperation.schema as {
         readonly body: { readonly properties: Record<string, unknown> };
@@ -2660,6 +2740,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
+        preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
           const context = contexts.get(request);
@@ -3102,13 +3183,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
-        preValidation: async (request) => resolveIdentity(request, accountReadOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, accountReadOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3238,7 +3323,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           onRequest: async (request) => admit(request, operation),
-          preValidation: async (request) => resolveIdentity(request, operation),
+          preValidation: async (request) => {
+            refuseUnstorableText(request);
+            await resolveIdentity(request, operation);
+          },
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -3393,7 +3481,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
-        preValidation: async (request) => resolveIdentity(request, recoveryReplaceOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, recoveryReplaceOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3499,13 +3590,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 created: { type: "boolean" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, enrolOperation),
-        preValidation: async (request) => resolveIdentity(request, enrolOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, enrolOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3529,7 +3624,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "signInEmail",
           summary: "Sign in with email and password",
           description:
-            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
+            "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -3647,7 +3742,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
-        preValidation: async (request) => resolveIdentity(request, createAuthAccountOperation),
+        preValidation: async (request) => {
+          // Passwords are hashed before persistence; their existing schema and hashing
+          // rules remain authoritative. Validate every other submitted field unchanged.
+          const body = request.body;
+          refuseUnstorableText(
+            request,
+            typeof body === "object" && body !== null && !Array.isArray(body)
+              ? { ...body, password: undefined }
+              : body,
+          );
+          await resolveIdentity(request, createAuthAccountOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3803,9 +3909,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : {}),
+            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+              : operation.operationId === "createConfiguration" ||
+                  operation.operationId === "updateConfiguration"
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                : {}),
         schema,
-        onRequest: async (request) => admit(request, operation),
+        onRequest: async (request) => {
+          await admit(request, operation);
+          if (authorizesBeforeBody(operation)) {
+            await resolveIdentity(request, operation);
+            await authorizeBeforeBody(request, operation);
+          }
+        },
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
@@ -3825,7 +3942,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
-        preHandler: async (request) => resolveIdentity(request, operation),
+        ...(authorizesBeforeBody(operation)
+          ? {}
+          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => perform(request, reply, operation),
       });
     }

@@ -163,12 +163,34 @@ export const DeploymentParams = Type.Object(
   { additionalProperties: false },
 );
 
+/** Query strings are not coerced; boolean values are exact text. */
+export const ServiceAccountDeleteQuery = Type.Object(
+  {
+    force: Type.Optional(
+      Type.Union([Type.Literal("true"), Type.Literal("false")], {
+        description:
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 /** Query strings are not coerced; numeric and boolean values are exact decimal text. */
 export const AgentRuntimeLogsQuery = Type.Object(
   {
     source: Type.Union([Type.Literal("gateway"), Type.Literal("agent"), Type.Literal("sandbox")]),
     pod: Type.Optional(
       Type.String({ minLength: 1, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }),
+    ),
+    container: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 253,
+        pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+        description:
+          "Actual container in an owned Pod, including init containers. Defaults to the first advertised main container.",
+      }),
     ),
     previous: Type.Optional(Type.Union([Type.Literal("true"), Type.Literal("false")])),
     tailLines: Type.Optional(
@@ -195,7 +217,7 @@ export const AgentRuntimeLogsQuery = Type.Object(
     cursor: Type.Optional(
       Type.String({
         maxLength: 2048,
-        pattern: "^v1\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
+        pattern: "^v[12]\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
         description: "Opaque cursor returned by the previous page of the same view.",
       }),
     ),
@@ -345,7 +367,7 @@ export const UpdateCredentialSourceBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
   },
 );
 
@@ -958,6 +980,7 @@ export type IAMServicePrincipalParams = Type.Static<typeof IAMServicePrincipalPa
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
+export type ServiceAccountDeleteQuery = Type.Static<typeof ServiceAccountDeleteQuery>;
 export type AgentRuntimeLogsQuery = Type.Static<typeof AgentRuntimeLogsQuery>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
 export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;

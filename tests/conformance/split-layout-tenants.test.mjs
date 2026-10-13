@@ -120,6 +120,64 @@ test("export reads every tenant resource the import needs, without Secret values
     [seeded.role.id],
   );
   assert.ok(tenant.accessBindings.some(({ id }) => id === seeded.binding.id));
+
+  // Damage the real collection response after its successful HTTP status. A
+  // missing envelope must stop export, not become an empty Namespace inventory.
+  for (const damage of ["malformed", "empty", "missing-data"]) {
+    const api = createOccApi({
+      baseUrl: "http://127.0.0.1",
+      async fetchImpl(url, init) {
+        const response = await fixture.app.fetch(
+          new Request(url, {
+            ...init,
+            headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
+          }),
+        );
+        assert.equal(response.status, 200);
+        const text = await response.text();
+        const payload = JSON.parse(text);
+        assert.ok(payload.data.some(({ id }) => id === seeded.namespace.id));
+        delete payload.data;
+        const damaged =
+          damage === "malformed"
+            ? text.slice(0, -1)
+            : damage === "empty"
+              ? ""
+              : JSON.stringify(payload);
+        return new Response(damaged, { status: response.status });
+      },
+    });
+    await assert.rejects(
+      exportTenants(api),
+      /GET \/namespaces: HTTP 200 returned no data envelope/u,
+      damage,
+    );
+  }
+
+  // Empty successful deletes and accepted missing resources are valid on the
+  // same API; they must not acquire the collection response requirement.
+  const base = `/namespaces/${seeded.namespace.id}`;
+  assert.equal(
+    (
+      await fixture.api.expect(
+        "DELETE",
+        `${base}/iam/access-bindings/${seeded.binding.id}`,
+        undefined,
+        [204],
+      )
+    ).status,
+    204,
+  );
+  assert.equal(
+    (await fixture.api.expect("DELETE", `${base}/iam/roles/${seeded.role.id}`, undefined, [204]))
+      .status,
+    204,
+  );
+  assert.equal(
+    (await fixture.api.expect("DELETE", `${base}/iam/roles/${seeded.role.id}`, undefined, [404]))
+      .status,
+    404,
+  );
 });
 
 test("import re-creates tenants under new IDs, waits for readiness, and resumes", async () => {

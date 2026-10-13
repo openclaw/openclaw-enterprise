@@ -1,7 +1,7 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
-import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ComputeDriver,
@@ -13,6 +13,7 @@ import type {
 import type { NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import { currentComputeAbortSignal } from "../drivers/compute/operation-context.ts";
 import type { SelectedDriverConfiguration } from "./installation-config.ts";
+import { withoutByteOrderMark } from "./startup-file.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -125,6 +126,97 @@ function rootExportTarget(exports: unknown, manifestUrl: URL, path: string): Exp
   return exportTarget(exports, manifestUrl, path);
 }
 
+const ABSENT_MANIFEST_ERRORS: ReadonlySet<string> = new Set([
+  "EACCES",
+  "EISDIR",
+  "ELOOP",
+  "ENAMETOOLONG",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+]);
+
+/**
+ * The "type" Node's package.json reader gives a package scope. It matches top-level keys by
+ * their raw (still escaped) text and keeps the last "type" string that is "module" or
+ * "commonjs". A "type" that is not a string makes Node refuse the manifest (undefined here).
+ */
+function nodePackageType(text: string): string | undefined {
+  let type = "none";
+  let depth = 0;
+  let key: string | undefined;
+  let previous = "";
+  // JSON.parse has accepted the text, so strings and single characters tokenize it.
+  for (const token of text.match(/"(?:[^"\\]|\\.)*"|\S/g) ?? []) {
+    if (depth === 1 && previous === ":" && key === "type") {
+      if (!token.startsWith('"')) {
+        return undefined;
+      }
+      const value: unknown = JSON.parse(token);
+      if (value === "module" || value === "commonjs") {
+        type = value;
+      }
+    }
+    if (depth === 1 && (previous === "{" || previous === ",")) {
+      key = token.slice(1, -1);
+    }
+    if (token === "{" || token === "[") {
+      depth += 1;
+    } else if (token === "}" || token === "]") {
+      depth -= 1;
+    }
+    previous = token;
+  }
+  return type;
+}
+
+/**
+ * Node's package scope for a `.js` entry: the nearest package.json from the entry's directory,
+ * never at or past a node_modules directory. The walk stops at the package root. Returns the
+ * scope's "type" ("none" when absent) and the manifest that decided it.
+ */
+async function entryPackageScope(
+  entryPath: string,
+  packageDirectory: string,
+  path: string,
+): Promise<{ readonly type: string; readonly manifest: string } | undefined> {
+  for (
+    let directory = dirname(entryPath);
+    basename(directory) !== "node_modules";
+    directory = dirname(directory)
+  ) {
+    let read: string | undefined;
+    try {
+      read = await readFile(join(directory, "package.json"), "utf8");
+    } catch (error) {
+      // Node treats a package.json it cannot open or read as absent and keeps walking. Any
+      // other failure, such as ERR_STRING_TOO_LONG for a manifest Node still reads, fails closed.
+      if (!ABSENT_MANIFEST_ERRORS.has(String((error as NodeJS.ErrnoException).code))) {
+        throw new Error(`${path}.package cannot read package scope metadata.`, {
+          cause: error,
+        });
+      }
+    }
+    if (read !== undefined) {
+      const text = withoutByteOrderMark(read);
+      let type: string | undefined;
+      try {
+        type = asRecord(JSON.parse(text)) === undefined ? undefined : nodePackageType(text);
+      } catch {
+        type = undefined;
+      }
+      if (type === undefined) {
+        throw new Error(`${path}.package has invalid package scope metadata.`);
+      }
+      return { type, manifest: join(directory, "package.json") };
+    }
+    if (directory === packageDirectory || dirname(directory) === directory) {
+      break;
+    }
+  }
+  return undefined;
+}
+
 export async function loadDriverPackage(
   selection: ConfigurationRecord,
   capability: "configuration" | "iam" | "compute" | "sandbox",
@@ -180,7 +272,8 @@ export async function loadDriverPackage(
 
   let installedManifest: ConfigurationRecord | undefined;
   try {
-    installedManifest = asRecord(JSON.parse(await readFile(installedManifestPath, "utf8")));
+    const text = withoutByteOrderMark(await readFile(installedManifestPath, "utf8"));
+    installedManifest = asRecord(JSON.parse(text));
     if (installedManifest === undefined) {
       throw new Error(`${path}.package manifest must be one object.`);
     }
@@ -231,13 +324,34 @@ export async function loadDriverPackage(
   } catch {
     throw new Error(`${path}.package selects an unavailable compiled ESM entry.`);
   }
-  const extension = extname(entryPath);
-  if (extension !== ".mjs" && !(extension === ".js" && installedManifest.type === "module")) {
-    throw new Error(`${path}.package must export precompiled JavaScript ESM.`);
-  }
-  const contained = relative(dirname(installedManifestPath), entryPath);
+  const packageDirectory = dirname(installedManifestPath);
+  const contained = relative(packageDirectory, entryPath);
   if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
     throw new Error(`${path}.package entry escapes its installed package root.`);
+  }
+  // Node loads `.mjs` as ESM without reading a package scope, and `.js` by the nearest
+  // package.json scope, not the root's. A refusal names the file that decided the format.
+  const extension = extname(entryPath);
+  const packagePath = (file: string) =>
+    [packageName, ...relative(packageDirectory, file).split(sep)].join("/");
+  if (extension !== ".mjs") {
+    if (extension !== ".js") {
+      throw new Error(
+        `${path}.package must export precompiled JavaScript ESM: entry ${packagePath(entryPath)} is not a .mjs or .js file.`,
+      );
+    }
+    const scope = await entryPackageScope(entryPath, packageDirectory, path);
+    if (scope?.type !== "module") {
+      // No scope when the entry's real path sits under a node_modules directory inside the
+      // package: the walk stops there, as Node's does.
+      const reason =
+        scope === undefined
+          ? `has no package.json scope inside ${packageName}`
+          : `takes its format from ${packagePath(scope.manifest)}, which does not set "type": "module"`;
+      throw new Error(
+        `${path}.package must export precompiled JavaScript ESM: entry ${packagePath(entryPath)} ${reason}.`,
+      );
+    }
   }
 
   let imported: unknown;
