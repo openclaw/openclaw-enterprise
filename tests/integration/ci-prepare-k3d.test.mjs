@@ -337,6 +337,13 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       ...refused(0, "http://localhost:8080"),
       discovery(1, "the server is currently unable to handle the request"),
       `${at(1)} Error from server (ServiceUnavailable): the server is currently unable to handle the request`,
+      // Newer kubectl appends a logger field after the error.
+      `${at(1)} E1012 22:56:01.000000 1 memcache.go:265] "Unhandled Error" err="couldn't get current server ` +
+        `API group list: Get \\"https://127.0.0.1:6443/api?timeout=32s\\": net/http: TLS handshake timeout" ` +
+        `logger="UnhandledError"`,
+      `${at(1)} Unable to connect to the server: net/http: TLS handshake timeout`,
+      // K3s's own lines stay, whatever they say.
+      `${at(2)} level=error msg="fixture K3s line: couldn't get current server API group list: kept"`,
       `${at(2)} level=fatal msg="fixture K3s exit cause"`,
       // The finding 1174 node logged API retries for five minutes after K3s exited.
       ...Array.from({ length: 400 }, (_, retry) =>
@@ -344,18 +351,26 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       ).flat(),
     ].join("\n");
     const excerpt = nodeLogExcerpt(stdout, "");
-    assert.match(excerpt, /level=fatal msg="fixture K3s exit cause"$/);
+    assert.match(
+      excerpt,
+      /msg="fixture K3s line: couldn't get current server API group list: kept"\n.*msg="fixture K3s exit cause"$/,
+    );
     assert.match(
       excerpt,
       new RegExp(
         [
           `^\\[diagnostics omitted 5 kubectl retry lines against localhost:8080 \\(connection refused\\), ${at(0)} to ${at(0)}\\]`,
           `\\[diagnostics omitted 2 kubectl retry lines against the API server \\(ServiceUnavailable\\), ${at(1)} to ${at(1)}\\]`,
+          `\\[diagnostics omitted 1 kubectl retry lines against 127\\.0\\.0\\.1:6443 \\(TLS handshake timeout\\), ${at(1)} to ${at(1)}\\]`,
+          `\\[diagnostics omitted 1 kubectl retry lines against the API server \\(TLS handshake timeout\\), ${at(1)} to ${at(1)}\\]`,
           `\\[diagnostics omitted 2000 kubectl retry lines against 127\\.0\\.0\\.1:6443 \\(connection refused\\), ${at(5)} to ${at(1202)}\\]\n`,
         ].join("\n"),
       ),
     );
-    assert.doesNotMatch(excerpt, /memcache|was refused|Error from server/);
+    assert.doesNotMatch(
+      excerpt,
+      /memcache|was refused|Error from server|Unable to connect|logger=/,
+    );
   });
 
   for (const scenario of ["storage-unready", "storage-after-image-unready"]) {

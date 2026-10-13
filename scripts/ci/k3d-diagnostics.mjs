@@ -58,9 +58,13 @@ function safeText(value) {
 // excerpt drops the retries, notes each target and outcome with its first and
 // last time, keeps the start of each node's log, its first and last error and
 // warning lines, and its end, and stays under about 40 KB per node.
-const KUBECTL_DISCOVERY_RETRY = /couldn't get current server API group list: (.*)$/;
-const KUBECTL_REFUSED_RETRY = /The connection to the server (\S+) was refused/;
-const KUBECTL_SERVER_RETRY = /^\S+ Error from server \((\w+)\): /;
+
+// kubectl's own klog error line; K3s's logrus lines never match it.
+const KUBECTL_DISCOVERY_RETRY =
+  /^\S+ E\d{4} [\d:.]+\s+\d+ memcache\.go:\d+\] .*couldn't get current server API group list: (.*)$/;
+const KUBECTL_REFUSED_RETRY = /^\S+ The connection to the server (\S+) was refused/;
+const KUBECTL_SERVER_RETRY =
+  /^\S+ (?:Error from server \((\w+)\): |error: You must be logged in to the server \((\w+)\)|Unable to connect to the server: (.*)$)/;
 const KUBECTL_RETRY_KINDS = 12;
 
 function retryOutcome(detail) {
@@ -70,26 +74,27 @@ function retryOutcome(detail) {
   if (/unable to handle the request/.test(detail)) {
     return "ServiceUnavailable";
   }
-  return detail
-    .split(": ")
-    .at(-1)
-    .replace(/[\\"]+$/u, "")
-    .slice(0, 80);
+  return detail.split(": ").at(-1).slice(0, 80);
 }
 
 // The target and outcome of one kubectl retry line, or undefined for any other line.
 function kubectlRetry(line) {
   const discovery = KUBECTL_DISCOVERY_RETRY.exec(line);
   if (discovery) {
-    const server = /Get \\?"https?:\/\/([^/\\"]+)/.exec(discovery[1])?.[1];
-    return `${server ?? "the API server"} (${retryOutcome(discovery[1])})`;
+    // The error ends at err="..."'s first unescaped quote; a logger field may follow.
+    const detail = discovery[1].replace(/(?<!\\)".*$/u, "");
+    const server = /Get \\?"https?:\/\/([^/\\"]+)/.exec(detail)?.[1];
+    return `${server ?? "the API server"} (${retryOutcome(detail)})`;
   }
   const refused = KUBECTL_REFUSED_RETRY.exec(line);
   if (refused) {
     return `${refused[1]} (connection refused)`;
   }
   const answered = KUBECTL_SERVER_RETRY.exec(line);
-  return answered ? `the API server (${answered[1]})` : undefined;
+  if (answered) {
+    return `the API server (${answered[1] ?? answered[2] ?? retryOutcome(answered[3])})`;
+  }
+  return undefined;
 }
 
 // docker logs --timestamps stamps every line; anything else is a fragment.
@@ -156,12 +161,13 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
   const kept = [];
   const problems = new Set();
   const retries = new Map();
-  for (const { line, redacted, stamp } of entries) {
+  for (const { at, line, redacted, stamp } of entries) {
     const retry = kubectlRetry(line);
     if (retry !== undefined) {
       const seen = retries.get(retry) ?? { count: 0, first: stamp };
       seen.count += 1;
       seen.last = stamp;
+      seen.lastAt = at;
       retries.set(retry, seen);
       continue;
     }
@@ -173,15 +179,20 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
   const notes = [
     ...(note ? [`[diagnostics: ${note}]`] : []),
     ...(fragments > 0 ? [`[diagnostics dropped ${fragments} unstamped line fragments]`] : []),
+    // The latest kinds date the end of the log, so a long list keeps those, in
+    // the order they first appeared.
     ...[...retries]
+      .map((entry, order) => ({ entry, order }))
+      .sort((a, b) => b.entry[1].lastAt - a.entry[1].lastAt)
       .slice(0, KUBECTL_RETRY_KINDS)
+      .sort((a, b) => a.order - b.order)
       .map(
-        ([target, { count, first, last }]) =>
+        ({ entry: [target, { count, first, last }] }) =>
           `[diagnostics omitted ${count} kubectl retry lines against ${target}, ${first} to ${last}]`,
       ),
     ...(retries.size > KUBECTL_RETRY_KINDS
       ? [
-          `[diagnostics omitted ${retries.size - KUBECTL_RETRY_KINDS} more kinds of kubectl retry lines]`,
+          `[diagnostics omitted ${retries.size - KUBECTL_RETRY_KINDS} earlier kinds of kubectl retry lines]`,
         ]
       : []),
   ];
@@ -224,12 +235,14 @@ function conditions(values = []) {
   }));
 }
 
+// k3d colors its log even into a pipe.
+// eslint-disable-next-line no-control-regex
+const ANSI_COLOR = /\u001b\[[0-9;]*m/gu;
+
 // k3d's own progress lines name the step a create stopped in ("Starting node",
-// "Starting helpers"). k3d colors its log even into a pipe, so the excerpt drops
-// the color codes; credential lines are redacted.
+// "Starting helpers"), without color codes and with credential lines redacted.
 function k3dOutputExcerpt({ stdout = "", stderr = "" } = {}) {
-  // eslint-disable-next-line no-control-regex
-  const text = `${stderr}${stdout}`.replace(/\u001b\[[0-9;]*m/gu, "").trim();
+  const text = [stderr, stdout].join("\n").replace(ANSI_COLOR, "").trim();
   return text === "" ? undefined : safeText(text);
 }
 
