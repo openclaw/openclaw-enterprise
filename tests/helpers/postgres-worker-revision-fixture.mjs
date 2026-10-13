@@ -51,6 +51,39 @@ function trackLockOrder(unit, violations) {
   return Object.freeze({ ...unit, namespaces, agents });
 }
 
+// Node's test timeout does not cover after hooks, so a teardown step that never returned hung
+// its file until the CI job timeout, naming nothing (finding 1209). Each step now has a limit.
+// A step past it is left running and fails the hook naming the step, and the steps after it
+// still run: the database drop (WITH (FORCE)) ends the sessions a stuck worker or pool still
+// holds.
+const disposeLimitsMs = {
+  "worker stop": 30_000,
+  "pool end": 15_000,
+  // Waits for the CI state lock, which other files' test databases also take.
+  "drop database": 120_000,
+};
+
+async function disposeStep(step, limitMs, work) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(work),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(
+            `revision fixture teardown: ${step} did not finish within ${limitMs} ms`,
+          );
+          // In the file's output too, before the later steps run.
+          console.error(error.message);
+          reject(error);
+        }, limitMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // One template per owning test file; importing this helper registers no tests or hooks.
 export function createWorkerRevisionFixtures(testFile) {
   // Each test owns a database (Work claims span one), copied from one migrated template
@@ -58,10 +91,16 @@ export function createWorkerRevisionFixtures(testFile) {
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
   let template;
   async function cleanup() {
-    await (await template?.catch(() => undefined))?.cleanup();
+    const prepared = await template?.catch(() => undefined);
+    if (prepared !== undefined) {
+      await disposeStep("drop template database", disposeLimitsMs["drop database"], () =>
+        prepared.cleanup(),
+      );
+    }
   }
 
-  async function prepareDatabase(context) {
+  async function prepareDatabase(context, limitsMs = {}) {
+    const limits = { ...disposeLimitsMs, ...limitsMs };
     assert.ok(
       process.env.OPENCLAW_ENTERPRISE_CI_STATE,
       "Worker tests require an owned PostgreSQL fixture; see docs/testing/postgresql.md.",
@@ -84,17 +123,35 @@ export function createWorkerRevisionFixtures(testFile) {
     let disposal;
     function dispose() {
       return (disposal ??= (async () => {
+        const failures = [];
+        const run = async (step, work) => {
+          try {
+            await disposeStep(step, limits[step], work);
+          } catch (error) {
+            failures.push(error);
+          }
+        };
         // Work claims span the entire database. Join every worker owned by this
         // fixture before dropping it; never rewrite another worker's live claim.
         for (const worker of workers) {
-          await worker.stop();
+          await run("worker stop", () => worker.stop());
         }
         for (const pool of pools) {
-          if (!pool.ended) {
-            await pool.end();
+          // A pool already ending was ended by its worker's stop or by the test.
+          if (!pool.ending) {
+            await run("pool end", () => pool.end());
           }
         }
-        await prepared.cleanup();
+        await run("drop database", () => prepared.cleanup());
+        if (failures.length === 1) {
+          throw failures[0];
+        }
+        if (failures.length > 1) {
+          throw new AggregateError(
+            failures,
+            `revision fixture teardown failed: ${failures.map(({ message }) => message).join("; ")}`,
+          );
+        }
       })());
     }
     context.after(dispose);
@@ -112,6 +169,8 @@ export function createWorkerRevisionFixtures(testFile) {
       metrics,
       repoDriver,
       secretAuthMethod = "api_key",
+      // Shorter teardown step limits, for a test of the teardown itself.
+      disposeLimitsMs: limitsMs,
     } = {},
   ) {
     const [
@@ -129,7 +188,7 @@ export function createWorkerRevisionFixtures(testFile) {
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
     ]);
-    database ??= await prepareDatabase(context);
+    database ??= await prepareDatabase(context, limitsMs);
     function createPool(max) {
       const pool = new Pool({ connectionString: database.url, max });
       database.pools.add(pool);

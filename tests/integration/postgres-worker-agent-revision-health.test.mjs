@@ -65,6 +65,50 @@ test(
   },
 );
 
+// Finding 1209: a file hung 22 minutes in teardown, past its job's timeout, naming nothing.
+// Node's test timeout does not cover after hooks, and pg's pool.end() waits for every
+// checked-out client, so one client a failed test never released hung the file. Each teardown
+// step now has a limit: the stuck step is named, and the database drop still runs, ending the
+// leaked session.
+test(
+  "worker fixture teardown names a pool that never ends and still drops the database",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // This test runs the teardown itself and expects it to fail, so the fixture registers its
+    // after hooks with this stand-in; the fallback runs them only if the test fails first.
+    const hooks = [];
+    let leaked;
+    let disposed = false;
+    context.after(async () => {
+      leaked?.release(true);
+      if (!disposed) {
+        for (const hook of hooks) {
+          await Promise.resolve()
+            .then(hook)
+            .catch(() => {});
+        }
+      }
+    });
+    const fixture = await setup(
+      { after: (hook) => hooks.push(hook) },
+      { disposeLimitsMs: { "pool end": 1_000 } },
+    );
+    leaked = await fixture.observerPool.connect();
+    // A terminated session errors twice (the server's notice, then the closed socket).
+    const terminated = new Promise((resolve) => leaked.on("error", resolve));
+
+    disposed = true;
+    await assert.rejects(fixture.database.dispose(), {
+      message: "revision fixture teardown: pool end did not finish within 1000 ms",
+    });
+    // The drop (WITH (FORCE)) ended the leaked client's session, which nothing else would.
+    const ended = await Promise.race([terminated, delay(10_000, undefined, { ref: false })]);
+    assert.ok(ended instanceof Error, "the database drop ended the leaked connection");
+    leaked.release(true);
+    leaked = undefined;
+  },
+);
+
 // The worker is serial. A Compute wait that only saves a later pass asks whether
 // other Work is waiting and ends early when it is, so another Agent's deploy
 // runs next instead of queuing behind the wait (D221).
