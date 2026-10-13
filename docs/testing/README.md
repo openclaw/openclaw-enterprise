@@ -124,8 +124,11 @@ with `t.diagnostic("openclaw-ci-measurement <json>")`; the
 [reporter](../../scripts/ci/reporter.mjs) keeps only allowlisted shapes (today
 `kubelet-volume-refresh`, from the
 [volume refresh test](../../tests/integration/kubelet-volume-refresh-k3d.test.mjs),
-and `runtime-model-probe`, the Gateway model probe's time against its cap, from the
-runtime image model probe and startup probe tests) and drops other diagnostics.
+`runtime-model-probe`, the Gateway model probe's time against its cap, from the
+runtime image model probe and startup probe tests, and `runtime-sigterm`, each
+startup phase's stop time against its budget, from the
+[termination test](../../tests/integration/runtime-image-startup-termination.test.mjs))
+and drops other diagnostics.
 
 Tests normally clean up their own temporary processes, resources, and files, but
 some suites leave clusters, databases, Slack messages, or provider accounts for

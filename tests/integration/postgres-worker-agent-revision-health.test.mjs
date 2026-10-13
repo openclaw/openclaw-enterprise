@@ -7,8 +7,9 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
 
-// Worker health, readiness, leases and outages. Withdrawal, deployment and dispatch cases are
-// in postgres-worker-agent-revision.test.mjs; repository sessions, Agent stop and deletion, and
+// Worker health, readiness, leases and outages. Deployment and dispatch cases are in
+// postgres-worker-agent-revision.test.mjs, credential-source withdrawals in its
+// -credential-sources sibling; repository sessions, Agent stop and deletion, and
 // Namespace teardown are in postgres-worker-agent-revision-teardown.test.mjs; exclusive
 // replacement and refused candidates are in the -replacement sibling, a refused candidate's stop
 // and its wait in the -refused-stop and -refused-wait siblings, and redeploys whose predecessor

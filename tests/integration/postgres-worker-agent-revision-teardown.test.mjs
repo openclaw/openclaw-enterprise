@@ -23,8 +23,9 @@ import {
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Repository sessions through admission, maintenance and cleanup, Agent stop, Agent
-// deletion and Namespace teardown. Withdrawal, deployment and dispatch cases, and the
-// persisted deploy, stop and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
+// deletion and Namespace teardown. Deployment and dispatch cases, and the persisted deploy,
+// stop and delete lifecycle, are in postgres-worker-agent-revision.test.mjs; credential-source
+// withdrawals are in its -credential-sources sibling.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);

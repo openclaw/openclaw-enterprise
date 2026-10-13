@@ -3335,6 +3335,35 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           probeDoneMs: 1,
           readyMs: 1,
         }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "gateway-model-probe",
+          stopped: true,
+          elapsedMs: 4_321,
+          budgetMs: 15_000,
+          extra: "secretauthvalue-extra",
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "secretauthvalue-case",
+          stopped: true,
+          elapsedMs: 1,
+          budgetMs: 15_000,
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "codex-ready",
+          stopped: "secretauthvalue-stopped",
+          elapsedMs: 1,
+          budgetMs: 15_000,
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "codex-ready",
+          stopped: false,
+          elapsedMs: 1.5,
+          budgetMs: 15_000,
+        }),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -3404,8 +3433,101 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       probeDoneMs: null,
       readyMs: null,
     },
+    {
+      kind: "runtime-sigterm",
+      case: "gateway-model-probe",
+      stopped: true,
+      elapsedMs: 4_321,
+      budgetMs: 15_000,
+    },
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+});
+
+test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/cancelled.json");
+  // GitHub cancels a step by signalling and then killing its shell, never this runner, which
+  // finishes as an orphan beside the job's own cleanup step. The second file's cleanup kills
+  // the shell, as the cancellation would, and then fails, as the racing cleanup step makes it.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('plain.test.mjs')) {",
+      "    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };",
+      "  }",
+      "  return {",
+      "    cleanup: async () => {",
+      "      const shell = process.ppid;",
+      "      process.kill(shell, 'SIGKILL');",
+      "      const deadline = Date.now() + 10_000;",
+      "      while (process.ppid === shell && Date.now() < deadline) {",
+      "        await new Promise((resolve) => setTimeout(resolve, 10));",
+      "      }",
+      "      throw new Error('secretauthvalue cluster already removed');",
+      "    },",
+      "  };",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["plain", "cancelled"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      cancel: {
+        files: [
+          { path: "tests/integration/plain.test.mjs" },
+          { path: "tests/integration/cancelled.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["cancel"] },
+  });
+
+  // `; exit` keeps the shell from replacing itself with the runner.
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      '"$@"; exit $?',
+      "step-shell",
+      process.execPath,
+      runnerPath,
+      "run",
+      "cancel",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      join(root, "state/cancelled.json"),
+      "--results",
+      resultsPath,
+    ],
+    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv() },
+  );
+
+  assert.equal(result.signal, "SIGKILL", result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.status, "failed");
+  // A cleanup that fails while the job runs is still a cleanup failure.
+  assert.deepEqual(summary.files[0].cleanup, { status: "failed", error: { name: "Error" } });
+  assert.deepEqual(summary.files[1].cleanup, { status: "cancelled" });
+  assert.deepEqual(
+    summary.issues.map(({ code, file }) => [code, file]),
+    [
+      ["cleanup-failed", "tests/integration/plain.test.mjs"],
+      ["cleanup-cancelled", "tests/integration/cancelled.test.mjs"],
+    ],
+  );
+  assert.doesNotMatch(await readFile(resultsPath, "utf8"), /secretauthvalue/);
 });
 
 for (const scenario of [

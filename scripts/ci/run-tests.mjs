@@ -573,6 +573,16 @@ function killGroup(pgid, signal) {
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
 
+// GitHub cancels a step by signalling only its shell, which waits for this runner, and then
+// kills that shell. The signals never reach this runner: it carries on as an orphan beside the
+// job's always() Cleanup lane step, and the two cleanups can race. So a runner whose starting
+// parent is gone is being cancelled, and a cleanup that fails then is reported as cancelled.
+const startingParentPid = process.ppid;
+
+function jobCancelling() {
+  return process.ppid !== startingParentPid;
+}
+
 function forwardSignal(signal) {
   // This runner ends at once, so nothing would follow up on a file that ignores
   // the signal, and nothing reads the runners' reports any more.
@@ -1010,10 +1020,19 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         await setup(prepared.cleanup);
         cleanupResult = { status: "passed" };
       } catch (error) {
-        cleanupResult = { status: "failed", error: sanitizeError(error) };
-        issues.push(
-          issue("cleanup-failed", `cleanup failed for ${relativePath}`, { file: relativePath }),
-        );
+        if (jobCancelling()) {
+          cleanupResult = { status: "cancelled" };
+          issues.push(
+            issue("cleanup-cancelled", `cleanup stopped by job cancellation for ${relativePath}`, {
+              file: relativePath,
+            }),
+          );
+        } else {
+          cleanupResult = { status: "failed", error: sanitizeError(error) };
+          issues.push(
+            issue("cleanup-failed", `cleanup failed for ${relativePath}`, { file: relativePath }),
+          );
+        }
       }
     }
   }
@@ -1310,7 +1329,7 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
         }),
       );
     }
-    if (observed.cleanup?.status === "failed") {
+    if (["failed", "cancelled"].includes(observed.cleanup?.status)) {
       issues.push(
         issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
           lane: laneName,

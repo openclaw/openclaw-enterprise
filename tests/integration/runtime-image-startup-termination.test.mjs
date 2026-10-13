@@ -26,10 +26,11 @@ const promptTerminationMs = 15_000;
 
 // Sends SIGTERM as the kubelet does and measures how long the container takes
 // to stop. Container exit ends its PID namespace, so no child outlives it.
-async function assertPromptTermination(t, { containerName, collect }, description) {
+async function assertPromptTermination(t, { containerName, collect }, description, phase) {
+  const budgetMs = promptTerminationMs * imageSmokeTimeoutMultiplier;
   const signalledAt = Date.now();
   await runDocker(["kill", "--signal", "TERM", containerName]);
-  const deadline = signalledAt + promptTerminationMs * imageSmokeTimeoutMultiplier;
+  const deadline = signalledAt + budgetMs;
   let state = await collect();
   while (state.running && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -40,6 +41,17 @@ async function assertPromptTermination(t, { containerName, collect }, descriptio
     `${description}: ${state.running ? "still running" : `exit ${state.exitCode}`} ` +
       `${elapsedMs} ms after SIGTERM`,
   );
+  // Kept in the lane result (files[].measurements) on passing runs too, so flake sweeps can
+  // read each phase's headroom against its budget.
+  t.diagnostic(
+    `openclaw-ci-measurement ${JSON.stringify({
+      kind: "runtime-sigterm",
+      case: phase,
+      stopped: !state.running,
+      elapsedMs,
+      budgetMs,
+    })}`,
+  );
   if (state.running) {
     assert.fail(
       `${description}: SIGTERM did not stop the wrapper in ${elapsedMs} ms.\n${failureTail(state.output)}`,
@@ -49,13 +61,14 @@ async function assertPromptTermination(t, { containerName, collect }, descriptio
   assert.equal(state.exitCode, 0, `${description}: exit code`);
 }
 
-// Starts one wrapper, waits for `until`, then sends SIGTERM.
-async function runTerminationScenario(t, { kind, mode, until, description }) {
+// Starts one wrapper, waits for `until`, then sends SIGTERM. `phase` names the
+// measurement: the wrapper kind and the startup phase it was stopped in.
+async function runTerminationScenario(t, { kind, mode, until, description, phase }) {
   return runStartupProbeScenario(t, {
     kind,
     mode,
     until,
-    act: (scenario) => assertPromptTermination(t, scenario, description),
+    act: (scenario) => assertPromptTermination(t, scenario, description, `${kind}-${phase}`),
   });
 }
 
@@ -69,6 +82,7 @@ async function assertWrapperTermination(t, kind) {
     mode: "hang",
     until: ({ events }) => events.some(isModelTurn),
     description: `${label} during its model probe`,
+    phase: "model-probe",
   });
   await withStartupProbeEvidence(probing, async () => {
     const { events, phases } = probing.snapshot;
@@ -83,6 +97,7 @@ async function assertWrapperTermination(t, kind) {
     mode: "reject",
     until: heldFailure("AUTHENTICATION_FAILED"),
     description: `${label} holding AUTHENTICATION_FAILED`,
+    phase: "held-failure",
   });
   await withStartupProbeEvidence(holding, async () => {
     assert.equal(holding.snapshot.events.some(observedValue("ready", true)), false);
@@ -95,6 +110,7 @@ async function assertWrapperTermination(t, kind) {
     mode: "answer",
     until: ({ events }) => events.some(observedValue("ready", true)),
     description: `${label} while ready`,
+    phase: "ready",
   });
 }
 
@@ -123,6 +139,7 @@ test(
       mode: "answer",
       until: ({ output }) => /Waiting for Harness plugin runtime status/.test(output),
       description: "dedicated Gateway waiting for its Harness",
+      phase: "harness-wait",
     });
     await withStartupProbeEvidence(waiting, async () => {
       assert.equal(waiting.snapshot.events.some(observedValue("native", true)), false);
