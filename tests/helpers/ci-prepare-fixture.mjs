@@ -541,6 +541,7 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
   // Only lanes whose tests need no Gateway API or other K3s add-on skip them.
+  // Keep this list in step with lanesWithoutK3sAddons in scripts/ci/prepare.mjs.
   const addonArgs = [
     "k3d-fixture-configuration",
     "k3d-fixture-state",
