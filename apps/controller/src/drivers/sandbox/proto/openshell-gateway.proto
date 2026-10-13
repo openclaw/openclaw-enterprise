@@ -143,6 +143,14 @@ message SandboxSpec {
   ResourceRequirements resource_requirements = 9;
   repeated string command = 12;
   bool tty = 13;
+  SandboxRestartPolicy restart_policy = 15;
+}
+
+enum SandboxRestartPolicy {
+  SANDBOX_RESTART_POLICY_UNSPECIFIED = 0;
+  SANDBOX_RESTART_POLICY_NEVER = 1;
+  SANDBOX_RESTART_POLICY_ON_FAILURE = 2;
+  SANDBOX_RESTART_POLICY_ALWAYS = 3;
 }
 
 message SandboxTemplate {
@@ -261,6 +269,7 @@ message SandboxStatus {
   uint32 current_policy_version = 7;
   string main_process_instance_id = 8;
   optional int32 exit_code = 9;
+  uint32 restart_count = 14;
 }
 
 message SandboxCondition {

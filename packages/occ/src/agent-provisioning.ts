@@ -20,6 +20,7 @@ import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/
 import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
 import type { ControllerWork } from "./state/controller-work.ts";
+import { controllerWorkLeaseActive } from "./state/controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
 
@@ -151,6 +152,7 @@ export function normalizeProvisioningWorkspace(
 export function provisioningProgress(
   record: Readonly<AgentProvisioningRecord>,
   work?: Readonly<ControllerWork>,
+  now: Date = new Date(),
 ): Readonly<AgentProvisioningProgress> {
   const progress = asRecord(record.progress);
   const error = asRecord(progress?.error);
@@ -172,7 +174,7 @@ export function provisioningProgress(
       ? "failed"
       : record.status === "succeeded"
         ? "succeeded"
-        : work?.state === "claimed"
+        : work !== undefined && controllerWorkLeaseActive(work, now)
           ? "running"
           : "queued",
     phase: record.completedPhase,

@@ -4,15 +4,15 @@ An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
 identity, revision history, and deployed gateway. Its permissions do not grant
 access to another Namespace's resources.
 
-Use a [Preset](presets.md) to copy reusable launch settings into a new Agent draft.
+Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 
-To get one running, [deploy your first Agent](../guides/first-agent.md). For an
-existing Agent, see [Compute](../guides/topics/agent-compute.md) for execution
-choices, [Agent Revisions](../guides/topics/agent-revisions.md) for changes, or
-[Troubleshoot](../guides/topics/agent-troubleshoot.md) if a deployment stalls.
+[Deploy your first Agent](../guides/first-agent.md), choose
+[Compute](../guides/topics/agent-compute.md), manage
+[revisions](../guides/topics/agent-revisions.md), or
+[troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creating an Agent saves its identity and exact Namespace-owned Configuration
-reference with `active` status and `stopped` desired runtime state. No revision is
+Creation saves identity and exact Namespace-owned Configuration with `active`
+status and `stopped` desired runtime state. No revision is
 created and no workload or model starts until an authorized caller requests
 [deployment](#identity-and-deployment).
 
@@ -65,19 +65,25 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
 
 This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
-`error`, plugin `warnings`, and nullable `progress`.
+`error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
-- `queued`: no live claim, including after lease expiry.
+- `queued`: no live claim; PostgreSQL's clock judges lease expiry.
 - `running`: a live worker claim.
 - `succeeded`: original work activated the revision or found it already active.
 - `failed`: terminal failure or completion without activation.
 
 Pending `progress.lastAttempt` contains the latest exact-work result's
-allowlisted `code`, fixed `message`, and `at`, when first recorded; repeated
-deferrals record once ([readiness codes](agents/deployment.md#pending-deployment-progress)). Null means no bound evidence, not proof work never ran. Maintenance and
-cleanup results are excluded. `progress.nextAttemptAt` is the earliest queued
-eligibility, not a promised start; it is null while claimed. Terminal `progress`
+allowlisted `code`, fixed `message`, and `at`; repeated deferrals record once,
+except [refused-candidate stops](agents/deployment.md#pending-deployment-progress).
+Null means no bound evidence. Maintenance and cleanup
+results are excluded. `progress.nextAttemptAt` is the earliest queued
+eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
+
+Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
+Deployment failure remains terminal. Bootstrap errors retain bounded
+`error.data.preparation` (identities, reasons, scheduling, exits, timestamps),
+excluding raw output and credentials; see [bootstrap limits](drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
@@ -92,20 +98,20 @@ own CLI fails with
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
 with a closed code and admitted `pluginId`.
 
-Polling reads persisted state without runtime, provider, or model probes.
-Terminal results survive runtime deletion and controller restart. Later
-deployments have separate records and cannot rewrite earlier results.
+Polling reads only persisted state. Terminal results survive runtime deletion
+and controller restart; later deployments cannot rewrite them.
 
 ### Current runtime diagnostics
 
 A bodyless `POST` to
 `/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
 requests fresh checks for the exact revision. It requires Agent read and operate
-plus AgentRevision read. The response has a revision ID, observation time, and
-at most 32 bounded checks. Kubernetes currently probes Slack configuration,
-authentication, and connectivity without sending. Missing Pods yield `unknown`;
-unavailable evidence yields `503`. The call changes no stored deployment state
-and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+plus AgentRevision read. It returns a revision ID, observation time, and at
+most 32 checks. Kubernetes reports held startup failures and probes Slack
+configuration, authentication, and connectivity without sending. Missing Pods
+yield `unknown`; unavailable evidence yields `503`. The call changes no stored
+state and proves no model response. On OpenShell the `agent` check is always
+`unknown`; use deployment status and [Harness logs](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs). See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
 
 ## Backend association
 
@@ -262,7 +268,8 @@ Other rosters retain the explicit main target; dedicated deployment requires it.
 ```
 
 `content` must be well-formed Unicode without NUL characters and fit within
-16 KiB when encoded as UTF-8. The complete request body is limited to 48 KiB.
+16 KiB when encoded as UTF-8. The complete request body is limited to 97 KiB,
+enough for 16 KiB written entirely in six-byte JSON escapes.
 Success returns `200`. A successful `PUT` reports `size` in UTF-8 bytes and
 records the Agent, file name, and outcome in the audit log.
 
@@ -272,7 +279,7 @@ records the Agent, file name, and outcome in the audit log.
 | `404 NOT_FOUND`              | The requested Agent or file was not found.           |
 | `409 AGENT_DELETING`         | The Agent is being deleted.                          |
 | `409 RESOURCE_CONFLICT`      | The Agent is stopping.                               |
-| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 48 KiB.                     |
+| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 97 KiB.                     |
 | `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
 | `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |
 
@@ -371,9 +378,9 @@ The public API has no revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
 The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
-Kubernetes Compute and dedicated Codex; other sandbox execution combinations are
-rejected. Stock OpenShell cannot provide all required workload credentials; check
-its compatibility limits before planning deployment.
+Kubernetes Compute and dedicated Codex; other combinations are rejected.
+Stock OpenShell lacks some required workload credentials; check its
+compatibility limits first.
 
 ## Failure semantics
 

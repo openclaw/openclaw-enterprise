@@ -817,7 +817,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
 (async () => {
   await useLocalPluginRuntimeAppServerToken();
-  const config = await readCodexAppConfiguration();
+  const config = await readCodexPluginConfiguration();
   process.stdout.write(JSON.stringify({
     apps: config?.apps ?? {},
     features: config?.features ?? {},

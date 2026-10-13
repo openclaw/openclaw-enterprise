@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-10"
-last_updated_session: "authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff"
+updated: "2026-10-12"
+last_updated_session: "authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031"
 ---
 
 # Production image upgrade flow
@@ -107,8 +107,9 @@ On the experimental two-cluster profile, each Pod also runs
 startup does not run. In each execution tenant Namespace where its identity holds
 the release-era tenant grant, SelfSubjectAccessReviews ask for the newer
 `openclaw-execution` rules (API: Pod and `pods/proxy` reads, plus `pods/log` and
-Event reads with runtime logs; worker: Pod `patch`). A missing rule refuses the
-candidate and points to
+Event reads with runtime logs; worker: Pod `patch` and `batch` Job `get`, `create`,
+and `delete`). Worker Job grants are required even with runtime logs disabled.
+A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/two-cluster-local.md#upgrade-the-execution-chart).
 Because the chart's default-deny NetworkPolicy also selects these Pods, the
 helper first creates a temporary NetworkPolicy carrying the rendered
@@ -179,10 +180,21 @@ broker-enabled worker it also accepts a restartable init container, provided
 no worker exists in the ordinary container list. It rejects a non-restartable
 init worker or ambiguous placement. It retries authenticated OCC access and verifies the same Installation ID. A
 controller-only release then ends without requesting Agent deployments.
-Existing revisions keep the Pod specification of the controller that deployed
-them, so controller fixes to Gateway and Agent Pods, such as
-[diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent only at
-its next deployment.
+An existing revision keeps the Pod specification of the controller that
+deployed it only until the worker prepares it again. Agents with repository
+credentials get a maintenance pass every 30 seconds (the repository Driver's
+`maintenanceIntervalMs`) until their repository session deadline. Other Agents
+are prepared again only when their deployment was still finishing as the new
+worker took over (the helper checks for unfinished deployments only before a
+runtime release).
+Kubernetes Compute applies the Gateway and, for dedicated Harnesses, Harness
+Deployments as the new controller renders them, with the Installation's current
+images, so a changed Pod template (for example new entrypoint arguments or
+readiness probes) rolls those Pods once on the unchanged runtime image. Chat is
+unavailable until the new Pods are ready, about 17 seconds in one test.
+Controller fixes to Gateway and Agent Pods, such as
+[diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent then or
+at its next deployment.
 
 For a repository-enabled release, it also verifies the ready API and worker
 Pods, their owning ReplicaSets, node architecture, and runtime controller and
@@ -246,7 +258,8 @@ checks the exported inventory before following the recovery procedure. Empty
   `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
   workload changes. The controller-only helper requests no Agent deployments;
-  separately check repository-bound revisions affected by broker restart.
+  one same-image Pod template rollout per affected Agent is expected. Separately
+  check repository-bound revisions affected by broker restart.
   Runtime proof should show the intended replacements.
 - Use the credentialed production Kubernetes integration with distinct baseline
   and candidate images for end-to-end proof. Mocked commands prove only script
@@ -267,6 +280,10 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
+
+- 2026-10-10 03:30: Say that the worker's next preparation of an existing revision applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)
 
 - 2026-10-10 02:10: Require complete successful API responses before publishing the split-layout export bundle. (authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff - 0886f47d05fdeb2fa4359f4840fb77378d643bac)
 

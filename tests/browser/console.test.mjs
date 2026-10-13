@@ -30,6 +30,65 @@ const mobile = {
   context: { hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } },
 };
 
+test("a collection body disconnected after headers shows interruption and Retry reloads real data", async (t) => {
+  let interruptNextRead = false;
+  let interruptedBody;
+  const fixture = await createConsoleAppFixture(t, {
+    async onSend(request, reply, payload) {
+      if (
+        !interruptNextRead ||
+        request.method !== "GET" ||
+        !request.url.endsWith("/agents") ||
+        reply.statusCode !== 200
+      ) {
+        return payload;
+      }
+      interruptNextRead = false;
+      // The real authorized API already produced this list. Deliver its headers
+      // and only a prefix, then break the socket after the browser sees headers.
+      assert.equal(typeof payload, "string");
+      reply.hijack();
+      reply.raw.writeHead(reply.statusCode, {
+        ...reply.getHeaders(),
+        "content-length": Buffer.byteLength(payload),
+      });
+      reply.raw.write(payload.slice(0, 10));
+      interruptedBody = reply.raw;
+      return payload;
+    },
+  });
+  t.after(() => interruptedBody?.destroy());
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Body interruption", { ready: true });
+  await fixture.createAgent(namespace.id, "Research assistant");
+  const { page, artifacts } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Research assistant", { exact: true }).waitFor();
+
+  interruptNextRead = true;
+  const headers = page.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/agents`),
+  );
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  const received = await headers;
+  assert.equal(received.status(), 200);
+  assert.ok(Number((await received.allHeaders())["content-length"]) > 10);
+  interruptedBody.destroy(new Error("Test connection closed after response headers"));
+  await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
+  await page.screenshot({ path: join(artifacts, "response-body-interrupted.png") });
+  await page.getByRole("heading", { name: "Request interrupted", exact: true }).waitFor();
+  assert.equal(await page.getByText("Research assistant", { exact: true }).count(), 0);
+  const writesBeforeRetry = requests.filter((request) => request.method !== "GET").length;
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.getByText("Research assistant", { exact: true }).waitFor();
+  assert.equal(requests.filter((request) => request.method !== "GET").length, writesBeforeRetry);
+  assert.equal(
+    await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+    namespace.id,
+  );
+});
+
 async function openShellMenu(page) {
   await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
 }
@@ -208,8 +267,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await fixture.bootstrap();
   const alpha = await fixture.createNamespace("Alpha", { ready: true });
   const beta = await fixture.createNamespace("Beta", { ready: true });
-  await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>");
-  await fixture.createAgent(beta.id, "Beta agent");
+  const alphaAgent = await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>");
+  const betaAgent = await fixture.createAgent(beta.id, "Beta agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
@@ -283,9 +342,15 @@ test("console browser flow keeps Namespace URL state across global pages and log
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
   );
   assert.deepEqual(writeRequests, []);
-  assert.equal(
-    requests.some((request) => /\/deploy|\/agents\/agt_/.test(request.path)),
-    false,
+  // List rows read revision history for Latest deployment. Browsing these draft
+  // Agents must not read their detail or invoke any deployment operation.
+  const agentRequests = requests.filter(({ path }) => /\/deploy|\/agents\/agt_/.test(path));
+  assert.deepEqual(
+    [...new Set(agentRequests.map(({ method, path }) => `${method} ${path}`))].sort(),
+    [
+      `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
+      `GET /namespaces/${beta.id}/agents/${betaAgent.id}/revisions`,
+    ].sort(),
   );
 });
 
@@ -1069,6 +1134,48 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   await page.goto(`${fixture.origin}/console/?authError=google&authReason=membership`);
   await page.getByRole("button", { name: "Login" }).waitFor();
   await expectNoText(page, /organization/);
+});
+
+test("a disabled account's provider sign-in says the account is disabled", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  let password = true;
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { github: true, google: true, password, sessionBinding: true },
+        meta: { requestId: "browser-account-disabled" },
+      }),
+    }),
+  );
+  // Any provider's callback may carry it; neither a retry, a password nor an attach can help,
+  // so the advice names only an administrator, with or without password sign-in.
+  for (const [provider, label] of [
+    ["github", "GitHub"],
+    ["google", "Google"],
+  ]) {
+    for (const available of [true, false]) {
+      password = available;
+      await page.goto(
+        `${fixture.origin}/console/?authError=${provider}&authReason=account-disabled`,
+      );
+      await page
+        .getByText(
+          `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`,
+          { exact: true },
+        )
+        .waitFor();
+      await expectNoText(page, /attach your|use your password/);
+    }
+  }
+  // Without a provider error the reason means nothing.
+  password = true;
+  await page.goto(`${fixture.origin}/console/?authReason=account-disabled`);
+  await page.getByRole("button", { name: "Login" }).waitFor();
+  await expectNoText(page, /disabled/);
 });
 
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {

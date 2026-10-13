@@ -97,11 +97,6 @@
       "count": 1
     }
   },
-  "tests/conformance/secret-occ.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "tests/conformance/test-files.test.mjs": {
     "no-empty": {
       "count": 1

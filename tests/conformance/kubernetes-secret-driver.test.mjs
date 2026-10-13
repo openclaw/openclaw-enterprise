@@ -258,6 +258,7 @@ for (const layout of ["shared", "adopted", "split"]) {
     });
 
     stored.metadata.labels["operator.example/retained"] = "true";
+    stored.metadata.annotations["operator.example/retained"] = "true";
     await driver.update(
       {
         ...identity,
@@ -283,6 +284,7 @@ for (const layout of ["shared", "adopted", "split"]) {
     const updated = client.secrets.get(`${namespace}/${backendRef.name}`);
     assert.equal(updated.metadata.uid, backendRef.uid);
     assert.equal(updated.metadata.labels["operator.example/retained"], "true");
+    assert.equal(updated.metadata.annotations["operator.example/retained"], "true");
     assert.equal(Buffer.from(updated.data.value, "base64").toString("utf8"), "rotated-value");
     assert.deepEqual(
       await driver.resolve({
@@ -348,6 +350,8 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     {
       name: "record owned by another Secret Driver",
       mutateRecord: (record) => ({ ...record, driverId: "secret-other-driver" }),
+      // delete does not compare the record's driverId: OCC picks the driver by it.
+      deleteChecksDriver: false,
     },
     {
       name: "foreign driver annotation",
@@ -362,6 +366,20 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
       name: "foreign backend UID",
       mutateBackendRef: (backendRef) => ({ ...backendRef, uid: "foreign-uid" }),
     },
+    {
+      name: "foreign backend key",
+      mutateBackendRef: (backendRef) => ({ ...backendRef, key: "token" }),
+    },
+    {
+      name: "unmanaged Secret",
+      mutateStored: (stored) => delete stored.metadata.labels["app.kubernetes.io/managed-by"],
+    },
+    {
+      name: "service account token Secret",
+      mutateStored: (stored) => (stored.type = "kubernetes.io/service-account-token"),
+    },
+    { name: "immutable Secret", mutateStored: (stored) => (stored.immutable = true) },
+    { name: "Secret without its value key", mutateStored: (stored) => delete stored.data.value },
   ]) {
     const client = new FakeCoreV1Api();
     const nsId = namespaceId();
@@ -383,6 +401,11 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
       SecretOwnershipError,
       scenario.name,
     );
+    if (scenario.deleteChecksDriver !== false) {
+      await assert.rejects(driver.delete(secret), SecretOwnershipError, scenario.name);
+      assert.equal(client.calls.deleteNamespacedSecret, 0, scenario.name);
+      assert.equal(client.secrets.size, 1, scenario.name);
+    }
   }
 
   const client = new FakeCoreV1Api();
@@ -401,6 +424,76 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
   await assert.rejects(
     () => driver.create({ ...identity, id: secretId(), namespaceId: namespaceId() }, "safe-value"),
     SecretBackendUnavailableError,
+  );
+
+  // Malformed identities and values are refused before any request, and nothing is stored,
+  // even when a namespace carries the unprefixed ID.
+  const unprefixed = `namespace_${randomUUID()}`;
+  client.addNamespace(unprefixed);
+  const listed = client.calls.listNamespace;
+  for (const [name, invalid, value] of [
+    ["Secret ID prefix", { ...identity, id: `secret_${randomUUID()}` }, "safe-value"],
+    ["Namespace ID prefix", { ...identity, namespaceId: unprefixed }, "safe-value"],
+    ["empty name", { ...identity, name: "" }, "safe-value"],
+    // 65,537 UTF-8 bytes in 32,769 UTF-16 code units.
+    ["one byte over the limit", identity, `${"é".repeat(32_768)}x`],
+  ]) {
+    await assert.rejects(() => driver.create(invalid, value), SecretValidationError, name);
+  }
+  assert.equal(client.calls.listNamespace, listed);
+  assert.equal(client.secrets.size, 0);
+
+  // Exactly 65,536 UTF-8 bytes fit.
+  const largest = "é".repeat(32_768);
+  const backendRef = await driver.create(identity, largest);
+  const secret = {
+    ...identity,
+    driverId: driver.id,
+    backendRef,
+    createdAt: new Date().toISOString(),
+  };
+  // Updates and conditional writes refuse what a create refuses, and write nothing.
+  await assert.rejects(driver.update(secret, ""), SecretValidationError);
+  await assert.rejects(driver.compareAndSwap(secret, "", "safe-value"), SecretValidationError);
+  // A record without a name or a backend reference is refused before it is used.
+  await assert.rejects(driver.update({ ...secret, name: "" }, "safe-value"), SecretValidationError);
+  await assert.rejects(driver.delete({ ...secret, name: "" }), SecretValidationError);
+  await assert.rejects(driver.resolve({ ...secret, backendRef: undefined }), SecretValidationError);
+  assert.equal(client.calls.replaceNamespacedSecret, 0);
+  assert.equal(await driver.withValue(secret, async (value) => value), largest);
+
+  // Each create gets a fresh backend name, so a failed create's cleanup can only find its own.
+  const again = await driver.create(identity, "safe-value");
+  assert.notEqual(again.name, backendRef.name);
+  assert.equal(client.secrets.size, 2);
+
+  // A create whose stored object lacks OCC ownership (a mutating webhook, say) is refused.
+  const realCreate = client.createNamespacedSecret.bind(client);
+  client.createNamespacedSecret = async (request) => {
+    delete request.body.metadata.labels["openclaw.dev/secret"];
+    return realCreate(request);
+  };
+  await assert.rejects(
+    driver.create({ ...identity, id: secretId() }, "safe-value"),
+    SecretOwnershipError,
+  );
+});
+
+test("kubernetes-secret-driver refuses unknown options and implementations", () => {
+  const authentication = { mode: "inCluster" };
+  for (const options of [
+    undefined,
+    { authentication, clients: {} },
+    { authentication, namespace: "default" },
+  ]) {
+    assert.throws(
+      () => KubernetesSecretDriver.validateConfiguration(options),
+      SecretValidationError,
+    );
+  }
+  assert.throws(
+    () => new KubernetesSecretDriver({ authentication }, { implementation: "occ/other-secret" }),
+    SecretValidationError,
   );
 });
 
@@ -423,6 +516,8 @@ test("kubernetes-secret-driver rejects malformed or oversized stored values on t
     "",
     "not-base64!",
     "c2FmZS12YWx1ZQ==\n",
+    // "a" with nonzero padding bits; its canonical form is "YQ==".
+    "YR==",
     Buffer.from([0xff]).toString("base64"),
     Buffer.from("value\0suffix").toString("base64"),
     Buffer.alloc(65_537, "x").toString("base64"),
@@ -582,7 +677,11 @@ test("kubernetes-secret-driver retries a read the API server dropped for a few s
   // A refused read is final at once.
   client.readSecretFailureCodes.push(403);
   reads = client.reads;
-  await assert.rejects(() => driver.resolve(secret), SecretBackendUnavailableError);
+  await assert.rejects(
+    () => driver.resolve(secret),
+    (error) =>
+      error instanceof SecretBackendUnavailableError && /not authorized/.test(error.message),
+  );
   assert.equal(client.reads - reads, 1);
 });
 
@@ -764,6 +863,190 @@ test("kubernetes-secret-driver removes a Secret whose create applied but answere
   await assert.rejects(() => create(driver, nsId), cleanupFailed);
   assert.equal(client.secrets.size, 1);
   assert.equal(client.calls.deleteNamespacedSecret, 1);
+});
+
+const ownershipRefused = (error) =>
+  error instanceof SecretOwnershipError &&
+  error.message === "Secret backend does not match exact OCC ownership.";
+const cleanupFailed = (error) =>
+  error instanceof SecretBackendUnavailableError &&
+  error.message ===
+    "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.";
+const stripSecretLabel = (body) => {
+  delete body.metadata.labels["openclaw.dev/secret"];
+};
+// A client whose admission webhook rewrites what create stores (and so what it answers),
+// with a hook to change the stored object after the answer and each delete's target recorded.
+const webhookClient = ({ rewrite = () => {}, answer = () => {}, afterStore = () => {} }) => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  client.addNamespace(nsId);
+  const realCreate = client.createNamespacedSecret.bind(client);
+  client.requested = [];
+  client.createNamespacedSecret = async (request) => {
+    const body = clone(request.body);
+    rewrite(body);
+    const answered = await realCreate({ ...request, body });
+    client.requested.push(`${request.namespace}/${request.body.metadata.name}`);
+    afterStore(client, `${request.namespace}/${request.body.metadata.name}`);
+    answer(answered);
+    return answered;
+  };
+  const realDelete = client.deleteNamespacedSecret.bind(client);
+  client.deleted = [];
+  client.deleteNamespacedSecret = async (request) => {
+    client.deleted.push(`${request.namespace}/${request.name}`);
+    return realDelete(request);
+  };
+  const driver = driverWithClient(client);
+  const create = () =>
+    driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value");
+  return { client, create };
+};
+
+test("kubernetes-secret-driver deletes the exact Secret a refused create stored", async () => {
+  // Whatever the webhook rewrote, the create is refused and the stored object, which holds the
+  // value, is deleted by its name with the uid and resourceVersion it was answered with
+  // (finding 1111).
+  for (const [label, rewrite] of [
+    ["label stripped", stripSecretLabel],
+    [
+      "driver annotation rewritten",
+      (body) => {
+        body.metadata.annotations["openclaw.dev/secret-driver-id"] = "other-driver";
+      },
+    ],
+    [
+      "type rewritten",
+      (body) => {
+        body.type = "kubernetes.io/basic-auth";
+      },
+    ],
+    [
+      "made immutable",
+      (body) => {
+        body.immutable = true;
+      },
+    ],
+  ]) {
+    const { client, create } = webhookClient({ rewrite });
+    await assert.rejects(create, ownershipRefused, label);
+    assert.equal(client.secrets.size, 0, label);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }], label);
+    assert.deepEqual(client.deleted, client.requested, label);
+  }
+
+  // The delete targets the name this create chose, not one the answer claims, and the
+  // answer's own refusal is what the caller sees.
+  {
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      answer: (answered) => {
+        answered.metadata.name = "secret-someone-else";
+      },
+    });
+    await assert.rejects(create, ownershipRefused);
+    assert.equal(client.secrets.size, 0);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+    assert.deepEqual(client.deleted, client.requested);
+  }
+
+  // An accepted create deletes nothing.
+  {
+    const { client, create } = webhookClient({});
+    await create();
+    assert.equal(client.secrets.size, 1);
+    assert.equal(client.calls.deleteNamespacedSecret, 0);
+  }
+});
+
+test("kubernetes-secret-driver refuses a create answered under another name", async () => {
+  // A nonconforming API server answers the create with exact OCC ownership but another
+  // metadata.name. No backendRef names that object: the create is refused and the object it
+  // stored under this create's name is deleted, pinned to the answered uid (finding 1121).
+  const { client, create } = webhookClient({
+    answer: (answered) => {
+      answered.metadata.name = "secret-someone-else";
+    },
+  });
+  await assert.rejects(create, ownershipRefused);
+  assert.equal(client.secrets.size, 0);
+  assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+  assert.deepEqual(client.deleted, client.requested);
+
+  // Nothing under this create's name does not prove nothing was stored: the object may live
+  // under the name it was answered with, so the outcome is reported as unknown.
+  {
+    const { client, create } = webhookClient({
+      answer: (answered) => {
+        answered.metadata.name = "secret-someone-else";
+      },
+      afterStore: (fake, key) => fake.secrets.delete(key),
+    });
+    await assert.rejects(create, cleanupFailed);
+    assert.equal(client.calls.deleteNamespacedSecret, 1);
+  }
+});
+
+test("kubernetes-secret-driver leaves an object that is no longer the refused answer alone", async () => {
+  // An object that is no longer the one answered (replaced under that name, or rewritten
+  // since) fails the delete preconditions and is left alone, and the driver reports that it
+  // could not clean up instead of a plain refusal.
+  for (const [label, field, value] of [
+    ["replaced", "uid", "uid-other"],
+    ["rewritten since", "resourceVersion", "2"],
+  ]) {
+    let replacement;
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      afterStore: (fake, key) => {
+        replacement = clone(fake.secrets.get(key));
+        replacement.metadata[field] = value;
+        fake.secrets.set(key, replacement);
+      },
+    });
+    await assert.rejects(create, cleanupFailed, label);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }], label);
+    assert.deepEqual([...client.secrets.values()], [replacement], label);
+  }
+});
+
+test("kubernetes-secret-driver reports a refused create it cannot clean up as an unknown outcome", async () => {
+  // A delete the API server fails is sent once and reported as an unknown outcome, not
+  // swallowed into the refusal.
+  for (const failure of ["dropped", 403, 503]) {
+    const { client, create } = webhookClient({ rewrite: stripSecretLabel });
+    client.failureCodes.deleteNamespacedSecret.push(failure);
+    const pauses = [];
+    await assert.rejects(() => withRetryTimers(create, pauses), cleanupFailed, `${failure}`);
+    assert.equal(client.secrets.size, 1, `${failure}`);
+    assert.equal(client.calls.deleteNamespacedSecret, 1, `${failure}`);
+    assert.deepEqual(pauses, [], `${failure}`);
+  }
+
+  // An object already gone needs no cleanup, so the refusal stands.
+  {
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      afterStore: (fake, key) => fake.secrets.delete(key),
+    });
+    await assert.rejects(create, ownershipRefused);
+    assert.equal(client.calls.deleteNamespacedSecret, 1);
+  }
+
+  // An answer without the uid or resourceVersion that would pin a delete cannot be cleaned up
+  // safely, so nothing is deleted and the outcome is reported as unknown.
+  for (const field of ["uid", "resourceVersion"]) {
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      answer: (answered) => {
+        delete answered.metadata[field];
+      },
+    });
+    await assert.rejects(create, cleanupFailed, field);
+    assert.equal(client.secrets.size, 1, field);
+    assert.equal(client.calls.deleteNamespacedSecret, 0, field);
+  }
 });
 
 test("kubernetes-secret-driver ends a retry pause at once when the owner cancels", async () => {

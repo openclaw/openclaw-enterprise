@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-03
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-10
+last_updated_session: authoring-run/e833fed6-3411-4493-bc8a-237fef04c6b3
 ---
 
 # Platform Startup Flow
@@ -145,6 +145,11 @@ IAM policy, validates its user session configuration, constructs the
 exact bundled or installed IAM Driver with platform state, and structurally
 verifies the selected Compute and Configuration Drivers. It runs a selected
 Compute preflight when present; bundled Kubernetes Compute must provide one.
+During Installation loading, its `validateConfiguration` checks each Gateway,
+Agent and Namespace container-default CPU/memory request against its limit.
+`apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts:compareResourceQuantities` uses fixed-point Kubernetes
+quantity ordering, including Nano rounding and BinarySI saturation. Invalid
+pairs fail construction with the setting path, before Namespace or Pod creation.
 Preflight warnings are emitted through the API logger and do not block
 composition. Configured
 [development API composition](../../apps/controller/src/composition/development-postgres.ts)
@@ -255,6 +260,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 04:40: Refuse invalid Kubernetes resource pairs during selected Driver construction. (authoring-run/e833fed6-3411-4493-bc8a-237fef04c6b3 - 8e5a06cec7f622185222a8a7dbafe3b0a7228d9f)
 
 - 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
 

@@ -85,23 +85,6 @@
   font: inherit;
 }
 
-.channel-field input[readonly] {
-  background: var(--surface-muted);
-  color: var(--muted);
-  cursor: default;
-}
-
-.channel-field code {
-  display: block;
-  width: 100%;
-  padding: 11px 12px;
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  background: var(--surface-muted);
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
 .channel-check {
   display: flex;
   gap: 0.5rem;

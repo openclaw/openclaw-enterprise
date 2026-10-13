@@ -4,6 +4,7 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { gatewayRoutingPins } from "../../scripts/ci/routing.mjs";
 import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
+import { registerQaSecret } from "./qa-secrets.mjs";
 
 export async function verifyNetworkPolicy(f) {
   const namespace = `qa-policy-${f.suffix}`;
@@ -208,6 +209,7 @@ export async function prepareHybridInstallation(f) {
     spec: { controllerName: "gateway.envoyproxy.io/gatewayclass-controller" },
   });
   const key = randomBytes(32).toString("hex");
+  registerQaSecret(key);
   await f.apply({
     apiVersion: "v1",
     kind: "Secret",
@@ -314,6 +316,61 @@ export async function prepareHybridInstallation(f) {
     selected.environment.OCC_GATEWAY_API_KEY_PATH = "/run/openclaw-development/gateway-api-key";
     selected.environment.NODE_EXTRA_CA_CERTS = "/run/openclaw-development/gateway-ca.crt";
   }
+  // Hosted runners can use a different UID from the image's non-root user.
+  // Keep these control-plane routing files private while making their owner
+  // match the process that reads the bind mounts; never chmod them world-readable.
+  const isolated = ["run", "--rm", "--network", "none", "--read-only"];
+  const [uid, gid] = JSON.parse(
+    await f.run("docker", [
+      ...isolated,
+      "--entrypoint",
+      "node",
+      f.controllerDockerImage,
+      "-p",
+      "JSON.stringify([process.getuid(), process.getgid()])",
+    ]),
+  );
+  assert.ok(Number.isInteger(uid) && uid > 0 && Number.isInteger(gid) && gid >= 0);
+  const files = ["gateway-api-key", "gateway-ca.crt"];
+  await f.run("docker", [
+    ...isolated,
+    "--user",
+    "0:0",
+    "--cap-drop",
+    "ALL",
+    "--cap-add",
+    "CHOWN",
+    "--security-opt",
+    "no-new-privileges",
+    ...files.flatMap((file) => [
+      "--mount",
+      `type=bind,source=${join(f.stateDirectory, file)},target=/routing/${file}`,
+    ]),
+    "--entrypoint",
+    "node",
+    f.controllerDockerImage,
+    "-e",
+    "const fs=require('fs');for(const file of process.argv.slice(3)){fs.chownSync('/routing/'+file,Number(process.argv[1]),Number(process.argv[2]));}",
+    String(uid),
+    String(gid),
+    ...files,
+  ]);
+  // Verify through the same image/user and read-only mounts as the controller.
+  // Container-side ownership also works with Docker Desktop's UID mapping.
+  await f.run("docker", [
+    ...isolated,
+    ...files.flatMap((file) => [
+      "--mount",
+      `type=bind,source=${join(f.stateDirectory, file)},target=/routing/${file},readonly`,
+    ]),
+    "--entrypoint",
+    "node",
+    f.controllerDockerImage,
+    "-e",
+    "const fs=require('fs');const assert=require('assert/strict');for(const file of process.argv.slice(1)){const path='/routing/'+file;assert.ok(fs.readFileSync(path).length>0);assert.equal(fs.statSync(path).mode&0o777,0o600);}",
+    ...files,
+  ]);
+  await f.record("routing-file-ownership", { hostUid: process.getuid(), uid, gid, mode: "0600" });
   await writeFile(composePath, dumpYaml(compose), { mode: 0o600 });
   await f.saveInstallation(f.configuration);
   await render();

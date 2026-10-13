@@ -83,6 +83,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		os.Getenv("OCC_SERVICE_KEY_FILE"),
 		"Bootstrap or service-key response file",
 	)
+	// --ca-bundle= is not refused like the flags in emptyFlagValues: it clears OCC_CA_BUNDLE.
 	flags.StringVar(
 		&app.caBundle,
 		"ca-bundle",
@@ -576,13 +577,15 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		Use:   "update ID",
 		Short: "Push current or replacement Secret values to the gateway copy",
 		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			// An explicit empty --file was refused by refuseEmptyFlags.
+			fileSet := command.Flags().Changed("file")
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
 			}
 			body := jsontext.Value("{}")
-			if updateFile != "" {
+			if fileSet {
 				body, err = readJSON(updateFile)
 				if err != nil {
 					return err
@@ -1105,6 +1108,9 @@ func helpWithOutputFormats(help func(*cobra.Command, []string)) func(*cobra.Comm
 }
 
 func (app *application) validateOptions(command *cobra.Command) error {
+	if err := refuseEmptyFlags(command); err != nil {
+		return err
+	}
 	formats := []string{"table", "json", "yaml"}
 	if annotated, ok := command.Annotations[outputFormatsAnnotation]; ok {
 		formats = strings.Split(annotated, ",")
@@ -1124,6 +1130,38 @@ func (app *application) validateOptions(command *cobra.Command) error {
 		return fmt.Errorf("OCC timeout must be a positive integer number of seconds")
 	}
 	app.parsedTimeout = time.Duration(seconds) * time.Second
+	return nil
+}
+
+// emptyFlagValues says what each listed flag must name. These flags read an
+// empty value as omitted, so an explicit --flag= is refused before any work
+// instead of silently taking the default or failing later with a misleading
+// error. --ca-bundle= deliberately clears OCC_CA_BUNDLE, and --namespace=
+// clears OCC_NAMESPACE (service-key create then issues an Installation-scoped
+// key; Namespace commands refuse it), so neither is listed. The other string
+// flags refuse an empty value themselves.
+var emptyFlagValues = map[string]string{
+	"file":              "a JSON document",
+	"key-output":        "a key file path",
+	"level":             "error, warn, info or debug",
+	"out":               "a key file path",
+	"pod":               "a Pod",
+	"revision":          "a revision ID",
+	"service-key-file":  "a bootstrap or service-key response file",
+	"service-principal": "a ServicePrincipal ID",
+	"source":            "gateway, agent or sandbox",
+	"url":               "the OCC endpoint URL",
+}
+
+// refuseEmptyFlags refuses an explicitly empty value for a flag in
+// emptyFlagValues, in flag-name order.
+func refuseEmptyFlags(command *cobra.Command) error {
+	for _, name := range slices.Sorted(maps.Keys(emptyFlagValues)) {
+		flag := command.Flags().Lookup(name)
+		if flag != nil && flag.Changed && flag.Value.String() == "" {
+			return fmt.Errorf("--%s must name %s", name, emptyFlagValues[name])
+		}
+	}
 	return nil
 }
 

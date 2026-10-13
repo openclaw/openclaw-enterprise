@@ -58,7 +58,7 @@ mkdirSync("/home/node/workspace", { recursive: true });
 writeFileSync(process.env.CODEX_HOME + "/config.toml", '[features]\\napps = true\\nplugins = true\\nremote_plugin = true\\n'.replaceAll("\\\\n", "\\n"));
 const version = spawnSync("codex", ["--version"], { encoding: "utf8" });
 assert.equal(version.status, 0);
-assert.equal(version.stdout.trim(), "codex-cli 0.163.0-alpha.1", "native proof is pinned to the reviewed runtime");
+assert.equal(version.stdout.trim(), "codex-cli 0.163.0-alpha.2", "native proof is pinned to the reviewed runtime");
 const login = spawnSync("codex", ["-c", "cli_auth_credentials_store=file", "login", "--with-access-token"], {
   input: ${JSON.stringify(process.env.CODEX_ACCESS_TOKEN)}, encoding: "utf8", timeout: 30000,
 });
@@ -123,7 +123,7 @@ ${PLUGIN_RUNTIME_HELPERS}
     assert.equal(code, 0, errors.replaceAll(process.env.CODEX_ACCESS_TOKEN, "[REDACTED]"));
     const receipt = JSON.parse(output.trim());
     assert.deepEqual(receipt, {
-      version: "codex-cli 0.163.0-alpha.1",
+      version: "codex-cli 0.163.0-alpha.2",
       nativeReadCount: 6,
       maxOutstanding: 4,
       drainedNativeError: true,

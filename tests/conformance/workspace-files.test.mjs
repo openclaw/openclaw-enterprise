@@ -347,14 +347,58 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
     true,
   );
 
+  // 16 KiB of content, every byte a six-byte escape, then whitespace: one byte over the limit.
+  const escapedMaximum = `{"content":"${String.raw`\u0061`.repeat(16 * 1024)}"}`;
   const encodedTooLarge = await request(fixture.app, `${path}/USER.md`, {
     method: "PUT",
-    headers: { origin: publicOrigin, "content-length": String(54_014) },
-    body: `{"content":"${String.raw`\u0061`.repeat(9_000)}"}`,
+    headers: { origin: publicOrigin },
+    body: escapedMaximum + " ".repeat(6 * 16 * 1024 + 1024 + 1 - escapedMaximum.length),
   });
   assert.equal(encodedTooLarge.response.status, 413);
   assert.equal(encodedTooLarge.payload.error.code, "PAYLOAD_TOO_LARGE");
   assert.deepEqual(calls, []);
+});
+
+test("Agent workspace file PUT admits 16 KiB of content in any JSON encoding", async () => {
+  const writes = [];
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read(read) {
+        return { status: "ok", file: { name: read.filename, content: "" } };
+      },
+      async write(write) {
+        writes.push(write.content);
+        return { status: "ok", file: { name: write.filename, size: 0 } };
+      },
+    },
+  });
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Encoded content tenant");
+  const { agent } = await createAgent(fixture, namespace, "Encoded content Agent");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
+  const escape = (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  const cases = [
+    // JSON.stringify writes each control character as a six-byte escape: a 98 KB body.
+    ["U+0001 control characters", "\u0001".repeat(16 * 1024), undefined],
+    // ASCII-only JSON (Python's json.dumps default) writes each two-byte letter in six bytes.
+    ["ASCII-escaped two-byte letters", "\u00e9".repeat(8 * 1024), escape],
+    ["ASCII letters, every one escaped", "a".repeat(16 * 1024), escape],
+  ];
+  for (const [label, content, escapeAll] of cases) {
+    assert.equal(Buffer.byteLength(content, "utf8"), 16 * 1024, label);
+    const body =
+      escapeAll === undefined
+        ? { content }
+        : `{"content":"${[...content].map((character) => escapeAll(character)).join("")}"}`;
+    const write = await request(fixture.app, path, {
+      method: "PUT",
+      headers: { origin: publicOrigin },
+      body,
+    });
+    assert.equal(write.response.status, 200, `${label}: ${JSON.stringify(write.payload)}`);
+    assert.equal(writes.at(-1), content, label);
+  }
+  assert.equal(writes.length, cases.length);
 });
 
 test("Agent workspace file routes map provider file states without leaking content in audit", async () => {
