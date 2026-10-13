@@ -8,7 +8,7 @@ last_updated_session: authoring-run/5808365b-c590-4c11-92d6-4ee32efc3626
 
 ## Overview
 
-GitHub Actions selects coverage for each event and ends at `CI Required` and resource cleanup. Full CI runs twenty-one noncredentialed test lanes, prepares disposable resources, and rejects missing or skipped required coverage. A verified documentation-only PR runs Suite Audit and documentation checks without product tests. Neither route establishes protected model or service integrations.
+GitHub Actions selects coverage for each event and ends at `CI Required` and resource cleanup. Full CI runs twenty-two noncredentialed test lanes, prepares disposable resources, and rejects missing or skipped required coverage. A verified documentation-only PR runs Suite Audit and documentation checks without product tests. Neither route establishes protected model or service integrations.
 
 ## Entry Points
 
@@ -24,7 +24,7 @@ graph TD
   A --> N["Suite Audit"]
   S -->|full PR| Q["Report affected packages (advisory)"]
   S -->|docs| D["Documentation checks"]
-  S -->|full or tests| B["All twenty-one or selected CI test lanes"]
+  S -->|full or tests| B["All twenty-two or selected CI test lanes"]
   B --> F["Prepare owned resources"]
   F -->|prepared| H["Run tests and validate cases"]
   F -->|preparation fails| J["Owned-resource cleanup"]
@@ -93,7 +93,7 @@ The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image
 
 For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.mjs:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
 
-`checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-model-probes`, `images-runtime-startup`, and `images-runtime-startup-2` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; probes, runtime startup and `repository-credentials-platform` restore. Images load into the job's Docker engine; cache credentials stay in preparation.
+`checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-model-probes`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; probes, runtime startup and `repository-credentials-platform` restore. Images load into the job's Docker engine; cache credentials stay in preparation.
 
 Kubernetes fixture startup records phase timings and host snapshots. On failure,
 bounded reads save `<state-file>.diagnostics.json` outside the cluster directory

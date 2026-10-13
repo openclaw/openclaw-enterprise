@@ -1,4 +1,4 @@
-// Shared by the runtime image startup smoke tests, which CI runs in two lanes
+// Shared by the runtime image startup smoke tests, which CI runs in three lanes
 // (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
 // runtime-image-startup-termination.test.mjs,
 // runtime-image-gateway-peer.test.mjs, runtime-image-native-worker.test.mjs,

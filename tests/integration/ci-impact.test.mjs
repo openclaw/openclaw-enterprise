@@ -1212,6 +1212,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     "images-model-probes",
     "images-runtime-startup",
     "images-runtime-startup-2",
+    "images-runtime-startup-3",
     "runtime-image-fixture",
     "k3d-fixture-configuration",
     "k3d-fixture-state",

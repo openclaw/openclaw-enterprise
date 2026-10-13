@@ -869,6 +869,7 @@ const imageCacheLanes = new Map([
   ["images-model-probes", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
+  ["images-runtime-startup-3", { localStore: false }],
   ["repository-credentials-platform", { localStore: true }],
 ]);
 
@@ -2404,10 +2405,11 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     case "images-runtime-startup":
-    case "images-runtime-startup-2": {
-      // Runtime image smoke tests run apart from packaging, in two lanes, to
+    case "images-runtime-startup-2":
+    case "images-runtime-startup-3": {
+      // Runtime image smoke tests run apart from packaging, in three lanes, to
       // shorten CI wall time. Only the lane whose tests run the Codex sandbox
-      // sets codexSeccomp; the other skips the k3d cluster it needs. The
+      // sets codexSeccomp; the others skip the k3d cluster it needs. The
       // cluster needs no image, so it is created while the image builds.
       const codexSeccomp = lanePrepare(name).codexSeccomp;
       const [built, cluster] = await timedPreparation(name, "runtime-image-build-cluster", () =>

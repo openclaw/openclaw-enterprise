@@ -954,9 +954,16 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const { lanes } = loadTestSuites(
     fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
   );
-  const laneFiles = ["images-runtime-startup", "images-runtime-startup-2"].flatMap((lane) =>
-    lanes[lane].files.map((file) => file.path),
+  // Every Image Runtime Startup part, so a new part cannot drop out of the smoke.
+  const startupLanes = Object.keys(lanes).filter((lane) =>
+    /^images-runtime-startup(?:-\d+)?$/.test(lane),
   );
+  assert.deepEqual(startupLanes.sort(), [
+    "images-runtime-startup",
+    "images-runtime-startup-2",
+    "images-runtime-startup-3",
+  ]);
+  const laneFiles = startupLanes.flatMap((lane) => lanes[lane].files.map((file) => file.path));
   // The model probe outcomes moved into lane 2 from Image Model Probes, whose files
   // the release smoke has never run. Every other file a lane splits off must stay in
   // the release smoke, or a native-platform release loses those cases silently.
