@@ -110,14 +110,16 @@ reach the gateway.
 | `oauth2-refresh-token`      | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 
 `codex-pat` supports personal access tokens, including service-account tokens,
-for dedicated Codex only. Its configured binaries can use `CODEX_ACCESS_TOKEN`
-over HTTPS at these routes:
+for dedicated Codex only. Configured binaries use `CODEX_ACCESS_TOKEN` over HTTPS at:
 
 - `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`: account metadata.
 - `chatgpt.com/backend-api/codex/**`: models and Responses.
 - `chatgpt.com/backend-api/wham/config/bundle`: required startup configuration.
+- `chatgpt.com/backend-api/wham/accounts/check`: selected-workspace routing before inference.
+- `chatgpt.com/backend-api/wham/settings/user`: per-turn attribution settings.
+- `chatgpt.com/backend-api/wham/usage`: Gateway usage-limit recovery.
 
-Other backend paths remain denied.
+Profile, analytics, messaging, cloud-task and credit-mutation APIs remain denied.
 
 The Harness stores only an opaque placeholder in native Codex's
 `personal_access_token` auth-file field. Native account validation and the model

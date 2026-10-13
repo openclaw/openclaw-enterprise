@@ -170,20 +170,20 @@ pinned API cannot preserve the exact Agent ServiceAccount and token.
 For a `credential_source` revision it renders the catalog login mode (`api_key` or
 `codex_pat` for Codex), no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
 attachments, one provider name per source, go into
-`requirements.credentialAttachments`. Compute passes those requirements and the
-immutable revision to OpenShell instead of creating the Deployment itself.
+`requirements.credentialAttachments`. Compute passes the requirements and immutable revision to OpenShell.
 For Codex, it reads the exact Agent transport Secret in the control plane and
 adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
 plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
 requirements and removes their ConfigMap paths from the remaining environment.
 
-`prepareHarnessAuth` selects provider-managed PAT storage.
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
-writes only the opaque `personal_access_token` to private `auth.json`, clears
-the child environment override and runs `codex login status` using file storage.
-Account validation, configuration loading and the model probe gate readiness.
-The PAT profile admits exact `/backend-api/wham/config/bundle`
-(`apps/controller/src/drivers/credential-gateway/openshell.ts`).
+PAT bootstrap (`prepareHarnessAuth`,
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
+stores only the opaque token in private `auth.json`, clears the child override
+and runs native `login status`. The profile
+(`apps/controller/src/drivers/credential-gateway/openshell.ts`) admits
+[PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+for identity/plan metadata, managed policy, workspace routing, models, attribution
+and usage recovery. Startup failures keep revisions inactive.
 
 ### 3. Validate and serialize the Sandbox
 
@@ -365,6 +365,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 22:23: Trace native PAT prerequisites. (01a136ee-8824-7043-b9e2-49eccacac3bd - 204354a83)
 
 - 2026-10-13 21:36: Admit the exact Codex managed-configuration route. (01a136ee-8824-7043-b9e2-49eccacac3bd - 822d00a55)
 

@@ -313,6 +313,21 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           protocol: "rest",
           path: "/backend-api/wham/config/bundle",
         },
+        // Workspace discovery gates native inference; attribution is loaded per turn.
+        {
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path: "/backend-api/wham/accounts/check",
+        },
+        {
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path: "/backend-api/wham/settings/user",
+        },
+        // The Gateway reads native rate limits when recovering a usage-limit error.
+        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
       ],
       binaries: options.binaries,
       inferenceCapable: true,

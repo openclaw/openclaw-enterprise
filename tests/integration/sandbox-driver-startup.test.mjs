@@ -2253,7 +2253,7 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { type: "codex-pat", config: {}, secrets: { access_token: "synthetic-codex-pat" } },
   );
   const [profile] = profiles.values();
-  // These are the pinned Codex dependency's startup/model routes. A broader backend
+  // These are the pinned Codex dependency's startup, turn and usage-recovery routes. A broader backend
   // or WHAM wildcard would release this credential to unrelated account APIs.
   assert.deepEqual(profile.endpoints, [
     {
@@ -2264,6 +2264,9 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/codex/**" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/config/bundle" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/accounts/check" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/settings/user" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
   ]);
   assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);
 });
