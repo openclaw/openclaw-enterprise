@@ -42,7 +42,7 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
 // escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
 // (`src/config/env-substitution.ts`).
-const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/g;
+const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
 
 const holdsEnvironmentReference = (value: unknown): boolean =>
   typeof value === "string" &&
@@ -92,9 +92,9 @@ function fillsAsRuntimeUrl(literals: readonly string[]): boolean {
 }
 
 // The text after an http(s) scheme's colon with each variable between `literals` filled.
-function fillUrl(literals: readonly string[], hostToken: string): string {
+function fillUrl(literals: readonly string[], hostToken: string, slashesToken = hostToken): string {
   const tokens: Readonly<Record<Exclude<UrlPart, "brackets">, string>> = {
-    slashes: hostToken,
+    slashes: slashesToken,
     host: hostToken,
     port: "",
     path: "x",
@@ -144,8 +144,9 @@ function fillUrl(literals: readonly string[], hostToken: string): string {
 }
 
 // `literals` with each unescaped environment reference in them split out as one more variable:
-// the runtime fills it before it uses the value.
-function splitEnvironmentReferences(literals: readonly string[]): string[] {
+// the runtime fills it before it uses the value. With `fallbacks`, a reference with a
+// `:-fallback` is its fallback text instead, as the runtime renders it when the variable is unset.
+function splitEnvironmentReferences(literals: readonly string[], fallbacks: boolean): string[] {
   const split = [""];
   for (const [index, literal] of literals.entries()) {
     if (index > 0) {
@@ -154,10 +155,12 @@ function splitEnvironmentReferences(literals: readonly string[]): string[] {
     let position = 0;
     for (const match of literal.matchAll(environmentReference)) {
       split[split.length - 1] += literal.slice(position, match.index);
-      if (match[1] === undefined) {
-        split.push("");
-      } else {
+      if (match[1] !== undefined) {
         split[split.length - 1] += match[0];
+      } else if (fallbacks && match[2] !== undefined) {
+        split[split.length - 1] += match[2];
+      } else {
+        split.push("");
       }
       position = match.index + match[0].length;
     }
@@ -169,19 +172,28 @@ function splitEnvironmentReferences(literals: readonly string[]): string[] {
 /**
  * Whether a URL carries a user name or password: a credential in the URL (finding 1244). On a
  * Preset save, `literals` is the text around its unfilled variables (`unresolved`), and an
- * environment reference is a variable too, so the URL need not parse as written (finding 1250).
- * Each variable is filled with the token for where it sits, as for the baseUrl rule, so literal
- * text before an `@` in the authority, or a variable that is the whole user name or password,
- * is found whatever fills the host, the port or the path. A variable before the scheme's colon
- * fills the scheme; one that leads the URL with no colon after it fills a scheme and a host.
- * Text no stand-in parses is read for an `@` in its authority, and so is a literal port that only
- * a variable supplying an `@` could make parse (`user:pass{{ vars.host }}`). A whole reference or
- * variable is no credential: it is checked once filled.
+ * environment reference is a variable too (or its `:-fallback` text, as the runtime renders it
+ * when unset), so the URL need not parse as written (finding 1250).
+ * - Each variable is filled with the token for where it sits, as for the baseUrl rule, so literal
+ *   text before an `@` in the authority, or a variable that is the whole user name or password,
+ *   is found whatever fills the host, the port or the path. A variable right after the scheme's
+ *   colon is also tried empty, as the slashes may follow it.
+ * - A variable before the scheme's colon fills the scheme; one that leads the URL with no colon
+ *   after it fills a scheme and a host.
+ * - The authority is also read as the URL parser does, with each variable a letter: the last `@`
+ *   before its end splits off userinfo, whatever brackets surround it. A literal port that only a
+ *   variable supplying an `@` could make parse (`user:pass{{ vars.host }}`) counts too.
+ * A whole reference or variable is no credential: it is checked once filled. Nor is an all-digit
+ * password a variable could turn a port into (`{{ vars.u }}:4242{{ vars.host }}`).
  */
 export function urlHoldsUserinfo(value: string, literals: readonly string[] = [value]): boolean {
-  const [head = "", ...tail] = splitEnvironmentReferences(literals).map((literal) =>
-    literal.replaceAll(/[\t\n\r]/g, ""),
+  return [false, true].some((fallbacks) =>
+    holdsUserinfo(splitEnvironmentReferences(literals, fallbacks)),
   );
+}
+
+function holdsUserinfo(literals: readonly string[]): boolean {
+  const [head = "", ...tail] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
   const parts = [head.slice(head.search(/[^\0- ]|$/)), ...tail];
   // The scheme ends at the first colon that comes before any slash, query, fragment or `@`.
   const index = parts.findIndex((part) => /[:/\\?#@]/.test(part));
@@ -200,8 +212,16 @@ export function urlHoldsUserinfo(value: string, literals: readonly string[] = [v
     return false;
   }
   let parsed = false;
-  for (const hostToken of ["x", "1"]) {
-    const text = scheme + fillUrl(rest, hostToken);
+  const fills = [
+    ["x", "x"],
+    ["1", "1"],
+  ];
+  // A variable right after the scheme's colon may be empty, with the slashes after it.
+  if (rest[0] === "") {
+    fills.push(["x", ""]);
+  }
+  for (const [hostToken = "x", slashesToken] of fills) {
+    const text = scheme + fillUrl(rest, hostToken, slashesToken);
     if (URL.canParse(text)) {
       const url = new URL(text);
       if (url.username !== "" || url.password !== "") {
@@ -210,15 +230,19 @@ export function urlHoldsUserinfo(value: string, literals: readonly string[] = [v
       parsed = true;
     }
   }
-  // The authority as a special scheme reads it, with each variable filled as above.
-  const filled = fillUrl(rest, "x");
-  const authority = filled.slice(filled.search(/[^/\\]|$/)).split(/[/\\?#]/, 1)[0] ?? "";
-  const sign = authority.lastIndexOf("@");
+  // The authority as the URL parser reads it: a special scheme also ends it at a backslash.
+  const special = /^(?:https?|wss?|ftp|file):$/i.test(scheme);
+  const authority = (text: string): string =>
+    text
+      .slice(text.search(special ? /[^/\\]|$/ : /[^/]|$/))
+      .split(special ? /[/\\?#]/ : /[/?#]/, 1)[0] ?? "";
+  const written = authority(rest.join("x"));
+  const sign = written.lastIndexOf("@");
   if (sign !== -1) {
-    const userinfo = authority.slice(0, sign);
+    const userinfo = written.slice(0, sign);
     return userinfo !== "" && userinfo !== ":";
   }
-  const port = /^(?:\[[^\]]*\]|[^:[\]]*):(.*)$/.exec(authority)?.[1];
+  const port = /^(?:\[[^\]]*\]|[^:[\]]*):(.*)$/.exec(authority(fillUrl(rest, "x")))?.[1];
   return !parsed && rest.length > 1 && port !== undefined && /\D/.test(port);
 }
 

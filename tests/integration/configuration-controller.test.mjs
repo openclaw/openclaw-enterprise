@@ -1493,6 +1493,24 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       }),
       "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
     ],
+    // The runtime renders a reference's fallback when the variable is unset.
+    [
+      gateway({ baseUrl: `https://\${MODEL_HOST:-user:${sentinel}@models.example.test}/v1` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    [
+      gateway({
+        request: {
+          proxy: { mode: "explicit-proxy", url: `\${PROXY_URL:-http://u:${sentinel}@proxy:3128}` },
+        },
+      }),
+      "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // The URL parser ends the user name at the last `@`, inside brackets too.
+    [
+      gateway({ baseUrl: `https://[\${MODEL_HOST}user:${sentinel}@models.example.test/]` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
   ];
   for (const [values, message] of refused) {
     for (const [collection, body] of [
@@ -1552,6 +1570,9 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       "x-api-key-version": "2",
     },
     models: [{ id: "m", request: { headers: { "x.trace.id": "t" } } }],
+    // Finding 1250: an environment reference with a fallback that holds no user name.
+    baseUrl: "https://${MODEL_HOST:-models.example.test}/v1",
+    request: { proxy: { mode: "explicit-proxy", url: "${PROXY_URL:-http://proxy.example:3128}" } },
   });
   const created = await request(context.app, "POST", configurations, {
     body: { kind: "agent", values: accepted },
@@ -1707,6 +1728,8 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       ["baseUrl", { baseUrl: `https://user:${sentinel}@{{ vars.url }}/v1` }],
       ["baseUrl", { baseUrl: "https://{{ vars.header }}@{{ vars.url }}/v1" }],
       ["baseUrl", { baseUrl: `{{ vars.url }}://user:${sentinel}@{{ vars.api }}/v1` }],
+      ["baseUrl", { baseUrl: `https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1` }],
+      ["baseUrl", { baseUrl: `https://[{{ vars.url }}user:${sentinel}@models.test/]` }],
       [
         "models/0/baseUrl",
         {
@@ -1741,6 +1764,13 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway(settings),
       `Configuration field /models/providers/gateway/${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`,
     ]),
+    // A model row's credential header is matched as the text around its variables too.
+    [
+      gateway({
+        models: [{ id: "m", headers: { "Authorization{{ vars.header }}": "Bearer synthetic" } }],
+      }),
+      "Configuration field /models/providers/gateway/models/0/headers/Authorization{{ vars.header }} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+    ],
   ]) {
     const escaped = await request(context.app, "POST", presets, {
       body: {
