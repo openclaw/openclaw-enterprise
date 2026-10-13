@@ -219,6 +219,8 @@ export interface ControllerWork {
   readonly attemptCount: number;
   readonly claimToken?: string;
   readonly leaseExpiresAt?: Date;
+  /** Claim liveness judged by the State store's clock when it read this work. */
+  readonly leaseActive?: boolean;
   readonly completedAt?: Date;
   readonly reasonCode?: string;
   readonly resultData?: Readonly<Record<string, unknown>>;
@@ -542,7 +544,12 @@ export function controllerWorkDeploymentStatus(
     return "failed";
   }
   if (work.state === "claimed") {
-    if (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime()) {
+    // Leases are granted and expired on the database clock; the controller's
+    // clock can disagree with it, so prefer the store's own judgement.
+    const leaseActive =
+      work.leaseActive ??
+      (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime());
+    if (leaseActive) {
       return "running";
     }
     return "queued";
