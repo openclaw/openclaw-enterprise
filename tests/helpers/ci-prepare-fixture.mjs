@@ -540,7 +540,19 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 }
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [16, 18, 19].includes(args.length)) {
+  // Only lanes whose tests need no Gateway API or other K3s add-on skip them.
+  const addonArgs = [
+    "k3d-fixture-configuration",
+    "k3d-fixture-state",
+    "k3d-fixture-plugins",
+    "k3d-fixture-oauth",
+    "images-runtime-startup",
+    "repository-credentials-platform",
+    "k3d-observability",
+  ].includes(process.env.CI_FIXTURE_LANE)
+    ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
+    : [];
+  if (equals(args.slice(0, 2), ["cluster", "create"]) && [14, 16, 18, 19].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
     // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
@@ -557,8 +569,7 @@ if (command === "k3d") {
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
       "--no-lb",
-      "--k3s-arg",
-      "--disable=traefik,servicelb,metrics-server@server:*",
+      ...addonArgs,
     ]);
     // The creation-failure case models k3d's default rollback so it can prove
     // that the preparation owner retains containers for diagnosis and cleanup.
@@ -574,8 +585,7 @@ if (command === "k3d") {
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
       "--no-lb",
-      "--k3s-arg",
-      "--disable=traefik,servicelb,metrics-server@server:*",
+      ...addonArgs,
     ]);
     }
     state.cluster = args[2];
@@ -756,6 +766,7 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
     RUNNER_TEMP: root,
     CI_FIXTURE_ROOT: root,
     CI_FIXTURE_SCENARIO: scenario,
+    CI_FIXTURE_LANE: lane,
     OCC_DOCKER_BIN: join(
       bin,
       ["podman-success", "podman-image-absent"].includes(scenario) ? "podman" : "docker.mjs",

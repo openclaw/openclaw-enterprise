@@ -21,7 +21,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
-import { ANSI_COLOR, captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
+import {
+  ANSI_COLOR,
+  captureK3dDiagnostics,
+  k3dHostMetrics,
+  redactCredentialLine,
+} from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
@@ -54,6 +59,18 @@ const fixtureLanes = new Set([
   "k3d-fixture-state",
   "k3d-fixture-plugins",
   "k3d-fixture-oauth",
+]);
+// These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
+// Gateway API, so their clusters skip K3s's Traefik, ServiceLB and
+// metrics-server add-ons, which would otherwise pull and start on every node
+// while the lane imports its images. Lanes that set up gateway routing need
+// Traefik: K3s installs the Gateway API CRDs with it (routing.mjs). Every lane
+// here runs in PR CI; full-integration lanes keep K3s's defaults.
+const lanesWithoutK3sAddons = new Set([
+  ...fixtureLanes,
+  "images-runtime-startup",
+  "repository-credentials-platform",
+  "k3d-observability",
 ]);
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
@@ -1241,10 +1258,9 @@ async function ensureK3dCluster(statePath, state) {
       // every create. Without it, server-0 publishes the API port itself, and
       // the nginx connection limit behind finding 682 is gone too.
       "--no-lb",
-      // No CI test uses an Ingress, a LoadBalancer Service or the metrics API.
-      // These add-ons would pull and start on every node while lanes import
-      // their images and start their tests.
-      ...(!openShell ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"] : []),
+      ...(lanesWithoutK3sAddons.has(state.lane)
+        ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
+        : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
       ...(crossNodePluginStatus ? ["--no-rollback"] : []),
@@ -1395,7 +1411,7 @@ function forwardK3dOutput(lane, child) {
   function print(line) {
     const text = line.replace(ANSI_COLOR, "").trimEnd();
     if (text.trim()) {
-      progress(lane, `k3d: ${text.slice(0, 400)}`);
+      progress(lane, `k3d: ${redactCredentialLine(text).slice(0, 400)}`);
     }
   }
 }

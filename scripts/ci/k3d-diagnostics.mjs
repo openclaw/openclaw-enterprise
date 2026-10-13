@@ -38,15 +38,15 @@ export async function k3dHostMetrics(directory) {
 const CREDENTIAL_LINE =
   /token|password|secret|credential|authorization|bearer|private.?key|https?:\/\/[^\s/]+@/i;
 
+export function redactCredentialLine(line) {
+  return CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line;
+}
+
 function safeText(value) {
   if (typeof value !== "string") {
     return value;
   }
-  return value
-    .split("\n")
-    .map((line) => (CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line))
-    .join("\n")
-    .slice(-8_000);
+  return value.split("\n").map(redactCredentialLine).join("\n").slice(-8_000);
 }
 
 // k3d's node entrypoint starts K3s in the background and retries `kubectl
