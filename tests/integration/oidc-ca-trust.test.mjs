@@ -265,7 +265,7 @@ async function certificates(directory, name, hostname) {
     "rsa:2048",
     "-nodes",
     "-subj",
-    `/CN=${hostname}`,
+    `/O=Example Corp/CN=${hostname}`,
     "-keyout",
     file("leaf.key"),
     "-out",
@@ -531,7 +531,9 @@ test(
       });
       await assert.rejects(readFile(wiring.output), { code: "ENOENT" });
     };
-    const leafSubject = new X509Certificate(idp["leaf.pem"]).subject.replace(/\s+/g, ", ");
+    const leafSubject = new X509Certificate(idp["leaf.pem"]).subject.replace(/\n/g, ", ");
+    // A subject value with a space stays whole: one comma between fields, none inside a value.
+    assert.match(leafSubject, /^O=Example Corp, CN=/);
     for (const [name, content, problem] of [
       ["empty", "", "the value is empty"],
       ["whitespace", " \n", "the value is empty"],
@@ -754,7 +756,7 @@ test(
       ["not a certificate", "the value must hold only PEM CA certificates"],
       [
         database["leaf.pem"],
-        `certificate 1 of 1 (${new X509Certificate(database["leaf.pem"]).subject.replace(/\s+/g, ", ")}) is not a CA certificate`,
+        `certificate 1 of 1 (${new X509Certificate(database["leaf.pem"]).subject.replace(/\n/g, ", ")}) is not a CA certificate`,
       ],
       [database["ca.pem"] + database["ca.key"], "the value must hold only PEM CA certificates"],
       [null, "not found in the Pod"],

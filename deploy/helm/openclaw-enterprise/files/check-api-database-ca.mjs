@@ -44,7 +44,7 @@ function databaseCa(path) {
     }
     if (!certificate.ca) {
       throw new CaError(
-        `certificate ${index + 1} of ${blocks.length} (${certificate.subject.replace(/\s+/g, ", ")}) is not a CA certificate; use the database server's issuing CA`,
+        `certificate ${index + 1} of ${blocks.length} (${certificate.subject.replace(/\n/g, ", ")}) is not a CA certificate; use the database server's issuing CA`,
       );
     }
   });

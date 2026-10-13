@@ -73,7 +73,7 @@ function certificates(pem) {
       throw new BundleError(`${position} has trailing data`);
     }
     if (!certificate.ca) {
-      const subject = certificate.subject.replace(/\s+/g, ", ");
+      const subject = certificate.subject.replace(/\n/g, ", ");
       throw new BundleError(
         `${position} (${subject}) is not a CA certificate; use the issuing root or intermediate CA, not the server certificate`,
       );
