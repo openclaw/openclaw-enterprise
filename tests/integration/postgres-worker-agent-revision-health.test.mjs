@@ -65,6 +65,39 @@ test(
   },
 );
 
+// Finding 1209: a file hung 22 minutes in teardown, past its job's timeout, naming nothing.
+// Node's test timeout does not cover after hooks, and pg's pool.end() waits for every
+// checked-out client, so one client a failed test never released hung the file. Each teardown
+// step now has a limit: the stuck step is named, and the database drop still runs, ending the
+// leaked connection so the file can exit.
+test(
+  "worker fixture teardown names a pool that never ends and still drops the database",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // This test runs the teardown itself and expects it to fail, so the fixture's own after
+    // hook goes to this stand-in context; the fallback below only cleans up after a failure.
+    let fixture;
+    let leaked;
+    context.after(async () => {
+      leaked?.release(true);
+      await fixture?.database.dispose().catch(() => {});
+    });
+    fixture = await setup({ after() {} }, { disposeLimitsMs: { "pool end": 1_000 } });
+    leaked = await fixture.observerPool.connect();
+    // A terminated session errors twice (the server's notice, then the closed socket).
+    const terminated = new Promise((resolve) => leaked.on("error", resolve));
+
+    await assert.rejects(fixture.database.dispose(), {
+      message: "revision fixture teardown: pool end did not finish within 1000 ms",
+    });
+    // The drop (WITH (FORCE)) ended the leaked client's session, which nothing else would.
+    const ended = await Promise.race([terminated, delay(10_000).then(() => undefined)]);
+    assert.ok(ended instanceof Error, "the database drop ended the leaked connection");
+    leaked.release(true);
+    leaked = undefined;
+  },
+);
+
 // The worker is serial. A Compute wait that only saves a later pass asks whether
 // other Work is waiting and ends early when it is, so another Agent's deploy
 // runs next instead of queuing behind the wait (D221).
