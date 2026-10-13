@@ -2484,6 +2484,55 @@ test("a full 1 MiB container window is cut for about the cost of sanitizing it o
   );
 });
 
+test("the page budget measures every page it returns, whatever its prefix estimate", async () => {
+  const { boundedRuntimeLogPage } =
+    await import("../../packages/occ/src/runtime-logs/page-budget.ts");
+  const stream = { source: "gateway", pod: "gateway-test-0", container: "gateway" };
+  const line = (index) => ({
+    type: "line",
+    time: null,
+    stream,
+    contentClass: "operational",
+    kind: "text",
+    level: "unknown",
+    message: `${index}`.padEnd(1000, "x"),
+  });
+  // `grow` bytes of cursor per delivered line defeat the estimate, which reads only
+  // record sizes; `skip` drops records so they no longer account for every line.
+  const budget = ({ count, grow = 0, skip = false }) => {
+    let builds = 0;
+    const page = boundedRuntimeLogPage(count, (end) => {
+      builds += 1;
+      return {
+        revisionId: "revision-test",
+        source: "gateway",
+        stream,
+        observedAt: "2026-09-30T12:10:00.000Z",
+        records: Array.from({ length: end }, (_, index) => line(index)).filter(
+          (_, index) => !skip || index % 2 === 0,
+        ),
+        withheld: 0,
+        truncated: end < count,
+        cursor: "c".repeat(64 + grow * end),
+      };
+    });
+    return { page, builds, bytes: Buffer.byteLength(JSON.stringify(page), "utf8") };
+  };
+  const estimated = budget({ count: 1000 });
+  const missed = budget({ count: 1000, grow: 64 });
+  const unaccounted = budget({ count: 1000, skip: true });
+  // A sound estimate costs the full, empty and estimated builds.
+  assert.equal(estimated.builds, 3);
+  for (const { page, builds, bytes } of [estimated, missed, unaccounted]) {
+    assert.ok(bytes <= 512 * 1024 - 64, `${bytes} bytes`);
+    assert.ok(page.records.length > 0 && page.truncated);
+    assert.ok(builds <= 13, `${builds} builds`);
+  }
+  // A missed estimate falls back to the search below it rather than returning it.
+  assert.ok(missed.builds > 3);
+  assert.ok(missed.page.records.length < estimated.page.records.length);
+});
+
 function wireContainerRows(time, count = 60) {
   return Array.from({ length: count }, (_, index) => ({
     time,

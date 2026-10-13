@@ -880,11 +880,6 @@ function sandboxLineSize(line: Readonly<SandboxLogLine>): number {
   return size;
 }
 
-/**
- * The sandbox counterpart of `sanitizeRuntimeLogChunk`: OpenShell policy decisions and
- * supervisor tracing become `activity` records. Messages, command lines and URLs are
- * redacted; any structured payload in a message is withheld.
- */
 type SandboxOutcome =
   { readonly reason: RuntimeLogWithheldReason } | { readonly record: SanitizedRuntimeLogRecord };
 
@@ -933,6 +928,11 @@ function sandboxLineOutcome(
   return { record: brand(record) };
 }
 
+/**
+ * The sandbox counterpart of `sanitizeRuntimeLogChunk`: OpenShell policy decisions and
+ * supervisor tracing become `activity` records. Messages, command lines and URLs are
+ * redacted; any structured payload in a message is withheld.
+ */
 export function sanitizeSandboxLogLines(
   streamValue: RuntimeLogStream,
   lines: readonly Readonly<SandboxLogLine>[],

@@ -633,8 +633,9 @@ const MAX_SANDBOX_LOG_LINES = 2000;
 /**
  * The largest response message the client accepts, after decompression: the grpc-js
  * default, pinned because it is what bounds `GetSandboxLogs`. OpenShell does not limit
- * a log line's length, so a read of up to 1000 lines is buffered whole before OCC
- * withholds oversized lines; a larger response fails with `RESOURCE_EXHAUSTED`.
+ * a log line's length, so a read (up to 2000 lines; OCC asks for at most 1000) is
+ * buffered whole before OCC withholds oversized lines. A larger response fails the
+ * read with `RESOURCE_EXHAUSTED` instead of being cut.
  * grpc-js has no per-call limit, and every other RPC already had this one.
  */
 const MAX_RECEIVE_MESSAGE_BYTES = 4 * 1024 * 1024;
