@@ -72,23 +72,29 @@ const disposeLimitsMs = {
 // counts the file's results (node:test sets a failing exit code only once the event loop drains).
 const abandonedExitGraceMs = 2_000;
 let abandonedSteps = 0;
-let exitArmed = false;
+let exitTimer;
+let exitHookAdded = false;
 
-// `cleanup` runs as a root after hook, with the root test's context. The grace starts from an
-// after hook it adds there, which runs once every root after hook the file registered has run,
-// in whatever order (node:test reads the hook list as it runs it): a timer armed in `cleanup`
-// itself cut off a later root after hook (finding 1246). Without a context it starts now.
-function exitIfAbandoned(context) {
-  if (abandonedSteps === 0 || exitArmed) {
-    return;
+function exitIfAbandoned() {
+  if (abandonedSteps > 0) {
+    // process.exit() keeps the exit code; the test runner reads results from its reports.
+    exitTimer ??= setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
   }
-  exitArmed = true;
-  // process.exit() keeps the exit code; the test runner reads results from its reports.
-  const arm = () => void setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
-  if (typeof context?.after === "function") {
-    context.after(arm);
-  } else {
-    arm();
+}
+
+// `cleanup` runs as a root after hook, with the root test's context. A timer it armed itself cut
+// off a root after hook registered after it (finding 1246), so it adds an after hook there:
+// node:test runs a hook added while its after hooks run after the ones already registered, and
+// that hook starts the grace if any step, in a test or a later hook, was abandoned. node:test
+// skips the after hooks after a failing one, so a failed `cleanup`, or one called without a
+// context, starts the grace at once; after a later root after hook fails, the file waits for the
+// runner's file timeout.
+function exitAfterRootHooks(context) {
+  if (typeof context?.after !== "function") {
+    exitIfAbandoned();
+  } else if (!exitHookAdded) {
+    exitHookAdded = true;
+    context.after(exitIfAbandoned);
   }
 }
 
@@ -122,6 +128,7 @@ export function createWorkerRevisionFixtures(testFile) {
   let template;
   // The owning file registers this as a root after hook: `after(cleanup)`.
   async function cleanup(context) {
+    let failed = true;
     try {
       const prepared = await template?.catch(() => undefined);
       if (prepared !== undefined) {
@@ -130,8 +137,9 @@ export function createWorkerRevisionFixtures(testFile) {
           prepared.cleanup({ lockTimeoutMs: limitMs }),
         );
       }
+      failed = false;
     } finally {
-      exitIfAbandoned(context);
+      exitAfterRootHooks(failed ? undefined : context);
     }
   }
 

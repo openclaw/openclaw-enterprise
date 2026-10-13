@@ -114,11 +114,9 @@ test(
   },
 );
 
-// Finding 1223: a teardown step left running past its limit can hold its process open (a pool's
-// socket, a child), so the file sat idle after its last test until the runner's file timeout
-// killed it. A file that abandoned a step now exits once its own teardown is done. Runs the
-// fixture's real teardown step in its own test process; needs no PostgreSQL.
-test("an abandoned teardown step that holds its process open does not keep the file alive", async (t) => {
+// Runs `body` as a test file of its own under the revision fixture, needing no PostgreSQL, and
+// returns its output once its process exits, or fails after 30 s naming the file as still running.
+async function runFixtureFile(t, body) {
   const directory = await mkdtemp(join(tmpdir(), "revision-fixture-exit-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, "abandoned.test.mjs");
@@ -129,24 +127,17 @@ test("an abandoned teardown step that holds its process open does not keep the f
 import test, { after } from "node:test";
 import { createWorkerRevisionFixtures, disposeStep } from ${JSON.stringify(helper.href)};
 const { cleanup } = createWorkerRevisionFixtures(import.meta.url);
-after(cleanup);
-// A root after hook registered after cleanup, slower than the exit grace, still finishes.
-after(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 3_000));
-  console.log("later after hook finished");
-});
-test("a stuck step is abandoned at its limit", async () => {
-  assert.equal(await disposeStep("worker stop", 5_000, () => "stopped"), "stopped");
-  // A pool.end() that never settles while its socket keeps the event loop alive.
-  await assert.rejects(
+// A pool.end() that never settles while its socket keeps the event loop alive.
+const abandonStep = () =>
+  assert.rejects(
     disposeStep("pool end", 100, () => {
       setInterval(() => {}, 1_000);
       return new Promise(() => {});
     }),
     { message: "revision fixture teardown: pool end did not finish within 100 ms" },
   );
-});
-`,
+after(cleanup);
+${body}`,
   );
   // A test runner of its own (this file's context would make it skip the file), in its own
   // process group, so a file that never exits can be killed with its test process.
@@ -174,8 +165,39 @@ test("a stuck step is abandoned at its limit", async () => {
   assert.equal(signal, null, `the file was still running after 30 s:\n${output}`);
   assert.equal(status, 0, output);
   assert.match(output, /revision fixture teardown: pool end did not finish within 100 ms/);
+  return output;
+}
+
+// Finding 1223: a teardown step left running past its limit can hold its process open (a pool's
+// socket, a child), so the file sat idle after its last test until the runner's file timeout
+// killed it. A file that abandoned a step now exits once its own teardown is done. Runs the
+// fixture's real teardown step in its own test process.
+test("an abandoned teardown step that holds its process open does not keep the file alive", async (t) => {
+  const output = await runFixtureFile(
+    t,
+    `// A root after hook registered after cleanup, slower than the exit grace, still finishes.
+after(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  console.log("later after hook finished");
+});
+test("a stuck step is abandoned at its limit", async () => {
+  assert.equal(await disposeStep("worker stop", 5_000, () => "stopped"), "stopped");
+  await abandonStep();
+});
+`,
+  );
   // Finding 1246: the exit grace starts once every root after hook has run, not at cleanup.
   assert.match(output, /later after hook finished/);
+});
+
+// Finding 1246: a step a root after hook after cleanup abandons also ends the file.
+test("a teardown step abandoned by a later root after hook does not keep the file alive", async (t) => {
+  await runFixtureFile(
+    t,
+    `after(abandonStep);
+test("nothing is abandoned during the tests", () => {});
+`,
+  );
 });
 
 // The worker is serial. A Compute wait that only saves a later pass asks whether
