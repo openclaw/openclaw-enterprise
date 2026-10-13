@@ -279,9 +279,10 @@ State on 2026-10-13, all on `main`:
   `dev-up-k3d` passed 6 of 6, with no skips and cleanup passed, at final #1138 head
   `4f0bd9b3c`
   ([run 38370119656](https://github.com/openclaw/openclaw-enterprise/actions/runs/38370119656)).
-  Browser sign-in uses imported CAs. On macOS 26.7.1 (ARM64), Docker Desktop 4.94.0 started
-  the local profile from `0232c95a`; Console and Keycloak returned HTTP `200` with verified
-  TLS. Browser acceptance awaits OS authorization for hosts and CA trust.
+  On macOS 26.7.1 ARM64, Docker Desktop 4.94.0 ran `0232c95a`. After user-approved hosts
+  and CA trust setup, an agent verified Alice’s Keycloak login and administrator recovery login
+  in fresh Chrome 156 Incognito. Both origins showed secure connections, without warning
+  bypasses. The stack remains available for review.
 - **Private CA: #1774 (`cb63275da`).** The reported production-shaped check covers 9 of 9
   cases, including a negative control, both rotation paths and Agent Pods receiving only the
   Gateway CA; this RFC has no reviewer-accessible recording to verify that report.
