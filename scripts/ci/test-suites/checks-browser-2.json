@@ -4,11 +4,12 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/browser/console-agent-presets.test.mjs",
     "tests/browser/console-agents.test.mjs",
     "tests/integration/ci-impact.test.mjs",
-    "tests/browser/console-agent-presets.test.mjs",
-    "tests/browser/console-agent-channels.test.mjs",
     "tests/browser/console-agent-draft-guards.test.mjs",
+    "tests/browser/console-agent-channels.test.mjs",
+    "tests/browser/console-agents-2.test.mjs",
     "tests/browser/console-agent-state.test.mjs",
     "tests/browser/console-runtime-credentials.test.mjs",
     "tests/browser/console-codex-oauth.test.mjs",
@@ -18,6 +19,9 @@
   "files": [
     {
       "path": "tests/browser/console-agents.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agents-2.test.mjs"
     },
     {
       "path": "tests/browser/console-codex-oauth.test.mjs"

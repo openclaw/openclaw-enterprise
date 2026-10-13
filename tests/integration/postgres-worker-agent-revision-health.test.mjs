@@ -9,11 +9,11 @@ import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.
 
 // Worker health, readiness, leases and outages. Deployment and dispatch cases are in
 // postgres-worker-agent-revision.test.mjs, credential-source withdrawals in its
-// -credential-sources sibling; repository sessions, Agent stop and deletion, and
-// Namespace teardown are in postgres-worker-agent-revision-teardown.test.mjs; exclusive
-// replacement and refused candidates are in the -replacement sibling, a refused candidate's stop
-// and its wait in the -refused-stop and -refused-wait siblings, and redeploys whose predecessor
-// stop yields in the -yielded-redeploy sibling. The lane runs the revision files at once.
+// -credential-sources sibling; repository sessions are in its -teardown sibling, and Agent stop
+// and deletion and Namespace teardown in its -stop sibling; exclusive replacement and refused
+// candidates are in the -replacement sibling, a refused candidate's stop and its wait in the
+// -refused-stop and -refused-wait siblings, and redeploys whose predecessor stop yields in the
+// -yielded-redeploy sibling. The lane runs the revision files at once.
 
 const { setup, cleanup } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
