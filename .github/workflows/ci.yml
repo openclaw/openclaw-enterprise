@@ -21,6 +21,10 @@ concurrency:
 env:
   CI: "1"
   NODE_VERSION: "24.16.0"
+  # CI Impact and CI Required only run the impact and aggregation scripts, so
+  # they take the runner's cached Node 24 instead of downloading NODE_VERSION
+  # (about 5 s each, on the critical path at both ends of the run).
+  GATE_NODE_VERSION: "24"
 
 jobs:
   impact:
@@ -38,7 +42,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.GATE_NODE_VERSION }}
       - id: select
         env:
           IMPACT_ACTION: select
@@ -500,7 +504,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.GATE_NODE_VERSION }}
       - name: Verify selected mode
         env:
           IMPACT_ACTION: verify

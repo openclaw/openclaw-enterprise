@@ -12,13 +12,14 @@
     },
     "immutableEnvImages": ["OCC_TEST_WORKSPACE_ENVOY_IMAGE"]
   },
-  "fileConcurrency": 3,
+  "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/runtime-image-startup.test.mjs",
     "tests/integration/runtime-image-native-worker.test.mjs",
     "tests/integration/runtime-image-state-migration.test.mjs",
-    "tests/integration/runtime-image-managed-files.test.mjs",
-    "tests/integration/workspace-files-native.test.mjs"
+    "tests/integration/workspace-files-native.test.mjs",
+    "tests/integration/runtime-image-native-listener.test.mjs",
+    "tests/integration/runtime-image-managed-files.test.mjs"
   ],
   "files": [
     {
@@ -31,7 +32,12 @@
         "runtime image keeps Codex auth writable with a nested generated images mount",
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image validates the configuration dedicated native OpenClaw renders",
+        "runtime image validates the configuration dedicated native OpenClaw renders"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-native-listener.test.mjs",
+      "expectedTests": [
         "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
         "runtime image Kubernetes admission refuses healthy native listeners that cannot serve Pod-IP traffic"
       ]

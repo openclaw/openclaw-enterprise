@@ -2,8 +2,9 @@
 // (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
 // runtime-image-startup-termination.test.mjs,
 // runtime-image-gateway-peer.test.mjs, runtime-image-native-worker.test.mjs,
-// runtime-image-state-migration.test.mjs and
-// runtime-image-managed-files.test.mjs).
+// runtime-image-state-migration.test.mjs,
+// runtime-image-managed-files.test.mjs and
+// runtime-image-native-listener.test.mjs).
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
