@@ -8844,7 +8844,7 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
   }
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader =
-    "must not set a credential header (authorization, API key, token, secret, password or cookie)";
+    "must not set a credential header (authorization, any key, token, secret, password or cookie)";
   for (const [conflicting, message] of [
     [
       { env: { ANTHROPIC_API_KEY: "fixture" } },
@@ -8919,7 +8919,7 @@ test("model provider credential headers and request auth are refused on every pr
     [{ id: "codex", version: "1.0.0", mode: "dedicated" }, "codex/gpt-5"],
   ];
   const binding = "model credentials come from the Agent's Harness authentication binding";
-  const credentialHeader = `must not set a credential header (authorization, API key, token, secret, password or cookie): ${binding}`;
+  const credentialHeader = `must not set a credential header (authorization, any key, token, secret, password or cookie): ${binding}`;
   const requestAuth = `must be unset or {mode: "provider-default"}: ${binding}`;
   const invalidName = "must use valid HTTP header names";
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
@@ -9013,7 +9013,6 @@ test("model provider credential headers and request auth are refused on every pr
       "Key",
       "X-Signing-Key",
       "x-portkey-virtual-key",
-      "x-turnkey",
       "X-Credential",
       "X-Credentials",
       "X-Passphrase",
@@ -9021,6 +9020,8 @@ test("model provider credential headers and request auth are refused on every pr
       "X-Signature",
       "X-Hub-Signature-256",
       "X-Bearer",
+      "x-tokens",
+      "x-keys",
     ].map((name) => [
       provider("p", { headers: { [name]: "${K}" } }),
       "models.providers.p.headers",
@@ -9117,6 +9118,8 @@ test("model provider credential headers and request auth are refused on every pr
       "HTTP-Referer",
       "x-stainless-lang",
       "X-Keyword",
+      "x-cache-key-2",
+      "X-Idempotent-Key",
     ].map((name) => provider("p", { request: { headers: { [name]: "v" } } })),
     provider("p", {
       request: { headers: { "OpenAI-Organization": "org" }, auth: { mode: "provider-default" } },

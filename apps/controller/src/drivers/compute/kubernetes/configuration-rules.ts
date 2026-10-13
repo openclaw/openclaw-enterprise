@@ -131,7 +131,7 @@ const PROVIDER_ENVIRONMENT =
 const MODEL_CREDENTIAL_ENVIRONMENT =
   /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
 const CREDENTIAL_HEADER =
-  "must not set a credential header (authorization, API key, token, secret, password or cookie)";
+  "must not set a credential header (authorization, any key, token, secret, password or cookie)";
 
 /**
  * Providers of the model references in agents.defaults.model and agents.entries.*.model.

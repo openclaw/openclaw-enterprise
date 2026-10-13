@@ -15,9 +15,9 @@ real Installation.
 ## 2026-10-13: more model credential header names and provider models lists
 
 **What breaks.** The 2026-10-12 model credential rules (below)
-match more header names: every name ending in `key` except an idempotency or
-cache key, and a last word of `bearer`, `credential`, `credentials`,
-`passcode`, `passphrase` or `signature`, such as `X-Auth-Key`,
+match more header names: every name ending in `key` or `keys` except an
+idempotency or cache key, a last word of `bearer`, `credential`, `passcode`,
+`passphrase` or `signature`, and plurals, such as `X-Auth-Key`,
 `DD-APPLICATION-KEY` or `X-Hub-Signature-256`. Configuration create and update
 and provisioning, and on Kubernetes Compute also Preset saves, Agent saves and
 deployment, answer `400` for a `models.providers.<provider>.models` that is
@@ -62,9 +62,9 @@ model setting selects, that has:
 - a credential header in `headers` (on the provider or one of its `models`)
   or `request.headers`: a name whose last hyphen- or underscore-separated
   word, after any trailing number, is `auth`, `authorization`, `bearer`,
-  `cookie`, `credential`, `credentials`, `passcode`, `passphrase`, `password`,
-  `secret`, `signature` or `token`, or that ends in `key` except an
-  idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
+  `cookie`, `credential`, `passcode`, `passphrase`, `password`, `secret`,
+  `signature` or `token` (or a plural), or that ends in `key` or `keys` except
+  an idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
   `X-Auth-Key`, `x-auth-token` or `Cookie` (widened on 2026-10-13, below);
 - a header name that is not a valid HTTP field name (spaces, zero-width or
   non-ASCII characters);

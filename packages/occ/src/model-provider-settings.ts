@@ -126,18 +126,18 @@ export function isHttpFieldName(name: string): boolean {
 
 // A header whose last hyphen- or underscore-separated word names a credential: Authorization,
 // Proxy-Authorization, x-auth-token, cookie, x-client-secret, x-credentials, x-passphrase,
-// x-signature, x-bearer and the like. Vendors and gateways each pick their own credential
-// header, so a fixed list would miss the next one; matching the last word keeps names such
-// as x-token-id or x-auth-mode, which carry no credential, out. A trailing number word, as in
-// x-hub-signature-256, is skipped.
+// x-signature, x-bearer and the like, singular or plural. Vendors and gateways each pick their
+// own credential header, so a fixed list would miss the next one; matching the last word keeps
+// names such as x-token-id or x-auth-mode, which carry no credential, out. A trailing number
+// word, as in x-hub-signature-256, is skipped.
 const CREDENTIAL_HEADER_WORD =
-  /(?:^|[-_])(?:auth|authorization|bearer|cookie|credentials?|passcode|passphrase|password|secret|signature|token)(?:[-_]\d+)?$/i;
-// Any name ending in `key` is a credential too (x-api-key, apikey, x-auth-key,
+  /(?:^|[-_])(?:auth|authorization|bearer|cookies?|credentials?|passcode|passphrase|passwords?|secrets?|signatures?|tokens?)(?:[-_]\d+)?$/i;
+// Any name ending in `key` or `keys` is a credential too (x-api-key, apikey, x-auth-key,
 // dd-application-key, x-portkey-virtual-key, a bare key): vendors name keys too freely to
 // list. A key's id or name (x-api-key-id) ends in another word.
-const CREDENTIAL_HEADER_KEY = /key(?:[-_]\d+)?$/i;
+const CREDENTIAL_HEADER_KEY = /keys?(?:[-_]\d+)?$/i;
 // Keys that name no credential: an idempotency key and a cache key.
-const NON_CREDENTIAL_KEY = /(?:^|[-_])(?:cache|idempotency)[-_]?key$/i;
+const NON_CREDENTIAL_KEY = /(?:^|[-_])(?:cache|idempoten(?:cy|t))[-_]?keys?(?:[-_]\d+)?$/i;
 
 /** Whether a model provider header with this name carries a credential. */
 export function isCredentialHeaderName(name: string): boolean {

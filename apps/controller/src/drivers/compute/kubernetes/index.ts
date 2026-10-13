@@ -2165,6 +2165,8 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
     if (row === undefined) {
       throw unsupportedProvider(key, "", "an object");
     }
+    // validateConfiguration (requireHarnessCredentialBinding) refuses a models that is not a
+    // list first, with the shared message; this keeps the entrypoint's own rule whole.
     if (
       row.models !== undefined &&
       (!Array.isArray(row.models) || !row.models.every((model) => asRecord(model) !== undefined))

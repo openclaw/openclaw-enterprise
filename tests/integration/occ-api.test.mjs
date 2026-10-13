@@ -5781,7 +5781,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
           providers: { openai: { request: { headers: { Authorization: "Bearer ${TOKEN}" } } } },
         },
       },
-      "Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, API key, token, secret, password or cookie): model credentials come from the Agent's Harness authentication binding.",
+      "Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, any key, token, secret, password or cookie): model credentials come from the Agent's Harness authentication binding.",
     ],
   ]) {
     const refused = await injectedRequest(

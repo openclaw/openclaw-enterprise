@@ -839,7 +839,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   };
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader =
-    "must not set a credential header (authorization, API key, token, secret, password or cookie)";
+    "must not set a credential header (authorization, any key, token, secret, password or cookie)";
   const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
 
   for (const [values, message] of [
@@ -1468,7 +1468,7 @@ test("A stored Configuration with request credentials an older release accepted 
   const sentinel = `synthetic-request-credential-${randomUUID()}`;
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
-  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, API key, token, secret, password or cookie): ${binding}.`;
+  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, any key, token, secret, password or cookie): ${binding}.`;
 
   for (const [label, stale, message] of [
     [
