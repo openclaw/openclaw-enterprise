@@ -2254,6 +2254,15 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       { skills: { entries: { file: { env: { INDEX: `file://h\\https:u:${sentinel}@h` } } } } },
       "/skills/entries/file/env/INDEX",
     ],
+    // Python and curl read a backslash in a password as part of the userinfo.
+    [
+      { skills: { entries: { bs: { env: { INDEX: `https://u:p\\w${sentinel}@pypi` } } } } },
+      "/skills/entries/bs/env/INDEX",
+    ],
+    [
+      { env: { vars: { HTTPS_PROXY: `http://u:p\\w${sentinel}@proxy.example:3128` } } },
+      "/env/vars/HTTPS_PROXY",
+    ],
   ];
   for (const [values, field] of refused) {
     await t.test(`refuses ${field}`, async () => {
@@ -2298,14 +2307,23 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
   }
   // A value whose URLs would take too long to check is refused rather than block the controller.
   await t.test("refuses a value too costly to check", async () => {
-    const values = { skills: { entries: { x: { env: { X: "${A:-://}".repeat(2000) } } } } };
+    // Twelve values that each fit the budget exceed it together: it is the document's.
+    const env = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [`X${index}`, `x://h${"${A:-x}".repeat(170)}`]),
+    );
+    const one = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: { skills: { entries: { x: { env: { X0: env.X0 } } } } } },
+    });
+    assert.equal(one.status, 201, JSON.stringify(one.body));
+    await request(context.app, "DELETE", `${configurations}/${one.body.data.id}`);
+    const values = { skills: { entries: { x: { env } } } };
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values },
     });
     assert.equal(response.status, 400, JSON.stringify(response.body));
     assert.equal(
       response.body.error.message,
-      "Configuration field /skills/entries/x/env/X holds too many URLs or ${NAME} references to check for a user name or password. Shorten it, or make the whole value a ${NAME} reference.",
+      "Configuration field /skills/entries/x/env/X10 holds too many URLs or ${NAME} references to check for a user name or password. Shorten it, or make the whole value a ${NAME} reference.",
     );
   });
   // Nothing refused was stored.

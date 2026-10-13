@@ -30,8 +30,8 @@ const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 const environmentCostMessage = (path: string): string =>
   `Configuration field ${path} holds too many URLs or \${NAME} references to check for a user name or password. Shorten it, or make the whole value a \${NAME} reference.`;
 
-// The most work `environmentUrls` and the userinfo check may do on one environment value, in
-// characters read (each rendering of each URL counts): about 0.1 s.
+// The most work `environmentUrls` and the userinfo checks may do on one document's environment
+// values, in characters read (each rendering of each URL counts): about 0.1 s.
 const ENVIRONMENT_URL_BUDGET = 1 << 22;
 
 // Each URL `value` may hold, from its scheme to the end of its authority, where `\0` marks an
@@ -42,8 +42,15 @@ const ENVIRONMENT_URL_BUDGET = 1 << 22;
 // reference (each also between the colon and the slashes), with no space after it. References
 // are read as the runtime reads them (`environmentReference`; `$${VAR}` is literal text). A
 // candidate inside the authority of one already returned is part of it, unless it sits in a
-// reference whose fallback could end that authority.
-function environmentUrls(value: string): string[] | undefined {
+// reference whose fallback could end that authority. A backslash does not end an authority here:
+// WHATWG parsers read it as a slash after a special scheme, but Python and curl read it as part
+// of the userinfo, so each URL is also checked with it percent-encoded. `spent` carries the work
+// done on the document so far; a proxy variable's whole-value check is charged to it too.
+function environmentUrls(
+  value: string,
+  spent: { work: number },
+  proxy: boolean,
+): string[] | undefined {
   const text = value.replaceAll(/[\t\n\r]/g, "");
   // Each reference, by its start and by its end; `inside` marks the start of the one at each
   // index, and `count` how many start before it.
@@ -62,7 +69,10 @@ function environmentUrls(value: string): string[] | undefined {
   for (let index = 1; index < count.length; index += 1) {
     count[index] = (count[index] ?? 0) + (count[index - 1] ?? 0);
   }
-  let work = text.length;
+  let work = spent.work + text.length;
+  if (proxy) {
+    work += 2 * text.length * (3 + (count[text.length] ?? 0));
+  }
   const skip = (from: number): [number, number] => {
     let index = from;
     let slashes = 0;
@@ -106,33 +116,33 @@ function environmentUrls(value: string): string[] | undefined {
     if (
       colon >= covered.from &&
       authority < covered.to &&
-      (reference === -1 || !/[/?#\\]/.test(text.slice(reference, after.get(reference))))
+      (reference === -1 || !/["/?#]/.test(text.slice(reference, after.get(reference))))
     ) {
       continue;
     }
-    // `file` is special to the URL parser too: a backslash ends its authority. A double quote
-    // ends a URL inside JSON text.
-    const backslash = variable || special || /(?:^|[^A-Za-z0-9+.])file$/i.test(scheme);
+    // A double quote ends a URL inside JSON text.
     let end = authority;
     while (end < text.length) {
       const skipped = after.get(end);
       if (skipped !== undefined) {
         end = skipped;
-      } else if (/["/?#]/.test(text[end] ?? "") || (text[end] === "\\" && backslash)) {
+      } else if (/["/?#]/.test(text[end] ?? "")) {
         break;
       } else {
         end += 1;
       }
     }
     end = Math.min(end + 1, text.length);
-    // The check renders every fallback in the URL, so its cost grows with each reference.
-    work += (end - start) * (3 + (count[end] ?? 0) - (count[start] ?? 0));
+    // Each of the two checks renders every fallback in the URL, so its cost grows with each
+    // reference.
+    work += 2 * (end - start) * (3 + (count[end] ?? 0) - (count[start] ?? 0));
     if (work > ENVIRONMENT_URL_BUDGET) {
       return undefined;
     }
     covered = { from: authority, to: end - 1 };
     spans.push([start, end]);
   }
+  spent.work = work;
   return spans.map(([start, end]) => text.slice(start, end));
 }
 
@@ -208,12 +218,19 @@ export function validateModelCredentialReferences(
   // 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`, `npm_config_registry`,
   // `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as `GOPROXY` holds several.
   // A proxy variable is also read from its start, without a scheme as http.
+  const spent = { work: 0 };
   const refuseEnvironmentUserinfo = (path: SettingPath, value: unknown, proxy: boolean): void => {
     if (typeof value !== "string") {
       return;
     }
-    // `\0` stands for each unfilled variable: a process environment cannot hold one.
-    const urls = environmentUrls((options.unresolved?.(path) ?? [value]).join("\0"));
+    // `\0` stands for each unfilled variable: a process environment cannot hold one. A proxy
+    // without a scheme is read as http.
+    const text = (options.unresolved?.(path) ?? [value]).join("\0");
+    const urls = environmentUrls(
+      proxy && !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(text) ? `http://${text}` : text,
+      spent,
+      proxy,
+    );
     if (urls === undefined) {
       throw new ModelCredentialValueError(pointer(...path), environmentCostMessage);
     }
@@ -221,7 +238,10 @@ export function validateModelCredentialReferences(
       refuseUrlUserinfo(path, value, true);
     }
     for (const url of urls) {
-      if (urlHoldsUserinfo(value, url.split("\0"))) {
+      if (
+        urlHoldsUserinfo(value, url.split("\0")) ||
+        urlHoldsUserinfo(value, url.replaceAll("\\", "%5C").split("\0"))
+      ) {
         throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
       }
     }
