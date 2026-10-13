@@ -1423,6 +1423,112 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
 });
 
+test("Without Kubernetes Compute, Configuration and Preset saves refuse what every Compute refuses", async (t) => {
+  // Findings 1189-1191: a Compute without validateConfiguration (Docker) relies on the shared
+  // model provider rules and the Configuration Driver alone. Preset saves skipped the shared
+  // rules, header names no HTTP client sends were stored, and plausible credential header
+  // names (version, dot and new words) took literals.
+  const root = await mkdtemp(join(tmpdir(), "occ-model-rules-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  // Like Docker Compute: ready Namespaces, no validateConfiguration.
+  const computeDriver = createReadyComputeDriver("compute-without-configuration-rules");
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
+  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  const invalidName = (setting) =>
+    `Configuration setting ${setting} must use valid HTTP header names.`;
+  const listMessage =
+    "Configuration setting models.providers.gateway.models must be an array of model entries.";
+  const refused = [
+    [gateway({ headers: { "x-api-key ": sentinel } }), invalidName("models.providers.gateway.headers")],
+    [
+      gateway({ models: [{ id: "m", request: { headers: { "Authorizatioн": sentinel } } }] }),
+      invalidName("models.providers.gateway.models.0.request.headers"),
+    ],
+    [gateway({ models: {} }), listMessage],
+    [gateway({ models: { m: { id: "m", headers: { "x-api-key": sentinel } } } }), listMessage],
+    [
+      gateway({ baseUrl: "ftp://models.example.test" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+  ];
+  for (const [values, message] of refused) {
+    for (const [collection, body] of [
+      [configurations, { kind: "agent", values }],
+      [presets, { name: "Refused", template: { configuration: { values } } }],
+    ]) {
+      const response = await request(context.app, "POST", collection, { body });
+      assert.equal(response.status, 400, `${collection}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.error.message, message, collection);
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    }
+  }
+  // Credential header names the widened rule matches take only references.
+  for (const name of [
+    "Authentication",
+    "X-Authentication",
+    "X-JWT",
+    "X-JWT-Assertion",
+    "X-Client-Assertion",
+    "X-Hmac",
+    "X-Otp",
+    "X-Pin",
+    "X-Pwd",
+    "X-Pass",
+    "X-License",
+    "X-Api-Key-V2",
+    "x-signature-v1",
+    "x.authorization",
+    "x.token",
+  ]) {
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: gateway({ headers: { [name]: sentinel } }) },
+    });
+    assert.equal(response.status, 400, `${name}: ${JSON.stringify(response.body)}`);
+    assert.match(
+      response.body.error.message,
+      /^Configuration field \/models\/providers\/gateway\/headers\/\S+ holds a credential value inline/,
+      name,
+    );
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  }
+  assert.deepEqual(await readdir(root), []);
+  const listed = await request(context.app, "GET", presets);
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual(listed.body.data, []);
+
+  // Benign names and a bearer reference under an Authentication header still save.
+  const accepted = gateway({
+    headers: {
+      Authentication: "Bearer ${GATEWAY_TOKEN}",
+      "X-Partition-Key": "p",
+      "X-Shard-Key": "s",
+      "X-Sort-Key": "s",
+      "X-Dedup-Key": "d",
+      "X-Passthrough": "on",
+      "X-Pinned-Version": "1",
+      "x-api-key-version": "2",
+    },
+    models: [{ id: "m", request: { headers: { "x.trace.id": "t" } } }],
+  });
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const preset = await request(context.app, "POST", presets, {
+    body: { name: "Accepted", template: { configuration: { values: accepted } } },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+});
+
 test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {
   // The 2026-10-12 notice: an older release saved model credentials in a provider's request
   // transport settings. After the upgrade the bundled Driver must still read and replace that

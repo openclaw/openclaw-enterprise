@@ -96,7 +96,12 @@ export function validateModelCredentialReferences(
       ] as const) {
         for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
           if (isCredentialHeaderName(name)) {
-            validateReference(value, pointer(...headersPath, name), /authorization$/i.test(name));
+            // Some gateways carry the bearer token in an Authentication header.
+            validateReference(
+              value,
+              pointer(...headersPath, name),
+              /auth(?:entication|orization)$/i.test(name),
+            );
           }
         }
       }

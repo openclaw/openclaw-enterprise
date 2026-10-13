@@ -1,5 +1,6 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import {
+  INVALID_HEADER_NAME,
   isCredentialHeaderName,
   isHttpFieldName,
   keyedSettingPath,
@@ -214,7 +215,7 @@ export function requireHarnessCredentialBinding(
       ] as const) {
         for (const name of Object.keys(asRecord(headers) ?? {})) {
           if (!isHttpFieldName(name)) {
-            throw createError(headersSetting, "must use valid HTTP header names");
+            throw createError(headersSetting, INVALID_HEADER_NAME);
           }
           if (isCredentialHeaderName(name)) {
             throw createError(headersSetting, `${CREDENTIAL_HEADER}: ${HARNESS_BINDING}`);

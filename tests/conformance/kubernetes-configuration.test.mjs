@@ -465,6 +465,11 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { models: { providers: { openai: { headers: { "x-portkey-virtual-key": sentinel } } } } },
     { models: { providers: { openai: { request: { headers: { "X-Credentials": sentinel } } } } } },
     { models: { providers: { openai: { headers: { "X-Hub-Signature-256": sentinel } } } } },
+    // Authentication, JWT and assertion words, version and dot suffixes (finding 1189).
+    { models: { providers: { openai: { headers: { Authentication: sentinel } } } } },
+    { models: { providers: { openai: { headers: { "X-JWT-Assertion": sentinel } } } } },
+    { models: { providers: { openai: { headers: { "X-Api-Key-V2": sentinel } } } } },
+    { models: { providers: { openai: { request: { headers: { "x.authorization": sentinel } } } } } },
     // The client certificate, key and passphrase for the model endpoint and its proxy.
     { models: { providers: { openai: { request: { tls: { key: sentinel } } } } } },
     { models: { providers: { openai: { request: { tls: { passphrase: sentinel } } } } } },
@@ -546,7 +551,11 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
           groq: { request: { proxy: { mode: "explicit-proxy", url: "${PROXY_URL}" } } },
           openai: {
             apiKey: "${OPENAI_API_KEY}",
-            headers: { Authorization: "Bearer ${MODEL_TOKEN}", "x-goog-api-key": "${GOOGLE_KEY}" },
+            headers: {
+              Authorization: "Bearer ${MODEL_TOKEN}",
+              Authentication: "Bearer ${MODEL_TOKEN}",
+              "x-goog-api-key": "${GOOGLE_KEY}",
+            },
             request: {
               headers: { "Proxy-Authorization": "Bearer ${PROXY_TOKEN}" },
               auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" },

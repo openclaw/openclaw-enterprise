@@ -98,7 +98,9 @@ export function validateModelProviderSettings(values: OpenClawConfigurationDocum
       continue;
     }
     const path = ["models", "providers", providerName] as const;
+    const setting = keyedSettingPath("models.providers", providerName);
     validateSettings(settings, path, true);
+    validateHeaderNames(settings, setting);
     const models = settings.models;
     if (models === undefined) {
       continue;
@@ -110,7 +112,27 @@ export function validateModelProviderSettings(values: OpenClawConfigurationDocum
       const modelSettings = asRecord(model);
       if (modelSettings !== undefined) {
         validateSettings(modelSettings, [...path, "models", index], false);
+        validateHeaderNames(modelSettings, `${setting}.models.${index}`);
       }
+    }
+  }
+}
+
+/** The requirement for a model provider header name that is not an HTTP field name. */
+export const INVALID_HEADER_NAME = "must use valid HTTP header names";
+
+// Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
+// literal under it is never stored where the credential rules would not recognize it. The
+// Kubernetes rule refuses it with the same message.
+function validateHeaderNames(settings: Record<string, unknown>, setting: string): void {
+  for (const [headersSetting, headers] of [
+    [`${setting}.headers`, settings.headers],
+    [`${setting}.request.headers`, asRecord(settings.request)?.headers],
+  ] as const) {
+    if (!Object.keys(asRecord(headers) ?? {}).every(isHttpFieldName)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(headersSetting, INVALID_HEADER_NAME),
+      );
     }
   }
 }
@@ -124,20 +146,24 @@ export function isHttpFieldName(name: string): boolean {
   return HTTP_FIELD_NAME.test(name);
 }
 
-// A header whose last hyphen- or underscore-separated word names a credential: Authorization,
-// Proxy-Authorization, x-auth-token, cookie, x-client-secret, x-credentials, x-passphrase,
-// x-signature, x-bearer and the like, singular or plural. Vendors and gateways each pick their
-// own credential header, so a fixed list would miss the next one; matching the last word keeps
-// names such as x-token-id or x-auth-mode, which carry no credential, out. A trailing number
-// word, as in x-hub-signature-256, is skipped.
+// A header whose last hyphen-, underscore- or dot-separated word names a credential:
+// Authorization, Authentication, Proxy-Authorization, x-auth-token, cookie, x-client-secret,
+// x-credentials, x-passphrase, x-signature, x-bearer, X-JWT-Assertion, x-otp, x-pin, x-pwd and
+// the like, singular or plural. Vendors and gateways each pick their own credential header, so
+// a fixed list would miss the next one; matching the whole last word keeps names such as
+// x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry no credential, out.
+// A trailing version word, as in x-hub-signature-256 or x-api-key-v2, is skipped.
 const CREDENTIAL_HEADER_WORD =
-  /(?:^|[-_])(?:auth|authorization|bearer|cookies?|credentials?|passcode|passphrase|passwords?|secrets?|signatures?|tokens?)(?:[-_]\d+)?$/i;
+  /(?:^|[-_.])(?:assertions?|auth|authentication|authorization|bearer|cookies?|credentials?|hmac|jwts?|licen[cs]es?|otp|pass|passcode|passphrase|passwords?|pin|pwd|secrets?|signatures?|tokens?)(?:[-_.]v?\d+)?$/i;
 // Any name ending in `key` or `keys` is a credential too (x-api-key, apikey, x-auth-key,
 // dd-application-key, x-portkey-virtual-key, a bare key): vendors name keys too freely to
 // list. A key's id or name (x-api-key-id) ends in another word.
-const CREDENTIAL_HEADER_KEY = /keys?(?:[-_]\d+)?$/i;
-// Keys that name no credential: an idempotency key and a cache key.
-const NON_CREDENTIAL_KEY = /(?:^|[-_])(?:cache|idempoten(?:cy|t))[-_]?keys?(?:[-_]\d+)?$/i;
+const CREDENTIAL_HEADER_KEY = /keys?(?:[-_.]v?\d+)?$/i;
+// Keys that name no credential: idempotency, cache, deduplication, partition, shard and sort
+// keys. A request or routing key can be a credential (an events API routing key is), so it is
+// refused like any other key.
+const NON_CREDENTIAL_KEY =
+  /(?:^|[-_.])(?:cache|dedup(?:e|lication)?|idempoten(?:cy|t)|partition|shard|sort)[-_.]?keys?(?:[-_.]v?\d+)?$/i;
 
 /** Whether a model provider header with this name carries a credential. */
 export function isCredentialHeaderName(name: string): boolean {

@@ -392,6 +392,7 @@ export {
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export {
+  INVALID_HEADER_NAME,
   isCredentialHeaderName,
   isHttpFieldName,
   PROVIDER_MODELS_LIST,
@@ -4254,8 +4255,9 @@ export class OpenClawController {
           "The selected Configuration Driver cannot validate Preset values.",
         );
       }
-      // The Compute rules first, as on Configuration create and update, so a value both
-      // refuse gets the same message wherever it is written.
+      // The model provider and Compute rules first, as on Configuration create and update, so
+      // a value they refuse gets the same message wherever it is written.
+      validateModelProviderSettings(values);
       this.validateComputeConfiguration(values);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values);
