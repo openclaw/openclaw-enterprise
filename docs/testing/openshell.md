@@ -149,18 +149,19 @@ credential rejection from a transport error or a restarted process. Full
 integration lanes run only from `main`, so this proof runs after a withdrawal
 change lands, not on its pull request.
 
-`OCC_TEST_OPENSHELL_HARNESS` defaults to `codex`. Select `openclaw` to verify
-that the native Harness requests no inbound OpenShell service exposure and
-completes a real model turn through its outbound enrolled-worker connection.
+`OCC_TEST_OPENSHELL_HARNESS` defaults to `codex`. Select `openclaw` for the
+[native authority proof](#native-openclaw-with-k3d), including real model turns
+through the outbound enrolled-worker connection without inbound Harness exposure.
 The selected network policy permits provider egress from the Codex executable
 for Codex or from the Node executable for native OpenClaw. The native verification
 fixture explicitly admits enrollment egress for the Node executable and the
 Workspace Gateway's exact host and configured port, including the
 high loopback port allocated by the Docker Desktop or Podman Machine verification
-relay on macOS. The real fixture
-also gives the delegated Sandbox the same 2 GiB Harness memory limit as
-Kubernetes Compute; the cluster's 1 GiB container default is insufficient while
-the native worker installs its Gateway bundle.
+relay on macOS. Native verification allocates 6 GiB per Harness for the node
+and two retained session workers. The native namespace memory-limit quota is
+32 GiB: 20 GiB for two 6 GiB Harnesses and two 4 GiB Gateways, plus 12 GiB for
+OpenShell provider workloads and transient preparation Pods. Codex retains its
+2 GiB limit.
 
 Use an OCE runtime image built from the OpenClaw source commit pinned by
 `deploy/runtime/Dockerfile`. The native proof requires the environment-managed
@@ -181,24 +182,46 @@ the native case with `--harness openclaw`:
 ./scripts/k3d demo --harness openclaw
 ```
 
-`test` and `demo` use the same verification-only compatibility bridge; it does
-not promote that bridge into a supported production path.
+`test` and `demo` use the same provider delivery through the regular Compute and
+Sandbox Drivers. Projected workload identity remains disabled; model credentials
+stay in the Credential Gateway.
 
 This selection prepares the pinned OpenShell lane, builds the sibling
 `../openclaw` checkout, and records its commit with the prepared environment.
-Set `OCC_K3D_OPENCLAW_SOURCE` to another absolute source checkout. Codex and
-native OpenClaw use separate helper-owned state. `demo` keeps the proven topology
+`OCC_K3D_OPENCLAW_SOURCE` selects an absolute source checkout supporting native
+worker inference, node-only `device.pair.setupCode`/`setupStatus`, signed device
+authentication and `device.token.revoke` fencing nodes and retained workers.
+Record its commit and image digest; the release pin alone is insufficient.
+Codex and native OpenClaw use separate helper-owned state. `demo` keeps the proven topology
 running after its real turn, opens the Control UI's new-session flow and the OCC
 console on loopback, and prints its isolated integration username instead of
 using the development login. It leaves the dedicated worker slot free, so the
 first browser session uses the dedicated-native profile without the Gateway
 receiving the Harness's model credential.
 
+The native `test` provisions two Agents sharing one credential source. Both
+read/write workspace files and complete new-session and retained-session model
+turns. A Gateway-issued setup and its signed device authority must work at A
+and fail at B. Auth-only probes use loopback-forwarded `/node`, independently
+of network policy; they never substitute for the actual Harness.
+
+An unused setup expires naturally after ten minutes; no clock, database or
+envelope tampering is permitted. A fresh setup remains usable. Revoking A's
+actual node must disconnect it, make workspace read/write return 503, and fail
+the previously working retained-session model operation while B stays usable and neither A Pod
+restarts. Timeouts and operator-auth failures do not count. Redacted HTTP
+errors alone are insufficient: immediate positive controls, node disconnection,
+unchanged Pods and healthy B establish causality.
+
+Allow 15–30 minutes after image preparation (40-minute test cap).
+`native-authority` diagnostics log only stages, codes and timing. `demo` skips
+these destructive cases. In-flight cancellation and re-enrollment remain unproved.
+
 Without `--harness`, `copy` selects the one active demo and `down` removes both
 helper-owned Harness environments; pass `--harness codex` or
 `--harness openclaw` to select one.
 
-### Gateway prerequisite and native test bridge
+### Gateway prerequisite and provider delivery
 
 The integration uses an operator-owned Helm wrapper to install the OpenShell
 gateway before delegating to the Driver. The bundled Driver does not install
@@ -218,25 +241,15 @@ their ownership and replacement routes before removing stale policies, or
 recreate the disposable fixture. Reusing a Sandbox by name does not update its
 template.
 
-The Codex case now uses the production Driver path. The Agent Pod receives the
-app-server token verifier, provider-file paths, an OpenShell model-key
-placeholder, and a workspace-node bootstrap placeholder, but no raw credential.
-Its writable home and temporary state live below
-`/sandbox/.openclaw-runtime`, which is a revision-scoped subpath of the Agent
-PVC. Persistent workspace, node, session, and image state remains on separate
-exact subpaths mounted below `/sandbox/.openclaw-mounts`. Node state is addressed
-through a process-created `state` child of its real mount because atomic
-replacement rejects symlink parents and cannot tighten the root-owned mount
-root; bootstrap links the remaining runtime paths. The real test confirms that the Sandbox process
-identity can write the runtime home. The exposed route uses bearer
-passthrough: correct Gateway authentication upgrades, while missing and
-incorrect credentials fail. The real turn begins in the Gateway and executes in
-the OpenShell-owned Harness. The OpenShell lane also runs the protected local
-first-Agent test with `--harness codex` twice, against its own Compose-plus-k3d
-stack and against its own Kubernetes-only stack.
-It checks that the Gateway uses the advertised WebSocket origin, maps its exact
-hostname to the installed OpenShell Gateway Service, and leaves the direct Agent
-Service inactive.
+Codex writable home and temporary state live under the revision-scoped
+`/sandbox/.openclaw-runtime` PVC subpath. Workspace, node, session and image state
+use separate subpaths under `/sandbox/.openclaw-mounts`. Node state uses a
+process-created `state` child because atomic replacement rejects symlink parents
+and cannot tighten the root-owned mount root. The test verifies writable home,
+bearer passthrough, denied missing/incorrect credentials and real Gateway-to-Harness
+turns. The local first-Agent case runs against Compose-plus-k3d and Kubernetes-only
+stacks. It verifies the advertised WebSocket origin, exact OpenShell Gateway
+Service hostname and inactive direct Agent Service.
 
 The Codex case also proves OAuth2 refresh sources. It starts a disposable
 Keycloak that serves HTTPS with a private CA, mounts a bundle of Node's public
@@ -250,21 +263,22 @@ For the exact Compose-plus-k3d startup, repeatable first-Agent command, current
 checkpoint, and symptom-based recovery notes, see
 [Resume the OpenShell first-Agent proof](openshell-first-agent.md).
 
-The native OpenClaw selector retains its verification-only bootstrap Job and
-PVC bridge. It is a separate containment experiment, not a supported
-first-Agent path. The pinned Kubernetes driver chooses workload identity independently
-of `policy.process`: this k3d fixture uses its default UID/GID `10001:10001`.
-The bridge prepares private storage for that identity and verifies the resulting
-workload Pod identity. Preparing it for the image or policy UID `1000` leaves
-foreign-owned ancestors that fs-safe rejects, even when Kubernetes grants group
-write access. The supervisor launches with `TMPDIR=/tmp`; the bridge switches the
-native worker to its private temporary mount before running its entrypoint.
-It places bootstrap code inside the compressed program, preserving the Driver's
-fixed-loader contract. Readiness retries reuse the completed bootstrap Job because
-deleting its Pod invalidates the copied ServiceAccount token. The Job remains until
-the token's admitted lifetime ends or the test cleans it up. See the
+Native OpenClaw uses the regular Compute and Sandbox Drivers without projected
+workload identity, bootstrap Jobs or PVC credential copies. Its runtime profile
+supplies node setup and public CA. The test rejects `openshell-cred-*` Jobs and
+projected Agent identity tokens. A credential-free preparation Deployment fixes
+PVC ownership and terminates before Sandbox creation. Remove it when OCE adopts
+OpenShell private subpath preparation. Workspace and model operations use the
+real Gateway and worker; every Harness process retains only the model-key
+placeholder.
+
+The pinned Kubernetes driver chooses workload identity independently of
+`policy.process`; the k3d fixture verifies its default `10001:10001`. The
+supervisor probes with `TMPDIR=/tmp`, then the native process uses a private
+child under its revision runtime home. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
-and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
+for the current boundary. This source change alone does not establish live
+OpenShift admission, Landlock, enrollment, or model execution.
 
 Local `sandbox-driver-startup`, `controller-lifecycle`, and
 `postgres-platform-state` integration tests cover driver selection and Backend

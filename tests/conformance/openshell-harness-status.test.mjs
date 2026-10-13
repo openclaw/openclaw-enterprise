@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
@@ -26,11 +29,18 @@ const turnStarted = { type: "turn.started" };
 const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
 const completed = { type: "turn.completed" };
 
-function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
+function runHarnessEntrypoint({
+  env,
+  login = { status: 0 },
+  probe,
+  http,
+  program = AGENT_RUNTIME_ENTRYPOINT,
+}) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));
   const servers = [];
   const diagnostics = [];
   let appServerStarts = 0;
+  const launches = [];
   const sandbox = {
     URL,
     Buffer,
@@ -38,6 +48,7 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
     setInterval() {},
     console: { error: (message) => diagnostics.push(message) },
     process: {
+      execPath: process.execPath,
       env: {
         CODEX_HOME: join(directory, "codex"),
         CODEX_LOGIN_MODE: "api_key",
@@ -86,6 +97,11 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
       if (specifier === "node:fs") {
         return {
           mkdirSync() {},
+          chmodSync() {},
+          existsSync: (path) => path === "/app/skills",
+          lstatSync: () => ({ isDirectory: () => true }),
+          readdirSync: () => ["fixture-skill"],
+          cpSync() {},
           mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
           rmSync,
           readFileSync() {
@@ -102,9 +118,12 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
             }
             return probe;
           },
-          spawn(_command, args) {
-            assert.ok(args.includes("app-server"));
-            appServerStarts++;
+          spawn(command, args, options) {
+            assert.ok(args.includes("app-server") || args.includes("connect"));
+            launches.push({ command, args, env: options.env });
+            if (args.includes("app-server")) {
+              appServerStarts++;
+            }
             return { on() {}, kill() {}, stderr: undefined };
           },
         };
@@ -113,11 +132,11 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
     },
   };
   try {
-    vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    vm.runInNewContext(program, sandbox);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-  return { servers, diagnostics, appServerStarts };
+  return { servers, diagnostics, appServerStarts, launches };
 }
 
 function call(handler, { method = "GET", url = "/openclaw/runtime/status", authorization }) {
@@ -142,6 +161,53 @@ function call(handler, { method = "GET", url = "/openclaw/runtime/status", autho
   );
   return { status, headers, body: JSON.parse(body) };
 }
+
+test("a provider-owned native Harness starts without a Compute status port", () => {
+  const model = "openai/gpt-4.1";
+  const env = {
+    HOME: "/fixture/home",
+    TMPDIR: "/fixture/tmp",
+    OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+    OPENCLAW_NODE_STATE_DIR: "/fixture/state",
+    OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup",
+    OPENCLAW_WORKSPACE_DIR: "/fixture/workspace",
+    OPENCLAW_NATIVE_WORKER_CAPACITY: "2",
+    OPENCLAW_HARNESS_MODEL: model,
+    OPENCLAW_HARNESS_PROVIDER: "openai",
+    OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
+    OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({ agents: { defaults: { model } } }),
+  };
+  // Fixed CLI output isolates wrapper startup, not real enrollment or model execution.
+  const probe = {
+    status: 0,
+    stdout: JSON.stringify({
+      auth: { probes: { results: [{ provider: "openai", model, source: "env", status: "ok" }] } },
+    }),
+  };
+  const result = runHarnessEntrypoint({ env, probe, program: NATIVE_WORKER_ENTRYPOINT });
+  assert.equal(result.servers.length, 0, "outbound enrollment needs no private HTTP listener");
+  assert.equal(result.launches.length, 1);
+  assert.equal(result.launches[0].command, process.execPath);
+  assert.deepEqual(Array.from(result.launches[0].args), [
+    "/app/openclaw.mjs",
+    "connect",
+    "--target-file",
+    "/fixture/state/connect-target",
+    "--ephemeral",
+    "--display-name",
+    "OpenClaw Enterprise native worker",
+  ]);
+  assert.equal(result.launches[0].env.OPENCLAW_WORKSPACE_DIR, "/fixture/workspace");
+  assert.throws(
+    () =>
+      runHarnessEntrypoint({
+        env: { ...env, OPENCLAW_RUNTIME_STATUS_PORT: "invalid" },
+        probe,
+        program: NATIVE_WORKER_ENTRYPOINT,
+      }),
+    /Runtime status port is invalid/,
+  );
+});
 
 const providerEnv = { APP_TOKEN_SHA: sha256(TOKEN) };
 const failedProbe = (message) => ({
@@ -174,7 +240,7 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
     ],
   ]) {
     await t.test(name, () => {
-      const { servers, diagnostics, appServerStarts } = runCodexEntrypoint({
+      const { servers, diagnostics, appServerStarts } = runHarnessEntrypoint({
         env: providerEnv,
         ...options,
       });
@@ -234,7 +300,7 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
 });
 
 test("a Compute-owned Codex Harness keeps its held failure on the private status port", () => {
-  const { servers, appServerStarts } = runCodexEntrypoint({
+  const { servers, appServerStarts } = runHarnessEntrypoint({
     env: {
       APP_SERVER_TOKEN: TOKEN,
       OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
@@ -253,7 +319,7 @@ test("a Compute-owned Codex Harness keeps its held failure on the private status
 });
 
 test("a provider-owned Codex Harness with a working model starts the app-server and serves no status", () => {
-  const { servers, appServerStarts } = runCodexEntrypoint({
+  const { servers, appServerStarts } = runHarnessEntrypoint({
     env: providerEnv,
     probe: {
       status: 0,
@@ -288,7 +354,7 @@ test("the OpenShell client reads a held failure from the real Harness wrapper th
   const probeServer = createServer();
   const freePort = await listen(probeServer);
   await close(probeServer);
-  const { servers } = runCodexEntrypoint({
+  const { servers } = runHarnessEntrypoint({
     env: providerEnv,
     probe: failedProbe("stream error: model unavailable"),
     http: { createServer, port: freePort },

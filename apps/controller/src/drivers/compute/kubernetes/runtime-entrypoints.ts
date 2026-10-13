@@ -4047,7 +4047,18 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
-const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
+const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
+const setupEnvelopePath = process.env.OPENCLAW_NODE_SETUP_ENVELOPE;
+if ([Boolean(setupEnvironment), Boolean(setupEnvelopePath)].filter(Boolean).length !== 1) {
+  throw new Error("Dedicated OpenClaw worker requires one node setup source.");
+}
+const setupCode = setupEnvironment || (() => {
+  const payload = JSON.parse(readFileSync(setupEnvelopePath, "utf8"));
+  if (!payload || Array.isArray(payload) || typeof payload.bootstrapToken !== "string" || !payload.bootstrapToken) {
+    throw new Error("Dedicated OpenClaw worker node setup envelope is invalid.");
+  }
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+})();
 const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
 const temporary = process.env.TMPDIR;
 const workerCapacity = Number(process.env.OPENCLAW_NATIVE_WORKER_CAPACITY);
@@ -4096,7 +4107,10 @@ function nativeWorkerReady() {
   });
 }
 
-startRuntimeReadinessServer(nativeWorkerReady);
+// Provider-owned Harnesses use node enrollment readiness and omit Pod-local status settings.
+if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
+  startRuntimeReadinessServer(nativeWorkerReady);
+}
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
@@ -4130,14 +4144,14 @@ const nodeEnv = {
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
-if (process.env.OPENCLAW_NODE_CA_PEM) {
+if (process.env.OPENCLAW_NODE_CA_PEM || process.env.OPENCLAW_NODE_CA_PATH) {
   const caPath = join(state, "gateway-ca.pem");
   const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
   writeFileSync(
     caPath,
-    [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"),
+    [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM || readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8")].filter(Boolean).join("\n"),
     { mode: 0o600 },
   );
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;

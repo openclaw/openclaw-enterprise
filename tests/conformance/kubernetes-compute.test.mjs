@@ -6610,6 +6610,63 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
   assert.equal(env.includes("OPENCLAW_PLUGIN_STATUS_PORT"), false);
 });
 
+test("native provider enrollment needs no inbound Harness route", () => {
+  const peerLabels = supervisorPeerLabels("revision-native-worker");
+  const sandboxDriver = {
+    id: "sandbox-native-worker",
+    implementation: "openshell",
+    capability: "sandbox",
+    async harnessEndpoint() {
+      return undefined;
+    },
+    async workspaceNodePeerLabels() {
+      return peerLabels;
+    },
+  };
+  const driverOptions = options({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  const namespaceAddress = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const revision = {
+    id: "revision-native-worker",
+    namespaceId: tenant.id,
+    agentId: "agent-native-worker",
+    sandboxDriverId: sandboxDriver.id,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+  };
+  // Native OpenClaw shares the Driver's endpoint capability with Codex, but connects
+  // outbound. It must retain enrollment policies without requiring an inbound route.
+  const outboundDriver = new KubernetesComputeDriver(driverOptions, {
+    sandboxDriver,
+  });
+  const outboundPolicies = outboundDriver
+    .agentNetworkPolicies(revision, namespaceAddress, {}, [peerLabels])
+    .map(({ resource }) => resource);
+  // Enrollment admits only the selected Sandbox supervisor, not every supervisor
+  // in the tenant, and must not restore the old additive supervisor egress policy.
+  const enrollment = outboundPolicies.find(({ metadata }) =>
+    metadata.name.startsWith("allow-gateway-workspace-node-"),
+  );
+  assert.deepEqual(enrollment.spec.ingress, [
+    {
+      from: [outboundDriver.peer({ namespace: namespaceAddress.name, podLabels: peerLabels })],
+      ports: [{ protocol: "TCP", port: driverOptions.network.gatewayPort }],
+    },
+  ]);
+  assert.equal(
+    outboundPolicies.some(({ metadata }) =>
+      metadata.name.startsWith("allow-workspace-node-gateway-"),
+    ),
+    false,
+  );
+  assert.equal(
+    outboundPolicies.some(({ metadata }) => metadata.name.startsWith("allow-gateway-agent-")),
+    false,
+    "native workers must not receive a Codex inbound transport policy",
+  );
+});
+
 test("dedicated OpenClaw renders an enrolled Harness without exposing model credentials to its gateway", async () => {
   const driverOptions = options({
     runtime: {
@@ -11425,6 +11482,17 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   harnessAnswer = { state: "serving" };
   const observedBeforeActivation = harnessObservations.length;
   await driver.activateRevision(revision, authContext(revision));
+  // A Driver can share transport capabilities across Harness kinds; an outbound-only
+  // revision must activate from normal readiness without a fabricated transport probe.
+  const endpointObserver = fixture.sandbox.harnessEndpoint;
+  const transportObserver = fixture.sandbox.harnessStatus;
+  fixture.sandbox.harnessEndpoint = async () => undefined;
+  fixture.sandbox.harnessStatus = async () =>
+    assert.fail("no endpoint means no transport observation");
+  await driver.activateRevision(revision, authContext(revision));
+  fixture.sandbox.harnessEndpoint = endpointObserver;
+  fixture.sandbox.harnessStatus = transportObserver;
+
   assert.equal(harnessObservations.length, observedBeforeActivation + 1);
   assert.equal(harnessObservations.at(-1).transportToken, "test-transport");
 
