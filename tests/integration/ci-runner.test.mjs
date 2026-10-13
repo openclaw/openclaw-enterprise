@@ -3532,7 +3532,10 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       ["cleanup-cancelled", "tests/integration/cancelled.test.mjs"],
     ],
   );
-  assert.doesNotMatch(await readFile(resultsPath, "utf8"), /secretauthvalue/);
+  assert.doesNotMatch(
+    `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`,
+    /secretauthvalue/,
+  );
 });
 
 for (const scenario of [
