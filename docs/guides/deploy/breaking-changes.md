@@ -120,7 +120,7 @@ and a number or boolean variable as the whole `baseUrl` or `api`. A later
 change refuses a `baseUrl` without exactly `//` after `http:` or `https:`
 (`https:/v1`, `https:${HOST}`, `https:{{ vars.host }}`), and a user name or
 password in an MCP server's `env` proxy variables, Codex's network proxy URLs
-and speech provider `proxy` settings.
+and speech and Talk provider `proxy` settings.
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
