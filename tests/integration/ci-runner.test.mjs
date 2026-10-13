@@ -3449,7 +3449,8 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   const resultsPath = join(root, "results/cancelled.json");
   // GitHub cancels a step by signalling and then killing its shell, never this runner, which
   // finishes as an orphan beside the job's own cleanup step. The second file's cleanup kills
-  // the shell, as the cancellation would, and then fails, as the racing cleanup step makes it.
+  // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
+  // cleanup step makes it.
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
     [
@@ -3491,13 +3492,13 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
     groups: { ci: ["cancel"] },
   });
 
-  // `; exit` keeps the shell from replacing itself with the runner.
+  // A parent process stands in for the step's shell: it waits for the runner until the second
+  // file's cleanup kills it. No shell parses any of these arguments.
   const result = spawnSync(
-    "bash",
+    process.execPath,
     [
-      "-c",
-      '"$@"; exit $?',
-      "step-shell",
+      "-e",
+      'require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), { stdio: "inherit" });',
       process.execPath,
       runnerPath,
       "run",
