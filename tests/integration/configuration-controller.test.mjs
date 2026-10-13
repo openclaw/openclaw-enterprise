@@ -2547,7 +2547,7 @@ test("Configuration and Preset saves read a git config value as a proxy when its
       "/agents/defaults/sandbox/docker/env/GIT_CONFIG_VALUE_1",
     ],
     [
-      { mcp: { servers: { docs: { command: "docs-mcp", env: pair("core.gitProxy") } } } },
+      { mcp: { servers: { docs: { command: "docs-mcp", env: pair("http.proxy") } } } },
       "/mcp/servers/docs/env/GIT_CONFIG_VALUE_0",
     ],
     // `env` and `env.vars` are one environment; a key's environment reference renders its
@@ -2561,6 +2561,68 @@ test("Configuration and Preset saves read a git config value as a proxy when its
       "/env/vars/GIT_CONFIG_VALUE_0",
     ],
     [{ env: { vars: pair("${GIT_KEY:-http.proxy}") } }, "/env/vars/GIT_CONFIG_VALUE_0"],
+    // A key that is a whole reference may render any key.
+    [
+      { skills: { entries: { x: { env: pair("${GIT_KEY}") } } } },
+      "/skills/entries/x/env/GIT_CONFIG_VALUE_0",
+    ],
+    // Keys pair across the maps OpenClaw merges: the Gateway's environment and every skill's, and
+    // the Docker sandbox's defaults and each Agent's.
+    [
+      {
+        env: { vars: { GIT_CONFIG_KEY_0: "http.proxy" } },
+        skills: { entries: { x: { env: { GIT_CONFIG_VALUE_0: proxy } } } },
+      },
+      "/skills/entries/x/env/GIT_CONFIG_VALUE_0",
+    ],
+    [
+      {
+        skills: {
+          entries: {
+            a: { env: { GIT_CONFIG_KEY_0: "http.proxy" } },
+            b: { env: { GIT_CONFIG_VALUE_0: proxy } },
+          },
+        },
+      },
+      "/skills/entries/b/env/GIT_CONFIG_VALUE_0",
+    ],
+    [
+      {
+        agents: {
+          defaults: { sandbox: { docker: { env: { GIT_CONFIG_KEY_0: "http.proxy" } } } },
+          entries: { main: { sandbox: { docker: { env: { GIT_CONFIG_VALUE_0: proxy } } } } },
+        },
+      },
+      "/agents/entries/main/sandbox/docker/env/GIT_CONFIG_VALUE_0",
+    ],
+    [
+      {
+        agents: {
+          defaults: { sandbox: { docker: { env: { GIT_CONFIG_VALUE_0: proxy } } } },
+          entries: { main: { sandbox: { docker: { env: { GIT_CONFIG_KEY_0: "http.proxy" } } } } },
+        },
+      },
+      "/agents/defaults/sandbox/docker/env/GIT_CONFIG_VALUE_0",
+    ],
+    // OpenClaw trims a variable's name.
+    [
+      { env: { vars: { GIT_CONFIG_KEY_0: "http.proxy", "GIT_CONFIG_VALUE_0 ": proxy } } },
+      "/env/vars/GIT_CONFIG_VALUE_0 ",
+    ],
+    [{ env: { vars: { " HTTPS_PROXY": proxy } } }, "/env/vars/ HTTPS_PROXY"],
+    // `git -c` pairs in GIT_CONFIG_PARAMETERS, in the current and the older quoting.
+    [
+      {
+        env: {
+          vars: { GIT_CONFIG_PARAMETERS: `'user.name'='ops' 'http.proxy'='${proxy}'` },
+        },
+      },
+      "/env/vars/GIT_CONFIG_PARAMETERS",
+    ],
+    [
+      { env: { vars: { GIT_CONFIG_PARAMETERS: `'remote.origin.proxy=${proxy}'` } } },
+      "/env/vars/GIT_CONFIG_PARAMETERS",
+    ],
   ];
   for (const [values, field] of refused) {
     await t.test(`refuses ${field}`, async () => {
@@ -2579,6 +2641,17 @@ test("Configuration and Preset saves read a git config value as a proxy when its
   // name whose index waits on one pairs with every index.
   const variables = { url: { type: "string" }, n: { type: "string" } };
   for (const [env, field] of [
+    [{ GIT_CONFIG_KEY_0: "{{ vars.url }}", GIT_CONFIG_VALUE_0: proxy }, "GIT_CONFIG_VALUE_0"],
+    [{ GIT_CONFIG_KEY_0: "{{ vars.url }}.proxy", GIT_CONFIG_VALUE_0: proxy }, "GIT_CONFIG_VALUE_0"],
+    [{ GIT_CONFIG_KEY_0: "http.{{ vars.url }}", GIT_CONFIG_VALUE_0: proxy }, "GIT_CONFIG_VALUE_0"],
+    [
+      { GIT_CONFIG_KEY_0: "http.proxy", "GIT_CONFIG_VALUE{{ vars.n }}": proxy },
+      "GIT_CONFIG_VALUE{{ vars.n }}",
+    ],
+    [
+      { GIT_CONFIG_KEY_0: "http.proxy", "GIT_CONFIG_{{ vars.n }}_0": proxy },
+      "GIT_CONFIG_{{ vars.n }}_0",
+    ],
     [
       { GIT_CONFIG_KEY_0: "http.{{ vars.url }}.proxy", GIT_CONFIG_VALUE_0: proxy },
       "GIT_CONFIG_VALUE_0",
@@ -2611,10 +2684,11 @@ test("Configuration and Preset saves read a git config value as a proxy when its
   assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
   assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
 
-  // Ordinary git config pairs still save: other keys with an `@` in their value, a proxy without
-  // a user name, or one that is a whole reference, and a proxy key in another process's map.
+  // Ordinary git config pairs still save: other keys with an `@` in their value (`core.gitProxy`
+  // names a command), a proxy without a user name, or one that is a whole reference, and a proxy
+  // key in another process's map.
   const env = {
-    GIT_CONFIG_COUNT: "5",
+    GIT_CONFIG_COUNT: "6",
     GIT_CONFIG_KEY_0: "user.email",
     GIT_CONFIG_VALUE_0: "ops@example.test",
     GIT_CONFIG_KEY_1: "http.proxy",
@@ -2625,13 +2699,24 @@ test("Configuration and Preset saves read a git config value as a proxy when its
     GIT_CONFIG_VALUE_3: "gh:",
     GIT_CONFIG_KEY_4: "http.proxyAuthMethod",
     GIT_CONFIG_VALUE_4: "basic",
+    GIT_CONFIG_KEY_5: "core.gitProxy",
+    GIT_CONFIG_VALUE_5: "ssh ops@jump.example.test nc %h %p",
+    GIT_CONFIG_PARAMETERS: "'user.email'='ops@example.test' 'http.proxy'='proxy.example.test:3128'",
   };
   const accepted = {
     env: { vars: env },
     skills: {
       entries: {
         docs: { env },
-        mail: { env: { GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ops@example.test" } },
+      },
+    },
+    hooks: {
+      internal: {
+        entries: {
+          mail: {
+            env: { GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ops@example.test" },
+          },
+        },
       },
     },
     mcp: { servers: { docs: { command: "docs-mcp", env } } },

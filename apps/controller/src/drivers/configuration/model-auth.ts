@@ -28,13 +28,51 @@ const urlCredentialMessage = (path: string): string =>
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
 // git reads `GIT_CONFIG_VALUE_<n>` as the value of the config key `GIT_CONFIG_KEY_<n>` names.
-// On a Preset save, a name that waits on a variable is matched as the text around it, with any
-// index.
 const GIT_CONFIG_SLOT = /^GIT_CONFIG_(KEY|VALUE)_(\d+)$/i;
-const GIT_CONFIG_SLOT_TEXT = /^GIT_CONFIG_(KEY|VALUE)_\d*$/i;
-// The git config keys whose value git and curl read as a proxy, in any case: `http.proxy`,
-// `https.proxy`, `http.<url>.proxy`, `remote.<name>.proxy` and `core.gitProxy`.
-const GIT_PROXY_KEY = /^\s*(?:(?:https?(?:\..*)?|remote\..*)\.proxy|core\.gitproxy)\s*$/is;
+// The git config sections whose `proxy` key git and curl read as a proxy URL (`http.proxy`,
+// `http.<url>.proxy`, `remote.<name>.proxy`), and `https.`, which git ignores but users write.
+// `core.gitProxy` names a command, not a URL.
+const GIT_PROXY_SECTIONS = ["http.", "https.", "remote."];
+
+/**
+ * Whether the git config key `key` can name a proxy, in any case, where each `\0` stands for text
+ * a variable or reference may fill: it starts with a proxy section and ends in `.proxy`. Text a
+ * variable fills can complete both ends.
+ */
+function namesGitProxy(key: string): boolean {
+  const text = key.toLowerCase();
+  const pieces = text.split("\0");
+  if (pieces.length === 1) {
+    return GIT_PROXY_SECTIONS.some(
+      (section) =>
+        text.startsWith(section) && text.endsWith(".proxy") && text.length >= section.length + 5,
+    );
+  }
+  const first = pieces[0] ?? "";
+  const last = pieces.at(-1) ?? "";
+  return (
+    (last.endsWith(".proxy") || ".proxy".endsWith(last)) &&
+    GIT_PROXY_SECTIONS.some((section) => first.startsWith(section) || section.startsWith(first))
+  );
+}
+
+// One shell-quoted word of `GIT_CONFIG_PARAMETERS`, where `'\''` and `'\!'` quote `'` and `!`.
+const QUOTED = String.raw`'((?:[^']|'\\[!']')*)'`;
+// Its `'key'='value'` and `'key=value'` pairs, as `git -c` writes them.
+const GIT_CONFIG_PARAMETER = new RegExp(`${QUOTED}(?:=${QUOTED})?`, "g");
+const unquote = (word: string): string => word.replaceAll(/'\\([!'])'/g, "$1");
+
+/** The `[key, value]` pairs of `GIT_CONFIG_PARAMETERS` text. */
+function gitConfigParameters(text: string): [string, string][] {
+  return [...text.matchAll(GIT_CONFIG_PARAMETER)].map(([, word = "", value]) => {
+    if (value !== undefined) {
+      return [unquote(word), unquote(value)];
+    }
+    const pair = unquote(word);
+    const equals = pair.indexOf("=");
+    return equals === -1 ? [pair, ""] : [pair.slice(0, equals), pair.slice(equals + 1)];
+  });
+}
 
 const mcpHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
@@ -279,6 +317,20 @@ export function validateModelCredentialReferences(
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
     }
   };
+  // A proxy URL in part of an environment value, `text`, where `\0` stands for each unfilled
+  // variable, read without a scheme as http.
+  const refuseProxyUserinfo = (path: SettingPath, value: string, text: string): void => {
+    const literals = (
+      /^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(text) ? text : `http://${text}`
+    ).split("\0");
+    spent.work += userinfoWork(literals);
+    if (spent.work > URL_CHECK_BUDGET) {
+      throw new ModelCredentialValueError(pointer(...path), urlCostMessage);
+    }
+    if (urlHoldsUserinfo(value, literals)) {
+      throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
+  };
   // Every URL an environment value holds is checked, whatever the variable's name (finding
   // 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`, `npm_config_registry`,
   // `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as `GOPROXY` holds several.
@@ -494,50 +546,78 @@ export function validateModelCredentialReferences(
     }
     // A `GIT_CONFIG_VALUE_<n>` whose `GIT_CONFIG_KEY_<n>` names a proxy is a proxy too, read
     // without a scheme as http: git and curl send its userinfo as Proxy-Authorization (finding
-    // 1276). `env` and `env.vars`, the first two maps, are one environment. On a Preset save, a
-    // key or name that waits on a variable is matched as the text around it, and a name whose
-    // index waits on one pairs with every index.
-    const gitConfigSlot = (prefix: SettingPath, name: string) => {
-      const literal = options.unresolved?.([...prefix, name], true)?.join("");
-      const [, kind = "", index] =
-        (literal === undefined ? GIT_CONFIG_SLOT.exec(name) : GIT_CONFIG_SLOT_TEXT.exec(literal)) ??
-        [];
-      return { kind: kind.toUpperCase(), index };
-    };
-    const gitProxyKeys = environments.map(([prefix, settings]) => {
-      const indices = new Set<string | undefined>();
-      for (const [name, value] of Object.entries(settings ?? {})) {
-        const { kind, index } = gitConfigSlot(prefix, name);
-        if (kind !== "KEY" || typeof value !== "string") {
+    // 1276). Keys pair across the maps OpenClaw merges into one environment: `env`, `env.vars` and
+    // every skill's (the Gateway's process), and the Docker sandbox's defaults and every Agent's.
+    // On a Preset save, a key or name that waits on a variable is matched as the text around it
+    // (`namesGitProxy`), and a name that waits on one pairs with every index; so does a key's
+    // `${VAR}` reference, which may render any text.
+    const merged = (prefix: SettingPath): string =>
+      prefix[0] === "env" || prefix[0] === "skills"
+        ? "process"
+        : prefix[0] === "agents" && prefix.includes("docker")
+          ? "sandbox"
+          : prefix.join("\0");
+    const slots = environments.map(([prefix, settings]) =>
+      Object.entries(settings ?? {}).map(([name, value]) => {
+        const literal = options.unresolved?.([...prefix, name], true)?.join("");
+        const proxy = [name, literal].some(
+          (text) => text !== undefined && PROXY_ENVIRONMENT.test(text.trim()),
+        );
+        // OpenClaw trims a variable's name. A name that waits on a variable has no known index,
+        // and no known kind unless the text around it names one.
+        const [, kind = "", index] = GIT_CONFIG_SLOT.exec(name.trim()) ?? [];
+        const text = literal?.trim().toUpperCase();
+        const unknown = text?.startsWith("GIT_CONFIG") === true;
+        const key = kind.toUpperCase() === "KEY" || (unknown && !text.includes("VALUE"));
+        return {
+          name,
+          value,
+          proxy,
+          index: literal === undefined ? index : undefined,
+          key,
+          gitValue: kind.toUpperCase() === "VALUE" || (unknown && !text.includes("KEY")),
+          parameters: literal === undefined && /^GIT_CONFIG_PARAMETERS$/i.test(name.trim()),
+        };
+      }),
+    );
+    const proxyKeys = new Map<string, Set<string | undefined>>();
+    for (const [position, [prefix]] of environments.entries()) {
+      const keys = proxyKeys.get(merged(prefix)) ?? new Set();
+      proxyKeys.set(merged(prefix), keys);
+      for (const { name, value, index, key } of slots[position] ?? []) {
+        if (!key || typeof value !== "string") {
           continue;
         }
-        const text = options.unresolved?.([...prefix, name])?.join("") ?? value;
-        // An environment reference renders its fallback, or nothing.
-        const rendered = text.replaceAll(
-          environmentReference,
-          (reference: string, escaped?: string, fallback?: string) =>
-            escaped === undefined ? (fallback ?? "") : reference.slice(1),
-        );
-        if ([value, text, rendered].some((key) => GIT_PROXY_KEY.test(key))) {
-          indices.add(index);
+        const text = (options.unresolved?.([...prefix, name]) ?? [value])
+          .join("\0")
+          .replaceAll(environmentReference, (reference: string, escaped?: string) =>
+            escaped === undefined ? "\0" : reference.slice(1),
+          );
+        if (namesGitProxy(text)) {
+          keys.add(index);
         }
       }
-      return indices;
-    });
-    const gateway = new Set([...(gitProxyKeys[0] ?? []), ...(gitProxyKeys[1] ?? [])]);
-    for (const [position, [prefix, settings]] of environments.entries()) {
-      const proxyKeys = position < 2 ? gateway : (gitProxyKeys[position] ?? new Set());
-      for (const [name, value] of Object.entries(settings ?? {})) {
-        const literal = options.unresolved?.([...prefix, name], true)?.join("");
-        const { kind, index } = gitConfigSlot(prefix, name);
+    }
+    for (const [position, [prefix]] of environments.entries()) {
+      const keys = proxyKeys.get(merged(prefix)) ?? new Set();
+      for (const { name, value, proxy, index, gitValue, parameters } of slots[position] ?? []) {
+        const path = [...prefix, name];
         refuseEnvironmentUserinfo(
-          [...prefix, name],
+          path,
           value,
-          [name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text)) ||
-            (kind === "VALUE" &&
-              (proxyKeys.has(undefined) ||
-                (index === undefined ? proxyKeys.size > 0 : proxyKeys.has(index)))),
+          proxy ||
+            (gitValue &&
+              (keys.has(undefined) || (index === undefined ? keys.size > 0 : keys.has(index)))),
         );
+        // `git -c` pairs: each value whose key names a proxy.
+        if (parameters && typeof value === "string") {
+          const text = (options.unresolved?.(path) ?? [value]).join("\0");
+          for (const [key, setting] of gitConfigParameters(text)) {
+            if (namesGitProxy(key.replaceAll(environmentReference, "\0"))) {
+              refuseProxyUserinfo(path, value, setting);
+            }
+          }
+        }
       }
     }
   }
