@@ -867,6 +867,24 @@ describe("Presets", { concurrency: 2 }, () => {
         },
         "Configuration setting env.vars.ANTHROPIC_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
       ],
+      // A literal both rule sets refuse gets the Compute message, as on Configuration save.
+      [
+        {
+          configuration: {
+            values: {
+              ...openaiModel,
+              models: {
+                providers: {
+                  openai: {
+                    request: { auth: { mode: "authorization-bearer", token: "sk-literal" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: model credentials come from the Agent's Harness authentication binding.`,
+      ],
     ];
     for (const [template, message, details] of cases) {
       const rejected = await fixture.request("POST", collection(namespace.id), {

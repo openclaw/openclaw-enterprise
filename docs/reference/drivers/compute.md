@@ -20,13 +20,11 @@ Every `ComputeDriver` has an `id`, `implementation`, and
 `capability: "compute"`.
 
 Optional `configureAgent(configuration, {nativeAdminOrigin?})` transforms a frozen
-deployment copy before validation and immutable admission. OCC supplies the
-Installation-owned origin; Compute owns native policy and conflicts. Preserve the
-Harness, opt-outs, unrelated settings and SecretRefs without source mutation or
-infrastructure effects. Kubernetes uses it for
-[first-deployment native admin](../agent-native-admin.md#first-deployment-configuration).
-See [deployment configuration](compute-admission.md#deployment-configuration) for
-call order and absence behavior.
+deployment copy before validation and admission; OCC supplies the
+Installation-owned origin. Preserve Harness, opt-outs, unrelated settings and
+SecretRefs without source mutation or infrastructure effects. See
+[Compute policy and conflicts](../agent-native-admin.md#first-deployment-configuration)
+and [admission order](compute-admission.md#deployment-configuration).
 
 Optional `getRuntimeImages(revision)` returns
 `{workload, container, image, imageId, commit, openclawCommit}` entries for
@@ -71,6 +69,10 @@ Namespace results can mark a failure `retryable` or `permanent`; success
 requires a true flag and no failure.
 Methods without a return value must reject if they cannot complete. The revision
 context is optional in TypeScript; the worker supplies it after authorization.
+
+`prepareRevision` throws `ComputePreparationFailedError` for terminal initialization.
+OCC atomically fails deployment with durable `stopRevision` cleanup.
+Restart resumes cleanup, not preparation; codes exclude credentials.
 
 ### Optional additions
 

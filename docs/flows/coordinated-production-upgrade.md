@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-10"
-last_updated_session: "authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff"
+updated: "2026-10-12"
+last_updated_session: "authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031"
 ---
 
 # Production image upgrade flow
@@ -107,8 +107,9 @@ On the experimental two-cluster profile, each Pod also runs
 startup does not run. In each execution tenant Namespace where its identity holds
 the release-era tenant grant, SelfSubjectAccessReviews ask for the newer
 `openclaw-execution` rules (API: Pod and `pods/proxy` reads, plus `pods/log` and
-Event reads with runtime logs; worker: Pod `patch`). A missing rule refuses the
-candidate and points to
+Event reads with runtime logs; worker: Pod `patch` and `batch` Job `get`, `create`,
+and `delete`). Worker Job grants are required even with runtime logs disabled.
+A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/two-cluster-local.md#upgrade-the-execution-chart).
 Because the chart's default-deny NetworkPolicy also selects these Pods, the
 helper first creates a temporary NetworkPolicy carrying the rendered
@@ -279,6 +280,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
 
 - 2026-10-10 03:30: Say that the worker's next preparation of an existing revision applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)
 

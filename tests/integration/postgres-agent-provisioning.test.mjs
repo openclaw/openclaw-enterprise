@@ -30,6 +30,7 @@ import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -137,9 +138,9 @@ function provisioningBody(namespaceId, secrets, overrides = {}) {
       method: "api_key",
       source: secretRef(namespaceId, secrets.modelKey.id),
     },
-    initialWorkspaceFiles: {
-      "AGENTS.md": "Use the inline workspace setup from provisioning.",
-    },
+    // The development Compute fixture has no workspace storage. Real file setup
+    // is covered by the Kubernetes provisioning integration.
+    initialWorkspaceFiles: {},
     ...overrides,
   };
 }
@@ -491,7 +492,7 @@ async function createFixture(context, options = {}) {
       emit: (event) => {
         options.onWorkerEvent?.(event);
         // This persistence case ends at durable handoff, before credential service dispatch.
-        if (options.stopAfterProvisioning && event.code === "PROVISIONING_HANDED_OFF") {
+        if (options.stopAfterProvisioning && event.code === "PROVISIONING_DEPLOYMENT_PENDING") {
           workerCompletion = worker.stop();
         }
       },
@@ -746,6 +747,68 @@ test(
 );
 
 test(
+  "provisioning status judges claim liveness by the database clock, not the controller clock",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId } = admitted.data.provisioning;
+    const statusPath = `/namespaces/${namespace.id}/agents/provision/${encodeURIComponent(workId)}`;
+    const apiStatus = async () => {
+      const observed = await fixture.request("GET", statusPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status;
+    };
+    // The real State read and status derivation with a controller clock skewed far from
+    // PostgreSQL's; the controller route above runs with the real clock (the composed app
+    // takes no clock option).
+    const statusAt = (instant) =>
+      fixture.state.read(async (state) => {
+        const found = await state.provisioning.findWithWork(workId);
+        assert.notEqual(found?.work, undefined, "the provisioning job must join its queue row");
+        return provisioningProgress(found.record, found.work, new Date(instant)).status;
+      });
+    const setLease = async (interval) => {
+      const updated = await fixture.pool.query(
+        `UPDATE occ.controller_work
+         SET lease_expires_at = clock_timestamp() + $2::interval
+         WHERE idempotency_key = $1 AND state = 'claimed'`,
+        [workId, interval],
+      );
+      assert.equal(updated.rowCount, 1, "test must move the exact claimed lease");
+    };
+
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    try {
+      assert.equal(await apiStatus(), "running");
+      // A controller clock ahead of the lease still reports the live claim.
+      assert.equal(await statusAt("2999-01-01T00:00:00Z"), "running");
+
+      // An expired claim is waiting for a new worker, not running.
+      await setLease("-1 second");
+      assert.equal(await apiStatus(), "queued");
+      // A controller clock behind the lease still reports the expired claim as waiting.
+      assert.equal(await statusAt("1970-01-01T00:00:00Z"), "queued");
+    } finally {
+      // Cancel under a live lease so no later worker in this database recovers the job.
+      await setLease("10 minutes");
+      const cancelled = await fixture.state.transact((unit) =>
+        unit.provisioning.cancel(claim, {
+          code: "PROVISIONING_CANCELLED",
+          message: "lease liveness test completed without worker dispatch",
+        }),
+      );
+      assert.equal(cancelled.status, "cancelled");
+    }
+  },
+);
+
+test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
@@ -826,13 +889,21 @@ test(
     assert.equal(changed.status, 409, JSON.stringify(changed.body));
 
     await fixture.startWorker();
-    const status = await waitFor("Agent provisioning to succeed", async () => {
-      const observed = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
-    });
+    const status = await waitFor(
+      "Agent provisioning to queue its initial deployment wait",
+      async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        // Admission publishes revisionId before the worker queues its activation
+        // wait. Inspect the handoff only after that deferral has committed.
+        return observed.data.revisionId !== undefined && observed.data.status === "queued"
+          ? observed.data
+          : undefined;
+      },
+    );
     await fixture.stopWorker();
-    assert.equal(status.status, "succeeded");
+    assert.equal(status.status, "queued");
     assert.match(status.agentId, identifier("agt"));
     assert.match(status.configurationId, identifier("cfg"));
 
@@ -900,7 +971,95 @@ test(
       [namespace.id, admitted.data.provisioning.workId],
     );
     assert.equal(work.rowCount, 1);
-    assert.equal(work.rows[0].state, "succeeded");
+    assert.equal(work.rows[0].state, "queued");
+  },
+);
+
+// Finding 1145: the request refuses repository bindings the Compute topology cannot deliver.
+// Work it already accepted is rechecked by the worker and retry until the Agent exists, so a
+// topology change after admission fails the work before it creates the Agent.
+test(
+  "a repository topology change before the worker runs fails the provisioning work before its Agent",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const initial = await createFixture(context);
+    const namespace = await initial.bootstrapNamespace();
+    const repoDriver = new GitHubRepoDriver(
+      {
+        id: "provisioning-repositories",
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: "/unused/provisioning/control.sock",
+        }),
+        drivers: { repo: "provisioning-repo" },
+      },
+      {
+        version: 1,
+        backendId: "provisioning-repositories",
+        providerInstanceId: "provisioning-github",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "project",
+            repositoryId: "789",
+            repository: "example/project",
+            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read"] }],
+          },
+        ],
+      },
+      { sessionDurationSeconds: 600 },
+    );
+    const topology = createTestKubernetesComputeDriver("provisioning-topology-change", {
+      repositoryCredentials: true,
+    });
+    const computeDriver = initial.computeDriver;
+    computeDriver.validateRepositoryCredentials =
+      topology.validateRepositoryCredentials.bind(topology);
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver: initial.configurationDriver,
+      secretDriver: initial.secretDriver,
+      repoDriver,
+    });
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = {
+      ...provisioningBody(namespace.id, secrets, {
+        repositoryAccess: {
+          defaultProfile: "git-read",
+          repositories: [{ repositoryRef: "project" }],
+        },
+      }),
+      pluginApprovers: [],
+    };
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The topology now cannot deliver repository credentials (as with a Sandbox selected).
+    computeDriver.validateRepositoryCredentials = () => {
+      throw new Error("synthetic topology refusal");
+    };
+    await fixture.startWorker();
+    const failed = await waitFor("the worker to refuse the repository topology", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.progress.error === undefined ? undefined : row;
+    });
+    await fixture.stopWorker();
+    // The status keeps the fixed text; retry answers Agent create's 409.
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    });
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    const message =
+      "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
+    const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 409, JSON.stringify(retried.body));
+    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assert.equal(retried.body.error.message, message);
   },
 );
 
@@ -909,7 +1068,14 @@ for (const authMethod of ["api_key", "codex_pat"]) {
     `${authMethod} provisioning grants existing Secret access and hands off one revision`,
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
-      const fixture = await createFixture(context);
+      let deploymentReady = false;
+      const computeDriver = createRuntimeComputeDriver();
+      const prepareRevision = computeDriver.prepareRevision.bind(computeDriver);
+      computeDriver.prepareRevision = async (...args) => ({
+        ...(await prepareRevision(...args)),
+        ready: deploymentReady,
+      });
+      const fixture = await createFixture(context, { computeDriver });
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
       const secretCreateCallCount = fixture.secretDriver.calls.filter(
@@ -952,12 +1118,30 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       ]);
 
       await fixture.startWorker();
+      // This suite proves the real API, worker and PostgreSQL lifecycle with its
+      // existing development Compute fixture, not Kubernetes or model execution.
+      const handoff = await waitFor("initial deployment to remain pending", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.revisionId !== undefined ? observed.data : undefined;
+      });
+      assert.notEqual(handoff.status, "succeeded");
+      deploymentReady = true;
       const status = await waitFor("Agent provisioning to succeed", async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        if (observed.data.revisionId !== undefined) {
+          const deployment = await fixture.request(
+            "GET",
+            `/namespaces/${namespace.id}/agents/${observed.data.agentId}/deployments/${observed.data.revisionId}`,
+          );
+          assert.notEqual(deployment.data.status, "failed", JSON.stringify(deployment.body));
+        }
         return observed.data.status === "succeeded" ? observed.data : undefined;
       });
       assert.equal(status.status, "succeeded");
+      assert.equal(status.agentId, handoff.agentId);
+      assert.equal(status.revisionId, handoff.revisionId);
       assert.match(status.agentId, identifier("agt"));
       assert.match(status.configurationId, identifier("cfg"));
       fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
@@ -3642,7 +3826,7 @@ test(
 );
 
 test(
-  "guided Codex provisioning freezes native admin policy on its first worker handoff and retry",
+  "guided Codex provisioning freezes native admin policy on its first worker handoff and pending replay",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const compute = createRuntimeComputeDriver();
@@ -3705,15 +3889,22 @@ test(
     const status = await waitFor("native admin provisioning handoff", async () => {
       const observed = await fixture.request("GET", admitted.data.provisioning.url);
       assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
+      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+      // Revision admission precedes deployment completion. Stop at the durable handoff,
+      // once the worker has queued its deployment wait, without claiming success yet.
+      return observed.data.revisionId !== undefined && observed.data.status === "queued"
+        ? observed.data
+        : undefined;
     });
     await fixture.stopWorker();
+    assert.equal(status.status, "queued");
     fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
     const revisions = await fixture.state.read((view) =>
       view.revisions.listRevisions(namespace.id, status.agentId),
     );
     assert.equal(revisions.length, 1);
     const revision = revisions[0];
+    assert.equal(revision.id, status.revisionId);
     const installation = await fixture.state.loadInstallation();
     const origin = `https://${deriveNativeAdminHost(installation.id, { namespaceId: namespace.id, id: status.agentId }, "agents.oce.example.test")}:8443`;
     assert.equal(nativeAdminConfigurationSupported(revision, origin), true);
@@ -3739,6 +3930,9 @@ test(
     const retried = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
+    assert.equal(retried.status, 202, JSON.stringify(retried.body));
+    assert.equal(retried.data.provisioning.workId, admitted.data.provisioning.workId);
+    assert.equal(retried.data.provisioning.status, "queued");
     assert.equal(retried.data.provisioning.revisionId, revision.id);
     assert.equal(
       (

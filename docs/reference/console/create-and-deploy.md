@@ -74,8 +74,9 @@ still block initial workspace files and Secret-backed environment projection.
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   After provisioning, Console opens Agent details while deployment continues.
-   Follow startup and failures with **Deployment activity → Refresh deployment**.
+   Provisioning stays pending until the first deployment activates or fails.
+   Success opens Agent details. Failure links to the same Agent and revision;
+   correct its cause and deploy again through **Deployment activity**.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -160,6 +161,10 @@ one, such as a deleted Secret; **Create Agent** then submits a new request. Save
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+
+After the first revision is admitted, a deployment failure cannot retry
+provisioning or create another Agent. Open the retained Agent, correct its
+settings or credential source, and submit a new deployment.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.

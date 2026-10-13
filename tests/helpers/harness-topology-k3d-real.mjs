@@ -269,6 +269,11 @@ async function createScopedController(context, identifier, platformNamespace, ku
       {
         op: "add",
         path: "/rules/-",
+        value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
         value: {
           apiGroups: [""],
           resources: ["secrets"],
@@ -3775,7 +3780,10 @@ const gatewayLocalCodexTools = Object.freeze([
   "gateway_exec",
   "gateway_process",
   "terminal",
+  "portal",
   "openclaw",
+  "plugins",
+  "gateway",
 ]);
 
 // Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.

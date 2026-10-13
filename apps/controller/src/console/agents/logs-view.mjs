@@ -56,27 +56,27 @@ function age(timestamp) {
 }
 
 export function podCard(pod) {
-  const container = pod.containers.find(({ name }) => name === pod.role) ?? pod.containers[0];
-  const termination = container?.lastTermination;
   const details = element("dl", { className: "credential-status-list" });
   const add = (name, value) => details.append(element("dt", {}, name), element("dd", {}, value));
   add("Phase", pod.phase);
   add("Ready", pod.ready ? "Yes" : "No");
-  add("Restarts", String(container?.restartCount ?? 0));
-  if (container && container.state !== "running") {
+  for (const container of pod.containers) {
+    add("Container", container.name);
+    add("Restarts", String(container.restartCount));
     add("State", `${container.state}${container.reason ? ` · ${container.reason}` : ""}`);
-  }
-  if (termination) {
-    add(
-      "Last termination",
-      [
-        termination.reason ?? "Unknown reason",
-        termination.exitCode === null ? null : `exit ${termination.exitCode}`,
-        termination.finishedAt ? displayDate(termination.finishedAt) : null,
-      ]
-        .filter(Boolean)
-        .join(" · "),
-    );
+    const termination = container.lastTermination;
+    if (termination) {
+      add(
+        "Last termination",
+        [
+          termination.reason ?? "Unknown reason",
+          termination.exitCode === null ? null : `exit ${termination.exitCode}`,
+          termination.finishedAt ? displayDate(termination.finishedAt) : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      );
+    }
   }
   add("Age", age(pod.createdAt));
   const warnings = pod.events.filter(({ type }) => type === "Warning").slice(0, 5);

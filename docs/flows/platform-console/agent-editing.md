@@ -247,22 +247,21 @@ Pickers switch references; rotating shared Secret values is separate.
 ### 6. Read and replace live workspace files
 
 `apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens from
-`tab=workspace` after an exact Agent read. It bypasses Configuration and revision
-history reads: workspace contents belong to the live Agent. Without an active
-revision, the Agent gets an unavailable explanation without file requests.
+`tab=workspace` after an exact Agent read. It skips Configuration and revision history. Contents belong to the live Agent.
+With no active revision, files stay unavailable and no file request is sent.
 
-The editor GETs each supported filename. Textareas normalize line endings to LF,
-so the baseline is the textarea value: an untouched CRLF file stays clean, and a read
-never rewrites it. After a successful load, only an edit enables Save. A
-successful response reauthorizes file access before restoring retained text,
-including empty edits. Drafts keep their original baseline; Reload replaces them
-with the current file. `404` without an unknown write permits an explicit create
-attempt, including an empty file; other failures leave Save disabled. Save sends
-`{ content }` to the same exact-Agent PUT route. It neither patches
-Configuration nor admits a revision. The existing
-[workspace flow](../workspace-files.md) owns authorization and native file transport.
-Results are per file. Unknown write outcomes require a successful reload before
-another save; the editor never retries a write automatically.
+The editor GETs each supported filename and normalizes textareas to LF. An
+untouched CRLF file stays clean and is not rewritten. Only an edit enables Save.
+The response reauthorizes access before restoring retained text, including empty
+edits. Drafts keep their baseline; Reload replaces them. A 404 without an unknown
+write permits an explicit create, including an empty file; other failures disable
+Save. Save PUTs `{ content }` on the exact-Agent route. It neither patches
+Configuration nor admits a revision. The [workspace flow](../workspace-files.md)
+owns authorization and native transport. Results are per file. An unknown write
+waits for explicit Reload. Current contents, or the formal missing-file 404,
+settle it and open an empty editor for a deliberate create. Another 404, a
+denial, or an unavailable read stays guarded. The editor never retries or creates
+a file.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
@@ -358,6 +357,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 - 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
 - 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)
+- 2026-10-10 02:44: Trace explicit missing-file readback after an uncertain workspace create in the accompanying change. (authoring-run/16c725e2-438f-46bf-a31c-305458ac49d8 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 - 2026-10-10 01:41: Trace confirmed manual deletion recovery and uncertain repeat readback in the accompanying change. (authoring-run/da61175b-df1b-4e96-b202-94e9e82538f9 - 243b38ba6d951240065e5061e1e4abccdb44410c)
 - 2026-10-10 00:08: Trace explicit repeated Stop recovery in the accompanying change. (authoring-run/52a975bb-0283-40ba-9126-2c2f6eb8992c - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 

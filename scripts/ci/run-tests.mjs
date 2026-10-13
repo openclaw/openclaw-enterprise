@@ -430,6 +430,40 @@ function testTimeoutMs() {
   return 60 * 60 * 1000;
 }
 
+// CI_RUNNER_DEADLINE_MS (Unix epoch milliseconds) is when every file of the lane must have
+// stopped. The run-ci-lane action sets it a few minutes before the job's timeout-minutes, so a
+// hung file is stopped, named and recorded before GitHub cancels the job, which leaves no
+// results and no test name (finding 1209).
+function laneDeadlineMs() {
+  const value = Number(process.env.CI_RUNNER_DEADLINE_MS ?? "");
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function laneDeadlinePassed() {
+  const deadline = laneDeadlineMs();
+  return deadline !== undefined && Date.now() >= deadline;
+}
+
+function laneDeadlineIssue(relativePath) {
+  return issue(
+    "lane-deadline",
+    `the lane deadline passed before this file started: ${relativePath}`,
+    {
+      file: relativePath,
+    },
+  );
+}
+
+// The file's timeout: the per-file limit, cut to what is left before the lane deadline.
+function fileTimeout() {
+  const limitMs = testTimeoutMs();
+  const deadline = laneDeadlineMs();
+  if (deadline === undefined || deadline - Date.now() >= limitMs) {
+    return { timeoutMs: limitMs, laneDeadline: false };
+  }
+  return { timeoutMs: Math.max(1, deadline - Date.now()), laneDeadline: true };
+}
+
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
 // this runner may use. CI_RUNNER_FILE_CONCURRENCY replaces that limit for lanes that
 // allow concurrency (1 runs every file alone, as lanes without fileConcurrency do).
@@ -572,6 +606,16 @@ function killGroup(pgid, signal) {
 }
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
+
+// GitHub cancels a step by signalling only its shell, which waits for this runner, and then
+// kills that shell. The signals never reach this runner: it carries on as an orphan beside the
+// job's always() Cleanup lane step, and the two cleanups can race. So a runner whose starting
+// parent is gone is being cancelled, and a cleanup that fails then is reported as cancelled.
+const startingParentPid = process.ppid;
+
+function jobCancelling() {
+  return process.ppid !== startingParentPid;
+}
 
 function forwardSignal(signal) {
   // This runner ends at once, so nothing would follow up on a file that ignores
@@ -878,6 +922,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     return emptyFileResult(relativePath, issues);
   }
 
+  // A file queued behind a hung one starts nothing past the lane deadline.
+  if (laneDeadlinePassed()) {
+    issues.push(laneDeadlineIssue(relativePath));
+    return emptyFileResult(relativePath, issues);
+  }
+
   if (prepareFile) {
     try {
       const result =
@@ -909,6 +959,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     }
   }
 
+  // Preparation can outlast the deadline too; the cleanup below still runs.
+  if (laneDeadlinePassed()) {
+    issues.push(laneDeadlineIssue(relativePath));
+  }
+
   const env = mergeEnv(
     baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
     lane.env,
@@ -932,6 +987,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let nodeElapsedMs;
   let agentActivity;
   let measurements = [];
+  let timeout;
   try {
     if (issues.length === 0) {
       agentActivity = await startAgentNamespaceCapture({
@@ -947,10 +1003,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
       const nodeStarted = performance.now();
+      timeout = fileTimeout();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
-        timeout: testTimeoutMs(),
+        timeout: timeout.timeoutMs,
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
@@ -1010,10 +1067,21 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         await setup(prepared.cleanup);
         cleanupResult = { status: "passed" };
       } catch (error) {
-        cleanupResult = { status: "failed", error: sanitizeError(error) };
-        issues.push(
-          issue("cleanup-failed", `cleanup failed for ${relativePath}`, { file: relativePath }),
-        );
+        if (jobCancelling()) {
+          // Keep the sanitized error: a parent that died for another reason (OOM-killed step
+          // shell, closed terminal) also reads as a cancellation.
+          cleanupResult = { status: "cancelled", error: sanitizeError(error) };
+          issues.push(
+            issue("cleanup-cancelled", `cleanup stopped by job cancellation for ${relativePath}`, {
+              file: relativePath,
+            }),
+          );
+        } else {
+          cleanupResult = { status: "failed", error: sanitizeError(error) };
+          issues.push(
+            issue("cleanup-failed", `cleanup failed for ${relativePath}`, { file: relativePath }),
+          );
+        }
       }
     }
   }
@@ -1027,10 +1095,18 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   if (nodeResult?.error?.code === "ETIMEDOUT") {
+    // Name the tests it was running in the job log too: the diagnostics report is an artifact.
+    const names = (details?.interruptedTests ?? []).map(({ name }) => JSON.stringify(name));
+    const running = names.slice(0, 5);
+    if (names.length > running.length) {
+      running.push(`and ${names.length - running.length} more`);
+    }
     issues.push(
-      issue("test-timeout", `selected file exceeded the runner timeout: ${relativePath}`, {
-        file: relativePath,
-      }),
+      issue(
+        "test-timeout",
+        `selected file exceeded the runner timeout (${timeout.timeoutMs} ms${timeout.laneDeadline ? ", cut to the lane deadline" : ""}): ${relativePath}${running.length === 0 ? "" : ` while running ${running.join(", ")}`}`,
+        { file: relativePath },
+      ),
     );
   }
 
@@ -1080,7 +1156,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   if (status === "failed" && (details !== undefined || timedOut)) {
     await recordFailure(setup, statePath, lane.name, relativePath, {
       ...(timedOut
-        ? { reason: "timeout", timeoutMs: testTimeoutMs(), elapsedMs: nodeElapsedMs }
+        ? {
+            reason: "timeout",
+            timeoutMs: timeout.timeoutMs,
+            ...(timeout.laneDeadline ? { laneDeadline: true } : {}),
+            elapsedMs: nodeElapsedMs,
+          }
         : { reason: "failed" }),
       ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
     });
@@ -1310,7 +1391,7 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
         }),
       );
     }
-    if (observed.cleanup?.status === "failed") {
+    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
       issues.push(
         issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
           lane: laneName,

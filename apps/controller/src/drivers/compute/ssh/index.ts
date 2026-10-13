@@ -24,6 +24,7 @@ import {
   isPositiveSafeInteger,
   sha256Hex,
 } from "@openclaw-enterprise/utils";
+import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal } from "../operation-context.ts";
 import { WORKSPACE_SETUP_RUNTIME } from "../workspace-setup-runtime.ts";
@@ -66,6 +67,14 @@ interface SshComputeSelection {
 
 class OwnershipFailure extends Error {}
 class ConfigurationFailure extends Error {}
+
+// SSH Compute runs only embedded OpenClaw, with the operator-managed runtime credentials.
+const SSH_HARNESS_AUTH_METHODS: HarnessAuthMethodRule = {
+  compute: "SSH Compute",
+  topology: "embedded OpenClaw",
+  accepted: ["runtime"],
+  fix: "harnessAuth",
+};
 
 const HELPER = readFileSync(new URL("./remote-helper.cjs", import.meta.url), "utf8");
 const OPERATION_TIMEOUT_MS = 180_000;
@@ -452,14 +461,20 @@ export class SshComputeDriver implements ComputeDriver {
   }
 
   validateHarnessAuth(harness: RevisionHarnessDescriptor, auth: HarnessAuthSnapshot): void {
-    if (auth?.method !== "runtime" || Object.keys(auth).length !== 1) {
-      throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
-    }
+    // The topology first: no authentication method helps another one.
     // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
     if (harness.id !== "openclaw" || harness.mode !== "embedded") {
       throw new ConfigurationFailure(
         "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
       );
+    }
+    if (auth == null) {
+      throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
+    }
+    // An Agent setting the caller owns: Agent save and deployment answer 400.
+    requireHarnessAuthMethod(SSH_HARNESS_AUTH_METHODS, auth.method);
+    if (Object.keys(auth).length !== 1) {
+      throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
     }
   }
 

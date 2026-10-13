@@ -236,7 +236,8 @@ never put plaintext credentials in native Configuration or Installation YAML.
 
 The revision records only `{ "method": "runtime" }`; there is no Secret source,
 account identity, key value, or configurable environment-variable field in this
-binding. OCC still authorizes deployment and checks gateway `/readyz`, but makes
+binding. Any other method gets `400` naming `harnessAuth.method` at
+deployment, and at Agent create and update when they check the binding. OCC still authorizes deployment and checks gateway `/readyz`, but makes
 no model request and does not inspect the operator file. A gateway can be ready
 while its model credentials are invalid. Verify model access separately.
 

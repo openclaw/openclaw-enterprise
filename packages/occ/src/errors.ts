@@ -23,7 +23,9 @@ export class AuthorizationDeniedError extends Error {
     super(message);
     this.name = "AuthorizationDeniedError";
     if (evidence !== undefined) {
-      this.evidence = evidence;
+      if (evidence !== undefined) {
+        this.evidence = evidence;
+      }
     }
     if (authorization !== undefined) {
       this.authorization = Object.freeze({
@@ -348,10 +350,27 @@ function keyedSettingMessage(
  * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
  */
 export function keyedSettingPath(parent: string, key: string): string {
-  const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+  const shown = shownKey(key);
   return /^[A-Za-z0-9_-]+$/.test(shown)
     ? `${parent}.${shown}`
     : `${parent}[${JSON.stringify(shown)}]`;
+}
+
+// Control, format, line and paragraph separator characters and lone surrogates show as ?.
+const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+
+/**
+ * A submitted key a message names, such as a header name, in double quotes: characters
+ * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
+ * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
+ */
+export function quotedSettingKey(key: string, limit: number): string {
+  const characters = Array.from(shownKey(key));
+  return JSON.stringify(
+    characters.length <= limit
+      ? characters.join("")
+      : `${characters.slice(0, limit - 1).join("")}…`,
+  );
 }
 
 /**
@@ -702,6 +721,28 @@ export class ActivationPendingError extends Error {
 
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+
+/**
+ * Compute preparation cannot complete for this revision. The worker records a
+ * terminal deployment failure and durable workload retirement in one transaction.
+ * Drivers own initialization and cleanup; status never exposes the error message.
+ */
+export class ComputePreparationFailedError extends Error {
+  readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+  readonly evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence;
+
+  constructor(
+    code: ComputePreparationFailedError["code"],
+    evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence,
+  ) {
+    super("Harness credential initialization could not complete.");
+    this.name = "ComputePreparationFailedError";
+    this.code = code;
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
+  }
+}
 
 /**
  * Activation found its workloads running but one of them can never complete

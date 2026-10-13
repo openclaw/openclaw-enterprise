@@ -565,6 +565,16 @@ export const scenarios = {
     description:
       "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
   },
+  recoveryOnlyProviderUnavailable: {
+    group: "Pages/Sign in",
+    name: "Recovery-only provider outage",
+    path: "/console/?authError=github&authReason=provider-unavailable",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",
@@ -1494,29 +1504,28 @@ export const scenarios = {
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
-    name: "Created Agent with pending deployment",
+    name: "Initial deployment pending",
     path: create,
     actions: readyForm,
-    provisionedDeploymentStatus: "queued",
+    provisionedDeploymentStatus: "running",
     description:
-      "Creation opens Agent details after provisioning completes, while the first deployment remains queued.",
+      "Creation stays on the original provisioning request while its first deployment is running.",
     steps: [
-      "Click Create Agent and wait for Agent details to open.",
-      "Inspect Deployment activity: the recorded status remains queued, and no version is selected.",
-      "Click Refresh deployment. The simulated deployment stays queued; the create form does not reopen.",
+      "Click Create Agent and confirm provisioning remains in progress.",
+      "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
-    name: "Created Agent with failed deployment",
+    name: "Initial deployment failed",
     path: create,
     actions: readyForm,
     provisionedDeploymentStatus: "failed",
     description:
-      "A first-deployment failure appears on Agent details after successful provisioning, without trapping creation on the form.",
+      "The original provisioning request reports its first-deployment failure and links to the existing Agent and revision.",
     steps: [
-      "Click Create Agent and wait for Agent details to open.",
-      "Inspect the failed Deployment activity and its reconciliation error.",
+      "Click Create Agent and wait for the credential initialization failure.",
+      "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
     ],
   },
   createUnsupportedProvisioning: {
@@ -2877,6 +2886,77 @@ export const scenarios = {
     description:
       "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
+  agentsDeploymentFailed: {
+    group: "Pages/Agents",
+    name: "Latest deployment failed",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    description:
+      "The list shows the newest visible failure beside the current version, without asserting serving health.",
+    steps: [
+      "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
+    ],
+  },
+  deploymentBootstrapCleanup: {
+    group: "Pages/Agent detail",
+    name: "Bootstrap failure with cleanup pending",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    cleanupStatus: "queued",
+    cleanupCompletes: true,
+    description:
+      "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+    steps: [
+      "Read the failing oauth-bootstrap exit status beside the successful init container.",
+      "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
+    ],
+  },
+  agentsDeploymentDenied: {
+    group: "Pages/Agents",
+    name: "Latest deployment access denied",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadStatus: 403,
+    description:
+      "Agent identity and current pointer remain visible while deployment access is denied.",
+  },
+  agentsDeploymentLoading: {
+    group: "Pages/Agents",
+    name: "Latest deployment loading",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadDelay: 6000,
+    description:
+      "Deployment reads show loading beside the current pointer, then show the visible result.",
+  },
+  agentsDeploymentError: {
+    group: "Pages/Agents",
+    name: "Latest deployment unavailable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadStatus: 503,
+    description:
+      "An interrupted deployment read leaves the Agent and current pointer visible without guessing an outcome.",
+  },
+  runtimeBootstrapContainers: {
+    group: "Pages/Agent detail",
+    name: "Bootstrap container status and logs",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    bootstrapRuntime: true,
+    description:
+      "The Pod card names both containers; the writer's exit 1 is visible beside the init container's exit 0.",
+    steps: [
+      "Switch Pod / container from oauth-bootstrap to prepare-oauth-home and read its initialization output.",
+      "Switch back to oauth-bootstrap to inspect the failed writer.",
+    ],
+  },
   deploymentFailed: {
     group: "Pages/Agent detail",
     name: "New version failed",
@@ -4105,6 +4185,28 @@ export const scenarios = {
     ],
     description:
       "An uncertain write blocks retry until Reload lets the reader inspect current content.",
+  },
+  workspaceMissingReadback: {
+    group: "Components/Workspace",
+    name: "Missing file after uncertain create",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      { suffix: "/AGENTS.md", method: "PUT", status: 503, once: true },
+    ],
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "# Interrupted first create" },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
   },
   deletionConfirm: {
     group: "Components/Deletion",

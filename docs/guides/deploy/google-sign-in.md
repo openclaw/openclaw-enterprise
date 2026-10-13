@@ -110,7 +110,8 @@ email address itself is never used for identity or authorization.
 Enable Google during the same stopped maintenance as the
 [GitHub procedure](production-installation.md#enable-github-browser-sign-in): verify
 password recovery, create the Secret, set the values above, close ingress, stop
-identity writers, run `helm upgrade`, and verify through restricted access before
+identity writers, run `helm upgrade`, and verify through
+[restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access) before
 reopening ingress. If the guarded profile is already active through GitHub, adding
 Google needs no new activation, but still use one serving controller and stopped
 writers for the upgrade.
@@ -175,7 +176,9 @@ Rotating only the client secret keeps attachments and invalidates pending sign-i
 attempts. Rotating `OCC_AUTH_SECRET` also fails attempts in flight.
 
 A Google outage, blocked egress, or rejected ID token fails that sign-in closed and
-returns the browser to `/console/?authError=google`; password sign-in is unaffected.
+returns the browser to `/console/?authError=google`; password sign-in is unaffected. An
+outage adds `authReason=provider-unavailable`, and the Console says Google sign-in is
+unavailable right now.
 Google start and callback share GitHub's admission budget, so enabling both does not
 raise the external sign-in limits.
 

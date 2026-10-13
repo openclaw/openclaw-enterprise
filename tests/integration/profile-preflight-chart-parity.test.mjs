@@ -243,12 +243,16 @@ function assertParity({
 }
 
 // One Helm-backed test for one field: `cases` are [value, accepted, chartError?] rows.
-function fieldParity(name, { cases, label = short, controlPlane, values, chartError }) {
+function fieldParity(
+  name,
+  { cases, label = short, controlPlane, extraInput = () => ({}), values, chartError },
+) {
   test(name, { skip: helmSkip }, () =>
     each(cases, ([value, accepted, rowError = chartError]) =>
       assertParity({
         label: label(value),
         controlPlane: controlPlane(value),
+        extraInput: extraInput(value),
         values: values(value),
         accepted,
         chartError: rowError,
@@ -598,21 +602,41 @@ test(
   },
 );
 
+// The chart checks every control-plane image with one rule.
+const controlPlaneImageCases = [
+  ["registry.example.invalid/controller", true],
+  ["registry.example.invalid/foo_bar", true],
+  ["registry.example.invalid:5000/team/controller:release_1", true],
+  ["registry.example.invalid/foo+bar", false],
+  ["registry.example.invalid/controller?tag", false],
+  ["-registry.example.invalid/controller", false],
+  ["_registry.example.invalid/controller", false],
+];
+
 fieldParity("controller image references get the same verdict from preflight and the chart", {
-  cases: [
-    ["registry.example.invalid/controller", true],
-    ["registry.example.invalid/foo_bar", true],
-    ["registry.example.invalid:5000/team/controller:release_1", true],
-    ["registry.example.invalid/foo+bar", false],
-    ["registry.example.invalid/controller?tag", false],
-    ["-registry.example.invalid/controller", false],
-    ["_registry.example.invalid/controller", false],
-  ],
+  cases: controlPlaneImageCases,
   label: (name) => name,
   controlPlane: (name) => ({ controllerImage: `${name}@sha256:${"a".repeat(64)}` }),
   values: (name) => ({ images: { controller: `${name}@sha256:${"a".repeat(64)}` } }),
   chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
 });
+
+fieldParity(
+  "repository credential image references get the same verdict from preflight and the chart",
+  {
+    cases: controlPlaneImageCases,
+    label: (name) => name,
+    controlPlane: () => ({}),
+    extraInput: (name) => ({
+      repository: { ...repositoryInput, image: `${name}@sha256:${"c".repeat(64)}` },
+    }),
+    values: (name) => ({
+      repositoryCredentials: { ...repositoryInput, image: `${name}@sha256:${"c".repeat(64)}` },
+    }),
+    chartError:
+      /repositoryCredentials\.image must be an approved immutable SHA-256 image reference/,
+  },
+);
 
 test(
   "external sign-in Secret names get the same verdict from preflight and the chart",

@@ -15,3 +15,8 @@ export const AgentsInterruptedResponse = {
   name: "Interrupted response",
 };
 export const AgentsLoading = { ...story("agentsLoading"), name: "Loading" };
+
+export const LatestDeploymentFailed = story("agentsDeploymentFailed");
+export const LatestDeploymentDenied = story("agentsDeploymentDenied");
+export const LatestDeploymentLoading = story("agentsDeploymentLoading");
+export const LatestDeploymentUnavailable = story("agentsDeploymentError");

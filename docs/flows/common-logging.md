@@ -186,7 +186,8 @@ keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and bounded `occ.code`;
 the local diagnostic message is excluded from remote export.
-`authentication.sign-in-limit-warning` keeps `occ.code`, and
+`authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
+`occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
