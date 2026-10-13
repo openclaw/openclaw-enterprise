@@ -77,7 +77,7 @@ before running the launcher.
 
 ### Sign in through Keycloak
 
-Set `OCC_DEVELOPMENT_SIGN_IN=keycloak` for development Keycloak sign-in. The engine
+Set `OCC_DEVELOPMENT_SIGN_IN=keycloak` for Keycloak sign-in. The engine
 must bind free host port `127.0.0.1:443` and make it reachable from the host;
 other published ports must differ. k3d publishes ports at creation; changes
 require `dev-down` and fresh `dev-up`.
