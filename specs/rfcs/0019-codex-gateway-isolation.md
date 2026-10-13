@@ -132,8 +132,9 @@ when `APP_SERVER_URL` names a remote Codex Harness.
    `codexDynamicToolsExclude`; a non-object Codex plugin `config`, `cron`,
    `cron.triggers`, `models`, `models.providers` or step of
    `agents.defaults.compaction.memoryFlush` (#2273); or a `codex`/`openai` row
-   that is not an object or whose `models` is not a list of objects. The
-   entrypoint still fails the start on such a block admitted earlier.
+   that is not an object or whose `models` is not a list of objects. These checks run only
+   when the owner's document has the Codex plugin entry; otherwise the
+   entrypoint fails the start (closed).
 
 Related Harness-side hardening landed in the same window:
 
@@ -189,9 +190,8 @@ owner turn, so owner-only tools are offered. After #2273:
 - It could not start a non-Codex run in the D89 checks: `sessions_spawn` and
   `subagents` stay callable, but every spawn resolved to `codex/<model>`, and
   other refs fail `model not allowed` against the allowlist seeded from
-  configured provider rows. Spawned runs execute in the Gateway process; a
-  `model` naming a `codex` or `openai` row is stopped by the transport pin
-  (item 3), not by exclusion.
+  configured provider rows. Spawned runs execute in the Gateway process; one that reached the built-in
+  runtime would be stopped by the transport pin (item 3), not by exclusion.
 - It cannot set a session runtime override: no tool at `90d30a117` references
   `agentRuntimeOverride`, and live attempts were refused (D89, earlier pin).
 
@@ -222,12 +222,10 @@ misconfigured Configuration from turning that into a model with Gateway tools.
 
 ## Verification
 
-The PRs add conformance cases (`plugin-runtime-policy.test.mjs`,
-`kubernetes-compute.test.mjs`) and extend the runtime-image check against the
-pinned OpenClaw image. Live checks ran on a dogfood install in throwaway Namespaces:
+The PRs add conformance cases and extend the runtime-image check against the
+pinned image. Live checks ran on a dogfood install:
 
-- #808 on `769c8cd88`: no Gateway-local tools, and the thread resumed after
-  stop/start.
+- #808 on `769c8cd88`: no Gateway-local tools; the thread resumed after a restart.
 - #814 on `f22a584e6`: the Gateway config lists the then eleven exclusions and
   `cron.triggers.enabled: false`; a stream schedule was refused by the tool
   schema; no shell child appeared in the Gateway.
@@ -246,14 +244,14 @@ image.
 - **Mount the Harness workspace in the Gateway.** Rejected by the storage split
   (RFC-0003): the workspace is RWO on the Harness, and Gateway tools would still
   run with Gateway credentials and network.
-- **Route the tools through the node.** Upstream work for each tool; Codex's
-  native tools already cover them in the Harness.
+- **Route the tools through the node.** Upstream work per tool; Codex's native
+  tools cover them.
 - **Reject unsafe Configurations at admission.** Every new OpenClaw key would
   need a rule there, and rewriting at Gateway start also covers config admitted
   earlier. Admission refuses only shapes the rewrite cannot handle; a
   well-formed unsafe setting is admitted and then rewritten.
-- **Persist all of `CODEX_HOME` for non-OAuth logins.** It holds the login,
-  which should stay Pod-local; resume needs only `sessions`.
+- **Persist all of `CODEX_HOME`.** It holds the login; resume needs only
+  `sessions`.
 
 ## Known gaps and residual risk
 
@@ -264,7 +262,8 @@ image.
   built-in run a reachable model; the Gateway NetworkPolicy was the only barrier
   live. Any non-empty `agents.defaults.params`, agent `params` or non-run-control
   model `params` make `hasAuthoredProviderRequestParams` true, so Codex declares
-  the fallback and every normal turn fails closed in the Gateway. The default `openai` row can also pick up a credential:
+  the fallback and every normal turn fails closed in the Gateway (the Workspace
+  files flow's "Codex never hands that runtime a turn" holds only without them). The default `openai` row can also pick up a credential:
   an `OPENAI_API_KEY` reference in Configuration `env`/`env.vars` can resolve
   from a Secret binding. Separately, admission forces only `OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CODEX_ACCESS_TOKEN` to be
@@ -274,10 +273,8 @@ image.
   name at admission.
 - **#830 is open-ended.** It stubs every provider row (including those named by
   image, PDF, utility and hook models), forces an explicit `modelPolicy.allow`,
-  and strips params and model-credential env names. Automated review found it
-  widens an alias-only allowlist, still true at head `4916f264c`. Keys such as
-  `mediaModels`, `voiceModel` and cron job models stay uncovered; each new
-  OpenClaw model key is another rule. The branch conflicts with main.
+  and strips params and model-credential env names. Review found it widens an alias-only allowlist (still true at `4916f264c`),
+  and each new OpenClaw model key needs another rule. The branch conflicts with main.
 - **Operator terminal.** The Control UI panel still opens a Gateway PTY
   (Threat model).
 - **`skill_workshop` (not excluded; follow-up).** It is offered on
@@ -287,7 +284,8 @@ image.
 - **Plugin-contributed tools.** The list names core tools. A plugin the owner
   enables in the Configuration can add Gateway-local tools outside it.
 - **Lower-risk kept tools.** `secrets` lists or deletes entries in the
-  Gateway's own secret store, which OCE does not use; `web_fetch` makes
+  Gateway's own secret store, which OCE does not use; `personal_instructions`
+  writes an agent-dir file later prompts load; `web_fetch` makes
   requests from the Gateway Pod under OpenClaw's SSRF policy (default not
   re-verified); media tools (`tts`, image, video, music, `pdf`) write files
   under the Gateway workspace.
