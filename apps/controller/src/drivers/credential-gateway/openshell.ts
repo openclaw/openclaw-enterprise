@@ -61,7 +61,7 @@ const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_BASE_URL_CONFIG = "base_url";
 
 const SOURCE_ENDPOINT_REQUIREMENTS =
-  "The OpenShell endpoint requires HTTPS, a nonzero port, and a /v1 path. Wildcards, bracketed IPv6 hosts, URL credentials, query, and fragment are unsupported.";
+  "The OpenShell endpoint requires HTTPS, a nonzero port, and a /v1 path. Wildcards, bracketed IPv6 hosts, empty hostname labels, braces, URL credentials, query, and fragment are unsupported.";
 
 /** How the paired Credential Refresh Driver configures one `refresh` type. */
 export interface OpenShellRefreshSourceType {
@@ -482,9 +482,18 @@ function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean
 
 function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): string | undefined {
   const baseUrl = normalizeOpenAiBaseUrl(config[OPENAI_BASE_URL_CONFIG] ?? OPENAI_DEFAULT_BASE_URL);
-  // IPv6 brackets are URI syntax, but HostPattern interprets them as character classes.
-  // Do not glob-escape them without an exact representation shared by policy matching.
-  if (baseUrl === undefined || new URL(baseUrl).hostname.startsWith("[")) {
+  if (baseUrl === undefined) {
+    return undefined;
+  }
+  const hostname = new URL(baseUrl).hostname;
+  // Match OpenShell's HostPattern requirements before storing the source.
+  // IPv6 brackets are interpreted as pattern syntax, not literal URI brackets.
+  if (
+    hostname.startsWith("[") ||
+    hostname.includes("{") ||
+    hostname.includes("}") ||
+    hostname.split(".").some((label) => label.length === 0)
+  ) {
     return undefined;
   }
   return baseUrl;
@@ -568,6 +577,15 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const credentials = providerCredentials(type, input);
+    const name = openShellProviderName(context.source.id);
+    const existing = await client.getProvider(workspace, name, context.signal);
+    if (existing !== undefined && !ownedBy(existing, context.source.id)) {
+      throw new ScopeViolationError(
+        "An OpenShell provider with this source's name is not owned by the source.",
+      );
+    }
+    // Reject known collisions before changing the profile. These are separate RPCs:
+    // orphan profiles and provider replacement after this read remain outside this check.
     await this.ensureProfile(
       client,
       workspace,
@@ -576,7 +594,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       input.config,
       context.signal,
     );
-    const name = openShellProviderName(context.source.id);
     try {
       await client.createProvider(
         {

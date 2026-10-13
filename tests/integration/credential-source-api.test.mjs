@@ -159,6 +159,12 @@ test("credential source HTTP admission rejects invalid endpoints without retaini
     "https://%2A.example.test/v1",
     "https://ex%2aample.test/v1",
     "https://＊.example.test/v1",
+    // OpenShell's hostname matcher rejects empty labels and brace patterns.
+    "https://models.example.test./v1",
+    "https://models..example.test/v1",
+    "https://{a,b}.example.test/v1",
+    "https://{models}.example.test/v1",
+    "https://%7Bmodels%7D.example.test/v1",
     "https://models.example.test:0/v1",
     "https://models.example.test:000/v1",
     // URI-valid IPv6 brackets would be character classes in OpenShell host patterns.

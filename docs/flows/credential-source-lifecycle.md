@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-12
-last_updated_session: 850fdf4a-7ef8-425c-9c44-942ac1aee05f
+updated: 2026-10-13
+last_updated_session: authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2
 ---
 
 # Credential source lifecycle Flow
@@ -73,13 +73,11 @@ It then calls the Driver's side-effect-free
 `validateSourceConfig`. Invalid values return `CredentialSourceConfigError`
 (`400 INVALID_REQUEST`) before any Secret read, record creation, or gateway write.
 The shared `apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl`
-parses URLs before rejecting wildcard hostnames (including decoded percent
-escapes), wildcard paths, and port `0`. OpenShell additionally uses
+rejects decoded hostname wildcards, wildcard paths, and port `0`. OpenShell's
 `apps/controller/src/drivers/credential-gateway/openshell.ts:normalizedSourceBaseUrl`
-to reject bracketed IPv6 hosts: its profile matcher interprets brackets as
-character classes, not literal URI syntax. Compute URL validation still accepts
-IPv6. Registration and attachment require the OpenShell-safe representation;
-status and deletion retain the no-guessed-owner behavior for invalid stored sources.
+also rejects bracketed IPv6, braces, and empty hostname labels its matcher cannot
+use. Compute still accepts IPv6. Registration and attachment require the
+OpenShell-safe form; status and deletion do not guess ownership from an invalid URL.
 
 ### 2. Read Secret values
 
@@ -99,12 +97,12 @@ labels, UID, and key before decoding it. A Driver without `withValue` returns `5
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-The transaction inserts a `registering` `credential_sources` row and
-`credential_source_secrets` rows. The OpenShell provider name derives from the
-source ID. Compute's `resolveSandboxNamespace` supplies the paired Sandbox's
-placement. OCC calls `registerSource` with a 30-second timeout; the Driver ensures
-the source-owned profile and creates an OCC-labeled provider with that
-`profile_workspace`. Retries adopt only matching labels.
+The transaction inserts `registering` source and Secret-reference rows. The
+OpenShell provider name derives from the source ID. Compute's `resolveSandboxNamespace`
+supplies the Sandbox placement. OCC calls `registerSource` with a 30-second timeout; the
+Driver checks existing provider ownership, ensures the source's profile, and
+creates the labeled provider. It rechecks ownership on a creation collision; the
+gateway calls are not atomic.
 
 For terminal `failed` or `absent` results, `abandonCredentialRegistration`
 removes the provider and record, retaining a `deleting` record if removal fails.
@@ -312,6 +310,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
 
 - 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
 
