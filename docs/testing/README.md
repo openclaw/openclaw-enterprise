@@ -84,14 +84,17 @@ prepares pinned tools, workspace dependencies, Go, the same-source CLI and
 sandboxed Chromium, then runs all six cases. It uses generated fixture credentials,
 no protected environment or provider credentials, and enforcing NetworkPolicies.
 The file deadline is 150 minutes; the job allows 180 minutes including preparation
-and cleanup. `all` and ordinary PR gates do not select this lane. Existing
-credentialed lanes retain their branch and environment checks.
+and cleanup. The QA advisory workflow also runs this lane on trusted PRs;
+`all` and `CI Required` do not select it. Existing credentialed lanes retain
+their branch and environment checks.
 
 Check the run's `headSha` against the reviewed commit, then inspect the
 `full-results-dev-up-k3d` artifact and Full Integration Aggregate: every expected
 case must pass without skips at that source. A dispatched or green setup job is
-not runtime proof. Failure retains bounded result evidence; abrupt runner loss
-can prevent cleanup and loses private recovery state when the VM is discarded.
+not runtime proof. Advisory runs retain the same results in
+`qa-advisory-local-installation-dev-up-k3d`. Failure retains bounded result
+evidence; abrupt runner loss can prevent cleanup and loses private recovery
+state when the VM is discarded.
 
 ## Integration tests
 
