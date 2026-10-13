@@ -31,18 +31,20 @@ const urlCostMessage = (path: string): string =>
   `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
 
 // The most work `environmentUrls` and the userinfo checks may do on one document's URL fields and
-// environment values, in characters read (each rendering of each URL counts): about 0.1 s.
+// environment values, in characters read (each rendering of each URL counts): about 0.1 s for
+// each check of a document.
 const URL_CHECK_BUDGET = 1 << 22;
 
 // The work `urlHoldsUserinfo` does on `literals`: it renders the text three times plus once per
-// `${VAR:-fallback}` reference, and reads it whole each time (finding 1265).
+// `${VAR:-fallback}` reference, and reads it whole each time (finding 1265). Each unfilled Preset
+// variable between literals costs about as much as a dozen characters in every rendering.
 function userinfoWork(literals: readonly string[]): number {
   const text = literals.join("\0");
   let fallbacks = 0;
   for (const [, escaped, fallback] of text.matchAll(environmentReference)) {
     fallbacks += escaped === undefined && fallback !== undefined ? 1 : 0;
   }
-  return text.length * (3 + fallbacks);
+  return (text.length + 12 * literals.length) * (3 + fallbacks);
 }
 
 // Each URL `value` may hold, from its scheme to the end of its authority, where `\0` marks an
@@ -94,6 +96,18 @@ function environmentUrls(value: string, spent: { work: number }): string[] | und
       }
     }
   };
+  // Whether a reference's text holds a character in `ends`, read once per reference and pattern.
+  const endsIn = new Map<string, boolean>();
+  const holdsEnd = (reference: number, ends: RegExp): boolean => {
+    const key = `${ends.source}${reference}`;
+    const known = endsIn.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const found = ends.test(text.slice(reference, after.get(reference)));
+    endsIn.set(key, found);
+    return found;
+  };
   const spans: [number, number][] = [];
   let covered = { from: 0, to: 0, ends: /["/?#]/ };
   for (const { index: colon } of text.matchAll(/:/g)) {
@@ -120,7 +134,7 @@ function environmentUrls(value: string, spent: { work: number }): string[] | und
     if (
       colon >= covered.from &&
       authority < covered.to &&
-      (reference === -1 || !covered.ends.test(text.slice(reference, after.get(reference))))
+      (reference === -1 || !holdsEnd(reference, covered.ends))
     ) {
       continue;
     }
