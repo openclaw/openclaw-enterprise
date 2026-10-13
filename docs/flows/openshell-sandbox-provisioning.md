@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-09
-last_updated_session: authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67
+updated: 2026-10-13
+last_updated_session: land-2251-1924
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -95,41 +95,44 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-The written Installation declares the `openshell` Backend with the Gateway
-endpoint, the Sandbox, and a Credential Gateway whose `binaries` list holds the
-native Codex executable for each supported runtime architecture, x64 and ARM64.
-The launcher host does not determine the container architecture. Model egress
-comes from the credential source's
-provider profile, not the Sandbox policy.
+The written Installation declares the `openshell` Backend, Gateway endpoint,
+Sandbox and a Credential Gateway whose `binaries` list holds native Codex for
+x64 and ARM64 runtimes, whatever the launcher host. Credential-source profiles,
+not Sandbox policy, govern egress.
 
-`scripts/dev-up` validates Kubernetes Compute with OpenShell and delegates to
-`occ dev up`. Compose is the default control plane;
-`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only. Before
-creating state, Kubernetes-only startup rejects API-port collisions and records
-the engine, cluster, control-plane Kubernetes namespace, API port, and key destination. Both
-profiles verify the pinned source archive, package its charts, and import
-digest-pinned Gateway, Sandbox, and supervisor images. Kubernetes-only startup
-also builds or selects the OCE controller and Agent runtime, then imports them
-with PostgreSQL and resolves every in-cluster digest.
+`scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
+Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects
+Kubernetes-only. Before state creation, Kubernetes-only rejects API-port
+collisions and records engine, cluster, namespace, port and key destination.
+Both verify the pinned archive, package charts and import digest-pinned
+Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports them
+with PostgreSQL and resolves in-cluster digests.
 
-After Helm installs OpenShell, the development launcher reads the exact Gateway
-Service ClusterIP. It writes `network.providerHarness` with that address, the
-Gateway Pod selector, and TCP/8080. The Agent Gateway Pod uses the address only
-as a host alias for the exact hostname in the provider-advertised origin; its
-HTTP Host remains the OpenShell routing key. The corresponding NetworkPolicy
-allows that Gateway only to the selected OpenShell Gateway Pods and port.
+After Agent Sandbox rollout failure, `prepareOpenShell` calls
+`internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
+once before returning the original error for rollback. Synchronous capture
+selects the fixed Deployment, controller-UID-linked ReplicaSets/Pods and associated Warning
+reasons. It excludes messages, environment, full labels and logs, and marks
+unavailable, malformed or oversized results.
 
-The default Compose profile runs PostgreSQL and OCC in Compose while its worker
-targets k3d. Kubernetes-only runs those components in `oce-system` with
-in-cluster authentication. Both install private Envoy routing and operator
-Workspace resources, and restrict OpenShell Gateway access to the API, worker,
-supervisor callbacks, and dedicated Agent Gateways. See
-the [local deployment guides](../guides/deploy/local-kubernetes-development.md)
-for startup, RBAC, image, and cleanup details.
+Capture gets a fresh 15-second context, three-second request/command timeouts,
+256 KiB/command and a 32 KiB record cap. Direct commands are awaited; 200 ms pipe
+draining does not terminate arbitrary descendants. Error-output writes ignore
+failures; writer latency/durability are outside the subprocess budget. Capture
+neither retries nor diagnoses the failure.
 
-Cleanup validates the recorded engine and state before deleting the named
-cluster and, in Compose mode, the recorded project and volumes. Partial cleanup
-retains recovery state.
+After Helm, `network.providerHarness` records Gateway
+ClusterIP, Pod selector and TCP/8080. The Agent Gateway aliases only the advertised hostname to that IP, preserving
+HTTP Host for routing. NetworkPolicy lets it reach only those Pods/port.
+
+Compose runs PostgreSQL, OCC and its k3d-targeting worker; Kubernetes-only uses
+`oce-system` and in-cluster authentication. Both install private Envoy routing
+and operator Workspaces, limiting Gateway access to API, worker, supervisor
+callbacks and dedicated Agent Gateways. See
+[local deployment guides](../guides/deploy/local-kubernetes-development.md).
+
+Cleanup validates recorded engine/state before deleting the named cluster and
+Compose project/volumes; partial cleanup retains recovery state.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -360,9 +363,11 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 - 2026-10-10 12:40: Declare the Sandbox HOME for native hook credentials; hooks trust the file-delivered Gateway CA. (fix-1017)
 
+- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
+
 - 2026-10-09 19:45: Cover both runtime architectures in the development credential policy. (authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67 - bd540bcdef63cdc719e73192e4dbe99c365953c3)
 
-- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
+- 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds; tighten setup prose. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 
