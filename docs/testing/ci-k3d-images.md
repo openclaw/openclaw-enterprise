@@ -31,11 +31,12 @@ OpenShell retains its separately pinned image. Mutable overrides fail before
 resource creation. Clean up a failed run's owned resources with
 `node scripts/ci/cleanup.mjs --state <private-state-file>` before reusing its state path.
 
-`k3d cluster create` times out after five minutes (hosted runners take under a
-minute, node image pull included; `OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` overrides
-it). The timeout stops k3d's whole process group. A preparation command still
-running 5 seconds after its timeout's SIGTERM gets SIGKILL, and 5 seconds later
-preparation stops waiting for output that escaped descendants hold open
+`k3d cluster create` times out after two minutes, and its retry after five
+(hosted runners take under a minute, node image pull included;
+`OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` sets both). The timeout stops k3d's whole
+process group. A preparation command still running 5 seconds after its
+timeout's SIGTERM gets SIGKILL, and 5 seconds later preparation stops waiting
+for output that escaped descendants hold open
 (`OPENCLAW_CI_COMMAND_KILL_GRACE_MS` overrides both). Preparation then writes the
 lane's cluster diagnostics (10 seconds per command;
 `OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS` overrides it), deletes the partial

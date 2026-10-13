@@ -421,7 +421,9 @@ revisionTest(
       "uncertain provider retirement must not be replayed",
     );
   },
-  { timeout: 30_000 },
+  // First in its file, so it also absorbs the file's cold start (finding 1171):
+  // about 12.5 s typically, 22 s on a slow runner.
+  { timeout: 60_000 },
 );
 
 revisionTest(

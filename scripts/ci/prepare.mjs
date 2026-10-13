@@ -53,6 +53,7 @@ const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
   "k3d-fixture-plugins",
+  "k3d-fixture-oauth",
 ]);
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
@@ -1367,11 +1368,16 @@ async function waitForK3dNodesRegistered(kubectl, kubectlArgs, nodes) {
 // Hosted CI creates a cluster, node image pull included, in 26-48 s (284 runs,
 // 2026-10-08: p50 27 s, p99 44 s). A create that never returns once held a lane
 // for 44 minutes until the job timeout (finding 840).
-const k3dCreateTimeoutMs =
-  Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS) > 0
-    ? Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS)
-    : 5 * 60_000;
-const k3dCreateAttempts = 2;
+// A hung first attempt once held a lane for its full five minutes before a 12 s
+// retry (finding 1174), so the first attempt gets two minutes, still well over
+// the p99, and the retry keeps five for a slow runner.
+// OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS sets both attempts.
+const k3dCreateTimeoutOverrideMs = Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS);
+const k3dCreateTimeoutsMs =
+  k3dCreateTimeoutOverrideMs > 0
+    ? [k3dCreateTimeoutOverrideMs, k3dCreateTimeoutOverrideMs]
+    : [2 * 60_000, 5 * 60_000];
+const k3dCreateAttempts = k3dCreateTimeoutsMs.length;
 
 // Bound each create. After a timeout, keep diagnostics, delete what the
 // attempt created, and try once more with the same owned name and directory.
@@ -1379,9 +1385,10 @@ const k3dCreateAttempts = 2;
 async function createK3dCluster(statePath, state, resource, args) {
   const k3d = process.env.OPENCLAW_CI_K3D_BIN ?? "k3d";
   for (let attempt = 1; ; attempt += 1) {
+    const timeoutMs = k3dCreateTimeoutsMs[attempt - 1];
     try {
       await k3dStage(state, "k3d-create", () =>
-        execFile(k3d, args, { timeoutMs: k3dCreateTimeoutMs, processGroup: true }),
+        execFile(k3d, args, { timeoutMs, processGroup: true }),
       );
       return;
     } catch (error) {
@@ -1389,7 +1396,7 @@ async function createK3dCluster(statePath, state, resource, args) {
         throw error;
       }
       const summary =
-        `k3d cluster create ${resource.name} did not finish within ${k3dCreateTimeoutMs} ms ` +
+        `k3d cluster create ${resource.name} did not finish within ${timeoutMs} ms ` +
         `(attempt ${attempt} of ${k3dCreateAttempts})`;
       progress(state.lane, summary);
       await captureK3dDiagnostics({
@@ -2473,7 +2480,8 @@ async function prepareLane({ lane, statePath }) {
       break;
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
-    case "k3d-fixture-plugins": {
+    case "k3d-fixture-plugins":
+    case "k3d-fixture-oauth": {
       // PostgreSQL, the cluster and the fixture build are independent; the
       // fixture is imported only after the cluster passed its readiness gates.
       const [, cluster, built] = await timedPreparation(
