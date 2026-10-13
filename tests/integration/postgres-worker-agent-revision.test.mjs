@@ -4465,9 +4465,10 @@ revisionTest(
     // Ahead: the controller clock already counts the work as five minutes old, yet by the
     // database clock it is younger than the deadline, so the bootstrap keeps waiting.
     await waitFor("a pass ahead of the database clock", async () => outcomes[0]);
-    assert.equal(outcomes[0], "pending");
+    // A starved runner that reaches the first pass past the deadline fails here, not below.
     const young = await workRow();
     assert.ok(Number(young.age_ms) < timeoutMs, `work is still young (${young.age_ms} ms)`);
+    assert.equal(outcomes[0], "pending");
     assert.notEqual(young.state, "failed_permanent");
     assert.deepEqual(await cleanupRows(), []);
 

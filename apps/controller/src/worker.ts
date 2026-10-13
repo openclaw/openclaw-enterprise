@@ -1245,13 +1245,14 @@ export class ControllerWorker {
    * Milliseconds since the claimed work was created, by PostgreSQL's clock. The convergence
    * deadline and age-scaled rechecks use it. `createdAt` is on the database clock, so
    * `Date.now() - createdAt` would move the deadline by the controller's skew from it
-   * (finding 1187). The claim carries PostgreSQL's age when granted; this process's
-   * monotonic clock advances it from there.
+   * (finding 1187). The claim carries PostgreSQL's age when granted, and each renewal around
+   * an external effect refreshes it; this process's monotonic clock advances it in between.
+   * It trails the database's age by one round trip, so it never ends work early.
    */
   private workAgeMs(claim: ClaimedWork): number {
     const origin = this.workOrigins.get(claim);
     if (origin === undefined) {
-      throw new Error("The worker has no claim time for this work.");
+      throw new Error(`The worker has no claim time for work ${claim.idempotencyKey}.`);
     }
     return Math.max(0, performance.now() - origin);
   }
@@ -1912,7 +1913,7 @@ export class ControllerWorker {
         await this.finalize(claim, namespace, denied);
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) {
+      if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
       result = await this.observe(claim, namespace);
@@ -3716,7 +3717,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) {
+      if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
       result = await this.observeRevision(
@@ -4213,6 +4214,16 @@ export class ControllerWorker {
     };
   }
 
+  /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
+  private async renewClaim(claim: ClaimedWork): Promise<boolean> {
+    const renewed = await this.queue.heartbeat(claim);
+    if (renewed === undefined) {
+      return false;
+    }
+    this.workOrigins.set(claim, performance.now() - renewed.ageMs);
+    return true;
+  }
+
   private async withClaimHeartbeat<T>(
     claim: ClaimedWork,
     effect: (signal: AbortSignal) => Promise<T>,
@@ -4223,7 +4234,7 @@ export class ControllerWorker {
     // Consecutive short effects can each finish before their timer fires while
     // the whole sequence outlives the lease. Renew before every external effect.
     const firstRenewal = performance.now();
-    if ((await this.queue.heartbeat(claim)) === undefined) {
+    if (!(await this.renewClaim(claim))) {
       throw new WorkClaimLostError();
     }
     this.progress();
@@ -4253,7 +4264,7 @@ export class ControllerWorker {
       () => {
         pending = pending.then(async () => {
           const renewedAt = performance.now();
-          if ((await this.queue.heartbeat(claim)) === undefined) {
+          if (!(await this.renewClaim(claim))) {
             abandon();
           } else if (!lost) {
             confirmLease(renewedAt);
