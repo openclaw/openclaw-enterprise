@@ -846,8 +846,10 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   const namespace = await fixture.createNamespace("Cold drawer", { ready: true });
   await fixture.createAgent(namespace.id, "Cold drawer Agent");
   const { page } = await newPage(t, fixture, mobile);
+  await trackSettledFetches(page);
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
   await page.getByText("Cold drawer Agent", { exact: true }).waitFor();
+  await waitForSettledView(page);
 
   // A bookmark, a typed address or the post-login return has no ?namespace=: the Loading
   // render's nav links have none, and the fresh render's links gain it.
