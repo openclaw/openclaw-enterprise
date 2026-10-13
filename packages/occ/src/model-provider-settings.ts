@@ -42,7 +42,7 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
 // escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
 // (`src/config/env-substitution.ts`).
-const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
+export const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
 
 const holdsEnvironmentReference = (value: unknown): boolean =>
   typeof value === "string" &&

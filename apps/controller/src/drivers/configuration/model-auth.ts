@@ -3,6 +3,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  environmentReference,
   isCredentialHeaderName,
   ModelCredentialValueError,
   urlHoldsUserinfo,
@@ -26,6 +27,127 @@ const urlCredentialMessage = (path: string): string =>
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
+const environmentCostMessage = (path: string): string =>
+  `Configuration field ${path}, with the environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
+
+// The most work `environmentUrls` and the userinfo checks may do on one document's environment
+// values, in characters read (each rendering of each URL counts): about 0.1 s.
+const ENVIRONMENT_URL_BUDGET = 1 << 22;
+
+// Each URL `value` may hold, from its scheme to the end of its authority, where `\0` marks an
+// unfilled Preset variable; `undefined` when checking them would exceed the budget. URL parsers
+// (WHATWG's, Python's) drop tabs and newlines, and read userinfo after a special scheme with one
+// slash or none (`https:u:pw@host`). A candidate is a colon with two slashes after it, or one
+// after a scheme that ends in `http(s)`, `ws(s)` or `ftp` or holds a variable or `${VAR}`
+// reference (each also between the colon and the slashes), with no space after it. References
+// are read as the runtime reads them (`environmentReference`; `$${VAR}` is literal text). A
+// candidate inside the authority of one already returned is part of it, unless it sits in a
+// reference whose fallback could end that authority. A backslash does not end an authority here:
+// WHATWG parsers read it as a slash after a special scheme, but Python and curl read it as part
+// of the userinfo, so each URL is also checked with it percent-encoded. `spent` carries the work
+// done on the document so far; a proxy variable's whole-value check is charged to it too.
+function environmentUrls(
+  value: string,
+  spent: { work: number },
+  proxy: boolean,
+): string[] | undefined {
+  const text = value.replaceAll(/[\t\n\r]/g, "");
+  // Each reference, by its start and by its end; `inside` marks the start of the one at each
+  // index, and `count` how many start before it.
+  const after = new Map<number, number>();
+  const before = new Map<number, number>();
+  const inside = new Int32Array(text.length + 1).fill(-1);
+  const count = new Int32Array(text.length + 2);
+  for (const { index, 0: reference, 1: escaped } of text.matchAll(environmentReference)) {
+    if (escaped === undefined) {
+      after.set(index, index + reference.length);
+      before.set(index + reference.length, index);
+      inside.fill(index, index + 1, index + reference.length);
+      count[index + 1] = 1;
+    }
+  }
+  for (let index = 1; index < count.length; index += 1) {
+    count[index] = (count[index] ?? 0) + (count[index - 1] ?? 0);
+  }
+  let work = spent.work + text.length;
+  if (proxy) {
+    work += 2 * text.length * (3 + (count[text.length] ?? 0));
+  }
+  const skip = (from: number): [number, number] => {
+    let index = from;
+    let slashes = 0;
+    for (;;) {
+      const end = after.get(index);
+      if (end !== undefined) {
+        index = end;
+      } else if (text[index] === "\0") {
+        index += 1;
+      } else if (text[index] === "/" || text[index] === "\\") {
+        index += 1;
+        slashes += 1;
+      } else {
+        return [index, slashes];
+      }
+    }
+  };
+  const spans: [number, number][] = [];
+  let covered = { from: 0, to: 0, ends: /["/?#]/ };
+  for (const { index: colon } of text.matchAll(/:/g)) {
+    let start = colon;
+    for (;;) {
+      const reference = before.get(start);
+      if (reference !== undefined) {
+        start = reference;
+      } else if (start > 0 && /[\w+.\-\0]/.test(text[start - 1] ?? "")) {
+        start -= 1;
+      } else {
+        break;
+      }
+    }
+    const scheme = text.slice(start, colon);
+    const variable = /\0/.test(scheme) || count[colon] !== count[start];
+    const special = /(?:^|[^A-Za-z0-9+.])(?:https?|wss?|ftp)$/i.test(scheme);
+    const [authority, slashes] = skip(colon + 1);
+    work += authority - start;
+    if (slashes < 2 && (!(variable || special) || text[colon + 1] === " ")) {
+      continue;
+    }
+    const reference = inside[colon] ?? -1;
+    if (
+      colon >= covered.from &&
+      authority < covered.to &&
+      (reference === -1 || !covered.ends.test(text.slice(reference, after.get(reference))))
+    ) {
+      continue;
+    }
+    // A double quote ends a URL inside JSON text. A `file` URL, checked only as written (it sends
+    // no credentials, and Windows paths fill it with backslashes), also ends at a backslash.
+    const ends = /^file$/i.test(scheme) ? /["/?#\\]/ : /["/?#]/;
+    let end = authority;
+    while (end < text.length) {
+      const skipped = after.get(end);
+      if (skipped !== undefined) {
+        end = skipped;
+      } else if (ends.test(text[end] ?? "")) {
+        break;
+      } else {
+        end += 1;
+      }
+    }
+    end = Math.min(end + 1, text.length);
+    // Each of the two checks renders every fallback in the URL, so its cost grows with each
+    // reference.
+    work += 2 * (end - start) * (3 + (count[end] ?? 0) - (count[start] ?? 0));
+    if (work > ENVIRONMENT_URL_BUDGET) {
+      return undefined;
+    }
+    covered = { from: authority, to: end - 1, ends };
+    spans.push([start, end]);
+  }
+  spent.work = work;
+  return spans.map(([start, end]) => text.slice(start, end));
+}
+
 // The provider headers refused as literals before the 2026-10-12 notice.
 const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
 
@@ -40,7 +162,7 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * deployment checks all slots. A Preset save passes `unresolved`, so a credential header name that
  * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
- * channel proxies, MCP server URLs, proxy environment variables (also an MCP server's), Codex's
+ * channel proxies, MCP server URLs, a URL in any environment value of any environment map, Codex's
  * network proxy and speech and Talk provider proxies.
  */
 export function validateModelCredentialReferences(
@@ -92,6 +214,38 @@ export function validateModelCredentialReferences(
         urlHoldsUserinfo(value, [`http://${head}`, ...tail]))
     ) {
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
+  };
+  // Every URL an environment value holds is checked, whatever the variable's name (finding
+  // 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`, `npm_config_registry`,
+  // `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as `GOPROXY` holds several.
+  // A proxy variable is also read from its start, without a scheme as http.
+  const spent = { work: 0 };
+  const refuseEnvironmentUserinfo = (path: SettingPath, value: unknown, proxy: boolean): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    // `\0` stands for each unfilled variable: a process environment cannot hold one. A proxy
+    // without a scheme is read as http.
+    const text = (options.unresolved?.(path) ?? [value]).join("\0");
+    const urls = environmentUrls(
+      proxy && !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(text) ? `http://${text}` : text,
+      spent,
+      proxy,
+    );
+    if (urls === undefined) {
+      throw new ModelCredentialValueError(pointer(...path), environmentCostMessage);
+    }
+    if (proxy) {
+      refuseUrlUserinfo(path, value, true);
+    }
+    for (const url of urls) {
+      if (
+        urlHoldsUserinfo(value, url.split("\0")) ||
+        (!/^file:/i.test(url) && urlHoldsUserinfo(value, url.replaceAll("\\", "%5C").split("\0")))
+      ) {
+        throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+      }
     }
   };
 
@@ -181,11 +335,11 @@ export function validateModelCredentialReferences(
         );
       }
     }
-    // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
-    // process it starts, and an MCP server's `env` its stdio process (finding 1259). Clients such
-    // as curl and git read a value without a scheme as http. On a Preset save, a name that waits
-    // on a variable is matched as the text around it (`{{ vars.scheme }}_PROXY`), as for
-    // credential header names.
+    // The environment (HTTPS_PROXY, PIP_INDEX_URL, ...) reaches the Gateway and every process it
+    // starts, and an MCP server's `env` its stdio process (finding 1259). Clients such as curl
+    // and git read a proxy without a scheme as http. On a Preset save, a name that waits on a
+    // variable is matched as the text around it (`{{ vars.scheme }}_PROXY`), as for credential
+    // header names.
     const environments: [readonly string[], Record<string, unknown> | undefined][] = [
       [["env"], env],
       [["env", "vars"], asRecord(env?.vars)],
@@ -253,12 +407,33 @@ export function validateModelCredentialReferences(
         refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
       }
     }
+    // Every other environment map OpenClaw starts a process with (findings 1260, 1261): a
+    // skill's, an internal hook's, a provider's local service, an exec secret provider's, the
+    // Docker sandbox's (default and per Agent) and the install policy's exec check.
+    const keyedEnvironments = (path: readonly string[], each: readonly string[]) => {
+      for (const [key, settings] of Object.entries(at(values, path) ?? {})) {
+        environments.push([[...path, key, ...each], at(settings, each)]);
+      }
+    };
+    keyedEnvironments(["skills", "entries"], ["env"]);
+    keyedEnvironments(["hooks", "internal", "entries"], ["env"]);
+    keyedEnvironments(["models", "providers"], ["localService", "env"]);
+    keyedEnvironments(["secrets", "providers"], ["env"]);
+    keyedEnvironments(["agents", "entries"], ["sandbox", "docker", "env"]);
+    for (const path of [
+      ["agents", "defaults", "sandbox", "docker", "env"],
+      ["security", "installPolicy", "exec", "env"],
+    ]) {
+      environments.push([path, at(values, path)]);
+    }
     for (const [prefix, settings] of environments) {
-      for (const name of Object.keys(settings ?? {})) {
+      for (const [name, value] of Object.entries(settings ?? {})) {
         const literal = options.unresolved?.([...prefix, name], true)?.join("");
-        if ([name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text))) {
-          refuseUrlUserinfo([...prefix, name], settings?.[name], true);
-        }
+        refuseEnvironmentUserinfo(
+          [...prefix, name],
+          value,
+          [name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text)),
+        );
       }
     }
   }

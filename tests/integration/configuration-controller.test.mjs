@@ -2114,6 +2114,318 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   assert.equal(resaved.body.error.message, message("/proxy/proxyUrl"));
 });
 
+test("Configuration and Preset saves refuse a user name or password in a URL in any environment map, whatever the variable's name", async (t) => {
+  // Findings 1260-1262: the userinfo rule read only `env`, `env.vars` and MCP server `env`, and
+  // only `*_PROXY` names. A skill, hook, local model service, exec secret provider, Docker sandbox
+  // or install policy check starts its process with its own `env`, and pip, npm, git and Go send
+  // the userinfo in `PIP_INDEX_URL`, `npm_config_registry` or `GOPROXY` as Basic auth.
+  const root = await mkdtemp(join(tmpdir(), "occ-env-url-userinfo-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-env-url-userinfo");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-env-url-userinfo-${randomUUID()}`;
+  const message = (field) =>
+    `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const index = `https://u:${sentinel}@pypi.example.test/simple`;
+  const refused = [
+    [
+      { skills: { entries: { docs: { env: { HTTPS_PROXY: index } } } } },
+      "/skills/entries/docs/env/HTTPS_PROXY",
+    ],
+    [
+      { hooks: { internal: { entries: { audit: { env: { PIP_INDEX_URL: index } } } } } },
+      "/hooks/internal/entries/audit/env/PIP_INDEX_URL",
+    ],
+    [
+      {
+        models: {
+          providers: {
+            local: { localService: { command: "/usr/bin/serve", env: { GOPROXY: index } } },
+          },
+        },
+      },
+      "/models/providers/local/localService/env/GOPROXY",
+    ],
+    [
+      {
+        secrets: {
+          providers: {
+            vault: { source: "exec", command: "/usr/bin/vault", env: { VAULT: index } },
+          },
+        },
+      },
+      "/secrets/providers/vault/env/VAULT",
+    ],
+    [
+      { agents: { defaults: { sandbox: { docker: { env: { npm_config_registry: index } } } } } },
+      "/agents/defaults/sandbox/docker/env/npm_config_registry",
+    ],
+    [
+      { agents: { entries: { main: { sandbox: { docker: { env: { HTTP_PROXY: index } } } } } } },
+      "/agents/entries/main/sandbox/docker/env/HTTP_PROXY",
+    ],
+    [
+      {
+        security: {
+          installPolicy: { exec: { command: "/usr/bin/scan", env: { GIT_CONFIG_VALUE_0: index } } },
+        },
+      },
+      "/security/installPolicy/exec/env/GIT_CONFIG_VALUE_0",
+    ],
+    // Any name, in the maps checked before: a URL anywhere in the value, also in a list.
+    [
+      { env: { vars: { GOPROXY: `https://${sentinel}@proxy.example.test,direct` } } },
+      "/env/vars/GOPROXY",
+    ],
+    [{ env: { PIP_INDEX_URL: index } }, "/env/PIP_INDEX_URL"],
+    [
+      { env: { vars: { PIP_EXTRA_INDEX_URL: `https://pypi.example.test ${index}` } } },
+      "/env/vars/PIP_EXTRA_INDEX_URL",
+    ],
+    [
+      {
+        mcp: {
+          servers: {
+            docs: {
+              command: "docs-mcp",
+              env: { NPM_REGISTRY: `\${SCHEME}://u:${sentinel}@npm.test` },
+            },
+          },
+        },
+      },
+      "/mcp/servers/docs/env/NPM_REGISTRY",
+    ],
+    [
+      { env: { vars: { PIP_INDEX_URL: `\${PIP_URL:-https://u:${sentinel}@pypi.example.test}` } } },
+      "/env/vars/PIP_INDEX_URL",
+    ],
+    // URL parsers drop a tab or newline, a reference may render empty between `:` and `//`, and
+    // an http(s) URL reads userinfo with one slash or none.
+    [
+      { skills: { entries: { tab: { env: { PIP_INDEX_URL: `https:\t//u:${sentinel}@pypi` } } } } },
+      "/skills/entries/tab/env/PIP_INDEX_URL",
+    ],
+    [
+      { skills: { entries: { gap: { env: { INDEX: `https:\${GAP:-}//u:${sentinel}@pypi` } } } } },
+      "/skills/entries/gap/env/INDEX",
+    ],
+    [
+      { skills: { entries: { slash: { env: { INDEX: `https:/u:${sentinel}@pypi` } } } } },
+      "/skills/entries/slash/env/INDEX",
+    ],
+    [
+      { skills: { entries: { none: { env: { INDEX: `HTTPS:u:${sentinel}@pypi` } } } } },
+      "/skills/entries/none/env/INDEX",
+    ],
+    // A reference in the scheme renders it: `https${X:-}:` reads as `https:`.
+    [
+      { skills: { entries: { ref: { env: { INDEX: `https\${X:-}:u:${sentinel}@pypi` } } } } },
+      "/skills/entries/ref/env/INDEX",
+    ],
+    [
+      {
+        skills: {
+          entries: { list: { env: { GOPROXY: `ok.example,\${P:-https}:u:${sentinel}@h` } } },
+        },
+      },
+      "/skills/entries/list/env/GOPROXY",
+    ],
+    // A space in the userinfo still reads as userinfo (WHATWG, Python), `${a/}` is no reference
+    // (names are upper case), and a backslash ends a `file` authority.
+    [
+      { skills: { entries: { space: { env: { INDEX: `https://u:p w${sentinel}@pypi` } } } } },
+      "/skills/entries/space/env/INDEX",
+    ],
+    [
+      {
+        skills: {
+          entries: { lower: { env: { INDEX: `https://ok\${a/},https:u:${sentinel}@h` } } },
+        },
+      },
+      "/skills/entries/lower/env/INDEX",
+    ],
+    [
+      { skills: { entries: { file: { env: { INDEX: `file://h\\https:u:${sentinel}@h` } } } } },
+      "/skills/entries/file/env/INDEX",
+    ],
+    // Python and curl read a backslash in a password as part of the userinfo.
+    [
+      { skills: { entries: { bs: { env: { INDEX: `https://u:p\\w${sentinel}@pypi` } } } } },
+      "/skills/entries/bs/env/INDEX",
+    ],
+    [
+      { env: { vars: { HTTPS_PROXY: `http://u:p\\w${sentinel}@proxy.example:3128` } } },
+      "/env/vars/HTTPS_PROXY",
+    ],
+  ];
+  for (const [values, field] of refused) {
+    await t.test(`refuses ${field}`, async () => {
+      for (const [path, body] of [
+        [configurations, { kind: "agent", values }],
+        [presets, { name: "Refused", template: { configuration: { values } } }],
+      ]) {
+        const response = await request(context.app, "POST", path, { body });
+        assert.equal(response.status, 400, `${path}: ${JSON.stringify(response.body)}`);
+        assert.equal(response.body.error.message, message(field), path);
+        assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+      }
+    });
+  }
+
+  // A Preset variable beside the userinfo, in the scheme or between `:` and `//`, is refused at
+  // save; a variable that is the whole URL is checked once filled.
+  const variables = {
+    url: { type: "string" },
+    host: { type: "string" },
+    scheme: { type: "string" },
+  };
+  for (const [env, field] of [
+    [{ PIP_INDEX_URL: "https://{{ vars.url }}@pypi.example.test" }, "PIP_INDEX_URL"],
+    [{ GOPROXY: `{{ vars.scheme }}://u:${sentinel}@{{ vars.host }}` }, "GOPROXY"],
+    [{ REGISTRY: `https:{{ vars.scheme }}//u:${sentinel}@npm.test` }, "REGISTRY"],
+  ]) {
+    await t.test(`refuses a Preset ${field} at save`, async () => {
+      const response = await request(context.app, "POST", presets, {
+        body: {
+          name: "Refused",
+          template: {
+            variables,
+            configuration: { values: { skills: { entries: { x: { env } } } } },
+          },
+        },
+      });
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.message, message(`/skills/entries/x/env/${field}`));
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    });
+  }
+  // A value whose URLs would take too long to check is refused rather than block the controller.
+  await t.test("refuses a value too costly to check", async () => {
+    // Twelve values that each fit the budget exceed it together: it is the document's.
+    const env = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [`X${index}`, `x://h${"${A:-x}".repeat(170)}`]),
+    );
+    const one = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: { skills: { entries: { x: { env: { X0: env.X0 } } } } } },
+    });
+    assert.equal(one.status, 201, JSON.stringify(one.body));
+    await request(context.app, "DELETE", `${configurations}/${one.body.data.id}`);
+    const values = { skills: { entries: { x: { env } } } };
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(
+      response.body.error.message,
+      "Configuration field /skills/entries/x/env/X10, with the environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
+    );
+  });
+  // Nothing refused was stored.
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+  assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
+
+  const saved = await request(context.app, "POST", presets, {
+    body: {
+      name: "Whole variable",
+      template: {
+        variables,
+        configuration: {
+          values: { skills: { entries: { x: { env: { PIP_INDEX_URL: "{{ vars.url }}" } } } } },
+        },
+      },
+    },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const launch = (url) =>
+    request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate(saved.body.data.template, { url, host: "", scheme: "" })
+          .configuration,
+      },
+    });
+  await t.test("refuses a whole Preset variable at launch", async () => {
+    const filled = await launch(index);
+    assert.equal(filled.status, 400, JSON.stringify(filled.body));
+    assert.equal(filled.body.error.message, message("/skills/entries/x/env/PIP_INDEX_URL"));
+    assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
+  });
+  const plain = await launch("https://pypi.example.test/simple");
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+
+  // Ordinary values, URLs without userinfo, an `@` outside a URL's authority, whole references
+  // and fallbacks without userinfo still save in every map.
+  const env = {
+    PIP_INDEX_URL: "https://pypi.example.test/simple",
+    GOPROXY: "https://proxy.golang.org,direct",
+    NPM_SCOPE_URL: "https://registry.example.test/@scope/pkg",
+    GIT_CONFIG_VALUE_0: "${GIT_URL}",
+    REGISTRY: "${REGISTRY_URL:-https://registry.example.test}",
+    MAINTAINER: "ops@example.test",
+    NOTE: "see https://docs.example.test/help or write to ops@example.test",
+    ARTIFACT: "s3://bucket/key@v1",
+    JDBC: "jdbc:postgresql://db.example.test/app?user=ops@example.test",
+    PLAIN: "use https: everywhere, ask ops@example.test",
+    NEWS: "news:ops@example.test",
+    WINDOWS_ADMIN: "Windows:admin@example.test",
+    ARGS: "--proxy=http://proxy.example.test:3128/ --user=ops@example.test",
+    JSON: '{"url": "https://api.example.test", "contact": "ops@example.test"}',
+    ORIGINS: "http://localhost:3000,http://127.0.0.1:3000",
+    WINDOWS_FILE: "file:///C:\\Users\\ops@example.test\\notes.txt",
+    NO_PROXY: "localhost,.svc,10.0.0.0/8",
+    LOG_LEVEL: "debug",
+  };
+  const accepted = {
+    env: { ...env, vars: env },
+    skills: { entries: { docs: { env } } },
+    hooks: { internal: { entries: { audit: { env } } } },
+    models: { providers: { local: { localService: { command: "/usr/bin/serve", env } } } },
+    secrets: { providers: { vault: { source: "exec", command: "/usr/bin/vault", env } } },
+    agents: {
+      defaults: { sandbox: { docker: { env } } },
+      entries: { main: { sandbox: { docker: { env } } } },
+    },
+    security: { installPolicy: { exec: { command: "/usr/bin/scan", env } } },
+    mcp: { servers: { docs: { command: "docs-mcp", env } } },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: {
+            ...accepted,
+            skills: {
+              entries: {
+                docs: {
+                  env: {
+                    ...env,
+                    PIP_INDEX_URL: "https://{{ vars.host }}/simple",
+                    GOPROXY: "{{ vars.url }}",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
   // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is

@@ -115,13 +115,14 @@ or `request.proxy.url` whose host or port is a variable or `${VAR}` (or in its
 first header character by code point: `not one that starts with U+007B`. A
 Preset saved with one still reads but cannot launch: edit it. A later change
 refuses one in `proxy.proxyUrl`, a channel or channel account `proxy`, an MCP
-server `url`, and `env` proxy variables such as `HTTPS_PROXY` in any case; a
-`baseUrl` with an empty host (`https:///v1`, as an empty variable leaves it);
+server `url` and any URL in an `env` map (skill, hook, sandbox, ...),
+whatever the name (`HTTPS_PROXY`, `GOPROXY`); a `baseUrl` with an empty host
+(`https:///v1`, as an empty variable leaves it);
 and a number or boolean variable as the whole `baseUrl` or `api`. A later
 change refuses a `baseUrl` without exactly `//` after `http:` or `https:`
 (`https:/v1`, `https:${HOST}`, `https:{{ vars.host }}`), and a user name or
-password in an MCP server's `env` proxy variables, Codex's network proxy URLs
-and speech and Talk provider `proxy` settings.
+password in Codex's network proxy URLs and speech and Talk provider `proxy`
+settings.
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
