@@ -98,6 +98,21 @@ disabled execution cluster is not checked.
 **Steps.** Replace `0.0.0.0/0` or `::/0` with the execution API addresses you
 mean to allow. Rewrite `010.44.0.2/32` as `10.44.0.2/32`. Upgrade again.
 
+## 2026-10-12: cluster and execution API ports must be canonical decimals
+
+**What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
+values that are not a canonical decimal from 1 to 65535 with at most five
+digits. `010` and integers Sprig cannot convert, such as
+`9223372036854775808`, no longer render.
+
+**Who is affected.** Installations that set either port with a leading zero.
+
+**How to tell.** Helm names `cluster.port` or `executionCluster.apiPort` and
+says it must be an integer TCP port from 1 to 65535.
+
+**Steps.** Replace a leading-zero value with its effective decimal port (`010`
+becomes `8`) before the next Helm upgrade. _untested_ against a live release.
+
 ## 2026-10-12: model credentials in provider headers and request auth
 
 **What breaks.** On Kubernetes Compute, Configuration create and update,
