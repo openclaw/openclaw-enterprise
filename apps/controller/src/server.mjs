@@ -1,4 +1,4 @@
-import { refuseRewrittenIpv4Host } from "./auth/configuration.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -231,6 +231,7 @@ function configuration() {
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must be a valid absolute URL.");
   }
+  refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
   refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
   const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
   if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {

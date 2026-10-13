@@ -48,6 +48,16 @@ export function refuseRewrittenIpv4Host(setting: string, raw: string, parsed: UR
   );
 }
 
+// Node drops an empty user info (https://@host, https://:@host, https:@host) and publishes the
+// host alone, while the chart refuses any @ in auth.baseUrl. Like URL parsing, this drops tabs
+// and newlines and skips slashes or backslashes after the scheme, so any @ before the host
+// counts. `setting` names the URL in the error.
+export function refuseWrittenUserinfo(setting: string, raw: string): void {
+  if (/^[a-z][a-z\d+.-]*:[/\\]*[^/\\?#]*@/i.test(stripUrlEdges(raw).replace(/[\t\n\r]/g, ""))) {
+    throw new Error(`${setting} must not contain user info or an @ before the host.`);
+  }
+}
+
 // A bare ? or # (https://host? or https://host#) parses to an empty search or hash, but it
 // survives serialization (https://host/?), so Better Auth's base would become
 // https://host/?/auth and every /auth route would 404. Refuse it like any query or fragment.

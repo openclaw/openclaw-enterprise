@@ -720,9 +720,10 @@ const controlPlaneImageCases = [
   ["registry.example.invalid/controller?tag", false],
   ["-registry.example.invalid/controller", false],
   ["_registry.example.invalid/controller", false],
-  // An uppercase registry host is allowed. A second @ is refused, and so is a bracket anywhere:
-  // control-plane images cannot use an IPv6 registry host.
+  // An uppercase registry host or tag is allowed. A second @ is refused, and so is a bracket
+  // anywhere: control-plane images cannot use an IPv6 registry host.
   ["Registry.Example.invalid/team/controller", true],
+  ["registry.example.invalid/team/controller:Release_1", true],
   ["registry.example.invalid/controller@extra", false],
   ["registry.example.invalid/[fd00::1]/controller", false],
 ];
@@ -733,6 +734,42 @@ fieldParity("controller image references get the same verdict from preflight and
   controlPlane: (name) => ({ controllerImage: `${name}@sha256:${"a".repeat(64)}` }),
   values: (name) => ({ images: { controller: `${name}@sha256:${"a".repeat(64)}` } }),
   chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
+});
+
+// Kubernetes refuses to pull an image whose repository path has an uppercase letter
+// (InvalidImageName), and the chart renders it. Preflight refuses it in every image field.
+test("images with an uppercase repository path fail preflight", { skip: helmSkip }, () => {
+  const refusal = (field) => new RegExp(`${escape(field)} repository path must be lowercase`);
+  const fields = [
+    ["controlPlane.controllerImage", (image) => input({ controllerImage: image })],
+    ["runtime.image", (image) => ({ ...input({}), runtime: { ...input({}).runtime, image } })],
+    ["repository.image", (image) => ({ ...input({}), repository: { ...repositoryInput, image } })],
+  ];
+  const names = [
+    "registry.example.invalid/Team/controller",
+    "registry.example.invalid:5000/team/Controller:release_1",
+    "Registry.Example.invalid/team/Controller",
+    // Without a registry host, the image is docker.io/library/Controller.
+    "Controller",
+  ];
+  return each(
+    fields.flatMap(([field, profile]) => names.map((name) => [field, profile, name])),
+    ([field, profile, name]) =>
+      withProfile(profile(`${name}@sha256:${"a".repeat(64)}`), async ({ directory, renderer }) => {
+        assert.equal(renderer.ok, false, `${field} ${name}: renderer\n${renderer.output}`);
+        assert.match(renderer.output, refusal(field), `${field} ${name}`);
+        assert.equal(existsSync(join(directory, "values.yaml")), false);
+        if (field === "controlPlane.controllerImage") {
+          const chart = await helmTemplate([
+            await baselineValues(),
+            writeOverride(directory, {
+              images: { controller: `${name}@sha256:${"a".repeat(64)}` },
+            }),
+          ]);
+          assert.equal(chart.ok, true, `${name}: helm template\n${chart.output}`);
+        }
+      }),
+  );
 });
 
 // runtime.image never reaches the chart: it becomes Compute's images.gateway and
@@ -747,6 +784,7 @@ test("runtime image references get Compute's verdict in preflight", () =>
       ["registry.example.invalid:5000/team/runtime:release_1", true],
       ["[fd00::1]:5000/openclaw-enterprise/runtime", true],
       ["[::1]:5000/runtime", true],
+      ["Registry.Example.invalid/team/runtime:Release_1", true],
       ["registry.example.invalid/run time", false],
       ["registry.example.invalid/runtime\n", false],
       ["registry.example.invalid/runtime@extra", false],
@@ -806,6 +844,10 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
     ["https://example.com%2E", false, /invalid URL escape "%2E"/],
     // Node reads a backslash as a path separator; the chart refuses it in the host.
     ["https://console.example.com\\auth", false, /invalid character "\\\\" in host name/],
+    // Node drops an empty user info and publishes the host alone; the chart refuses any @.
+    ["https://@console.example.com", false, /auth\.baseUrl must be an absolute HTTP\(S\) origin/],
+    ["https://:@console.example.com", false, /auth\.baseUrl must be an absolute HTTP\(S\) origin/],
+    ["https://@192.0.2.10", false, /auth\.baseUrl must be an absolute HTTP\(S\) origin/],
     [
       syntheticCredentialUrl({ username: "", password: "secret", host: "console.example.com" }),
       false,

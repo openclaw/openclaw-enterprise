@@ -1598,6 +1598,13 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     // Either credential alone is refused too.
     syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
     syntheticCredentialUrl({ username: "", password: "pass", host: "grafana.example.internal" }),
+    // So is an empty user info, which Node drops: any @ before the host, with or without the
+    // slashes, and before an IPv4 host too.
+    "http://@grafana.example.internal/d",
+    "https://:@grafana.example.internal/d",
+    "http:@grafana.example.internal/d",
+    "http:\t//@grafana.example.internal/d",
+    "http://@192.0.2.10:3000/d",
   ]) {
     assertObservabilityPreflight(invalid, genericObservabilityUrl, rewrittenIpv4ObservabilityUrl);
   }

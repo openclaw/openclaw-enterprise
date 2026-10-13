@@ -47,6 +47,15 @@ const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 // The chart's rule for the images it renders: the controller (which also feeds
 // prepare-bootstrap-volume) and repository credentials.
 const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
+// Kubernetes refuses an image whose repository path has an uppercase letter
+// (InvalidImageName), while the chart and Compute accept it. Uppercase may appear only in the
+// registry host (the first component, when a / follows it) and in the tag.
+function lowercaseImageRepository(value) {
+  if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)/.test(value)) {
+    return "repository path must be lowercase; Kubernetes refuses to pull an uppercase one. Only the registry host and the tag may use uppercase.";
+  }
+  return true;
+}
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
 function isLiteralIpv4ProxyUrl(value) {
@@ -300,6 +309,14 @@ function stripUrlEdges(value) {
   return value.slice(start, end);
 }
 
+// Node drops an empty user info (https://@host, https://:@host, https:@host) and publishes the
+// host alone; Helm's URL parser keeps it, and the chart refuses an @ in the auth base URL. Like
+// URL parsing, this drops tabs and newlines and skips slashes or backslashes after the scheme,
+// so any @ before the host counts.
+function writtenUserinfo(value) {
+  return /^[a-z][a-z\d+.-]*:[/\\]*[^/\\?#]*@/i.test(stripUrlEdges(value).replace(/[\t\n\r]/g, ""));
+}
+
 // The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL).
 // Like the chart, this also refuses spellings URL parsing repairs: https:host, /. and /%2e,
 // and other Unicode spaces or invisible characters at either end (NBSP, U+3000, U+FEFF,
@@ -342,6 +359,7 @@ function httpOrigin(value) {
     (url.protocol !== "http:" && url.protocol !== "https:") ||
     url.username.length !== 0 ||
     url.password.length !== 0 ||
+    writtenUserinfo(value) ||
     url.pathname !== "/" ||
     url.search.length !== 0 ||
     url.hash.length !== 0 ||
@@ -350,7 +368,7 @@ function httpOrigin(value) {
     return false;
   }
   // Same written host as ipv4HostKept: C0 and space edges, then the origin's host group.
-  const writtenHost = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
+  const writtenHost = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
   if (writtenHost !== undefined && /%[0-7][0-9A-Fa-f]/.test(writtenHost)) {
     return "host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
   }
@@ -375,13 +393,14 @@ function httpOrigin(value) {
 }
 
 // The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
-// hex, shorthand, a single integer or a trailing dot publish a different host.
+// hex, shorthand, a single integer or a trailing dot publish a different host. Callers refuse
+// user info first (writtenUserinfo), so the host follows scheme:// directly.
 function ipv4HostKept(raw, url) {
   if (isIP(url.hostname) !== 4) {
     return true;
   }
   const stripped = stripUrlEdges(raw);
-  const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
+  const written = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
   return (
     written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
   );
@@ -416,6 +435,7 @@ function parsedObservabilityUrl(value) {
     url.hostname === "" ||
     url.username !== "" ||
     url.password !== "" ||
+    writtenUserinfo(value) ||
     url.hash !== ""
   ) {
     return undefined;
@@ -1396,10 +1416,12 @@ function buildRendered(profile, parsed, diagnostics) {
   });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
     pattern: controlPlaneDigestImage,
+    validate: lowercaseImageRepository,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
     pattern: digestImage,
+    validate: lowercaseImageRepository,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
@@ -1504,7 +1526,8 @@ function buildRendered(profile, parsed, diagnostics) {
     );
   }
 
-  // Same rule the controller applies to Installation observability.url at startup.
+  // Same rule the controller applies to Installation observability.url at startup, except
+  // that the controller drops an empty user info (http://@host), which preflight refuses.
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
   // absolute HTTP(S) message from optionalString.
   const rawObservabilityUrl = controlPlane.observabilityUrl;
@@ -1930,6 +1953,7 @@ function buildRendered(profile, parsed, diagnostics) {
       enabled: true,
       image: asString(repository, ["repository", "image"], diagnostics, {
         pattern: controlPlaneDigestImage,
+        validate: lowercaseImageRepository,
         description: "an immutable image reference with a SHA-256 digest",
       }),
       // Installation startup checks a GitHub Backend ID with isBackendId, then bounds it to
