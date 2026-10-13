@@ -1329,7 +1329,7 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
         }),
       );
     }
-    if (["failed", "cancelled"].includes(observed.cleanup?.status)) {
+    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
       issues.push(
         issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
           lane: laneName,

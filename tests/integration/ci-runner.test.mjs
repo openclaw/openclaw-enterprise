@@ -3511,7 +3511,7 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       "--results",
       resultsPath,
     ],
-    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv() },
+    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 30_000 },
   );
 
   assert.equal(result.signal, "SIGKILL", result.stderr);

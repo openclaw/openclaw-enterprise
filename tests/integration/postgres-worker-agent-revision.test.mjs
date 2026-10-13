@@ -1799,7 +1799,11 @@ revisionTest(
     // Ahead: the controller clock already counts new work as five minutes old, past the deadline,
     // yet by the database clock it is young, so the bootstrap keeps waiting.
     const young = await fixture.admitInitialRevision("deadline-clock-ahead");
-    await waitFor("a pass ahead of the database clock", async () => passes(young.candidate)[0]);
+    await waitFor(
+      "a pass ahead of the database clock",
+      async () => passes(young.candidate)[0],
+      timeoutMs - 15_000,
+    );
     const youngRow = await workRow(young.candidate);
     assert.ok(Number(youngRow.age_ms) < timeoutMs, `work is still young (${youngRow.age_ms} ms)`);
     assert.equal(passes(young.candidate)[0], "pending");
