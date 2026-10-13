@@ -1743,12 +1743,18 @@ export type HarnessDeviceAuthorizationResult =
   { readonly status: "pending" } | { readonly status: "ready"; readonly credential: string };
 
 /**
- * Options for Configuration rules that also run on Preset defaults. `unresolved` names text its
- * writer fills in later (an unfilled Preset variable): a rule defers a header name that holds one
- * to the Configuration the filled Preset creates, which is checked like any other.
+ * Options for Configuration rules that also run on Preset defaults. `unresolved` locates text its
+ * writer fills in later (an unfilled Preset variable): for the string at `path` in the values (an
+ * object key: `key` true, `path` ending in the key), the literal text around each unfilled
+ * variable, or undefined. A rule checks that text with a stand-in for each variable, and the
+ * Configuration the filled Preset creates is checked like any other. Text is located by path, so
+ * literal text that reads the same elsewhere (an escaped token) is checked as written.
  */
 export interface ConfigurationValidationOptions {
-  readonly unresolved?: (text: string) => boolean;
+  readonly unresolved?: (
+    path: readonly (string | number)[],
+    key?: boolean,
+  ) => readonly string[] | undefined;
 }
 
 export interface ComputeDriver extends Driver {

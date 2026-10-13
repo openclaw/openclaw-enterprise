@@ -41,9 +41,31 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // names) before it validates its configuration, so a value that holds one is left to it.
 const environmentReference = /\$\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/;
 
-// A value its writer fills in later: a runtime environment reference, or what `unresolved`
-// names (an unfilled Preset variable).
+// Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;
+
+const isRuntimeUrl = (value: unknown): boolean => {
+  const url = typeof value === "string" && URL.canParse(value) ? new URL(value) : undefined;
+  return url?.protocol === "http:" || url?.protocol === "https:";
+};
+
+// What a variable in a baseUrl may stand for: a host or path segment, a port, or a whole URL.
+// Each combination fills the variables in order; a baseUrl no combination makes a runtime URL
+// (`ftp://{{ vars.host }}`, a space beside the variable) fails every launch, so it is refused at
+// save. Past a few variables the combinations grow quickly, and the URL is checked once filled.
+const URL_STAND_INS = ["x", "1", "https://x"] as const;
+const URL_STAND_IN_VARIABLES = 4;
+
+function fillsAsRuntimeUrl(literals: readonly string[]): boolean {
+  if (literals.length - 1 > URL_STAND_IN_VARIABLES) {
+    return true;
+  }
+  const fill = (text: string, rest: readonly string[]): boolean =>
+    rest.length === 0
+      ? isRuntimeUrl(text)
+      : URL_STAND_INS.some((standIn) => fill(`${text}${standIn}${rest[0]}`, rest.slice(1)));
+  return fill(literals[0] ?? "", literals.slice(1));
+}
 
 function validateSettings(
   settings: Record<string, unknown>,
@@ -52,18 +74,24 @@ function validateSettings(
   unresolved: Unresolved,
 ) {
   const { baseUrl, api } = settings;
-  const pending = (value: unknown) =>
-    typeof value === "string" && (environmentReference.test(value) || unresolved(value));
+  // The runtime resolves an environment reference before it validates the value.
+  const environment = (value: unknown) =>
+    typeof value === "string" && environmentReference.test(value);
   // On a provider, the runtime treats a blank baseUrl as unset and uses a built-in
   // provider's default endpoint; a model's baseUrl must be a nonempty URL.
   const unsetBaseUrl = provider && typeof baseUrl === "string" && baseUrl.trim() === "";
-  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl && !pending(baseUrl)) {
-    const url = typeof baseUrl === "string" && URL.canParse(baseUrl) ? new URL(baseUrl) : undefined;
-    if (url?.protocol !== "http:" && url?.protocol !== "https:") {
+  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl && !environment(baseUrl)) {
+    const literals = unresolved([...path, "baseUrl"]);
+    if (literals === undefined ? !isRuntimeUrl(baseUrl) : !fillsAsRuntimeUrl(literals)) {
       throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
     }
   }
-  if (Object.hasOwn(settings, "api") && !pending(api)) {
+  // An api that waits on a variable names no adapter until it is filled.
+  if (
+    Object.hasOwn(settings, "api") &&
+    !environment(api) &&
+    unresolved([...path, "api"]) === undefined
+  ) {
     if (typeof api !== "string" || !RUNTIME_MODEL_APIS.includes(api)) {
       throw new ModelProviderSettingError(pointer(...path, "api"), "api");
     }
@@ -98,7 +126,7 @@ export function providerModelsListError(key: string): ConfigurationHarnessError 
  */
 export function validateModelProviderSettings(
   values: OpenClawConfigurationDocument,
-  { unresolved = () => false }: ConfigurationValidationOptions = {},
+  { unresolved = () => undefined }: ConfigurationValidationOptions = {},
 ): void {
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
@@ -114,12 +142,17 @@ export function validateModelProviderSettings(
     if (models !== undefined && !Array.isArray(models)) {
       throw providerModelsListError(providerName);
     }
-    validateHeaderNames(settings, setting, unresolved);
+    validateHeaderNames(settings, path, setting, unresolved);
     for (const [index, model] of (Array.isArray(models) ? models : []).entries()) {
       const modelSettings = asRecord(model);
       if (modelSettings !== undefined) {
         validateSettings(modelSettings, [...path, "models", index], false, unresolved);
-        validateHeaderNames(modelSettings, `${setting}.models.${index}`, unresolved);
+        validateHeaderNames(
+          modelSettings,
+          [...path, "models", index],
+          `${setting}.models.${index}`,
+          unresolved,
+        );
       }
     }
   }
@@ -128,12 +161,13 @@ export function validateModelProviderSettings(
 /**
  * The requirement for a model provider header name that is not an HTTP field name. It names the
  * header, as the credential header refusal does, so a name a Preset variable filled is found
- * (finding 1218), but only up to its first invalid character: a value pasted into the name
- * ("Authorization: Bearer …") is never echoed, and the cut shows where the name went wrong.
+ * (finding 1218), but only up to its first invalid character and at most 23 characters: a value
+ * pasted into the name ("Authorization: Bearer …", or a bare token and a newline) is never
+ * echoed whole (finding 1222), and the cut shows where the name went wrong.
  */
 export function invalidHeaderNameRequirement(name: string): string {
   const valid = HTTP_FIELD_NAME_START.exec(name)?.[0] ?? "";
-  return `must use valid HTTP header names, not ${quotedSettingKey(valid.length < name.length ? `${valid}…` : valid, 40)}`;
+  return `must use valid HTTP header names, not ${quotedSettingKey(valid.length < name.length ? `${valid}…` : valid, 24)}`;
 }
 
 // Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
@@ -141,15 +175,20 @@ export function invalidHeaderNameRequirement(name: string): string {
 // Kubernetes rule refuses it with the same message.
 function validateHeaderNames(
   settings: Record<string, unknown>,
+  path: readonly (string | number)[],
   setting: string,
   unresolved: Unresolved,
 ): void {
-  for (const [headersSetting, headers] of [
-    [`${setting}.headers`, settings.headers],
-    [`${setting}.request.headers`, asRecord(settings.request)?.headers],
+  for (const [headersPath, headersSetting, headers] of [
+    [[...path, "headers"], `${setting}.headers`, settings.headers],
+    [
+      [...path, "request", "headers"],
+      `${setting}.request.headers`,
+      asRecord(settings.request)?.headers,
+    ],
   ] as const) {
     const invalid = Object.keys(asRecord(headers) ?? {}).find(
-      (name) => !isAdmittedHeaderName(name, { unresolved }),
+      (name) => !isAdmittedHeaderName(name, { unresolved }, headersPath),
     );
     if (invalid !== undefined) {
       throw new ConfigurationHarnessError(
@@ -170,15 +209,19 @@ export function isHttpFieldName(name: string): boolean {
 }
 
 /**
- * Whether a model provider header name passes the header name rule: a valid HTTP field name, or,
- * on a Preset save, one that holds an unfilled variable (`unresolved`), checked once filled.
- * Every Compute and Kubernetes Compute's credential rule use it, so a Preset saves alike on both.
+ * Whether a model provider header name passes the header name rule: a valid HTTP field name. On a
+ * Preset save, a name that holds an unfilled variable (`unresolved`, at `headers`, the path of its
+ * headers object) is checked with a stand-in for each variable, so the text around it must be
+ * valid too (finding 1221), and checked again once filled. Every Compute and Kubernetes
+ * Compute's credential rule use it, so a Preset saves alike on both.
  */
 export function isAdmittedHeaderName(
   name: string,
   { unresolved }: ConfigurationValidationOptions = {},
+  headers: readonly (string | number)[] = [],
 ): boolean {
-  return isHttpFieldName(name) || unresolved?.(name) === true;
+  const literals = unresolved?.([...headers, name], true);
+  return isHttpFieldName(literals === undefined ? name : literals.join("x"));
 }
 
 // A header whose last hyphen-, underscore- or dot-separated word names a credential:

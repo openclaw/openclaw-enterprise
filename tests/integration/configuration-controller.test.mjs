@@ -1446,6 +1446,11 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ headers: { [`Authorization: Bearer ${sentinel}`]: "v" } }),
       invalidName("models.providers.gateway.headers", "Authorization…"),
     ],
+    // Finding 1222: nor whole when pasted alone, before a newline: the echo stops at 23 characters.
+    [
+      gateway({ headers: { [`${sentinel}\n`]: "v" } }),
+      invalidName("models.providers.gateway.headers", `${sentinel.slice(0, 23)}…`),
+    ],
     [
       gateway({ models: [{ id: "m", request: { headers: { Authorizatioн: sentinel } } }] }),
       invalidName("models.providers.gateway.models.0.request.headers", "Authorizatio…"),
@@ -1532,6 +1537,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     url: { type: "string" },
     api: { type: "string" },
     header: { type: "string" },
+    port: { type: "string" },
   };
   const templated = await request(context.app, "POST", presets, {
     body: {
@@ -1542,8 +1548,12 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
           values: gateway({
             baseUrl: "{{ vars.url }}",
             api: "{{ vars.api }}",
-            models: [{ id: "m", baseUrl: "https://{{ vars.url }}/v1" }],
-            headers: { "{{ vars.header }}": "v" },
+            models: [
+              { id: "m", baseUrl: "https://{{ vars.url }}/v1" },
+              { id: "n", baseUrl: "{{ vars.url }}/v1" },
+              { id: "o", baseUrl: "http://localhost:{{ vars.port }}/v1" },
+            ],
+            headers: { "{{ vars.header }}": "v", "X-{{ vars.header }}-Trace": "t" },
           }),
         },
       },
@@ -1567,6 +1577,41 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     [
       gateway({ baseUrl: "\\{{ vars.url }}" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1220: the same text as a placeholder elsewhere is still literal here.
+    [
+      {
+        models: {
+          providers: {
+            gateway: { headers: { "{{ vars.header }}": "v" } },
+            other: { headers: { "\\{{ vars.header }}": "v" } },
+          },
+        },
+      },
+      invalidName("models.providers.other.headers", "…"),
+    ],
+    [
+      gateway({
+        headers: { "{{ vars.url }}": "v" },
+        models: [{ id: "m", baseUrl: "\\{{ vars.url }}" }],
+      }),
+      "Configuration field /models/providers/gateway/models/0/baseUrl must be an absolute http or https URL.",
+    ],
+    [
+      gateway({ headers: { "{{ vars.header }}": "v" }, api: "{{ vars.literal }}" }),
+      "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.",
+    ],
+    // Finding 1221: the text around a variable is checked with a stand-in for it.
+    [gateway({ headers: { "{{ vars.header }} ": "v" } }), headers("…")],
+    [gateway({ headers: { "X-{{ vars.header }}\u200b": "v" } }), headers("X-…")],
+    [gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }), headers("…")],
+    [
+      gateway({ baseUrl: "ftp://{{ vars.url }}" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+    [
+      gateway({ models: [{ id: "m", baseUrl: "https://models {{ vars.url }}" }] }),
+      "Configuration field /models/providers/gateway/models/0/baseUrl must be an absolute http or https URL.",
     ],
   ]) {
     const escaped = await request(context.app, "POST", presets, {

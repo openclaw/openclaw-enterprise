@@ -4253,7 +4253,7 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<PresetTemplate> {
     const template = normalizePresetTemplate(input, namespaceId);
-    const { settings, placeholders } = presetTemplateDefaultsWithPlaceholders(template);
+    const { settings, unresolved } = presetTemplateDefaultsWithPlaceholders(template);
     const values = settings.configuration?.values;
     if (values !== undefined) {
       const driver = this.configurationDriver();
@@ -4265,11 +4265,10 @@ export class OpenClawController {
       // The model provider and Compute rules first, as on Configuration create and update, so
       // a value they refuse gets the same message wherever it is written. A variable without a
       // default is still a placeholder here; the Configuration it fills is checked on create.
-      // Only text the render put a placeholder into waits on a variable: an escaped token is
-      // literal text that stays in the launch render, so it is checked as written (finding 1214).
-      const options: ConfigurationValidationOptions = {
-        unresolved: (text) => placeholders.has(text),
-      };
+      // Only text the render put a placeholder into waits on a variable, located by its path: an
+      // escaped token is literal text that stays in the launch render, so it is checked as
+      // written (finding 1214), even where it reads like a placeholder elsewhere (finding 1220).
+      const options: ConfigurationValidationOptions = { unresolved };
       validateModelProviderSettings(values, options);
       this.validateComputeConfiguration(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.

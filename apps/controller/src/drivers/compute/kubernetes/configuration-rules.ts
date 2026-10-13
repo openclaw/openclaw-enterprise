@@ -176,8 +176,8 @@ export function selectedModelProviders(
  * model credential environment variables, and on any model provider or its models no
  * credential header (in `headers` or `request.headers`) and no `request.auth` credential.
  * Header names must be valid HTTP field names, so a lookalike cannot slip past the match; on a
- * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked once
- * filled, as on every Compute. (The provider apiKey rule depends on the Harness, so it stays in
+ * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked with a
+ * stand-in for it and again once filled, as on every Compute. (The provider apiKey rule depends on the Harness, so it stays in
  * Harness authentication admission, on selected providers only.)
  */
 export function requireHarnessCredentialBinding(
@@ -208,21 +208,25 @@ export function requireHarnessCredentialBinding(
     if (row?.models !== undefined && !Array.isArray(row.models)) {
       throw createError(`${path}.models`, PROVIDER_MODELS_LIST);
     }
-    const rows: [string, unknown][] = [
-      [path, row],
-      ...(Array.isArray(row?.models) ? row.models : []).map((model, index): [string, unknown] => [
-        `${path}.models.${index}`,
-        model,
-      ]),
+    const at = ["models", "providers", provider];
+    const rows: [string, readonly (string | number)[], unknown][] = [
+      [path, at, row],
+      ...(Array.isArray(row?.models) ? row.models : []).map(
+        (model, index): [string, readonly (string | number)[], unknown] => [
+          `${path}.models.${index}`,
+          [...at, "models", index],
+          model,
+        ],
+      ),
     ];
-    for (const [setting, model] of rows) {
+    for (const [setting, modelAt, model] of rows) {
       const request = asRecord(asRecord(model)?.request);
-      for (const [headersSetting, headers] of [
-        [`${setting}.headers`, asRecord(model)?.headers],
-        [`${setting}.request.headers`, request?.headers],
+      for (const [headersSetting, headersAt, headers] of [
+        [`${setting}.headers`, [...modelAt, "headers"], asRecord(model)?.headers],
+        [`${setting}.request.headers`, [...modelAt, "request", "headers"], request?.headers],
       ] as const) {
         for (const name of Object.keys(asRecord(headers) ?? {})) {
-          if (!isAdmittedHeaderName(name, options)) {
+          if (!isAdmittedHeaderName(name, options, headersAt)) {
             throw createError(headersSetting, invalidHeaderNameRequirement(name));
           }
           if (isCredentialHeaderName(name)) {
