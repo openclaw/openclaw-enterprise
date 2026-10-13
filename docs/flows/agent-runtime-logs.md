@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-12
-last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
+updated: 2026-10-13
+last_updated_session: fix-1168-1169
 ---
 
 # Agent runtime logs flow
@@ -134,8 +134,8 @@ It emits `stream_replaced`,
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
 `SanitizedRuntimeLogRecord`. `page-budget.ts` measures serialized pages,
 signed cursors and the HTTP envelope against 512 KiB. Full candidates precede
-bounded prefix builds, which reuse admission and clocks without I/O or audits. Fit is
-checked, without maximum filling guarantees. Fetched masking/withholding persist;
+prefix builds, which reuse admission, clocks and sanitization without I/O or audits.
+Fit, not maximum filling, is guaranteed. Fetched masking/withholding persist;
 state advances through delivered rows.
 
 Signed `pemOpen`/`pemAfterTime` describe delivered boundaries, never fetched overlap.
