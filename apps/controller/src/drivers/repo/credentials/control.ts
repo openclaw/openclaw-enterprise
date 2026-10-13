@@ -178,14 +178,19 @@ export function createControlAdmission(
       if (!sameSessionInput(previous.input, admittedInput)) {
         throw new Error("ADMISSION_CONFLICT");
       }
-      // A failed bind left the reservation unfenced, so retry the fence. If the bind
-      // was recorded after all, the fence fails and only a recorded disposal is
-      // reported; the session is never exposed while its receipt is unknown.
+      // A failed bind or a refused open left the reservation unfenced, so retry
+      // the fence. If the bind was recorded after all, the fence fails and only a
+      // recorded disposal is reported. A refusal has no session, so another fence
+      // failure stays retryable. The session is never exposed while its receipt
+      // is unknown.
       if (previous.unbound && !previous.saved) {
         if (await fenced(id, previous)) {
           throw new Error("ADMISSION_MISSING");
         }
-        const current = localStatus(previous.sessionId!);
+        if (previous.sessionId === undefined) {
+          throw new Error("RECEIPT_UNAVAILABLE");
+        }
+        const current = localStatus(previous.sessionId);
         if (current?.state !== "DISPOSED") {
           throw new Error("RECEIPT_UNAVAILABLE");
         }
@@ -261,8 +266,23 @@ export function createControlAdmission(
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       if (refused !== undefined) {
-        // Nothing will bind this reservation. Fence it so the admission answers missing.
-        await journal!.fence(id, admittedInput).catch(() => {});
+        // Nothing will bind this reservation. Fence it so the admission answers
+        // missing. If the fence does not commit, keep the reservation and retry
+        // it on the next open or recovery.
+        const record: AdmissionRecord = {
+          input: admittedInput,
+          sessionId: undefined,
+          forgetAt: clock.monotonicNow() + Math.max(0, admissionWindowMs - age),
+          durable: true,
+          ready: Promise.resolve(),
+          terminal: undefined,
+          unbound: true,
+          saved: false,
+          writing: undefined,
+          cancel: () => {},
+        };
+        records.set(id, record);
+        await fenced(id, record);
         throw refused;
       }
     } else if (age >= admissionWindowMs) {

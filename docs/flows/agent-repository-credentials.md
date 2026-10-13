@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: 2026-09-30
-last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
+updated: "2026-10-12"
+last_updated_session: authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e
 ---
 
 # Agent repository credential flow
@@ -166,7 +166,8 @@ records the session ID before passing files to
 `ComputeRevisionContext.repositoryCredentials`.
 
 A confirmed open session yields a `retained` binding without files. `recoverOnly`
-finds or fences unfinished admissions and closes recovered sessions.
+finds or fences unfinished admissions, including a reserved receipt whose fence
+did not commit, and closes recovered sessions.
 Fresh material requires confirmed disposal or a missing opening without a recorded
 session ID; invalidated known sessions block automatic same-revision replacement.
 Closing sessions raise `REPOSITORY_CLEANUP_PENDING` until disposal, subject to Work
@@ -355,6 +356,8 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 07:39: Recovery fences a reserved receipt whose fence did not commit. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-03 16:30: Log a stuck repository cleanup's cause once and slow its rechecks with age. (fix-repo-cleanup-backoff)
 - 2026-10-01 17:20: Point the safe revision response projection at its Agent HTTP owner. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
