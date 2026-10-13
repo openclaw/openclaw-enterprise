@@ -112,9 +112,10 @@ jobs:
       # would otherwise lengthen by about five minutes. The runtime image
       # startup tests are split in three, balanced by measured case durations;
       # only part 1 runs the Codex sandbox, so only it needs the k3d tools for
-      # the seccomp profile. Part 3 runs two Docker-only files that part 1
-      # used to run beside its startup file; part 1 was CPU-bound running
-      # three of its five files at once.
+      # the seccomp profile. Part 3 runs Docker-only files from part 1: two
+      # that ran beside its startup file, and the native listener cases split
+      # from that file, whose cases run one after another and set part 1's
+      # length.
       # Runners: the k3d fixture and observability lanes use blacksmith
       # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
       # K3s policy enforcement disabled, production-network-access fails
