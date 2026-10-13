@@ -95,10 +95,9 @@ fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
 must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files. The controller and repository
-references also follow the chart's rule: a letter or digit first,
-then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest. In all three, only
-the registry host and tag may use uppercase. `controlPlane.adminEmail`
+casing fails preflight without emitting deployable files. All three must also be
+references Kubernetes can pull, as the chart and Compute check: only the registry
+host and tag may use uppercase, and an IPv6 registry host is allowed. `controlPlane.adminEmail`
 must be an administrator email the bootstrap Job accepts after trim and lowercase:
 one `@` and a dotted domain.
 

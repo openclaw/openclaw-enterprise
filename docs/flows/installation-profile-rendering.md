@@ -98,11 +98,11 @@ slash, an uppercase letter, or a longer name fails preflight.
 
 `buildRendered` requires the literal `sha256` algorithm and 64 lowercase
 hexadecimal characters for `controlPlane.controllerImage`, `runtime.image`, and
-enabled `repository.image`. The controller and repository images also follow
-the chart's control-plane image rule (`controlPlaneDigestImage` here): a letter
-or digit first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
-`runtime.image` reaches only Compute and keeps `digestImage` (no whitespace or
-second `@`), so IPv6 registry hosts stay valid.
+enabled `repository.image`. All three must also pass `imageReferenceProblem`
+(`packages/occ/src/image-reference.ts`), a port of the Kubernetes reference
+parser that Compute, the chart and the image tools share: a reference Kubernetes
+refuses to pull, such as an uppercase repository path, fails, and an IPv6
+registry host passes.
 
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.

@@ -394,6 +394,8 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { imageReferenceProblem } from "./image-reference.ts";
+export type { ImageReferenceProblem } from "./image-reference.ts";
 export {
   environmentReference,
   invalidHeaderNameRequirement,

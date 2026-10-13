@@ -108,6 +108,7 @@ import {
   configurationSettingMessage,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  imageReferenceProblem,
   keyedSettingPath,
   requireOpenClawRoster,
   ResourceConflictError,
@@ -2789,12 +2790,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
           `${description} image must use an immutable SHA-256 digest.`,
         );
       }
-      // Kubernetes refuses to pull an image whose repository path has an uppercase letter
-      // (InvalidImageName). Only the registry host (the first component, when a / follows it)
-      // and the tag may use uppercase, as in profile preflight and the chart.
-      if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*(?:@|$))/.test(image)) {
+      // Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as
+      // an uppercase repository path; profile preflight, the chart and the image tools apply the
+      // same rule. Only the registry host and the tag may use uppercase.
+      const problem = imageReferenceProblem(image);
+      if (problem === "uppercase-repository") {
         throw new ConfigurationFailure(
           `${description} image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.`,
+        );
+      }
+      if (problem !== undefined) {
+        throw new ConfigurationFailure(
+          `${description} image must be a container image reference Kubernetes can pull.`,
         );
       }
     }

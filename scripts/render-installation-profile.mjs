@@ -11,6 +11,7 @@ import {
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
+import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -38,23 +39,21 @@ const secretKeyRule = {
   validate: isKubernetesSecretKey,
   description: "a Kubernetes Secret key of at most 253 characters",
 };
-// runtime.image reaches only KubernetesComputeDriver (installation.yaml images.gateway
-// and images.agent), never the chart. Compute requires only the trailing digest, so this
-// keeps the old rule: no whitespace or second @, which no runtime pulls. The chart's
-// control-plane rule would refuse working references such as an IPv6 registry host
-// ([fd00::1]:5000/runtime@sha256:...).
-const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
-// The chart's rule for the images it renders: the controller (which also feeds
-// prepare-bootstrap-volume) and repository credentials.
-const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
-// Kubernetes refuses an image whose repository path has an uppercase letter
-// (InvalidImageName); the chart, the image tools and Compute refuse it too. Uppercase may appear
-// only in the registry host (the first component, when a / follows it) and in the tag.
-function lowercaseImageRepository(value) {
-  if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)/.test(value)) {
+// Every image field takes a reference Kubernetes can pull, pinned to a lowercase SHA-256
+// digest. controllerImage and repository.image reach the chart, and the controller image
+// also feeds prepare-bootstrap-volume; runtime.image reaches only
+// KubernetesComputeDriver (installation.yaml images.gateway and images.agent). The chart,
+// Compute and the image tools apply the same imageReferenceProblem rule.
+const digestImage = /@sha256:[a-f0-9]{64}$/;
+// Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as one
+// with an uppercase repository path. Uppercase may appear only in the registry host (the first
+// component, when a / follows it) and in the tag.
+function pullableImageReference(value) {
+  const problem = imageReferenceProblem(value);
+  if (problem === "uppercase-repository") {
     return "repository path must be lowercase; Kubernetes refuses to pull an uppercase one. Only the registry host and the tag may use uppercase.";
   }
-  return true;
+  return problem === undefined;
 }
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
@@ -1415,13 +1414,13 @@ function buildRendered(profile, parsed, diagnostics) {
     description: NAME_RULE,
   });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
-    pattern: controlPlaneDigestImage,
-    validate: lowercaseImageRepository,
+    pattern: digestImage,
+    validate: pullableImageReference,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
     pattern: digestImage,
-    validate: lowercaseImageRepository,
+    validate: pullableImageReference,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
@@ -1952,8 +1951,8 @@ function buildRendered(profile, parsed, diagnostics) {
     values.repositoryCredentials = {
       enabled: true,
       image: asString(repository, ["repository", "image"], diagnostics, {
-        pattern: controlPlaneDigestImage,
-        validate: lowercaseImageRepository,
+        pattern: digestImage,
+        validate: pullableImageReference,
         description: "an immutable image reference with a SHA-256 digest",
       }),
       // Installation startup checks a GitHub Backend ID with isBackendId, then bounds it to

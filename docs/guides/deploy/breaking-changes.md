@@ -21,7 +21,10 @@ which Kubernetes refused to pull; an uppercase registry host or tag still
 passes. The chart (`images.*`, `repositoryCredentials.image`,
 `logging.collector.image`),
 `prepare-bootstrap-volume`, `upgrade-production-images`, and API and worker
-startup for the Compute gateway and Agent images refuse it too. Preflight, the chart, API
+startup for the Compute gateway and Agent images refuse it too, and any other
+reference Kubernetes cannot parse (`..` or an empty path component, a tag over
+128 characters, non-ASCII letters); all of them accept an IPv6 registry host
+(`[fd00::1]:5000/...`). Preflight, the chart, API
 startup and the bootstrap Job also refuse any `@` before the `auth.baseUrl`
 host (`https://@host`), which Node silently dropped; preflight refuses it in
 `controlPlane.observabilityUrl`, and API and worker startup in
@@ -31,12 +34,13 @@ host (`https://@host`), which Node silently dropped; preflight refuses it in
 those spellings.
 
 **How to tell.** Preflight, the chart and the tools report `... repository path
-must be lowercase`, or the URL field's absolute-URL message. API startup logs
+must be lowercase`, the field's image reference message, or the URL field's
+absolute-URL message. API startup logs
 `AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` or
 `OBSERVABILITY_URL_INVALID`.
 
-**Steps.** Lowercase the repository path, or delete the `@`, then render or
-restart again.
+**Steps.** Fix the image reference (lowercase its repository path), or delete
+the `@`, then render or restart again.
 
 ## 2026-10-13: channel proxy hosts must name one proxy address
 

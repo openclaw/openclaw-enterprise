@@ -1,12 +1,6 @@
 {{- $collector := .Values.logging.collector -}}
 {{- if $collector.enabled -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $collector.image) -}}
-{{- fail "logging.collector.image must be an approved immutable SHA-256 image reference" -}}
-{{- end -}}
-{{- /* Same repository path rule as images.* (_helpers.tpl). The looser shape above stays: the Collector never feeds prepare-bootstrap-volume, so it may use an IPv6 registry host. */ -}}
-{{- if regexMatch "^(?:[^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)" $collector.image -}}
-{{- fail "logging.collector.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one" -}}
-{{- end -}}
+{{- include "openclaw.validateImageReference" (dict "label" "logging.collector.image" "image" $collector.image) -}}
 {{- if or (not $collector.configSecretName) (not $collector.envSecretName) -}}
 {{- fail "logging.collector requires dedicated operator-created config and environment Secrets" -}}
 {{- end -}}
