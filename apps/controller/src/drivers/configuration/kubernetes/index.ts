@@ -69,6 +69,43 @@ function validateReference(reference: ConfigurationReference): void {
   requiredString(value.namespaceId, "Configuration Namespace ID");
 }
 
+// A stored ConfigMap is held to the credential slots refused before it could have been
+// saved (validateModelCredentialReferences' `stored`), so a document an older release saved
+// under a later rule still reads and can be replaced; writes and deployment check them all.
+function checkConfiguration(configuration: Configuration, stored: boolean): void {
+  const resource = asRecord(configuration);
+  if (resource === undefined) {
+    throw new ConfigurationValidationError("Configuration is required.");
+  }
+  validateReference(configuration);
+  if (resource.kind !== "agent") {
+    throw new ConfigurationValidationError("Configuration kind must identify an Agent.");
+  }
+  if (!Number.isSafeInteger(resource.generation) || Number(resource.generation) < 1) {
+    throw new ConfigurationValidationError(
+      "Configuration generation must be a positive safe integer.",
+    );
+  }
+  const createdAt = requiredString(resource.createdAt, "Configuration creation time");
+  if (Number.isNaN(Date.parse(createdAt))) {
+    throw new ConfigurationValidationError("Configuration creation time must be valid.");
+  }
+  checkValues(configuration.values, stored);
+}
+
+function checkValues(document: OpenClawConfigurationDocument, stored: boolean): void {
+  const values = asRecord(document);
+  if (values === undefined) {
+    throw new ConfigurationValidationError("Configuration values must be a JSON object.");
+  }
+  validateModelCredentialReferences(document, { stored });
+  if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
+    throw new ConfigurationValidationError(
+      "Configuration exceeds the Kubernetes ConfigMap size limit.",
+    );
+  }
+}
+
 export function kubernetesConfigurationName(configurationId: string): string {
   const id = requiredString(configurationId, "Configuration ID");
   if (!id.startsWith("cfg_")) {
@@ -126,48 +163,11 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   }
 
   async validate(configuration: Configuration): Promise<void> {
-    this.checkConfiguration(configuration, false);
+    checkConfiguration(configuration, false);
   }
 
   async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
-    this.checkValues(document, false);
-  }
-
-  // A stored ConfigMap is held to the credential slots refused before it could have been
-  // saved (validateModelCredentialReferences' `stored`), so a document an older release saved
-  // under a later rule still reads and can be replaced; writes and deployment check them all.
-  private checkConfiguration(configuration: Configuration, stored: boolean): void {
-    const resource = asRecord(configuration);
-    if (resource === undefined) {
-      throw new ConfigurationValidationError("Configuration is required.");
-    }
-    validateReference(configuration);
-    if (resource.kind !== "agent") {
-      throw new ConfigurationValidationError("Configuration kind must identify an Agent.");
-    }
-    if (!Number.isSafeInteger(resource.generation) || Number(resource.generation) < 1) {
-      throw new ConfigurationValidationError(
-        "Configuration generation must be a positive safe integer.",
-      );
-    }
-    const createdAt = requiredString(resource.createdAt, "Configuration creation time");
-    if (Number.isNaN(Date.parse(createdAt))) {
-      throw new ConfigurationValidationError("Configuration creation time must be valid.");
-    }
-    this.checkValues(configuration.values, stored);
-  }
-
-  private checkValues(document: OpenClawConfigurationDocument, stored: boolean): void {
-    const values = asRecord(document);
-    if (values === undefined) {
-      throw new ConfigurationValidationError("Configuration values must be a JSON object.");
-    }
-    validateModelCredentialReferences(document, { stored });
-    if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
-      throw new ConfigurationValidationError(
-        "Configuration exceeds the Kubernetes ConfigMap size limit.",
-      );
-    }
+    checkValues(document, false);
   }
 
   async create(configuration: Configuration): Promise<Configuration> {
@@ -435,7 +435,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
       );
     }
     try {
-      this.checkConfiguration(configuration, true);
+      checkConfiguration(configuration, true);
     } catch {
       throw new ConfigurationOwnershipError(
         "The stored ConfigMap violates Configuration security boundaries.",
