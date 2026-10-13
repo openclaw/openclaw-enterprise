@@ -1942,6 +1942,7 @@ export {
   renderPresetTemplate,
   validatePresetTemplate,
   presetTemplateDefaults,
+  presetTemplateDefaultsWithPlaceholders,
 } from "./preset-variables.mjs";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";

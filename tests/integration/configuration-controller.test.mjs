@@ -1561,6 +1561,45 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     },
   });
   assert.equal(templated.status, 201, JSON.stringify(templated.body));
+  // Finding 1214: an escaped token, or a default that reads like one, stays literal text in the
+  // launch render, so it is checked as written: these saved and then failed every launch.
+  const headers = invalidName("models.providers.gateway.headers");
+  for (const [values, message] of [
+    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers],
+    [gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }), headers],
+    [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers],
+    [gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }), headers],
+    [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers],
+    [
+      gateway({ baseUrl: "\\{{ vars.url }}" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+  ]) {
+    const escaped = await request(context.app, "POST", presets, {
+      body: {
+        name: "Escaped",
+        template: {
+          variables: { ...variables, literal: { type: "string", default: "{{ vars.header }}" } },
+          configuration: { values },
+        },
+      },
+    });
+    assert.equal(escaped.status, 400, JSON.stringify(escaped.body));
+    assert.equal(escaped.body.error.message, message);
+  }
+  // A default that fills a header name is a literal name: a credential name takes no literal.
+  const filledCredential = await request(context.app, "POST", presets, {
+    body: {
+      name: "Filled credential",
+      template: {
+        variables: { header: { type: "string", default: "x-api-key" } },
+        configuration: { values: gateway({ headers: { "{{ vars.header }}": sentinel } }) },
+      },
+    },
+  });
+  assert.equal(filledCredential.status, 400, JSON.stringify(filledCredential.body));
+  assert.match(filledCredential.body.error.message, /holds a credential value inline/);
+  assert.equal(JSON.stringify(filledCredential.body).includes(sentinel), false);
   // A default is checked like any value.
   const defaulted = await request(context.app, "POST", presets, {
     body: {

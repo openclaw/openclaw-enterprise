@@ -2,6 +2,7 @@
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOKEN = /^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
 const RESERVED = /\{\{\s*vars\./;
+const ESCAPED = /\\\{\{\s*vars\./;
 export const PRESET_JSON_MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
 const MAX_WORKSPACE_FILE_BYTES = 16 * 1024;
@@ -123,7 +124,7 @@ function tokens(text, definitions, path) {
   return parts;
 }
 
-function substitute(text, definitions, inputs, path, key, partial) {
+function substitute(text, definitions, inputs, path, key, partial, placeholders) {
   const parts = tokens(text, definitions, path);
   const refs = parts.filter((part) => typeof part !== "string");
   if (!refs.length) {
@@ -146,23 +147,30 @@ function substitute(text, definitions, inputs, path, key, partial) {
       return definitions[name].default;
     }
     if (partial) {
+      inserted = true;
       return `{{ vars.${name} }}`;
     }
     fail(path, `variable ${name} requires a value.`);
   };
-  if (whole) {
-    return resolve(refs[0]);
+  let inserted = false;
+  const result = whole
+    ? resolve(refs[0])
+    : parts.map((part) => (typeof part === "string" ? part : resolve(part))).join("");
+  // An escaped token renders to the same text as a placeholder but stays literal once filled,
+  // so a string that keeps one is never named as waiting on a variable.
+  if (inserted && placeholders && !ESCAPED.test(text)) {
+    placeholders.add(result);
   }
-  return parts.map((part) => (typeof part === "string" ? part : resolve(part))).join("");
+  return result;
 }
 
-function walk(value, definitions, inputs, path, keys, partial) {
+function walk(value, definitions, inputs, path, keys, partial, placeholders) {
   if (typeof value === "string") {
-    return substitute(value, definitions, inputs, path, false, partial);
+    return substitute(value, definitions, inputs, path, false, partial, placeholders);
   }
   if (Array.isArray(value)) {
     return value.map((child, index) =>
-      walk(child, definitions, inputs, `${path}[${index}]`, keys, partial),
+      walk(child, definitions, inputs, `${path}[${index}]`, keys, partial, placeholders),
     );
   }
   if (!record(value)) {
@@ -171,7 +179,9 @@ function walk(value, definitions, inputs, path, keys, partial) {
   const entries = [];
   const seen = new Set();
   for (const [key, child] of Object.entries(value)) {
-    const nextKey = keys ? substitute(key, definitions, inputs, `${path} key`, true, partial) : key;
+    const nextKey = keys
+      ? substitute(key, definitions, inputs, `${path} key`, true, partial, placeholders)
+      : key;
     if (!keys && RESERVED.test(key)) {
       fail(path, "variable field names are only supported in configuration.values.");
     }
@@ -188,6 +198,7 @@ function walk(value, definitions, inputs, path, keys, partial) {
         `${path}.${key}`,
         keys || (path === "configuration" && key === "values"),
         partial,
+        placeholders,
       ),
     ]);
   }
@@ -275,7 +286,18 @@ export function presetTemplateDefaults(template) {
   return render(template, {}, true);
 }
 
-function render(template, inputs, partial) {
+/** Like presetTemplateDefaults, and also name the rendered strings (values and keys) that hold a
+ * placeholder for a variable without a value, which admission checks once filled. A string that
+ * keeps an escaped token is literal text, so it is not named and is checked as written.
+ * @param {import('./presets.ts').PresetTemplate} template
+ * @returns {{ settings: import('./presets.ts').PresetLaunchSettings, placeholders: ReadonlySet<string> }}
+ */
+export function presetTemplateDefaultsWithPlaceholders(template) {
+  const placeholders = new Set();
+  return { settings: render(template, {}, true, placeholders), placeholders };
+}
+
+function render(template, inputs, partial, placeholders) {
   validatePresetTemplate(template);
   checkJson(inputs, "inputs");
   checkSize(inputs);
@@ -296,7 +318,7 @@ function render(template, inputs, partial) {
       .filter((section) => Object.hasOwn(template, section))
       .map((section) => [
         section,
-        walk(template[section], definitions, inputs, section, false, partial),
+        walk(template[section], definitions, inputs, section, false, partial, placeholders),
       ]),
   );
   checkInitialWorkspaceFiles(result.agent?.initialWorkspaceFiles, "agent.initialWorkspaceFiles");
