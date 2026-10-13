@@ -2571,7 +2571,7 @@ test("run gives up on a preparation still running at the lane deadline and names
     groups: { ci: ["prepare"] },
   });
 
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 5_000;
   const result = run(
     root,
     laneArgs(root, "prepare", statePath, resultsPath),
@@ -2589,7 +2589,7 @@ test("run gives up on a preparation still running at the lane deadline and names
     [{ code: "prepare-timeout", file: "tests/integration/hung.test.mjs", step: "prepare" }],
   );
   const { timeoutMs } = hung.issues[0];
-  assert(timeoutMs > 0 && timeoutMs <= 3_000, String(timeoutMs));
+  assert(timeoutMs > 0 && timeoutMs <= 5_000, String(timeoutMs));
   // Its tests never started. What the preparation made is left to the job's Cleanup lane step.
   assert.equal(hung.nodeExitCode, null);
   assert.equal(hung.counts.total, 0);
@@ -2605,7 +2605,7 @@ test("run gives up on a preparation still running at the lane deadline and names
   );
 });
 
-test("run gives up on a hung cleanup after its allowance and goes on to the next file", async (t) => {
+test("run gives up on a hung cleanup after its allowance and starts no later file", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/hung-cleanup.json");
   const resultsPath = join(root, "results/hung-cleanup.json");
@@ -2667,9 +2667,13 @@ test("run gives up on a hung cleanup after its allowance and goes on to the next
       },
     ],
   );
-  assert.equal(later.status, "passed");
-  assert.deepEqual(later.cleanup, { status: "passed" });
-  await readFile(cleaned);
+  // The abandoned cleanup may still hold the CI state lock, so the next file never starts.
+  assert.deepEqual(
+    later.issues.map(({ code, file }) => ({ code, file })),
+    [{ code: "setup-abandoned", file: "tests/integration/later.test.mjs" }],
+  );
+  assert.equal(later.counts.total, 0);
+  await assert.rejects(readFile(cleaned), { code: "ENOENT" });
 });
 
 test("run ends the cleanups of files the deadline stopped together one allowance past it", async (t) => {
@@ -2701,7 +2705,7 @@ test("run ends the cleanups of files the deadline stopped together one allowance
 
   const allowanceMs = 5_000;
   const started = Date.now();
-  const deadline = started + 3_000;
+  const deadline = started + 5_000;
   const result = run(
     root,
     laneArgs(root, "together", statePath, resultsPath),
@@ -2718,7 +2722,7 @@ test("run ends the cleanups of files the deadline stopped together one allowance
   assert.equal(result.status, 1, result.stderr);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.deepEqual(
-    summary.files.map((file) => [file.path, file.cleanup.status]),
+    summary.files.map((file) => [file.path, file.cleanup?.status]),
     files.map((file) => [file, "timeout"]),
   );
   // Cleanups run one at a time. One allowance each would end 20 s past the deadline; the window

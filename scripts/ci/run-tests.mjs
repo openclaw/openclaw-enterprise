@@ -463,7 +463,9 @@ function laneDeadlineIssue(relativePath) {
 // removes what the step left in the lane state.
 function cleanupAllowanceMs() {
   const value = Number.parseInt(process.env.CI_RUNNER_CLEANUP_TIMEOUT_MS ?? "", 10);
-  return Number.isFinite(value) && value > 0 ? value : 60_000;
+  // A cleanup's limit includes its wait for the CI state lock, which test processes also take
+  // to create their databases.
+  return Number.isFinite(value) && value > 0 ? value : 120_000;
 }
 
 function prepareLimitMs() {
@@ -471,16 +473,20 @@ function prepareLimitMs() {
   return deadline === undefined ? undefined : deadline - Date.now();
 }
 
-// Cleanups run one at a time. Past the lane deadline they share one window that closes an
-// allowance after it, so the cleanups of files the deadline stopped together cannot queue one
-// allowance each past the job timeout.
+// Cleanups run one at a time. All of them end by one window past the lane deadline (60 s, or
+// the allowance if shorter), so the cleanups of files the deadline stopped together cannot queue
+// one allowance each past the job timeout.
 function cleanupLimitMs() {
   const allowance = cleanupAllowanceMs();
   const deadline = laneDeadlineMs();
   return deadline === undefined
     ? allowance
-    : Math.min(allowance, deadline + allowance - Date.now());
+    : Math.min(allowance, deadline + Math.min(allowance, 60_000) - Date.now());
 }
+
+// Timers can fire a few milliseconds before Date.now() reaches their end, so a remaining
+// limit this short counts as none.
+const minStepMs = 1_000;
 
 let abandonedSteps = 0;
 
@@ -498,7 +504,7 @@ function withinLimit(step, limitMs) {
   if (limitMs === undefined) {
     return step();
   }
-  if (limitMs <= 0) {
+  if (limitMs < minStepMs) {
     return Promise.reject(new StepTimeoutError(0, false));
   }
   return new Promise((resolvePromise, reject) => {
@@ -992,6 +998,19 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   // A file queued behind a hung one starts nothing past the lane deadline.
   if (laneDeadlinePassed()) {
     issues.push(laneDeadlineIssue(relativePath));
+    return emptyFileResult(relativePath, issues);
+  }
+
+  // An abandoned preparation or cleanup most likely still holds the CI state lock. This file's
+  // preparation would wait for it until the deadline and then report a prepare-timeout of its own.
+  if (abandonedSteps > 0) {
+    issues.push(
+      issue(
+        "setup-abandoned",
+        `not started: an earlier file's preparation or cleanup did not finish: ${relativePath}`,
+        { file: relativePath },
+      ),
+    );
     return emptyFileResult(relativePath, issues);
   }
 
