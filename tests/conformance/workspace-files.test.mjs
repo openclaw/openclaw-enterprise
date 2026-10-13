@@ -416,6 +416,13 @@ test("Agent workspace file routes map provider file states without leaking conte
         if (read.filename === "SOUL.md") {
           return { status: "missing" };
         }
+        if (read.filename === "AGENTS.md") {
+          // One byte over the content limit: OCC refuses it rather than relaying it.
+          return {
+            status: "ok",
+            file: { name: read.filename, content: "x".repeat(16 * 1024 + 1) },
+          };
+        }
         return { status: "unavailable" };
       },
       async write() {
@@ -439,6 +446,13 @@ test("Agent workspace file routes map provider file states without leaking conte
   );
   assert.equal(readUnavailable.response.status, 503);
   assert.equal(readUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+
+  const oversized = await request(
+    fixture.app,
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`,
+  );
+  assert.equal(oversized.response.status, 503);
+  assert.equal(oversized.payload.error.code, "DEPENDENCY_UNAVAILABLE");
 
   const writeUnavailable = await put(
     fixture.app,
@@ -648,5 +662,7 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
   const abortedRead = await readAborted;
   assert.equal(abortedRead, read);
   assert.equal(read.signal.aborted, true);
+  // The disconnect aborted the read, not the request deadline.
+  assert.match(read.signal.reason.message, /disconnected/);
   assert.equal(reads.length, 1);
 });
