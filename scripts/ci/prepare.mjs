@@ -1241,6 +1241,10 @@ async function ensureK3dCluster(statePath, state) {
       // every create. Without it, server-0 publishes the API port itself, and
       // the nginx connection limit behind finding 682 is gone too.
       "--no-lb",
+      // No CI test uses an Ingress, a LoadBalancer Service or the metrics API.
+      // These add-ons would pull and start on every node while lanes import
+      // their images and start their tests.
+      ...(!openShell ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"] : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
       ...(crossNodePluginStatus ? ["--no-rollback"] : []),

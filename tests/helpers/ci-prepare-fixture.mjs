@@ -542,30 +542,32 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 }
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [14, 16, 17].includes(args.length)) {
+  if (equals(args.slice(0, 2), ["cluster", "create"]) && [16, 18, 19].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
     // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
     // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
     assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
-    if (args.length >= 16) {
+    if (args.length >= 18) {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
     const storage = args[10].split(":");
     assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
     assert.ok(existsSync(storage[0]), "both nodes must mount an existing shared host directory");
     assert.equal(args[11], "--api-port");
     assert.match(args[12], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(13, 16), [
+    assert.deepEqual(args.slice(13, 18), [
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
       "--no-lb",
+      "--k3s-arg",
+      "--disable=traefik,servicelb,metrics-server@server:*",
     ]);
     // The creation-failure case models k3d's default rollback so it can prove
     // that the preparation owner retains containers for diagnosis and cleanup.
     if (scenario !== "cluster-create-failed") {
-      assert.deepEqual(args.slice(16), ["--no-rollback"]);
+      assert.deepEqual(args.slice(18), ["--no-rollback"]);
     } else {
-      assert.ok(equals(args.slice(16), []) || equals(args.slice(16), ["--no-rollback"]));
+      assert.ok(equals(args.slice(18), []) || equals(args.slice(18), ["--no-rollback"]));
     }
     } else {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
@@ -574,6 +576,8 @@ if (command === "k3d") {
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
       "--no-lb",
+      "--k3s-arg",
+      "--disable=traefik,servicelb,metrics-server@server:*",
     ]);
     }
     state.cluster = args[2];
