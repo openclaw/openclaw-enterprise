@@ -172,7 +172,7 @@ and failure recovery belong to that Driver. Reconfiguration starts a new
 authorization epoch and requires redeploying existing Agents.
 
 The gateway must reach and trust the issuer. Preserve public roots when adding
-a private issuer CA; see [issuer trust setup](../../testing/openshell-oauth.md#prepare-the-custom-images-and-trust).
+a private issuer CA; see [issuer trust setup](../../testing/openshell-oauth.md#prepare-images-and-trust).
 
 ## How sources map to OpenShell
 

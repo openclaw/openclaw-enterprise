@@ -83,7 +83,7 @@ is null. Results describe recorded checks, not runtime health.
 Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
 Deployment failure remains terminal. Terminal preparation errors retain bounded
 `error.data.preparation` (identities, reasons, scheduling, exits, timestamps),
-excluding raw output and credentials. [External Codex OAuth](drivers/kubernetes-compute/codex-oauth-storage.md) keeps token custody with the selected external service.
+excluding raw output and credentials.
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
