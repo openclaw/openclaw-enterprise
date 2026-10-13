@@ -8991,16 +8991,20 @@ test("a Preset header name that waits on a variable is checked once filled", () 
       message: invalidName,
     });
   }
-  assert.throws(
-    () =>
-      driver.validateConfiguration(
-        ...preset(provider("p", { headers: { "{{ vars.p }}-Authorization": "v" } })),
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message: `Configuration setting models.providers.p.headers ${credentialHeader("{{ vars.p }}-Authorization")}.`,
-    },
-  );
+  // Finding 1244: so is one the text around the variable names, as the variable filled empty.
+  for (const name of [
+    "{{ vars.p }}-Authorization",
+    "Authorization{{ vars.p }}",
+    "X-Api-Key{{ vars.p }}",
+  ]) {
+    assert.throws(
+      () => driver.validateConfiguration(...preset(provider("p", { headers: { [name]: "v" } }))),
+      {
+        name: "ConfigurationHarnessError",
+        message: `Configuration setting models.providers.p.headers ${credentialHeader(name)}.`,
+      },
+    );
+  }
   // Finding 1221: the text around the variable must be valid too. Finding 1220: an escaped token
   // that reads like a placeholder in another provider stays literal.
   for (const values of [

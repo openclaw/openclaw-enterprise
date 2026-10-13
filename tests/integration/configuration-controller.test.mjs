@@ -1463,6 +1463,19 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ baseUrl: "ftp://models.example.test" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
     ],
+    // Finding 1243: OpenClaw renders the `$${HOST}` escape as the literal text `${HOST}`, so it is
+    // no environment reference and the URL is checked as written.
+    [
+      gateway({ baseUrl: "ftp://$${HOST}/v1" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1244: a user name or password in a model endpoint is a credential, as in a proxy URL.
+    [
+      gateway({
+        models: [{ id: "m", baseUrl: `https://user:${sentinel}@models.example.test/v1` }],
+      }),
+      "Configuration field /models/providers/gateway/models/0/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
   ];
   for (const [values, message] of refused) {
     for (const [collection, body] of [
@@ -1554,8 +1567,22 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
               { id: "o", baseUrl: "http://localhost:{{ vars.port }}/v1" },
               { id: "p", baseUrl: "http://[{{ vars.url }}]:8080/v1" },
               { id: "q", baseUrl: "http{{ vars.port }}://models.example.test" },
+              // Finding 1243: a variable may split the scheme, follow an IPv6 address as its port,
+              // or sit beside many others.
+              { id: "r", baseUrl: "ht{{ vars.port }}://models.example.test" },
+              { id: "t", baseUrl: "http://[::1]{{ vars.port }}/v1" },
+              {
+                id: "s",
+                baseUrl:
+                  "https://{{ vars.url }}.{{ vars.api }}.{{ vars.header }}.{{ vars.port }}.test:{{ vars.port }}/{{ vars.url }}",
+              },
             ],
-            headers: { "{{ vars.header }}": "v", "X-{{ vars.header }}-Trace": "t" },
+            headers: {
+              "{{ vars.header }}": "v",
+              "X-{{ vars.header }}-Trace": "t",
+              // A bearer reference under a name a variable completes, as under Authorization.
+              "Authorization{{ vars.header }}": "Bearer ${GATEWAY_TOKEN}",
+            },
           }),
         },
       },
@@ -1614,6 +1641,23 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     [
       gateway({ models: [{ id: "m", baseUrl: "https://models {{ vars.url }}.test" }] }),
       "Configuration field /models/providers/gateway/models/0/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1243: a literal scheme other than http(s) is refused however many variables follow.
+    [
+      gateway({
+        baseUrl: "ftp://{{ vars.url }}{{ vars.api }}{{ vars.header }}{{ vars.port }}{{ vars.url }}",
+      }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1244: the text around a variable names a credential header, which takes no literal,
+    // and a variable in a model endpoint's user name or password fills a credential.
+    [
+      gateway({ headers: { "Authorization{{ vars.header }}": "Bearer synthetic" } }),
+      "Configuration field /models/providers/gateway/headers/Authorization{{ vars.header }} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+    ],
+    [
+      gateway({ baseUrl: "https://user:{{ vars.url }}@models.example.test/v1" }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
     ],
   ]) {
     const escaped = await request(context.app, "POST", presets, {

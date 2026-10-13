@@ -38,8 +38,15 @@ const pointer = (...segments: readonly (string | number)[]): string =>
     .join("");
 
 // The runtime resolves `${VAR}` and `${VAR:-fallback}` environment references (uppercase
-// names) before it validates its configuration, so a value that holds one is left to it.
-const environmentReference = /\$\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/;
+// names) before it validates its configuration, so a value that holds one is left to it. Its
+// `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
+// escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
+// (`src/config/env-substitution.ts`).
+const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/g;
+
+const holdsEnvironmentReference = (value: unknown): boolean =>
+  typeof value === "string" &&
+  [...value.matchAll(environmentReference)].some(([, escaped]) => escaped === undefined);
 
 // Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;
@@ -49,23 +56,91 @@ const isRuntimeUrl = (value: unknown): boolean => {
   return url?.protocol === "http:" || url?.protocol === "https:";
 };
 
-// What a variable in a baseUrl may stand for: a host or path segment, a port, a whole URL,
-// nothing, or an IPv6 address. Each combination fills the variables in order; a baseUrl no
-// combination makes a runtime URL (`ftp://{{ vars.host }}`, a space beside the variable) is
-// refused at save. Past a few variables the combinations grow quickly, and the URL is checked
-// once filled.
-const URL_STAND_INS = ["x", "1", "https://x", "", "::1"] as const;
-const URL_STAND_IN_VARIABLES = 4;
+// Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
+// for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
+// address (the whole bracketed address, whatever literal text surrounds the variable in it), or
+// path text.
+type UrlPart = "slashes" | "host" | "port" | "brackets" | "path";
 
+/**
+ * Whether a baseUrl that waits on variables (`literals`, the text around them) can be filled as
+ * an http(s) URL, in time linear in its length. The URL parser ignores tabs and newlines and
+ * trims leading C0 controls and spaces, as here.
+ * - When a variable comes before the scheme's colon, it completes the scheme or is the whole URL,
+ *   and may end in `#` after which any text parses, so the URL is refused only when its literal
+ *   start begins no `http` or `https` scheme.
+ * - Otherwise a scheme other than http(s) is refused, and each variable is filled with the token
+ *   for where it sits, so text around it that no host, port or path admits (a space in the host,
+ *   letters after the port) is refused. A variable that would have to supply a delimiter, such as
+ *   a bracket or a slash, to make the URL parse is refused too: fill it at the launch instead.
+ * `hostToken` is tried as a name and as a number, since a numeric last label makes the whole
+ * host an IPv4 address (`{{ vars.net }}.1`) and a name's labels need not be numeric.
+ */
 function fillsAsRuntimeUrl(literals: readonly string[]): boolean {
-  if (literals.length - 1 > URL_STAND_IN_VARIABLES) {
-    return true;
+  const [first = "", ...rest] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
+  const start = first.slice(first.search(/[^\0- ]|$/));
+  const colon = start.indexOf(":");
+  if (colon === -1) {
+    return "https".startsWith(start.toLowerCase());
   }
-  const fill = (text: string, rest: readonly string[]): boolean =>
-    rest.length === 0
-      ? isRuntimeUrl(text)
-      : URL_STAND_INS.some((standIn) => fill(`${text}${standIn}${rest[0]}`, rest.slice(1)));
-  return fill(literals[0] ?? "", literals.slice(1));
+  const scheme = start.slice(0, colon + 1);
+  if (!/^https?:$/i.test(scheme)) {
+    return false;
+  }
+  const after = [start.slice(colon + 1), ...rest];
+  return ["x", "1"].some((hostToken) => isRuntimeUrl(scheme + fillUrl(after, hostToken)));
+}
+
+// The text after an http(s) scheme's colon with each variable between `literals` filled.
+function fillUrl(literals: readonly string[], hostToken: string): string {
+  const tokens: Readonly<Record<Exclude<UrlPart, "brackets">, string>> = {
+    slashes: hostToken,
+    host: hostToken,
+    port: "",
+    path: "x",
+  };
+  let text = "";
+  let part: UrlPart = "slashes";
+  // Where the open bracket is in `text`, and whether a variable sits in the brackets.
+  let bracket = -1;
+  let filledBrackets = false;
+  for (const [index, literal] of literals.entries()) {
+    // The variable before this literal.
+    if (index > 0) {
+      if (part === "brackets") {
+        filledBrackets = true;
+      } else {
+        text += tokens[part];
+        part = part === "slashes" ? "host" : part;
+      }
+    }
+    for (const character of literal) {
+      if (part === "slashes" && character !== "/" && character !== "\\") {
+        part = "host";
+      }
+      if (part === "host" || part === "port") {
+        if ("/\\?#".includes(character)) {
+          part = "path";
+        } else if (character === "@") {
+          part = "host";
+        } else if (character === ":") {
+          part = "port";
+        } else if (character === "[" && part === "host") {
+          part = "brackets";
+          bracket = text.length;
+          filledBrackets = false;
+        }
+      } else if (part === "brackets" && character === "]") {
+        // Only a port may follow the address, so a variable there is one (`[::1]{{ vars.port }}`).
+        part = "port";
+        if (filledBrackets) {
+          text = `${text.slice(0, bracket + 1)}::1`;
+        }
+      }
+      text += character;
+    }
+  }
+  return text;
 }
 
 function validateSettings(
@@ -76,8 +151,7 @@ function validateSettings(
 ) {
   const { baseUrl, api } = settings;
   // The runtime resolves an environment reference before it validates the value.
-  const environment = (value: unknown) =>
-    typeof value === "string" && environmentReference.test(value);
+  const environment = holdsEnvironmentReference;
   // On a provider, the runtime treats a blank baseUrl as unset and uses a built-in
   // provider's default endpoint; a model's baseUrl must be a nonempty URL.
   const unsetBaseUrl = provider && typeof baseUrl === "string" && baseUrl.trim() === "";
@@ -257,10 +331,22 @@ const NON_CREDENTIAL_KEY = new RegExp(
   "i",
 );
 
-/** Whether a model provider header with this name carries a credential. */
-export function isCredentialHeaderName(name: string): boolean {
-  return (
-    CREDENTIAL_HEADER_WORD.test(name) ||
-    (CREDENTIAL_HEADER_KEY.test(name) && !NON_CREDENTIAL_KEY.test(name))
-  );
+const marksCredential = (name: string): boolean =>
+  CREDENTIAL_HEADER_WORD.test(name) ||
+  (CREDENTIAL_HEADER_KEY.test(name) && !NON_CREDENTIAL_KEY.test(name));
+
+/**
+ * Whether a model provider header with this name carries a credential. On a Preset save, a name
+ * that holds an unfilled variable (`unresolved`, at `headers`, the path of its headers object) is
+ * also matched as the literal text around its variables, as filled empty, so
+ * `Authorization{{ vars.suffix }}` names a credential at save (finding 1244), and is matched again
+ * once filled. A variable glued to a credential word (`X-Token{{ vars.suffix }}`) counts too.
+ */
+export function isCredentialHeaderName(
+  name: string,
+  { unresolved }: ConfigurationValidationOptions = {},
+  headers: readonly (string | number)[] = [],
+): boolean {
+  const literals = unresolved?.([...headers, name], true);
+  return marksCredential(name) || (literals !== undefined && marksCredential(literals.join("")));
 }

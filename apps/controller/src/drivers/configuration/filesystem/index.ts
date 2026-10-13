@@ -5,6 +5,7 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { validateModelCredentialReferences } from "../model-auth.ts";
@@ -39,8 +40,11 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     this.root = resolve(root);
   }
 
-  async validateValues(values: OpenClawConfigurationDocument): Promise<void> {
-    validateModelCredentialReferences(values);
+  async validateValues(
+    values: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    validateModelCredentialReferences(values, options);
   }
 
   async validate(configuration: Configuration): Promise<void> {

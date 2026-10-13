@@ -143,9 +143,11 @@ Agent provisioning and Preset saves check each model provider's `baseUrl` and
 or `https` URL, and `api` must be a model API the pinned OpenClaw runtime supports, such as
 `openai-responses`, `openai-completions`, `anthropic-messages`, or `ollama`.
 A blank provider `baseUrl` and values with `${VAR}` references are left to the
-runtime, and a Preset `baseUrl` or `api` that waits on a variable without a
-default is checked once filled. The `400` names the field as a JSON pointer
-within `values`. They also refuse a `models` that is not a list and a `headers`
+runtime (a `$${VAR}` escape is no reference), and a Preset `baseUrl` or `api`
+that waits on a variable without a default is checked once filled. At save, such
+a `baseUrl` needs a literal `http` or `https` scheme, or one a variable
+completes, and each variable stands for one host, port, IPv6 address or path
+token. The `400` names the field as a JSON pointer within `values`. They also refuse a `models` that is not a list and a `headers`
 or `request.headers` name that is not a valid HTTP field name, naming the
 setting and the header; a Preset header name that waits on such a variable
 is checked once filled, on every Compute.

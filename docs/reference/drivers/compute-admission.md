@@ -65,15 +65,17 @@ Agent that fails a check still reads; its next update must fix the pair.
   word such as `-sha256`, `-ed25519` or `-v2`; the
   [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
   The refusal quotes the header's name, never its value. On a Preset save, a
-  header name that waits on a variable without a default is checked once
-  filled.
+  header name that waits on a variable without a default is matched as the
+  text around the variable (`Authorization{{ vars.suffix }}` is refused) and
+  checked again once filled.
   A `models` that is not a list is refused too: it would hide its rows.
 
 These close the credential slots in a provider's `headers` and `request`.
 The provider `apiKey` stays, checked against the Harness binding on selected
 providers only. The Configuration Driver accepts the `apiKey`, the credential
 headers, `request.auth.token` and `.value` and the TLS client keys only as
-references, and refuses a `request.proxy.url` with a user name or password.
+references, and refuses a `request.proxy.url` or model `baseUrl` with a user
+name or password.
 On Kubernetes a reference does not admit a credential header or a non-default
 `request.auth`: model credentials come only from the Agent's Harness
 authentication binding. Deployment runs `validateConfiguration` on the stored

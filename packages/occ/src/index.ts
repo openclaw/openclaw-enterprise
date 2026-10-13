@@ -4272,7 +4272,7 @@ export class OpenClawController {
       validateModelProviderSettings(values, options);
       this.validateComputeConfiguration(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
-      await driver.validateValues(values);
+      await driver.validateValues(values, options);
     }
     return template;
   }
