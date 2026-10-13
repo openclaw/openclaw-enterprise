@@ -125,7 +125,9 @@ jobs:
       # files at once. Image Model Probes stays on 16vcpu: its one case waits
       # out the 110 s model probe cap at 500m on any runner. PostgreSQL
       # Application uses 32vcpu too: it runs up to eight of its nine files at
-      # once, one per CPU (16vcpu caps it at four). Keycloak OIDC stays on
+      # once, one per CPU (16vcpu caps it at four). So does Checks and
+      # Conformance 1: four files at a time, its tests took 112-192 s and it
+      # was the last lane. Keycloak OIDC stays on
       # 8vcpu, the runner it soaked on before joining CI Required. The other lanes
       # use blacksmith 16vcpu, which exposes 4 CPUs to the job (8vcpu exposes
       # 2) and rarely waits for a runner (on 10-08/09, 15 % of 8vcpu jobs
@@ -138,7 +140,7 @@ jobs:
           SELECT_LANES: ${{ steps.select.outputs.lanes }}
           LANE_TABLE: |
             [
-              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
