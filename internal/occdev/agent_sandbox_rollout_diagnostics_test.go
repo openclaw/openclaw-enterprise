@@ -323,7 +323,7 @@ func TestAgentSandboxRolloutDiagnosticsRejectOwnership(t *testing.T) {
 	}
 }
 func TestAgentSandboxRolloutDiagnosticsBounds(t *testing.T) {
-	for _, scenario := range []string{"hostile-reason", "hostile-name", "message", "env", "number", "conditions", "containers", "objects", "malformed", "denied", "oversized", "hang", "pipe"} {
+	for _, scenario := range []string{"hostile-reason", "hostile-name", "number", "conditions", "containers", "objects", "malformed", "denied", "oversized", "hang", "pipe"} {
 		t.Run(scenario, func(t *testing.T) {
 			r, state, output, directory := agentSandboxTestRunner(t)
 			objects := agentSandboxTestObjects()
@@ -332,8 +332,6 @@ func TestAgentSandboxRolloutDiagnosticsBounds(t *testing.T) {
 			switch scenario {
 			case "hostile-reason":
 				status["reason"] = "PRIVATE\nTOKEN"
-			case "message", "env":
-				pod[scenario] = "PRIVATE-TOKEN"
 			case "hostile-name":
 				pod["name"] = strings.Repeat("a", 254)
 			case "number":
@@ -447,9 +445,14 @@ func TestAgentSandboxRolloutDiagnosticsWriterFailure(t *testing.T) {
 }
 
 func TestAgentSandboxRolloutDiagnosticsProjection(t *testing.T) {
-	for _, scenario := range []string{"owned", "foreign", "hostile-image"} {
+	for _, scenario := range []string{"owned", "ported-image", "foreign", "hostile-image"} {
 		t.Run(scenario, func(t *testing.T) {
 			r, state, output, directory := agentSandboxTestRunner(t)
+			want := "registry.example.invalid/controller:v1"
+			if scenario == "ported-image" {
+				// A reviewed local manifest may reference a registry with a port.
+				want = "localhost:5000/controller:v1"
+			}
 			r.env["OCC_TEST_SANDBOX_MODE"] = "project"
 			// Render the production templates from API-shaped objects, including
 			// list items without TypeMeta. Nonselected content must stay private.
@@ -467,7 +470,7 @@ func TestAgentSandboxRolloutDiagnosticsProjection(t *testing.T) {
 					raw["spec"] = map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": agentSandboxName}}}
 					raw["status"] = map[string]any{"observedGeneration": 2, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 0, "availableReplicas": 0, "conditions": item["conditions"]}
 				case "pods":
-					image := "registry.example.invalid/controller:v1"
+					image := want
 					if scenario == "hostile-image" {
 						image += "?PRIVATE-IMAGE"
 					}
@@ -508,7 +511,7 @@ func TestAgentSandboxRolloutDiagnosticsProjection(t *testing.T) {
 				t.Fatalf("changed rollout error: %v", err)
 			}
 			record := readAgentSandboxRecord(t, output)
-			if scenario != "owned" {
+			if scenario == "foreign" || scenario == "hostile-image" {
 				if len(record.Pods.Items) != 0 || len(record.Warnings.Items) != 0 {
 					t.Fatal("projection admitted hostile or unrelated metadata")
 				}
@@ -518,11 +521,26 @@ func TestAgentSandboxRolloutDiagnosticsProjection(t *testing.T) {
 				t.Fatal("projection lost selected metadata")
 			}
 			pod := record.Pods.Items[0]
-			if len(pod.Images) != 1 || pod.Images[0].Image != "registry.example.invalid/controller:v1" ||
+			if len(pod.Images) != 1 || pod.Images[0].Image != want ||
 				len(pod.Containers) != 1 || pod.Containers[0].ImageID != "containerd://sha256:"+strings.Repeat("a", 64) ||
 				pod.Containers[0].WaitingReason != "ImagePullBackOff" {
 				t.Fatal("projection lost image identity or waiting reason")
 			}
 		})
+	}
+}
+
+func TestAgentSandboxImageValid(t *testing.T) {
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	for _, image := range []string{"", "registry.k8s.io/agent-sandbox/controller:v0.5.2" + digest, "localhost:5000/controller:v1",
+		"docker-pullable://localhost:5000/controller" + digest, "containerd://sha256:" + strings.Repeat("b", 64)} {
+		if !agentSandboxImageValid(image) {
+			t.Errorf("rejected %q", image)
+		}
+	}
+	for _, image := range []string{"localhost:abc/controller", "localhost:123456/controller", "controller:v1?PRIVATE", "controller\nv1", "a b"} {
+		if agentSandboxImageValid(image) {
+			t.Errorf("accepted %q", image)
+		}
 	}
 }

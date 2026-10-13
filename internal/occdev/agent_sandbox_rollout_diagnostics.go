@@ -222,7 +222,7 @@ func (r *runner) agentSandboxRead(ctx context.Context, state *developmentState, 
 var agentSandboxNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var agentSandboxUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var agentSandboxCodePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,127}$`)
-var agentSandboxImagePattern = regexp.MustCompile(`^((containerd://)?sha256:[0-9a-f]{64}|(docker-pullable://)?[A-Za-z0-9][A-Za-z0-9._/-]*(:[A-Za-z0-9_.-]+)?(@sha256:[0-9a-f]{64})?)$`)
+var agentSandboxImagePattern = regexp.MustCompile(`^((containerd://)?sha256:[0-9a-f]{64}|(docker-pullable://)?([A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}/)?[A-Za-z0-9][A-Za-z0-9._/-]*(:[A-Za-z0-9_.-]+)?(@sha256:[0-9a-f]{64})?)$`)
 
 func agentSandboxImageValid(value string) bool {
 	return value == "" || len(value) <= 512 && agentSandboxImagePattern.MatchString(value)
