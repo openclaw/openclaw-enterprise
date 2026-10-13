@@ -1447,9 +1447,12 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   const listMessage =
     "Configuration setting models.providers.gateway.models must be an array of model entries.";
   const refused = [
-    [gateway({ headers: { "x-api-key ": sentinel } }), invalidName("models.providers.gateway.headers")],
     [
-      gateway({ models: [{ id: "m", request: { headers: { "Authorizatioн": sentinel } } }] }),
+      gateway({ headers: { "x-api-key ": sentinel } }),
+      invalidName("models.providers.gateway.headers"),
+    ],
+    [
+      gateway({ models: [{ id: "m", request: { headers: { Authorizatioн: sentinel } } }] }),
       invalidName("models.providers.gateway.models.0.request.headers"),
     ],
     [gateway({ models: {} }), listMessage],
