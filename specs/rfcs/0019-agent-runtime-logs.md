@@ -19,7 +19,7 @@ status_note: "Retroactive record. The design below is implemented on main (PRs #
 - **Related:** [Default production observability](0012-production-observability.md) (the
   Collector boundary), [Agent access](0010-agent-access.md) (native admin audience),
   [RFC-0001](0001-oidc-sign-in.md) (sign-in provider outages)
-- **Source baseline:** `main` at `07590c64e`. Symbols below were checked there.
+- **Source baseline:** `main` at `07590c64e`, cursor hashing at `84755c0ab` (#2274). Symbols below were checked there.
 
 <a id="problem-and-decision"></a>
 
