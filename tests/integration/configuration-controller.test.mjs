@@ -2323,7 +2323,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     assert.equal(response.status, 400, JSON.stringify(response.body));
     assert.equal(
       response.body.error.message,
-      "Configuration field /skills/entries/x/env/X10, with the environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
+      "Configuration field /skills/entries/x/env/X10, with the URLs and environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
     );
   });
   // Nothing refused was stored.
