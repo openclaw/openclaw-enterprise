@@ -179,8 +179,9 @@ binding additionally identifies the resource kind and ID.
 ## Manage Namespace policy
 
 Human-session policy mutations retain the assigning session through the transaction.
-Completed revocation prevents a pending write; expiry before commit rolls back
-policy and its success audit. A protected write may finish before logout completes.
+Completed revocation prevents a pending write. PostgreSQL validates session expiry
+during COMMIT and rolls back policy and its success audit if the session expired.
+A protected write may finish before logout completes.
 See the [Namespace IAM flow](../flows/namespace-iam-policy.md) for the implementation.
 
 Use `/namespaces/:namespaceId/iam/roles`,

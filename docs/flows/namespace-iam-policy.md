@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-12
-last_updated_session: "authoring-run/3dab5ffe-1c2c-4b63-9899-8f98cacf0b43"
+updated: 2026-10-13
+last_updated_session: "authoring-run/b48d214a-5490-45b0-b402-407eb7b9628b"
 ---
 
 # Namespace IAM Policy Flow
@@ -40,8 +40,8 @@ graph TD
   E --> F["Selected IAM Driver mutates platform IAM policy"]
   F --> G["Controller appends audit event in the same transaction"]
   D --> H["API returns policy metadata"]
-  G -->|commit with current session| H
-  G -->|session expired| X
+  G -->|COMMIT validates held session| H
+  G -->|held session expired| X
 ```
 
 ## Execution Trace
@@ -72,7 +72,7 @@ account locks. Guarded profiles first reuse
 which validates the bound account and sign-in method through the existing actor guard.
 Logout or account/method revocation must wait for a protected
 write to finish; revocation that completes first makes the write fail. Expiry
-during the write rolls back policy and its success audit. The memory auth adapter
+during the write or before server-side COMMIT validation rolls back policy and its success audit. The memory auth adapter
 serializes policy writes with local logout and rechecks the session inside the
 transaction. Non-session credentials keep their existing admission behavior.
 The event's authorization records the
@@ -134,7 +134,16 @@ unit's `holdAuthenticationSession` operation, implemented by PostgreSQL State.
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 
 The PostgreSQL state implementation writes Roles and AccessBindings through the
-same unit of work used by the API audit append. If commit outcome is unknown,
+same unit of work used by the API audit append. Holding a session issues an
+unchanged-row UPDATE that locks it without extending its lifetime or changing
+authentication metadata. This queues the deferred
+`occ.require_held_authentication_session` constraint for server-side COMMIT
+validation. It checks expiry with the database clock, including when the client's
+COMMIT request was delayed after the last authentication check. An expired
+session raises the named `held_authentication_session_is_current` constraint;
+State maps that rejection to an authorization denial (`403`). The policy and
+success audit roll back together; the API records the denial separately.
+If commit outcome is unknown,
 State discards the connection without another query. OCC reports dependency
 failure; a caller must not infer rollback or replay the mutation from that
 result. Later authorization requests read the current policy through the IAM
@@ -171,7 +180,8 @@ selected account, session, and policy writers join the same protocol.
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
   `tests/integration/postgres-production-wireup.test.mjs` checks revocation after
-  real HTTP admission, cross-replica logout ordering and expiry rollback. It uses
+  real HTTP admission, cross-replica logout ordering, expiry during policy work,
+  and expiry after the final client check with COMMIT paused at the transport. It uses
   real authentication, IAM and PostgreSQL; its passive Compute does not prove a native Gateway.
 - A `403` can also mean the admitted assigning session was revoked or expired
   before its protected transaction completed. A `403` means the caller lacks Installation administration, exact Namespace
@@ -191,7 +201,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
-- 2026-10-12 13:25: Retain human sessions through Namespace policy commits and coordinate revocation. (authoring-run/3dab5ffe-1c2c-4b63-9899-8f98cacf0b43 - b195e54e9b0ce98ead2b2306015a5209325e837b)
+- 2026-10-13 14:27: Retain human sessions through Namespace policy commits, coordinate revocation, and validate expiry during server-side COMMIT. (authoring-run/b48d214a-5490-45b0-b402-407eb7b9628b - e0de4a0ad5d994bfba63c77fd1f62170ae35b417)
 
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)

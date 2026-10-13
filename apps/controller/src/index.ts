@@ -2301,7 +2301,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             controller!.transact(async (unit) => {
               await options.auth.holdSession(unit, admitted.session, request);
               const result = await work(unit);
-              // Locks serialize revocation; recheck expiry before completing the transaction.
+              // Recheck the session after the protected policy and audit work.
               await options.auth.holdSession(unit, admitted.session, request);
               return result;
             }),

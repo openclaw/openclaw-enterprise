@@ -103,7 +103,7 @@ export interface InstallationRepository extends InstallationReadRepository {
    * no human account (its IAM bindings alone decide).
    */
   holdPrincipalAccount(principalId: string): Promise<boolean>;
-  /** Holds the stored user and unexpired session through COMMIT; authentication validates its profile. */
+  /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
   holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
 }
 
