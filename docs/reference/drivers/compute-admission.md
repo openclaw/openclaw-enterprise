@@ -57,10 +57,11 @@ Agent that fails a check still reads; its next update must fix the pair.
   selects it: a credential header in `headers` (on the provider or one of
   its models) or `request.headers`, a header name that is not a valid HTTP
   field name, and a `request.auth` other than exactly
-  `{mode: "provider-default"}`. A credential header's last hyphen- or
-  underscore-separated word is `auth`, `authorization`, `token`, `secret`,
-  `password`, `cookie`, `credential(s)`, `signature` or a like word, or its
-  name ends in `key` (not an idempotency or cache key); the
+  `{mode: "provider-default"}`. A credential header's last hyphen-,
+  underscore- or dot-separated word is `auth`, `authorization`, `token`,
+  `secret`, `password`, `cookie`, `credential(s)`, `signature`, `jwt` or a
+  like word, or its name ends in `key` (not an idempotency, cache, dedup,
+  partition, shard or sort key); the
   [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
   A `models` that is not a list is refused too: it would hide its rows.
 

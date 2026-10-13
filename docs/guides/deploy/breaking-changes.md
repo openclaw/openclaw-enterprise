@@ -22,6 +22,11 @@ idempotency or cache key, a last word of `bearer`, `credential`, `passcode`,
 and provisioning, and on Kubernetes Compute also Preset saves, Agent saves and
 deployment, answer `400` for a `models.providers.<provider>.models` that is
 not a list, which OpenClaw refused only when the Gateway started.
+A later change also matches the words `authentication`, `assertion`, `hmac`,
+`jwt`, `license`, `otp`, `pass`, `pin` and `pwd`, suffixes such as `-v2` and
+`.` separators, but saves partition, shard, sort and dedup keys; on every
+Compute, Configuration and Preset saves refuse a header name that is not a
+valid HTTP field name, and Preset saves check `models`, `baseUrl` and `api`.
 
 **Who is affected.** Configurations with such a header, or with a `models`
 record, `null` or string on any provider.
