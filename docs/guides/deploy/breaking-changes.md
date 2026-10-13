@@ -13,6 +13,22 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
+
+**What breaks.** Profile preflight refuses an uppercase letter in the repository
+path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
+which Kubernetes refused to pull; an uppercase registry host or tag still
+passes. Preflight, the chart and API startup also refuse any `@` before the
+`auth.baseUrl` host (`https://@host`), which Node silently dropped, and
+preflight refuses it in `controlPlane.observabilityUrl`.
+
+**Who is affected.** Profiles or values that use those spellings.
+
+**How to tell.** Preflight reports `... repository path must be lowercase`, or the
+URL field's absolute-URL message; API startup logs `AUTH_BASE_URL_INVALID`.
+
+**Steps.** Lowercase the repository path, or delete the `@`, then render again.
+
 ## 2026-10-13: channel proxy hosts must name one proxy address
 
 **What breaks.** Startup refuses a channel proxy IPv4 host that is not four
