@@ -884,6 +884,94 @@ test(
   },
 );
 
+// Finding 1145: the request refuses repository bindings the Compute topology cannot deliver.
+// Work it already accepted is rechecked by the worker and retry until the Agent exists, so a
+// topology change after admission fails the work before it creates the Agent.
+test(
+  "a repository topology change before the worker runs fails the provisioning work before its Agent",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const initial = await createFixture(context);
+    const namespace = await initial.bootstrapNamespace();
+    const repoDriver = new GitHubRepoDriver(
+      {
+        id: "provisioning-repositories",
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: "/unused/provisioning/control.sock",
+        }),
+        drivers: { repo: "provisioning-repo" },
+      },
+      {
+        version: 1,
+        backendId: "provisioning-repositories",
+        providerInstanceId: "provisioning-github",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "project",
+            repositoryId: "789",
+            repository: "example/project",
+            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read"] }],
+          },
+        ],
+      },
+      { sessionDurationSeconds: 600 },
+    );
+    const topology = createTestKubernetesComputeDriver("provisioning-topology-change", {
+      repositoryCredentials: true,
+    });
+    const computeDriver = initial.computeDriver;
+    computeDriver.validateRepositoryCredentials =
+      topology.validateRepositoryCredentials.bind(topology);
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver: initial.configurationDriver,
+      secretDriver: initial.secretDriver,
+      repoDriver,
+    });
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = {
+      ...provisioningBody(namespace.id, secrets, {
+        repositoryAccess: {
+          defaultProfile: "git-read",
+          repositories: [{ repositoryRef: "project" }],
+        },
+      }),
+      pluginApprovers: [],
+    };
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The topology now cannot deliver repository credentials (as with a Sandbox selected).
+    computeDriver.validateRepositoryCredentials = () => {
+      throw new Error("synthetic topology refusal");
+    };
+    await fixture.startWorker();
+    const failed = await waitFor("the worker to refuse the repository topology", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.progress.error === undefined ? undefined : row;
+    });
+    await fixture.stopWorker();
+    // The status keeps the fixed text; retry answers Agent create's 409.
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    });
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    const message =
+      "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
+    const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 409, JSON.stringify(retried.body));
+    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assert.equal(retried.body.error.message, message);
+  },
+);
+
 for (const authMethod of ["api_key", "codex_pat"]) {
   test(
     `${authMethod} provisioning grants existing Secret access and hands off one revision`,

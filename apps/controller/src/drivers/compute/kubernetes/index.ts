@@ -125,6 +125,7 @@ import {
   MANAGED_WORKSPACE,
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
+  workspaceSetupMainEntry,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
@@ -296,6 +297,18 @@ const preparationSettingError = (setting: string, requirement: string) =>
 // storage at its working directory.
 const kubernetesSetupWorkspaces = (mode: "embedded" | "dedicated"): readonly string[] =>
   mode === "dedicated" ? [MANAGED_WORKSPACE, HARNESS_WORKSPACE] : [MANAGED_WORKSPACE];
+
+// A Sandbox Harness's requirements carry no workspace initializer
+// (harnessRequirementsFromDeployment), so a Harness in a Sandbox, dedicated OpenClaw always
+// among them, cannot receive initial workspace files. Every Sandbox Driver that ships
+// provisions its Harness, so any Sandbox is refused.
+function requireNoSandboxWorkspaceSetup(sandboxDriverId: string | undefined): void {
+  if (sandboxDriverId !== undefined) {
+    throw new ConfigurationFailure(
+      "Initial workspace files cannot be delivered to a Harness in a Sandbox.",
+    );
+  }
+}
 
 export interface KubernetesWorkloadPeer {
   readonly namespace: string;
@@ -2136,6 +2149,9 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
       throw unsupported("plugins.entries.codex.config.codexDynamicToolsExclude", "a list");
     }
     object(object(configuration.cron, "cron")?.triggers, "cron.triggers");
+    const defaults = object(object(configuration.agents, "agents")?.defaults, "agents.defaults");
+    const compaction = object(defaults?.compaction, "agents.defaults.compaction");
+    object(compaction?.memoryFlush, "agents.defaults.compaction.memoryFlush");
   }
   const providers = object(object(configuration.models, "models")?.providers, "models.providers");
   for (const [key, provider] of Object.entries(providers ?? {})) {
@@ -3488,11 +3504,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   // The Installation's runtime storage, which preparation also needs, is not the caller's to
-  // fix, so it stays with preparation.
+  // fix, so it stays with preparation. A Sandbox Harness has no setup initializer, so the
+  // Sandbox refusal comes first: OpenShell forces the workspace to its mount, and the setting
+  // rule would otherwise name a path the caller never wrote (finding 1144).
   validateWorkspaceSetup(
     harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
+    sandboxDriverId?: string,
   ): void {
+    requireNoSandboxWorkspaceSetup(sandboxDriverId);
     requireWorkspaceSetupConfiguration(
       configuration,
       kubernetesSetupWorkspaces(harness.mode),
@@ -5188,7 +5208,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.prepareOAuthCredentials(revision, context, namespace),
         ))
       ) {
-        return result;
+        // The worker retires the bootstrap (Job and seed Secret) if the deadline passes here.
+        // Not `incomplete()`: no runtime failure evidence may end this wait early.
+        return { ...result, pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" };
       }
     }
     const deliveredHarnessAuth = await this.prepareRevisionStage("harness_auth", () =>
@@ -10349,6 +10371,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (this.options.runtime === undefined) {
       throw new ConfigurationFailure("Workspace setup requires durable native runtime storage.");
     }
+    requireNoSandboxWorkspaceSetup(revision.sandboxDriverId);
     requireWorkspaceSetupConfiguration(
       revision.configuration,
       kubernetesSetupWorkspaces(revision.harness.mode),
@@ -10470,8 +10493,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       workspaceNodeId !== undefined
         ? { nativeWorkerNodeId: workspaceNodeId }
         : {}),
+      // Initial workspace setup's directory: the main entry in any letter case, as OpenClaw
+      // and the setup rule read it (finding 1144).
       workspace:
-        asRecord(asRecord(asRecord(nativeConfiguration.agents)?.entries)?.main)?.workspace ??
+        workspaceSetupMainEntry(nativeConfiguration)?.agent?.workspace ??
         asRecord(asRecord(nativeConfiguration.agents)?.defaults)?.workspace ??
         "/home/node/.openclaw/workspace",
     };
@@ -12918,9 +12943,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             (owner) => asRecord(owner)?.uid === job.metadata.uid && asRecord(owner)?.kind === "Job",
           ),
       )
+      // The client returns `Date`s; compare ISO times, never `String(Date)` (weekday text).
       .sort((a, b) =>
-        String(asRecord(b.metadata)?.creationTimestamp).localeCompare(
-          String(asRecord(a.metadata)?.creationTimestamp),
+        (validKubernetesTime(asRecord(b.metadata)?.creationTimestamp) ?? "").localeCompare(
+          validKubernetesTime(asRecord(a.metadata)?.creationTimestamp) ?? "",
         ),
       )
       .slice(0, 4);

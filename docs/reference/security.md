@@ -263,7 +263,8 @@ to the Collector, and responses carry `Cache-Control: no-store`.
 - **Sandbox source.** OpenShell policy decisions and supervisor tracing use the
   same tiers and audit. OCC reads them through a client narrowed to the
   read-only `GetSandboxLogs` RPC (`sandbox:read`), so this path cannot create,
-  delete or exec into a Sandbox. Records are classed `activity`; command lines
+  delete or exec into a Sandbox. A response over 4 MiB fails the read instead of
+  being cut; that limit bounds the unsanitized read. Records are classed `activity`; command lines
   and URLs are redacted and cut to 1 KiB.
 - **Errors.** Driver and cluster error text never reaches a client; failures map
   to fixed codes.

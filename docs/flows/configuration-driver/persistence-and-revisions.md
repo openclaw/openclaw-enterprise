@@ -22,7 +22,10 @@ refuse a Codex approval policy the Gateway refuses and a literal
 `gateway.auth.password`, and the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
 Kubernetes refuses unsupported channels and model credentials outside the Harness
-authentication binding. A stored row that predates a rule still reads. The Driver owns backing document
+authentication binding. A stored row that predates a rule still reads and an
+edit can replace it: a bundled Driver checks a stored document only against
+the credential-reference rules in force before 2026-10-12, and every write and
+deployment against all of them. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)

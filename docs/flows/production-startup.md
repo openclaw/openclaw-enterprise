@@ -120,7 +120,9 @@ refuses peer maps Kubernetes rejects, preserving null/empty semantics and accept
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 containers optionally mount the CA. Helm validates distinct application and
-migration Secret keys against Kubernetes syntax before use. Bootstrap also
+migration Secret keys against Kubernetes syntax before use.
+`executionCluster.kubeconfigKey` must be a Secret key of at most 253 characters,
+not `.` or a `..` prefix. Bootstrap
 receives auth, administrator, Installation and output settings.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
@@ -130,8 +132,7 @@ dedicated role and canonical receipt/catalog state, and holds one advisory lock
 on the connection used by Drizzle's normal transaction. It accepts fresh
 databases, canonical history through migration 0023, or the completed history
 through 0025. Unsupported or mixed development histories fail before migration
-DDL, preventing bootstrap from running. Development and production share this preflight; see [migration history and recovery](../reference/settings/operations.md#migration-history)
-for the read-only check and developer-selected recreation procedure.
+DDL, preventing bootstrap from running. See [migration history and recovery](../reference/settings/operations.md#migration-history).
 
 `scripts/bootstrap-installation.mjs:authBaseURL` checks an HTTP(S) origin before
 database access. Production requires HTTPS except for HTTP loopback verification

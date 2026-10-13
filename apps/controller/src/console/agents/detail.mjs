@@ -445,11 +445,14 @@ function createDeploymentStatusPanel(
             "p",
             { role: "status", className: "deployment-cleanup" },
             {
+              // One retire cleanup per version: OAuth bootstrap or repository credential resources.
               queued:
-                "Cleanup pending. Bootstrap resources have not been confirmed removed; the controller will retry.",
-              running: "Cleanup is running. Bootstrap resources have not been confirmed removed.",
-              succeeded: "Cleanup completed for this version.",
-              failed: "Cleanup failed. Ask an operator to inspect the retained cleanup obligation.",
+                "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
+              running:
+                "Revision cleanup is running. This version's resources have not been confirmed removed.",
+              succeeded: "Revision cleanup completed for this version.",
+              failed:
+                "Revision cleanup failed. Ask an operator to inspect the retained cleanup obligation.",
             }[state.status.cleanup.status],
           )
         : null,

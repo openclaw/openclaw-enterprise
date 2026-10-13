@@ -123,8 +123,8 @@ OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Current version** shows `activeRevisionId`, a selected pointer, not serving health.
 **Deployment activity** shows the newest authorized outcome and the viewed version’s
 own result. The Agent list’s **Latest deployment** links failure details beside
-Current version. Unreadable results remain unavailable. Bootstrap failures retain
-safe evidence and refresh separate cleanup progress.
+Current version. Unreadable results remain unavailable. Bootstrap failures keep
+safe evidence; revision cleanup progress refreshes separately.
 
 For a failed deployment, **Open vN Logs** opens that exact version and brings
 its Logs panel into view, including when starting from the draft or another
@@ -279,23 +279,22 @@ for the release binding, limits, and deployment failure behavior.
 
 ## Edit workspace files
 
-Open **Workspace files** on an Agent to load the same four files. This view reads the live Agent workspace, not the
-Configuration draft or browsed AgentRevision, and requires an active revision
-and reachable gateway; selection alone does not prove access. Files are never
-copied into a Configuration or revision.
+Open **Workspace files** on an Agent to load the same four files from the live
+workspace, not the Configuration draft or a browsed AgentRevision. Loading needs
+an active revision and a reachable gateway; selection does not prove access.
+Files are not copied into a Configuration or revision.
 
-Each file has its own **Save** and **Reload**. A save creates or replaces only
-that file through the [workspace file API](agents.md#workspace-files); the editor
-enforces the API's 16 KiB UTF-8 and Unicode limits. Loading requires Agent `read`; saving
-requires `operate`. Writes have no version check: the last writer wins. Reload
-replaces unsaved edits with the current file. The editor uses LF line endings:
-loading a CRLF file does not enable Save or rewrite it, and saving an edit writes LF.
+Each file has **Save** and **Reload**. Save creates or replaces that file through
+the [workspace file API](agents.md#workspace-files), within its 16 KiB UTF-8 and Unicode limit.
+Loading requires Agent `read`; saving requires `operate`. The last writer wins.
+Reload replaces unsaved edits. The editor uses LF: loading a CRLF file does not
+enable Save or rewrite it, and saving an edit writes LF.
 
-A failed write preserves the editor contents. An unknown outcome disables that
-file's Save until a successful reload, so it is never replayed automatically; review the loaded contents before
-writing again. Files load and
-save independently, so one file's result says nothing about another's. For
-unavailable gateways, follow the
+A failed write keeps the editor contents. An unknown outcome disables Save until
+Reload confirms the file or its absence. Review what loaded, or enter new content
+when the file is missing, before saving again. A denial or unavailable read leaves
+Save disabled. The editor never replays a write. Each file saves independently.
+For an unavailable gateway, follow the
 [workspace access setup](../guides/deploy/workspace-routing.md#agent-workspace-files).
 
 ## Open the native admin UI
