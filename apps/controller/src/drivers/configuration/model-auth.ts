@@ -11,6 +11,9 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 export class ConfigurationValidationError extends Error {}
 
+// A setting's location, as `options.unresolved` takes it: a list index is a number.
+type SettingPath = readonly (string | number)[];
+
 const pointer = (...segments: readonly (string | number)[]): string =>
   segments
     .map((segment) => `/${String(segment).replaceAll("~", "~0").replaceAll("/", "~1")}`)
@@ -37,7 +40,8 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * deployment checks all slots. A Preset save passes `unresolved`, so a credential header name that
  * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
- * channel proxies, MCP server URLs and proxy environment variables.
+ * channel proxies, MCP server URLs, proxy environment variables (also an MCP server's), Codex's
+ * network proxy and speech provider proxies.
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -177,6 +181,15 @@ export function validateModelCredentialReferences(
         );
       }
     }
+    // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
+    // process it starts, and an MCP server's `env` its stdio process (finding 1259). Clients such
+    // as curl and git read a value without a scheme as http. On a Preset save, a name that waits
+    // on a variable is matched as the text around it (`{{ vars.scheme }}_PROXY`), as for
+    // credential header names.
+    const environments: [readonly string[], Record<string, unknown> | undefined][] = [
+      [["env"], env],
+      [["env", "vars"], asRecord(env?.vars)],
+    ];
     for (const at of [["mcp"], ["nodeHost", "mcp"]]) {
       const mcp = at.reduce<Record<string, unknown> | undefined>(
         (parent, key) => asRecord(parent?.[key]),
@@ -184,16 +197,56 @@ export function validateModelCredentialReferences(
       );
       for (const [server, settings] of Object.entries(asRecord(mcp?.servers) ?? {})) {
         refuseUrlUserinfo([...at, "servers", server, "url"], asRecord(settings)?.url);
+        environments.push([[...at, "servers", server, "env"], asRecord(asRecord(settings)?.env)]);
       }
     }
-    // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
-    // process it starts. Clients such as curl and git read a value without a scheme as http. On a
-    // Preset save, a name that waits on a variable is matched as the text around it
-    // (`{{ vars.scheme }}_PROXY`), as for credential header names.
-    for (const [prefix, settings] of [
-      [["env"], env],
-      [["env", "vars"], asRecord(env?.vars)],
-    ] as const) {
+    // The proxy URLs plugins read (finding 1259): Codex's network proxy, and a speech provider's
+    // `proxy` (Microsoft's) in every TTS block, voice-call's and its numbers' included.
+    const plugins = asRecord(asRecord(values.plugins)?.entries);
+    const codex = ["plugins", "entries", "codex", "config", "appServer", "networkProxy"];
+    const networkProxy = codex
+      .slice(2)
+      .reduce<Record<string, unknown> | undefined>(
+        (parent, key) => asRecord(parent?.[key]),
+        plugins,
+      );
+    for (const field of ["proxyUrl", "socksUrl"]) {
+      refuseUrlUserinfo([...codex, field], networkProxy?.[field]);
+    }
+    const voiceCall = ["plugins", "entries", "voice-call", "config"];
+    const voiceCallConfig = asRecord(asRecord(plugins?.["voice-call"])?.config);
+    const agents = asRecord(values.agents)?.list;
+    const speech: [SettingPath, unknown][] = [
+      [["tts"], values.tts],
+      ...(Array.isArray(agents) ? agents : []).map((agent, index): [SettingPath, unknown] => [
+        ["agents", "list", index, "tts"],
+        asRecord(agent)?.tts,
+      ]),
+      [[...voiceCall, "tts"], voiceCallConfig?.tts],
+      ...Object.entries(asRecord(voiceCallConfig?.numbers) ?? {}).map(
+        ([number, route]): [SettingPath, unknown] => [
+          [...voiceCall, "numbers", number, "tts"],
+          asRecord(route)?.tts,
+        ],
+      ),
+    ];
+    for (const [at, tts] of speech) {
+      const blocks: [SettingPath, Record<string, unknown> | undefined][] = [
+        [at, asRecord(tts)],
+        ...Object.entries(asRecord(asRecord(tts)?.personas) ?? {}).map(
+          ([persona, settings]): [SettingPath, Record<string, unknown> | undefined] => [
+            [...at, "personas", persona],
+            asRecord(settings),
+          ],
+        ),
+      ];
+      for (const [path, block] of blocks) {
+        for (const [provider, settings] of Object.entries(asRecord(block?.providers) ?? {})) {
+          refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
+        }
+      }
+    }
+    for (const [prefix, settings] of environments) {
       for (const name of Object.keys(settings ?? {})) {
         const literal = options.unresolved?.([...prefix, name], true)?.join("");
         if ([name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text))) {

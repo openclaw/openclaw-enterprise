@@ -51,13 +51,15 @@ const holdsEnvironmentReference = (value: unknown): boolean =>
 // Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;
 
-// An http(s) URL whose written authority is empty (`https:///v1`, as an empty Preset variable
-// for the host renders it) parses with the first path segment as its host (finding 1256).
+// An http(s) URL must write exactly two slashes after its scheme (a backslash reads as a slash).
+// The URL parser treats them as optional: `https:/v1` and `https:v1` parse with `v1` as the host
+// (finding 1259), and an empty authority (`https:///v1`, as an empty Preset variable for the
+// host renders it) with the first path segment as the host (finding 1256).
 const isRuntimeUrl = (value: unknown): boolean => {
   const url = typeof value === "string" && URL.canParse(value) ? new URL(value) : undefined;
   return (
     (url?.protocol === "http:" || url?.protocol === "https:") &&
-    !/^[\0- ]*https?:[/\\]{3}/i.test(String(value).replaceAll(/[\t\n\r]/g, ""))
+    /^[\0- ]*https?:[/\\]{2}(?![/\\])/i.test(String(value).replaceAll(/[\t\n\r]/g, ""))
   );
 };
 
@@ -287,9 +289,15 @@ function validateSettings(
   // On a provider, the runtime treats a blank baseUrl as unset and uses a built-in
   // provider's default endpoint; a model's baseUrl must be a nonempty URL.
   const unsetBaseUrl = provider && typeof baseUrl === "string" && baseUrl.trim() === "";
-  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl && !environment(baseUrl)) {
+  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl) {
+    // An environment reference is one more variable, so the text around it is checked as for a
+    // Preset variable (`https:${HOST}/v1` writes no slashes).
     const literals = unresolved([...path, "baseUrl"]);
-    if (literals === undefined ? !isRuntimeUrl(baseUrl) : !fillsAsRuntimeUrl(literals)) {
+    if (
+      literals === undefined && !environment(baseUrl)
+        ? !isRuntimeUrl(baseUrl)
+        : !fillsAsRuntimeUrl(splitEnvironmentReferences(literals ?? [String(baseUrl)], () => false))
+    ) {
       throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
     }
   }
