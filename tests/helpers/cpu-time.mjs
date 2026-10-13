@@ -24,10 +24,7 @@ export function cpuTimeMs(work, { budgetMs = Number.POSITIVE_INFINITY, runs = 3 
  * call. Only the awaited work may run in the process meanwhile: CPU time is not
  * attributed to a promise.
  */
-export async function cpuTimeMsAsync(
-  work,
-  { budgetMs = Number.POSITIVE_INFINITY, runs = 3 } = {},
-) {
+export async function cpuTimeMsAsync(work, { budgetMs = Number.POSITIVE_INFINITY, runs = 3 } = {}) {
   let cheapest = Number.POSITIVE_INFINITY;
   for (let run = 0; run < runs && cheapest >= budgetMs; run += 1) {
     const before = process.cpuUsage();

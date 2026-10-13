@@ -575,11 +575,12 @@ export type RuntimeLogSanitizeMemo = { readonly [runtimeLogSanitizeMemo]: true }
 type SanitizedText = ReturnType<typeof sanitizeRuntimeLogText>;
 
 interface MemoSlots {
-  readonly classified: ({ raw: string; depth: number; after: number; result: Classified } | undefined)[];
+  readonly classified: (
+    { raw: string; depth: number; after: number; result: Classified } | undefined
+  )[];
   readonly texts: ({ value: string; limit: number; result: SanitizedText } | undefined)[][];
   readonly sandbox: (
-    | { stream: RuntimeLogStream; line: Readonly<SandboxLogLine>; result: SandboxOutcome }
-    | undefined
+    { stream: RuntimeLogStream; line: Readonly<SandboxLogLine>; result: SandboxOutcome } | undefined
   )[];
 }
 
@@ -885,8 +886,7 @@ function sandboxLineSize(line: Readonly<SandboxLogLine>): number {
  * redacted; any structured payload in a message is withheld.
  */
 type SandboxOutcome =
-  | { readonly reason: RuntimeLogWithheldReason }
-  | { readonly record: SanitizedRuntimeLogRecord };
+  { readonly reason: RuntimeLogWithheldReason } | { readonly record: SanitizedRuntimeLogRecord };
 
 /** One Sandbox line on its own: withheld with a reason, or its redacted record. */
 function sandboxLineOutcome(
@@ -913,7 +913,9 @@ function sandboxLineOutcome(
   }
   const message = sanitizeRuntimeLogText(shown);
   const subsystem =
-    line.target.length === 0 ? undefined : sanitizeRuntimeLogText(line.target, MAX_FIELD_CHARS).text;
+    line.target.length === 0
+      ? undefined
+      : sanitizeRuntimeLogText(line.target, MAX_FIELD_CHARS).text;
   const fields = sandboxFields(line, parsed?.fields ?? {});
   const record: LineRecord = {
     type: "line",
