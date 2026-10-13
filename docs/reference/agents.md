@@ -81,9 +81,9 @@ eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
 Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
-Deployment failure remains terminal. Bootstrap errors retain bounded
+Deployment failure remains terminal. Terminal preparation errors retain bounded
 `error.data.preparation` (identities, reasons, scheduling, exits, timestamps),
-excluding raw output and credentials; see [bootstrap limits](drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
+excluding raw output and credentials. [External Codex OAuth](drivers/kubernetes-compute/codex-oauth-storage.md) keeps token custody with the selected external service.
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional

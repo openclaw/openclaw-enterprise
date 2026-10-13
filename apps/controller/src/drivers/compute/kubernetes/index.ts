@@ -24,7 +24,6 @@ import type {
   VersionApi,
   V1ConfigMap,
   V1EnvVar,
-  V1Job,
   V1NetworkPolicyPeer,
   V1ObjectMeta,
   V1DeleteOptions,
@@ -53,7 +52,6 @@ import type {
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
-  ComputePreparationFailureEvidence,
   ComputeReadiness,
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
@@ -102,7 +100,6 @@ import {
   ActivationPendingError,
   agentEntryMessage,
   ComputeGatewaySettingError,
-  ComputePreparationFailedError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialWithdrawalRefusedError,
@@ -230,40 +227,6 @@ type ManagedResourceKind =
   | "HTTPRoute"
   | "SecurityPolicy";
 type ReadableResourceKind = ManagedResourceKind | "Pod" | "Secret" | "Job";
-
-// API defaulting adds fields to Jobs. Verify every rendered field without
-// patching an immutable template or accepting extra containers/volumes.
-function bootstrapSpecMatches(observed: unknown, desired: unknown, path = ""): boolean {
-  if (
-    /^template\.spec\.(?:initContainers|containers)\.\d+\.resources\.(?:requests|limits)\.[^.]+$/.test(
-      path,
-    ) &&
-    typeof observed === "string" &&
-    typeof desired === "string"
-  ) {
-    return compareResourceQuantities(observed, desired) === 0;
-  }
-  if (Array.isArray(desired)) {
-    return (
-      Array.isArray(observed) &&
-      observed.length === desired.length &&
-      desired.every((value, index) =>
-        bootstrapSpecMatches(observed[index], value, `${path}.${index}`),
-      )
-    );
-  }
-  const record = asRecord(desired);
-  if (record !== undefined) {
-    const existing = asRecord(observed);
-    return (
-      existing !== undefined &&
-      Object.entries(record).every(([key, value]) =>
-        bootstrapSpecMatches(existing[key], value, path ? `${path}.${key}` : key),
-      )
-    );
-  }
-  return Object.is(observed, desired);
-}
 
 const CHANNEL_REQUIREMENTS = {
   slack: {

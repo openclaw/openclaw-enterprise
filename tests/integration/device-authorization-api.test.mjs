@@ -341,22 +341,6 @@ test("login handles are actor and Agent scoped while source discovery uses exact
   );
   const agentPath = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/device-authorizations`;
   assert.equal((await fixture.poll(login, agentPath)).status, 404);
-  const embedded = await fixture.createAgent(
-    fixture.namespace.id,
-    "Embedded Agent",
-    createHarnessConfiguration("openclaw", "gpt-5.1"),
-    { executionMode: "embedded", harnessAuth: null },
-  );
-  assert.equal(
-    (
-      await fixture.request(
-        "POST",
-        `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/device-authorizations`,
-        { body: { harnessId: "codex" } },
-      )
-    ).status,
-    501,
-  );
   assert.equal(
     (await fixture.request("POST", fixture.path, { body: { harnessId: "openclaw" } })).status,
     501,

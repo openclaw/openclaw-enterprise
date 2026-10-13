@@ -2769,7 +2769,10 @@ async function verifyCredentialSourceContract(
   await store.transact(async (transaction) => {
     await transaction.credentialSources.createCredentialSource(externalSource);
     await transaction.agents.createAgent(externalAgent);
-    await transaction.revisions.createRevision(externalRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(externalRevision),
+      externalRevision,
+    );
   });
   assert.deepEqual(
     await store.read((state) =>

@@ -256,7 +256,7 @@ export function installFixture(scenario, evidence) {
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
             : scenario.auth === "oauth"
-              ? { method: "credential_source", sourceId: "crs_demo_oauth" }
+              ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
   let selectedRevisionId = null;
   if (scenario.candidateDeploymentStatus) {
@@ -721,7 +721,7 @@ export function installFixture(scenario, evidence) {
         if (poll && method === "POST") {
           if (!scenario.oauthPending) {
             login.status = "ready";
-            login.source ??= { kind: "credential_source", namespaceId, id: nextId("crs") };
+            login.source ??= { kind: "credential_source", namespaceId, id: nextId("cs") };
           }
           return response(login);
         }

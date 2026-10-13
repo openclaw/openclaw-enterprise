@@ -35,7 +35,6 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   ComputeGatewaySettingError,
-  ComputePreparationFailedError,
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,

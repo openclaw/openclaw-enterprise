@@ -2367,7 +2367,10 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     deployed: true,
     auth: "oauth",
-    credentialSources: [{ sourceId: "crs_demo_oauth" }, { sourceId: "crs_demo_tool" }],
+    credentialSources: [
+      { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
+      { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
+    ],
     description:
       "Sign in and save a replacement explicitly. The Agent replaces its prior Harness source binding and retains unrelated tool bindings; deployment remains separate.",
     steps: [
