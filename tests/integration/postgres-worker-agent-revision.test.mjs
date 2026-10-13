@@ -3800,24 +3800,33 @@ revisionTest(
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("deployment-clock");
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { leaseDurationMs: 60_000 });
-    // Each controller reads the same durable work with a clock skewed far from PostgreSQL's.
-    const statusAt = async (instant) =>
-      (
-        await createBackendController(fixture, {
-          backends: [],
-          now: () => new Date(instant),
-        }).getDeploymentStatus(fixture.actor.id, fixture.namespace.id, owner.id, candidate.id)
-      ).status;
+    // Both controllers read the same durable work with clocks skewed far from PostgreSQL's.
+    const statusFrom = (instant) => {
+      const controller = createBackendController(fixture, {
+        backends: [],
+        now: () => new Date(instant),
+      });
+      return async () =>
+        (
+          await controller.getDeploymentStatus(
+            fixture.actor.id,
+            fixture.namespace.id,
+            owner.id,
+            candidate.id,
+          )
+        ).status;
+    };
+    const statusAhead = statusFrom("2999-01-01T00:00:00Z");
+    const statusBehind = statusFrom("1970-01-01T00:00:00Z");
 
-    assert.equal(await statusAt("2999-01-01T00:00:00Z"), "queued");
     const claim = await queue.claim();
     assert.equal(claim.idempotencyKey, candidate.idempotencyKey);
     // A controller clock ahead of the lease still reports the live claim.
-    assert.equal(await statusAt("2999-01-01T00:00:00Z"), "running");
+    assert.equal(await statusAhead(), "running");
 
     await fixture.expireClaim(candidate, claim.claimToken);
     // A controller clock behind the lease still reports the expired claim as waiting.
-    assert.equal(await statusAt("1970-01-01T00:00:00Z"), "queued");
+    assert.equal(await statusBehind(), "queued");
   },
 );
 
