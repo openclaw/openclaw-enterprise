@@ -890,7 +890,49 @@ const imageCacheLanes = new Map([
   ["repository-credentials-platform", { localStore: true }],
 ]);
 
-function imageBuildArgs(state, role, localStore, cacheWarm = false) {
+function imageCache(role) {
+  return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
+}
+
+// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
+// image input change, in order and never cancelled, so the newest commit's export
+// lands last. CI lanes only restore: a lane export on main could land after a
+// newer commit's warm export and replace it, and on a pull request it cost about
+// 40 s and filled only the merge ref's scope. The warm job exports in a second
+// build after the image is built and loaded: the same arguments without --load or
+// the tag, so BuildKit reuses the steps it just ran and only uploads the cache.
+function imageCacheExportArgs(role, buildArgs) {
+  if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
+    throw new Error("Only a hosted cache build can export the image cache.");
+  }
+  const rest = [];
+  for (let index = 3; index < buildArgs.length; index += 1) {
+    if (buildArgs[index] === "-t") {
+      index += 1;
+    } else {
+      rest.push(buildArgs[index]);
+    }
+  }
+  return [
+    "buildx",
+    "build",
+    "--output",
+    "type=cacheonly",
+    "--cache-to",
+    `${imageCache(role)},mode=max,timeout=10m`,
+    ...rest,
+  ];
+}
+
+// The warm job's limit for one image's cache export. Healthy exports took 25-65 s;
+// one stalled on a single layer upload for 17 minutes, past BuildKit's own
+// timeout=10m (finding 1219). Tests shorten it.
+const imageCacheExportTimeoutMs =
+  Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS)
+    : 5 * 60_000;
+
+function imageBuildArgs(state, role, localStore) {
   if (process.env.OCC_CI_IMAGE_CACHE === "1") {
     if (
       process.env.GITHUB_ACTIONS !== "true" ||
@@ -900,7 +942,6 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
     ) {
       throw new Error("Image caching requires the hosted image lane and its cache credentials.");
     }
-    const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
     return [
       "buildx",
       "build",
@@ -912,15 +953,7 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       "--build-arg",
       "SOURCE_DATE_EPOCH=0",
       "--cache-from",
-      `${cache},timeout=60s`,
-      // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for
-      // every image input change, in order and never cancelled, so the newest
-      // commit's export lands last. CI lanes only restore: a lane export on main
-      // could land after a newer commit's warm export and replace it, and on a
-      // pull request it cost about 40 s and filled only the merge ref's scope.
-      // The warm job exists to export, so each transfer may take longer and a
-      // failed export fails the job instead of being ignored.
-      ...(cacheWarm ? ["--cache-to", `${cache},mode=max,timeout=10m`] : []),
+      `${imageCache(role)},timeout=60s`,
     ];
   }
   return [
@@ -937,12 +970,12 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
 // image from the BuildKit cache without exporting its layers, then tag the
 // engine's image if it has the same ID. The ID is the digest of a config that
 // names every layer's content digest, so the tagged image is the one the build
-// would load. The warm job, which exports the cache, and any probe failure (a
-// timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
+// would load. The warm job, which builds every step for its export, and any probe
+// failure (a timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
 // says "absent" only when the engine reports no such image, "different" when it
 // holds another image under that reference, and "probe-failed" otherwise.
 async function reuseEngineImage(state, role, args, tag) {
-  if (args[0] !== "buildx" || !args.includes("--load") || args.includes("--cache-to")) {
+  if (args[0] !== "buildx" || !args.includes("--load")) {
     return false;
   }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -1027,25 +1060,57 @@ async function buildRuntimeImages(
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
-  // prints it per image once the build ends (parallel builds stay readable), also
-  // when the build fails or overruns its own deadline inside the job's.
-  const progress = cacheWarm ? ["--progress=plain"] : [];
-  const build = async (role, args) => {
-    if (!cacheWarm) {
-      return execFile(process.env.OCC_DOCKER_BIN ?? "docker", args);
-    }
+  // prints it per image and command once that ends (parallel builds stay
+  // readable), also when it fails or overruns its own deadline inside the job's.
+  const plainProgress = cacheWarm ? ["--progress=plain"] : [];
+  const warmCommand = async (heading, args, timeoutMs) => {
     let output = "";
     try {
-      const built = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
-        timeoutMs: 20 * 60_000,
-      });
-      output = built.stderr;
-      return built;
+      const done = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs });
+      output = done.stderr;
+      return done;
     } catch (error) {
       output = error.stderr ?? "";
       throw error;
     } finally {
-      process.stderr.write(`[image-cache-warm] ${role} build\n${output}\n`);
+      process.stderr.write(`[image-cache-warm] ${heading}\n${output}\n`);
+    }
+  };
+  const build = async (role, args) => {
+    if (!cacheWarm) {
+      return execFile(process.env.OCC_DOCKER_BIN ?? "docker", args);
+    }
+    const exportArgs = imageCacheExportArgs(role, args);
+    // A failed or overrunning build fails the job and keeps nothing.
+    await warmCommand(`${role} build`, args, 20 * 60_000);
+    // The export is best effort with its own limit. Without it, image lanes restore
+    // the previous cache: content-addressed steps that still match are reused and
+    // the rest rebuild, so a missed export makes builds slower, never wrong.
+    // BuildKit writes the cache manifest after the layers, so an interrupted
+    // export leaves lanes the previous cache.
+    const started = performance.now();
+    let outcome = "exported";
+    try {
+      await warmCommand(`${role} cache export`, exportArgs, imageCacheExportTimeoutMs);
+    } catch (error) {
+      outcome = error.timedOut ? "timed-out" : "failed";
+      const reason =
+        outcome === "timed-out"
+          ? `did not finish within ${imageCacheExportTimeoutMs} ms`
+          : "failed";
+      process.stdout.write(
+        `::warning title=Image cache export::The ${role} image built, but its cache export ` +
+          `${reason}; image lanes restore the previous cache until the next warm run.\n`,
+      );
+    } finally {
+      progress(
+        "image-cache-warm",
+        JSON.stringify({
+          stage: `${role}-cache-export`,
+          outcome,
+          elapsedMs: Math.round(performance.now() - started),
+        }),
+      );
     }
   };
   await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
@@ -1082,8 +1147,8 @@ async function buildRuntimeImages(
       role: "controller",
       tag,
       args: [
-        ...imageBuildArgs(state, "controller", localStore, cacheWarm),
-        ...progress,
+        ...imageBuildArgs(state, "controller", localStore),
+        ...plainProgress,
         "--pull=false",
         "--target",
         "runtime",
@@ -1104,8 +1169,8 @@ async function buildRuntimeImages(
       args:
         openclawSource === undefined
           ? [
-              ...imageBuildArgs(state, "runtime", localStore, cacheWarm),
-              ...progress,
+              ...imageBuildArgs(state, "runtime", localStore),
+              ...plainProgress,
               "--pull=false",
               "-f",
               runtimeDockerfile,
@@ -1145,7 +1210,8 @@ async function buildRuntimeImages(
   await writeState(statePath, state);
   await prepareTogether(
     builds.map((entry) => async () => {
-      if (!(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
+      // The warm job builds every step so its export has them all.
+      if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
         await build(entry.role, entry.args);
       }
       await markResourceReady(statePath, state, entry.resource);

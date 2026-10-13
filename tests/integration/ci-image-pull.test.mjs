@@ -97,11 +97,11 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
   for (const call of calls) {
     assert.equal(call.command, "podman");
     assert.deepEqual(call.args, ["pull", image]);
-    assert.equal(call.options.timeoutMs, 300_000);
+    assert.equal(call.options.timeoutMs, 120_000);
   }
   assert.deepEqual(sleeps, [5_000, 10_000]);
   assert.match(logs[0], /toomanyrequests.*attempt 2\/4/);
-  assert.match(logs[1], /timed out after 300000 ms.*attempt 3\/4/);
+  assert.match(logs[1], /timed out after 120000 ms.*attempt 3\/4/);
 });
 
 test("pullImage fails a permanent failure on the first attempt with the original error", async () => {

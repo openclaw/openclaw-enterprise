@@ -551,7 +551,7 @@ describe("CI preparation", { concurrency }, () => {
     GITHUB_RUN_ATTEMPT: "1",
   };
 
-  test("the main image cache warm job builds the packaging images and exports both caches strictly", async (t) => {
+  test("the main image cache warm job builds the packaging images, then exports both caches", async (t) => {
     const commands = await fixtureImageCommands(t, "success", "images-packaging", warmCacheEnv);
     const warmed = await commands.warmImageCache();
     assert.equal(warmed.status, 0, warmed.stderr);
@@ -562,28 +562,55 @@ describe("CI preparation", { concurrency }, () => {
     // Each image's BuildKit output is printed under its own heading.
     assert.match(warmed.stderr, /^\[image-cache-warm\] controller build$/m);
     assert.match(warmed.stderr, /^\[image-cache-warm\] runtime build$/m);
-    const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    assert.match(warmed.stderr, /^\[image-cache-warm\] controller cache export$/m);
+    assert.match(warmed.stderr, /^\[image-cache-warm\] runtime cache export$/m);
+    const buildx = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    const builds = buildx.filter(({ args }) => args.includes("--load"));
+    const exports = buildx.filter(({ args }) => !args.includes("--load"));
     assert.deepEqual(
       builds.map(({ args }) => (args.includes("--target") ? "controller" : "runtime")).sort(),
       ["controller", "runtime"],
     );
-    for (const { args } of builds) {
+    assert.equal(exports.length, 2);
+    for (const build of builds) {
+      const { args } = build;
       const role = args.includes("--target") ? "controller" : "runtime";
       const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
       assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
-      // The lane's restore keys, an export that fails the job instead of being ignored,
-      // and plain progress so the log shows each step's cache result.
+      // The lane's restore keys, no export in the build that loads the image, and
+      // plain progress so the log shows each step's cache result.
       assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`);
-      assert.equal(args[args.indexOf("--cache-to") + 1], `${cache},mode=max,timeout=10m`);
+      assert.equal(args.includes("--cache-to"), false);
       assert.ok(args.includes("--progress=plain"));
       if (role === "controller") {
         assert.ok(args.includes(`NODE_BASE_IMAGE=${packagingNodeBaseImage}`));
       }
+      // Each image's export repeats its build without loading or tagging, after it.
+      const tag = args.indexOf("-t");
+      const exported = exports.find(
+        ({ args: other }) => other.includes("--target") === (role === "controller"),
+      );
+      assert.deepEqual(exported.args, [
+        "buildx",
+        "build",
+        "--output",
+        "type=cacheonly",
+        "--cache-to",
+        `${cache},mode=max,timeout=10m`,
+        ...args.slice(3, tag),
+        ...args.slice(tag + 2),
+      ]);
+      assert.ok(buildx.indexOf(exported) > buildx.indexOf(build), role);
+      assert.match(
+        warmed.stderr,
+        new RegExp(`"stage":"${role}-cache-export","outcome":"exported"`),
+      );
     }
+    assert.doesNotMatch(warmed.stdout, /::warning/);
     const state = await readFile(commands.statePath, "utf8");
     assert.equal(JSON.parse(state).lane, "images-packaging");
     assert.doesNotMatch(
-      JSON.stringify(builds) + state + warmed.stdout + warmed.stderr,
+      JSON.stringify(buildx) + state + warmed.stdout + warmed.stderr,
       /synthetic-cache-credential/,
     );
     // The runtime image stays tagged under a local name that cleanup does not own and that
@@ -634,6 +661,52 @@ describe("CI preparation", { concurrency }, () => {
     const cleaned = await commands.cleanup();
     assert.equal(cleaned.status, 0, cleaned.stderr);
   });
+
+  // A stalled upload once outlived BuildKit's own timeout=10m by 7 minutes, until
+  // the build's 20-minute limit failed the job after the image had built (finding 1219).
+  for (const scenario of ["controller-cache-export-hung", "controller-cache-export-failed"]) {
+    test(`a warm cache export that cannot finish only warns: ${scenario}`, async (t) => {
+      const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
+        ...warmCacheEnv,
+        OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "5000",
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "500",
+      });
+      const warmed = await commands.warmImageCache();
+      assert.equal(warmed.status, 0, warmed.stderr);
+      const outcome = scenario.endsWith("-hung") ? "timed-out" : "failed";
+      assert.match(
+        warmed.stderr,
+        new RegExp(`"stage":"controller-cache-export","outcome":"${outcome}"`),
+      );
+      assert.match(warmed.stderr, /"stage":"runtime-cache-export","outcome":"exported"/);
+      assert.match(
+        warmed.stdout,
+        new RegExp(
+          `^::warning title=Image cache export::The controller image built, but its cache export ${
+            outcome === "timed-out" ? "did not finish within 5000 ms" : "failed"
+          }; `,
+          "m",
+        ),
+      );
+      if (outcome === "failed") {
+        assert.match(
+          warmed.stderr,
+          /^\[image-cache-warm\] controller cache export\n#52 exporting to GitHub Actions Cache$/m,
+        );
+      }
+      // Both images stay built, and main's runtime image is still kept.
+      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const tags = state.resources.filter(({ kind }) => kind === "image-tag");
+      assert.deepEqual(
+        tags.map(({ status }) => status),
+        ["ready", "ready"],
+      );
+      assert.match(warmed.stderr, /"stage":"runtime-image-kept"/);
+      assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
+      const cleaned = await commands.cleanup();
+      assert.equal(cleaned.status, 0, cleaned.stderr);
+    });
+  }
 
   test("the image cache warm job refuses refs other than main and lane arguments before building", async (t) => {
     for (const [label, env, args, error] of [
