@@ -259,9 +259,9 @@ test("Agent workspace file routes enforce read and operate permissions separatel
   const fixture = await createFixture({ workspaceFilesAccess });
   const namespace = await createNamespace(fixture, "Reader tenant");
   const { agent } = await createAgent(fixture, namespace, "Reader visible Agent");
-  // The reader's tenant A grant names the first Namespace; this case's is the one to read.
+  // The reader's tenant A grant names the first Namespace any case created; read this one.
   for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
-    if (grant.id.endsWith("-tenant-a-reader")) {
+    if (["role-tenant-a-reader", "binding-tenant-a-reader"].includes(grant.id)) {
       grant.namespaceId = namespace.id;
     }
   }
@@ -539,7 +539,7 @@ test("Agent workspace file requests are bounded before and during provider acces
     `/namespaces/${preNamespace.id}/agents/${preAgent.agent.id}/workspace/files/AGENTS.md`,
   );
   const readElapsedMs = Date.now() - startedBeforeRead;
-  // The provider half had a controller of its own, with the real lookup.
+  // The provider half needs the real lookup back.
   restoreLookup();
   assert.equal(read.response.status, 503);
   assert.equal(read.payload.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -625,7 +625,8 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
   const fixture = await createFixture({ workspaceFilesAccess });
   const namespace = await createNamespace(fixture, "Disconnect tenant");
   const { agent } = await createAgent(fixture, namespace, "Disconnect Agent");
-  const app = fixture.createApp(fixture.administrator, { workspaceFilesAccess }, createFastifyApp);
+  // Every app forwards to the running case's workspace file provider.
+  const app = fixture.createApp(fixture.administrator, {}, createFastifyApp);
   context.after(async () => {
     await app.close();
   });
