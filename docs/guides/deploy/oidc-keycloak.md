@@ -175,8 +175,8 @@ The `keycloak-oidc` CI lane uses the pinned real Keycloak and Chromium, the
 imported test realm, `start-dev` storage, fixture TLS and test HTTPS ingress. It
 composes the production API in a host process; it does not deploy a production
 Keycloak topology. The lane runs in full-mode pull request CI and on pushes to
-`main`, but is not a dependency of `CI Required`; documentation-only and test-only
-CI modes do not run it.
+`main`, and `CI Required` requires it. Documentation-only CI does not run it;
+test-only CI runs it when its test changes.
 
 The lane checks discovery and the signing key, attached sign-in with both client
 authentication methods, signing-key rotation, refusal of an unattached user, and
