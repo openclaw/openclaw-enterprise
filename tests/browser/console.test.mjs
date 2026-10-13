@@ -840,6 +840,47 @@ for (const focus of ["navigation link", "account menu"]) {
   });
 }
 
+test("an open mobile drawer keeps its navigation link focused when an address without a Namespace finishes loading", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Cold drawer", { ready: true });
+  await fixture.createAgent(namespace.id, "Cold drawer Agent");
+  const { page } = await newPage(t, fixture, mobile);
+  await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+  await page.getByText("Cold drawer Agent", { exact: true }).waitFor();
+
+  // A bookmark, a typed address or the post-login return has no ?namespace=: the Loading
+  // render's nav links have none, and the fresh render's links gain it.
+  const namespacesPattern = "**/namespaces";
+  const namespacesHold = await holdRoute(t, page, namespacesPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => namespacesHold.release());
+  await page.goto(new URL("/console/agents", fixture.origin).href);
+  await namespacesHold.waitForRelease();
+  const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+  await toggle.click();
+  const agents = page.getByRole("link", { name: "Agents", exact: true });
+  await agents.waitFor();
+  assert.equal(await agents.getAttribute("href"), "/console/agents");
+  assert.equal(await agents.evaluate((node) => node === globalThis.document.activeElement), true);
+  await releaseHeldRoute(page, namespacesPattern, namespacesHold);
+  await page.getByText("Cold drawer Agent", { exact: true }).waitFor();
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+
+  assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
+  assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+  assert.equal(await agents.getAttribute("href"), `/console/agents?namespace=${namespace.id}`);
+  assert.equal(
+    await agents.evaluate((node) => node === globalThis.document.activeElement),
+    true,
+    "The re-rendered drawer keeps focus on its navigation link",
+  );
+  await page.keyboard.press("Escape");
+  assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Escape closes it");
+  assert.equal(await page.locator("main").evaluate((node) => node.inert), false);
+});
+
 test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

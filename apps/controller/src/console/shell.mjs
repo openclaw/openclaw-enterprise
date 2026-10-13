@@ -280,7 +280,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     for (const name of ["agents", "namespaces"]) {
       const link = element(
         "a",
-        { href: pageUrl(name), ...(feature === name ? { "aria-current": "page" } : {}) },
+        {
+          href: pageUrl(name),
+          "data-nav": name,
+          ...(feature === name ? { "aria-current": "page" } : {}),
+        },
         element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
         pages[name],
       );
@@ -459,11 +463,16 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function sameControl(node, root) {
+    // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
+    // Other links (Observability) keep the href comparison.
+    const nav = node.getAttribute("data-nav");
     return (
       [...root.querySelectorAll(node.localName)].find(
         (candidate) =>
           candidate.className === node.className &&
-          candidate.getAttribute("href") === node.getAttribute("href") &&
+          (nav
+            ? candidate.getAttribute("data-nav") === nav
+            : candidate.getAttribute("href") === node.getAttribute("href")) &&
           candidate.textContent === node.textContent,
       ) ?? null
     );
