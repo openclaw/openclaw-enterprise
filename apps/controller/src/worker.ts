@@ -4367,7 +4367,8 @@ export class ControllerWorker {
    * readiness evidence, the newest is HARNESS_CREDENTIAL_BOOTSTRAP_PENDING. Transient dependency
    * failures, retries and lost claims say nothing about the bootstrap and are skipped. A later
    * readiness code wins, as it would for a pass that saw the deployment at the deadline: a
-   * runtime that failed by itself stays for diagnosis.
+   * runtime that failed by itself stays for diagnosis. A ready pass records no readiness code, so
+   * a revision published since (its activation can still fail transiently) is never retired.
    */
   private async bootstrapLastPending(claim: ClaimedWork): Promise<boolean> {
     if (!isCandidateDeployment(claim)) {
@@ -4376,7 +4377,14 @@ export class ControllerWorker {
     const latest = await this.queue.findWorkAttempt(claim.idempotencyKey, [
       ...REVISION_READINESS_CODES,
     ]);
-    return latest?.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
+    if (latest?.code !== "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING") {
+      return false;
+    }
+    // Only this claim publishes its candidate, so a pointer that is elsewhere now stays so.
+    const agent = await this.state.read((view) =>
+      view.agents.findAgent(claim.namespaceId, claim.agentId!),
+    );
+    return agent?.activeRevisionId !== claim.revisionId;
   }
 
   private async finalizeRevision(

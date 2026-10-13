@@ -77,8 +77,10 @@ pass that observes the running Job, the deployment fails with
 `CONVERGENCE_DEADLINE_EXCEEDED` and commits the same retirement obligation, so
 the seed does not outlive its revision. If that last pass instead hits a
 transient dependency failure such as `KUBERNETES_API_UNAVAILABLE`, the
-deployment fails with that code, and it still commits the retirement when the
-work's latest readiness code was `HARNESS_CREDENTIAL_BOOTSTRAP_PENDING`.
+deployment fails with that code. It still commits the retirement when the
+latest readiness code its deployment work recorded was
+`HARNESS_CREDENTIAL_BOOTSTRAP_PENDING` and the revision is not the Agent's
+active revision.
 
 The tenant worker roles in both Helm charts grant only `get`, `create`, and
 `delete` for `batch/jobs`; API identities receive no Job permissions.
