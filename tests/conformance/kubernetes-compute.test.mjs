@@ -9057,7 +9057,10 @@ test("model provider credential headers and request auth are refused on every pr
       "x-signature-sha256",
       "X-Signature-SHA-256",
       "x-hub-signature-sha256-v2",
+      "X-Signature-RS256",
+      "x-signature-blake2b",
       "x-api-key2",
+      "x-api-keyv2",
       "X-Api-Key2-V3",
       "x-vercel-protection-bypass",
     ].map((name) => [

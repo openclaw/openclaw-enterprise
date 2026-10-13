@@ -165,8 +165,8 @@ export function isHttpFieldName(name: string): boolean {
 // keeps names such as x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry
 // no credential, out.
 // A trailing algorithm word, a trailing version word or both, as in x-hub-signature-256,
-// X-Signature-Ed25519, X-HMAC-SHA256 or x-api-key-v2, are skipped.
-const CREDENTIAL_HEADER_SUFFIX = String.raw`(?:[-_.](?:sha[-_]?\d+|ed25519|ed448|rsa|ecdsa|md5))?(?:[-_.]v?\d+)?$`;
+// X-Signature-Ed25519, X-HMAC-SHA256, X-Signature-RS256 or x-api-key-v2, are skipped.
+const CREDENTIAL_HEADER_SUFFIX = String.raw`(?:[-_.](?:sha[-_.]?\d+|[ehpr]s\d{3}|ed25519|ed448|rsa|ecdsa|md5|blake2[bs]?))?(?:[-_.]v?\d+)?$`;
 const CREDENTIAL_HEADER_WORD = new RegExp(
   String.raw`(?:^|[-_.])(?:assertions?|auths?|authentications?|authorizations?|bearers?|cookies?|credentials?|hmacs?|jwts?|licen[cs]es?|otps?|pass|passcode|passphrase|passwords?|pin|protection[-_.]bypass|pwd|secrets?|signatures?|tokens?)` +
     CREDENTIAL_HEADER_SUFFIX,
@@ -174,17 +174,17 @@ const CREDENTIAL_HEADER_WORD = new RegExp(
 );
 // Any name ending in `key` or `keys` is a credential too (x-api-key, apikey, x-auth-key,
 // dd-application-key, x-portkey-virtual-key, a bare key): vendors name keys too freely to
-// list. A digit glued to the key (x-api-key2) is a version too. A key's id or name
+// list. A version glued to the key (x-api-key2, x-api-keyv2) is skipped too. A key's id or name
 // (x-api-key-id) ends in another word.
 const CREDENTIAL_HEADER_KEY = new RegExp(
-  String.raw`(?:key\d*|keys)` + CREDENTIAL_HEADER_SUFFIX,
+  String.raw`(?:key(?:v?\d+)?|keys)` + CREDENTIAL_HEADER_SUFFIX,
   "i",
 );
 // Keys that name no credential: idempotency, cache, deduplication, partition, shard and sort
 // keys. A request or routing key can be a credential (an events API routing key is), so it is
 // refused like any other key.
 const NON_CREDENTIAL_KEY = new RegExp(
-  String.raw`(?:^|[-_.])(?:cache|dedup(?:e|lication)?|idempoten(?:cy|t)|partition|shard|sort)[-_.]?(?:key\d*|keys)` +
+  String.raw`(?:^|[-_.])(?:cache|dedup(?:e|lication)?|idempoten(?:cy|t)|partition|shard|sort)[-_.]?(?:key(?:v?\d+)?|keys)` +
     CREDENTIAL_HEADER_SUFFIX,
   "i",
 );

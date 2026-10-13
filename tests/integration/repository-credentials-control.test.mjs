@@ -1249,11 +1249,12 @@ test(
 );
 
 test(
-  "refused admissions whose fence did not commit are fenced again and forgotten past their window",
+  "reservations whose fence did not commit are fenced again and forgotten past their window",
   { timeout: 15000 },
   async (t) => {
     // Capacity is two admission records. A repository has one active attempt, so each
-    // admission that reaches the journal uses its own repository.
+    // admission that reaches the journal uses its own repository: repo-a is refused,
+    // repo-b fails to bind and repo-c opens.
     const fixture = await boundControlFixture(t, { sessions: 1 }, [
       ...defaultRegistryRepositories,
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
@@ -1280,17 +1281,27 @@ test(
       receipts.state.transact = transact;
     });
     const refused = [];
-    for (const repositoryRef of ["repo-a", "repo-b"]) {
-      const invalid = { ...inputFor(repositoryRef), durationSeconds: 172_801 };
-      const id = await prepared(invalid);
-      // The reservation commits, then the fence transaction fails.
-      plan = [false, true];
-      assert.deepEqual(await send(invalid, id), {
-        status: 400,
-        body: { error: "invalid-request" },
-      });
+    // A refused open: the reservation commits, then the fence transaction fails.
+    const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
+    const invalidId = await prepared(invalid);
+    plan = [false, true];
+    assert.deepEqual(await send(invalid, invalidId), {
+      status: 400,
+      body: { error: "invalid-request" },
+    });
+    refused.push([invalid, invalidId]);
+    // A failed bind: the reservation commits, then the bind and the fence fail. The
+    // broker closes the session it never handed out.
+    const unbound = inputFor("repo-b");
+    const unboundId = await prepared(unbound);
+    plan = [false, true, true];
+    assert.deepEqual(await send(unbound, unboundId), {
+      status: 503,
+      body: { error: "unavailable" },
+    });
+    refused.push([unbound, unboundId]);
+    for (const [, id] of refused) {
       assert.equal((await receipt(id)).state, "reserved");
-      refused.push([invalid, id]);
     }
     const valid = inputFor("repo-c");
     // Both records fill capacity inside their admission window.
@@ -1315,9 +1326,9 @@ test(
     const opened = await send(valid, await prepared(valid));
     assert.equal(opened.status, 201);
     assert.equal(opened.body.session.state, "OPEN");
-    for (const [invalid, id] of refused) {
+    for (const [input, id] of refused) {
       assert.equal((await receipt(id)).state, "fenced");
-      assert.deepEqual(await send(invalid, id), {
+      assert.deepEqual(await send(input, id), {
         status: 404,
         body: { error: "admission-missing" },
       });
