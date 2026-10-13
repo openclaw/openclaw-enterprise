@@ -212,15 +212,16 @@ Other Harnesses are replaced, restarting their Gateway.
   limiting or pairing) reports `GATEWAY_UNAUTHORIZED` at once, and activation
   fails with `AGENT_GATEWAY_UNAUTHORIZED`.
   Otherwise the ID is set at Gateway start; losing it fails.
-- The Gateway's own `/home/node/workspace` stays empty. It withholds from Codex
-  OpenClaw tools that act on it or run commands in the Gateway Pod
-  (`ls`, `read`, `write`, `edit`, `apply_patch`, `exec`, `process`,
-  `gateway_exec`, `gateway_process`, `terminal`), and `openclaw`, whose
-  configuration changes could drop this list, through `codexDynamicToolsExclude`,
-  keeping owner entries. It sets `cron.triggers.enabled: false`, because stream
-  schedules and trigger scripts run in the Gateway; timed automations still run
-  Codex turns. Codex's native tools act in the Harness; the file-transfer tools
-  reach it through the node.
+- The Gateway's own `/home/node/workspace` stays empty. Through
+  `codexDynamicToolsExclude` (keeping owner entries) Codex loses OpenClaw tools
+  acting in the Gateway Pod (`ls`, `read`, `write`, `edit`, `apply_patch`,
+  `exec`, `process`, `gateway_exec`, `gateway_process`, `terminal`, `portal`) or
+  change the Gateway with operator authority (`openclaw`, `plugins`, `gateway`
+  self-update). Stream schedules and trigger scripts run in the Gateway, so
+  `cron.triggers.enabled` is `false`; timed automations still run Codex turns.
+  The memory flush run gets Gateway-local `read` and `write`, so
+  `agents.defaults.compaction.memoryFlush.enabled` is `false`. Codex's native
+  tools act in the Harness; file-transfer reaches it through the node.
 - The Harness reaches the model itself, so the Gateway's `codex` and `openai`
   provider rows keep only their models: overrides (`request`, `headers`,
   `params`, `localService`) are dropped, and an authored transport (always for
@@ -234,11 +235,11 @@ Other Harnesses are replaced, restarting their Gateway.
   [event name](common-logging.md#7-collector-exports-only-operational-classes).
   Deployment admission rejects the shapes it cannot rewrite: a non-list
   `codexDynamicToolsExclude`, a non-object Codex plugin `config`, `cron`,
-  `cron.triggers`, `models` or `models.providers`. The deploy request fails
-  with `400 INVALID_REQUEST` naming the setting path, and no revision is
-  created. A provider row that is not an object, or whose `models` is not a
-  list of catalog entries for the Agent's configured models, is refused earlier by OCC's
-  model check, also `400 INVALID_REQUEST` and naming the setting path.
+  `cron.triggers`, `models`, `models.providers`, or a non-object on the
+  `agents.defaults.compaction.memoryFlush` path. The deploy fails with
+  `400 INVALID_REQUEST` naming the setting path, and no revision is created.
+  OCC's model check refuses earlier, with the same error, a provider row that is
+  not an object or whose `models` is not a catalog list for the Agent's models.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
   roots for previews, browsing, bootstrap and outputs. Symlinks are not followed;
   explicit policies remain authoritative.

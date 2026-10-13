@@ -2902,7 +2902,7 @@ export const scenarios = {
       "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
     steps: [
       "Read the failing oauth-bootstrap exit status beside the successful init container.",
-      "Wait for cleanup to change from pending to completed; the deployment must still show failed.",
+      "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
     ],
   },
   agentsDeploymentDenied: {

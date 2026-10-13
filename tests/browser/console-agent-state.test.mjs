@@ -12,7 +12,14 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 
-function deploymentBody(namespaceId, agentId, deploymentId, status, error = null) {
+function deploymentBody(
+  namespaceId,
+  agentId,
+  deploymentId,
+  status,
+  error = null,
+  cleanup = undefined,
+) {
   return JSON.stringify({
     data: {
       deploymentId,
@@ -22,6 +29,7 @@ function deploymentBody(namespaceId, agentId, deploymentId, status, error = null
       error,
       warnings: [],
       progress: null,
+      ...(cleanup === undefined ? {} : { cleanup }),
     },
     meta: { requestId: "req_test_agent_state" },
   });
@@ -119,6 +127,50 @@ test("Deployment activity follows pending work until it records a result", async
   const readsAtResult = statusReads;
   await page.clock.runFor(DEPLOYMENT_POLL_MS * 3);
   assert.equal(statusReads, readsAtResult);
+});
+
+test("Deployment activity names retire cleanup as revision cleanup and follows it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Cleanup follow", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let cleanup = { status: "queued", nextAttemptAt: null };
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(
+          namespace.id,
+          agent.id,
+          revision.id,
+          "failed",
+          authenticationFailure,
+          cleanup,
+        ),
+      }),
+  );
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
+  await login(page, fixture, url);
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const activity = page.locator(".deployment-status");
+  await activity.getByText("Recorded status: failed").waitFor();
+
+  // The same retire cleanup also covers repository credential resources, so the
+  // status names the version's cleanup rather than bootstrap resources.
+  const status = activity.locator(".deployment-cleanup");
+  assert.equal(
+    await status.innerText(),
+    "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
+  );
+  cleanup = { status: "succeeded", nextAttemptAt: null };
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await status.getByText("Revision cleanup completed for this version.").waitFor();
+  await activity.getByText("Recorded status: failed").waitFor();
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
