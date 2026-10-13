@@ -144,9 +144,10 @@ follow their rule within 200 UTF-16 code units, as in the chart.
 
 `scripts/render-installation-profile.mjs:buildRendered`
 
-An optional `controlPlane.databaseCa.key` must be a simple basename. The chart
-refuses `.`, `..`, and any other key that is not letters, digits, `.`, `_`, or
-`-`. Omit the key to use `ca.pem`.
+An optional `controlPlane.databaseCa.key` must be a Kubernetes Secret key of at
+most 253 characters: not `.`, not a `..` prefix, and only letters, digits, `.`,
+`_`, or `-`. Preflight uses that same rule, so `..ca.pem` and a 254-character
+key fail before Helm. Omit the key to use `ca.pem`.
 
 `validateDatabaseCaMount` checks the generated values against the chart's active
 database-client mounts. With a database CA Secret, `mountPath` cannot equal the

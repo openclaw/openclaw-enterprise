@@ -2108,11 +2108,15 @@ test("profiles refuse database CA keys the chart refuses", () => {
   const omitted = render("openclaw", withCa(undefined));
   assert.equal(omitted.summary.ok, true, omitted.preflight.errors.join("\n"));
   assert.match(omitted.values, /caKey: ca.pem/);
-  for (const key of [".", "..", "ca/pem", "ca pem"]) {
+  const maxKey = "a".repeat(253);
+  const acceptedMax = render("openclaw", withCa(maxKey));
+  assert.equal(acceptedMax.summary.ok, true, acceptedMax.preflight.errors.join("\n"));
+  assert.match(acceptedMax.values, new RegExp(`caKey: ${maxKey}`));
+  for (const key of [".", "..", "..ca.pem", "ca/pem", "ca pem", "a".repeat(254)]) {
     assertPreflightFailure(
       "openclaw",
       withCa(key),
-      /controlPlane.databaseCa.key must be a simple basename/,
+      /controlPlane\.databaseCa\.key must be a Kubernetes Secret key of at most 253 characters/,
     );
   }
 });

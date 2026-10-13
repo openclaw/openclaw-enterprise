@@ -1,30 +1,38 @@
 import { WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_VERSION } from "@openclaw-enterprise/contracts";
+import { keyedSettingPath } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { OpenClawConfigurationDocument, WorkspaceSetup } from "@openclaw-enterprise/contracts";
 
-/** Only native main can consume the four setup documents. Undefined means unsupported. */
-export function workspaceSetupMainAgent(
+/**
+ * The roster entry that consumes the four setup documents: the sole `agents.entries` key, which
+ * must be main in any letter case (OpenClaw normalizes Agent ids case-insensitively), or main
+ * itself when the roster is omitted. `setting` names that entry. Undefined means unsupported.
+ */
+export function workspaceSetupMainEntry(
   configuration: OpenClawConfigurationDocument,
-): Readonly<Record<string, unknown>> | undefined {
+):
+  | { readonly setting: string; readonly agent: Readonly<Record<string, unknown>> | undefined }
+  | undefined {
+  const omitted = { setting: "agents.entries.main", agent: {} };
   if (configuration.agents === undefined) {
-    return {};
+    return omitted;
   }
   const agents = asRecord(configuration.agents);
   if (agents === undefined || Object.hasOwn(agents, "list")) {
     return undefined;
   }
   if (!Object.hasOwn(agents, "entries")) {
-    return {};
+    return omitted;
   }
   const entries = asRecord(agents.entries);
-  if (
-    entries === undefined ||
-    Object.keys(entries).length !== 1 ||
-    !Object.hasOwn(entries, "main")
-  ) {
+  const keys = Object.keys(entries ?? {});
+  if (entries === undefined || keys.length !== 1 || keys[0]!.trim().toLowerCase() !== "main") {
     return undefined;
   }
-  return asRecord(entries.main);
+  return {
+    setting: keyedSettingPath("agents.entries", keys[0]!),
+    agent: asRecord(entries[keys[0]!]),
+  };
 }
 
 /** The managed durable workspace native OpenClaw reads its setup documents from. */
@@ -46,8 +54,9 @@ export function requireWorkspaceSetupConfiguration(
   workspaces: readonly string[],
   createError: SettingError,
 ): string {
-  const main = workspaceSetupMainAgent(configuration);
-  if (main === undefined) {
+  const entry = workspaceSetupMainEntry(configuration);
+  const main = entry?.agent;
+  if (entry === undefined || main === undefined) {
     throw createError(
       "agents.entries",
       "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
@@ -55,7 +64,7 @@ export function requireWorkspaceSetupConfiguration(
   }
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   const setting =
-    main.workspace !== undefined ? "agents.entries.main.workspace" : "agents.defaults.workspace";
+    main.workspace !== undefined ? `${entry.setting}.workspace` : "agents.defaults.workspace";
   const workspace = main.workspace ?? defaults?.workspace ?? MANAGED_WORKSPACE;
   if (typeof workspace !== "string" || !workspaces.includes(workspace)) {
     throw createError(

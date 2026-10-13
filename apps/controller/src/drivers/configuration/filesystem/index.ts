@@ -68,7 +68,9 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     ) {
       throw new Error("Stored Configuration does not belong to the exact requested Namespace.");
     }
-    await this.validate(configuration as Configuration);
+    // Held to the slots refused before it could have been saved, so a document an older release
+    // saved under a later rule still reads and can be replaced; writes check every slot.
+    validateModelCredentialReferences((configuration as Configuration).values, { stored: true });
     return immutableCopy(configuration as Configuration) as Configuration;
   }
 

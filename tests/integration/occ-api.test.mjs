@@ -5774,6 +5774,15 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
       "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
     ],
+    [
+      {
+        ...model,
+        models: {
+          providers: { openai: { request: { headers: { Authorization: "Bearer ${TOKEN}" } } } },
+        },
+      },
+      "Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, API key, token, secret, password or cookie): model credentials come from the Agent's Harness authentication binding.",
+    ],
   ]) {
     const refused = await injectedRequest(
       fixture.app,

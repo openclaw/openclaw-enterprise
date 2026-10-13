@@ -25,7 +25,7 @@ import {
   MANAGED_WORKSPACE,
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
-  workspaceSetupMainAgent,
+  workspaceSetupMainEntry,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
@@ -355,10 +355,10 @@ function dockerSetupWorkspace(
     createError,
   );
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
-  const main = workspaceSetupMainAgent(configuration);
+  const main = workspaceSetupMainEntry(configuration);
   for (const [parent, agent] of [
     ["agents.defaults", defaults],
-    ["agents.entries.main", main],
+    [main?.setting ?? "agents.entries.main", main?.agent],
   ] as const) {
     for (const option of ["skipBootstrap", "skipOptionalBootstrapFiles"]) {
       if (agent?.[option] === true) {

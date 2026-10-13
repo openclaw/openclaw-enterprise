@@ -62,7 +62,7 @@ database skips PostgreSQL-backed cases. Those files share one database here; run
 (`--test-concurrency=1`); CI gives each file its own database.
 
 The OAuth Job case uses authenticated device-login, Agent-create, and Deploy
-routes, Kubernetes Secret storage, and PostgreSQL in `k3d-fixture-configuration`.
+routes, Kubernetes Secret storage, and PostgreSQL in `k3d-fixture-oauth`.
 Only provider HTTP uses synthetic responses. It
 retires an exact-owned legacy bootstrap Deployment before executing the seed
 Job, preserves its PVC and seed, and accepts API-canonicalized resource quantities.

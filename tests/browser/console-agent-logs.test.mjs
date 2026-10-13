@@ -275,7 +275,7 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
   await page.getByRole("button", { name: "Follow" }).click();
   await pane.getByText("after the restart").waitFor();
   await pane.getByText("Container restarted", { exact: true }).waitFor();
-  assert.ok(logRequests(requests, revisionId).some(({ path }) => path.includes("cursor=v1.")));
+  assert.ok(logRequests(requests, revisionId).some(({ path }) => path.includes("cursor=v2.")));
   await page.getByRole("button", { name: "Following" }).click();
 
   // The previous instance is a separate view and disables follow.
@@ -669,7 +669,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   computeDriver.state.lines = [line(1, "log reader can see this"), line(2, "a later line")];
   await page.getByRole("button", { name: "Follow" }).click();
   await pane.getByText("a later line").waitFor();
-  assert.ok(logRequests(requests, revisionId).some(({ path }) => path.includes("cursor=v1.")));
+  assert.ok(logRequests(requests, revisionId).some(({ path }) => path.includes("cursor=v2.")));
   await page.getByRole("button", { name: "Following" }).click();
 
   // A source this version does not have is explained, not a generic failure.

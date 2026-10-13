@@ -68,9 +68,9 @@ bootstrap, wire-up, platform-state, restart and password sign-in limit tests and
 remaining PostgreSQL files. Each has a disposable PostgreSQL server. The split
 follows measured file durations, so add a new file to `postgres-platform` or
 `postgres-auth`, keeping the job times close.
-Kubernetes fixture files run in `k3d-fixture-configuration`,
-`k3d-fixture-state`, and `k3d-fixture-plugins`, each with independent cluster,
-database, image, and cleanup state. Each lane runs its audited `parallelFiles` two at a time. The audit requires one owner per file; Full Integration aggregates its selected `full` group or targeted lane.
+Kubernetes fixture lanes `k3d-fixture-configuration`, `k3d-fixture-state`,
+`k3d-fixture-plugins`, and `k3d-fixture-oauth` each have independent cluster,
+database, image, and cleanup state; the first three run audited `parallelFiles` two at a time. The audit requires one owner per file; Full Integration aggregates its selected `full` group or targeted lane.
 
 The `repository-credentials-container` lane builds
 `.build/repository-credentials/{service,client}` with Dockerfiles under

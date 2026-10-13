@@ -415,7 +415,8 @@ test("the official Kubernetes client rejects ambiguous identities and insecure A
 test("Kubernetes Configuration rejects literal model credentials before writes and stored reads", async () => {
   const driver = createDriver();
   const sentinel = "synthetic-model-credential-not-for-configuration";
-  const valuesWithCredential = [
+  // Slots no release ever stored a literal in: refused on writes and on stored reads.
+  const refusedWhenStored = [
     { models: { providers: { openai: { apiKey: sentinel } } } },
     { models: { providers: { codex: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
     { models: { providers: { openai: { headers: { "x-api-key": sentinel } } } } },
@@ -424,7 +425,53 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
     { env: { vars: { CODEX_ACCESS_TOKEN: sentinel } } },
   ];
-  for (const values of valuesWithCredential) {
+  // Other credential header names, model rows and OpenClaw's request transport overrides
+  // (findings 1142 and 1143), refused since the 2026-10-12 notice. An older release stored
+  // them, so a stored one still reads and its operator can replace it.
+  const refusedOnWrite = [
+    { models: { providers: { google: { headers: { "x-goog-api-key": sentinel } } } } },
+    { models: { providers: { openai: { headers: { "Proxy-Authorization": sentinel } } } } },
+    { models: { providers: { openai: { headers: { Cookie: `session=${sentinel}` } } } } },
+    {
+      models: {
+        providers: { openai: { models: [{ id: "m", headers: { "x-auth-token": sentinel } }] } },
+      },
+    },
+    {
+      models: {
+        providers: { openai: { request: { headers: { Authorization: `Bearer ${sentinel}` } } } },
+      },
+    },
+    {
+      models: {
+        providers: {
+          openai: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
+        },
+      },
+    },
+    {
+      models: {
+        providers: {
+          openai: {
+            request: { auth: { mode: "header", headerName: "x-api-key", value: sentinel } },
+          },
+        },
+      },
+    },
+    { models: { providers: { openai: { headers: { x_api_key: sentinel } } } } },
+    { models: { providers: { openai: { headers: { "x-functions-key": sentinel } } } } },
+    // The client certificate, key and passphrase for the model endpoint and its proxy.
+    { models: { providers: { openai: { request: { tls: { key: sentinel } } } } } },
+    { models: { providers: { openai: { request: { tls: { passphrase: sentinel } } } } } },
+    {
+      models: {
+        providers: {
+          openai: { request: { proxy: { mode: "env-proxy", tls: { cert: sentinel } } } },
+        },
+      },
+    },
+  ];
+  for (const values of [...refusedWhenStored, ...refusedOnWrite]) {
     const unsafe = { ...configuration, values };
     for (const operation of ["create", "update"]) {
       await assert.rejects(driver[operation](unsafe), (error) => {
@@ -437,23 +484,78 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
       });
     }
     const stored = driver.manifest(unsafe, "existing-tenant");
-    await assert.rejects(
-      driver.checkedConfiguration(stored, configuration, "existing-tenant"),
-      (error) => {
-        assert.match(error.message, /security boundaries/);
-        assert.equal(error.message.includes(sentinel), false);
-        return true;
+    if (refusedWhenStored.includes(values)) {
+      await assert.rejects(
+        driver.checkedConfiguration(stored, configuration, "existing-tenant"),
+        (error) => {
+          assert.match(error.message, /security boundaries/);
+          assert.equal(error.message.includes(sentinel), false);
+          return true;
+        },
+      );
+    } else {
+      assert.deepEqual(
+        await driver.checkedConfiguration(stored, configuration, "existing-tenant"),
+        unsafe,
+      );
+    }
+  }
+  // A proxy URL with a user name or password carries the proxy credential in the URL.
+  for (const url of [
+    `http://user:${sentinel}@proxy.example:3128`,
+    `http://${sentinel}@proxy`,
+    `http://:${sentinel}@proxy`,
+  ]) {
+    const unsafe = {
+      ...configuration,
+      values: {
+        models: { providers: { openai: { request: { proxy: { mode: "explicit-proxy", url } } } } },
       },
-    );
+    };
+    for (const operation of ["create", "update"]) {
+      await assert.rejects(driver[operation](unsafe), (error) => {
+        assert.equal(
+          error.message,
+          "Configuration field /models/providers/openai/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+        );
+        return true;
+      });
+    }
   }
   const referenceOnly = {
     ...configuration,
     values: {
       models: {
         providers: {
+          anthropic: {
+            headers: { "anthropic-version": "2023-06-01", "idempotency-key": "k" },
+            request: {
+              tls: { ca: "-----BEGIN CERTIFICATE-----", cert: "${TLS_CERT}", key: "${TLS_KEY}" },
+              proxy: {
+                mode: "explicit-proxy",
+                url: "http://proxy.example:3128",
+                tls: { passphrase: "${PROXY_TLS_PASSPHRASE}" },
+              },
+            },
+          },
+          groq: { request: { proxy: { mode: "explicit-proxy", url: "${PROXY_URL}" } } },
           openai: {
             apiKey: "${OPENAI_API_KEY}",
-            headers: { Authorization: "Bearer ${MODEL_TOKEN}" },
+            headers: { Authorization: "Bearer ${MODEL_TOKEN}", "x-goog-api-key": "${GOOGLE_KEY}" },
+            request: {
+              headers: { "Proxy-Authorization": "Bearer ${PROXY_TOKEN}" },
+              auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" },
+            },
+            models: [{ id: "m", headers: { "x-auth-token": "${MODEL_TOKEN}" } }],
+          },
+          google: {
+            request: {
+              auth: {
+                mode: "header",
+                headerName: "x-goog-api-key",
+                value: { source: "env", provider: "default", id: "GOOGLE_KEY" },
+              },
+            },
           },
         },
       },
@@ -1017,4 +1119,48 @@ test("Kubernetes Configuration changes only the exact ConfigMap it read", async 
       "2026-08-20T00:00:00.000Z";
     await assert.rejects(driver.inspectExact(configuration), ConfigurationConflictError);
   }
+});
+
+test("Kubernetes Configuration reads and replaces a stored document with credentials refused since it was saved", async () => {
+  // An older release stored a literal request.auth token in a ConfigMap. After the upgrade the
+  // Driver reads it and accepts a replacement without it, so the operator can repair it; a
+  // write or deployment validation that keeps the literal is still refused.
+  const sentinel = "synthetic-model-credential-not-for-configuration";
+  const { client, driver } = await storedConfiguration();
+  const stale = {
+    ...configuration,
+    values: {
+      ...configuration.values,
+      models: {
+        providers: {
+          openai: {
+            ...configuration.values.models.providers.openai,
+            request: { auth: { mode: "authorization-bearer", token: sentinel } },
+          },
+        },
+      },
+    },
+  };
+  const [key, stored] = [...client.configMaps.entries()][0];
+  client.configMaps.set(key, {
+    ...stored,
+    data: { "openclaw.json": JSON.stringify(stale.values) },
+  });
+
+  assert.deepEqual(await driver.read(configuration), stale);
+  const refusal = (error) => {
+    assert.equal(
+      error.message,
+      "Configuration field /models/providers/openai/request/auth/token holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+    );
+    return true;
+  };
+  // Deployment validates the stored document before it is admitted.
+  await assert.rejects(driver.validate(stale), refusal);
+  await assert.rejects(driver.update({ ...stale, generation: 2 }), refusal);
+  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
+
+  assert.deepEqual(await driver.update(nextGeneration), nextGeneration);
+  assert.equal(client.configMaps.get(key).data["openclaw.json"].includes(sentinel), false);
+  assert.deepEqual(await driver.read({ id: configuration.id, namespaceId }), nextGeneration);
 });

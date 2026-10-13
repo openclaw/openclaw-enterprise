@@ -161,6 +161,7 @@ const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+  HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   "REVISION_INCOMPLETE",
@@ -4380,6 +4381,14 @@ export class ControllerWorker {
         outcome: "permanent",
         code: "CONVERGENCE_DEADLINE_EXCEEDED",
         data: convergenceDeadlineResultData(this.convergenceTimeoutMs, runtimeFailure),
+        // No runtime exists yet to keep for diagnosis, and nothing else retires this revision:
+        // its bootstrap Job and seed Secret (the OAuth token bundle) go with the failure. Only
+        // a candidate's own deployment work can observe a bootstrap; an active revision's
+        // source is already consumed.
+        ...(result.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" &&
+        claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`
+          ? { cleanupFailedPreparation: true as const }
+          : {}),
       };
     } else {
       resolved = result;

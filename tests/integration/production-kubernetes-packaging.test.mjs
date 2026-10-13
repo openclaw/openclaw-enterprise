@@ -656,6 +656,11 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
   for (const port of ["0", "010", "65536", "9.5"]) {
     await assert.rejects(render({ "api.port": port }), /api\.port must be an integer TCP port/);
   }
+  // --set parses this as a float. --set-string keeps the digits, which used to pass Sprig int overflow.
+  await assert.rejects(
+    render({}, { strings: { "api.port": "99999999999999999999" } }),
+    /api\.port must be an integer TCP port/,
+  );
   const objects = await resources((await render({ "api.port": "8081" })).stdout);
   const container = objects.find(
     (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
@@ -2153,6 +2158,7 @@ test(
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "0.0.0.0/0" }, /explicit IPv4 CIDRs/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "999.1.1.1/32" }, /invalid IPv4 address/],
+      [{ "repositoryCredentials.upstreamCidrs[0]": "192.168.001.10/32" }, /explicit IPv4 CIDRs/],
       ...[
         "external.example.com",
         "git.other-namespace.svc",
@@ -3248,6 +3254,11 @@ test(
         /invalid IPv4 address/,
       ],
       [
+        "GitHub sign-in with a leading-zero egress octet",
+        { ...githubLoginValues, "auth.github.egressCidrs[0]": "140.82.112.08/20" },
+        /explicit IPv4 CIDRs/,
+      ],
+      [
         "GitHub sign-in with a /0 egress entry",
         { ...githubLoginValues, "auth.github.egressCidrs[0]": "0.0.0.0/0" },
         /prefixes 1 through 32/,
@@ -3908,12 +3919,39 @@ test(
         "invalid database CA key",
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
       ],
+      [
+        "overlong database CA key",
+        { "database.caSecretName": "occ-rds-ca", "database.caKey": "a".repeat(254) },
+        /database\.caKey must be a Kubernetes Secret key/,
+      ],
       ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
       ["reserved application database Secret key", { "database.appUrlKey": "." }],
       ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
       ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
       ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
+      [
+        "invalid execution kubeconfig Secret key",
+        {
+          "executionCluster.enabled": "true",
+          "executionCluster.apiKubeconfigSecretName": "execution-api",
+          "executionCluster.workerKubeconfigSecretName": "execution-worker",
+          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+          "executionCluster.kubeconfigKey": "bad/key",
+        },
+        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved execution kubeconfig Secret key",
+        {
+          "executionCluster.enabled": "true",
+          "executionCluster.apiKubeconfigSecretName": "execution-api",
+          "executionCluster.workerKubeconfigSecretName": "execution-worker",
+          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+          "executionCluster.kubeconfigKey": "..kube",
+        },
+        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
+      ],
       [
         "invalid Better Auth signing Secret key",
         { "auth.secretKey": "bad/key" },
