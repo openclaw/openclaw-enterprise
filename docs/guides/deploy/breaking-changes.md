@@ -120,15 +120,18 @@ and a number or boolean variable as the whole `baseUrl` or `api`.
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
-Their Agents' next deployment fails until they are edited.
+A stored Configuration with such a user name or password does not deploy until
+it is edited.
 
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,
-or `Configuration field <field> carries a user name or password in the URL.`
+`Configuration field <field> carries a user name or password in the URL.`,
+or `... must be an absolute http or https URL.`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
 list of model objects, or remove it. Remove the user name and password from
-the URL, or make the whole URL a `${NAME}` reference.
+the URL, or make the whole URL a `${NAME}` reference. Give a `baseUrl` its host,
+and use a string variable for a whole `baseUrl` or `api`.
 
 ## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
 
