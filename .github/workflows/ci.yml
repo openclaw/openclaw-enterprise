@@ -118,8 +118,8 @@ jobs:
       # K3s policy enforcement disabled, production-network-access fails
       # every deny case there. It ran these lanes about a minute faster than
       # ubuntu-22.04 (4 CPUs). Both Image Runtime Startup lanes use 32vcpu
-      # too: their preparation is faster there, and each runs four files at
-      # once. Image Model Probes stays on 16vcpu: its one case waits
+      # too: their preparation is faster there, and Startup 2 runs its four
+      # files at once. Image Model Probes stays on 16vcpu: its one case waits
       # out the 110 s model probe cap at 500m on any runner. PostgreSQL
       # Application uses 32vcpu too: it runs up to eight of its nine files at
       # once, one per CPU (16vcpu caps it at four). The other lanes

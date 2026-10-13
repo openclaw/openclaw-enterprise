@@ -90,7 +90,6 @@ OCC_TEST_RUNTIME_IMAGE="$OCC_IMAGE_CHECK_RUNTIME" \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.mjs \
-    tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
@@ -116,7 +115,6 @@ OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.mjs \
-    tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
@@ -257,9 +255,8 @@ reconciliation, runtime image execution, or a model turn.
 [`runtime-image-startup-termination.test.mjs`](../../tests/integration/runtime-image-startup-termination.test.mjs),
 [`runtime-image-gateway-peer.test.mjs`](../../tests/integration/runtime-image-gateway-peer.test.mjs),
 [`runtime-image-native-worker.test.mjs`](../../tests/integration/runtime-image-native-worker.test.mjs),
-[`runtime-image-state-migration.test.mjs`](../../tests/integration/runtime-image-state-migration.test.mjs),
-[`runtime-image-managed-files.test.mjs`](../../tests/integration/runtime-image-managed-files.test.mjs)
-and [`runtime-image-native-listener.test.mjs`](../../tests/integration/runtime-image-native-listener.test.mjs)
+[`runtime-image-state-migration.test.mjs`](../../tests/integration/runtime-image-state-migration.test.mjs)
+and [`runtime-image-managed-files.test.mjs`](../../tests/integration/runtime-image-managed-files.test.mjs)
 verify a locally available OpenClaw runtime image before Docker Compose or
 Kubernetes execution. They start task-owned containers with the Docker Compute
 Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and
