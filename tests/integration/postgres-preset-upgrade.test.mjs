@@ -64,14 +64,22 @@ test(
       timeout: 20000,
     });
     const fixture = join(repository, "tests/helpers/preset-upgrade-process.mjs");
+    // Keep expected API state in parent memory across real controller exits.
+    // No response snapshot is written to disk or read back into request paths.
+    let saved;
     async function phase(root, name) {
-      const result = await run(process.execPath, [fixture, root, directory, name], {
+      const execution = run(process.execPath, [fixture, root, directory, name], {
         cwd: root,
         env: { ...environment, OCC_TEST_DATABASE_URL: databaseUrl },
         timeout: 25000,
         maxBuffer: 1024 * 1024,
       });
-      t.diagnostic(result.stdout.trim());
+      execution.child.stdin.end(JSON.stringify(saved ?? null));
+      const { stdout } = await execution;
+      if (name === "seed") {
+        saved = JSON.parse(stdout);
+      }
+      t.diagnostic(`preset preservation phase ${name}: passed`);
     }
     await phase(before, "seed");
     const stockInputs = await readFile(startupPath, "utf8");

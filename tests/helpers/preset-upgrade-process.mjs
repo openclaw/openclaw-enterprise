@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,6 +8,11 @@ import { pathToFileURL } from "node:url";
 // Each phase loads the selected controller in a fresh process. Persistence,
 // authentication, startup seeding, and Configuration storage remain real.
 const [repository, directory, phase] = process.argv.slice(2);
+let input = "";
+for await (const chunk of process.stdin) {
+  input += chunk;
+}
+const saved = JSON.parse(input);
 const load = (path) => import(pathToFileURL(join(repository, path)));
 const { composeProduction } = await load("apps/controller/src/composition/production.ts");
 const { loadInstallationConfiguration } = await load(
@@ -64,13 +69,19 @@ try {
     drivers,
   });
   const endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
+  const localFetch = (input, options) => {
+    const request = new Request(input, options);
+    assert.equal(new URL(request.url).origin, endpoint);
+    return fetch(request, { redirect: "error" });
+  };
   const session = await signInWithEmailPassword({
+    fetch: localFetch,
     origin: endpoint,
     email: "preset-upgrade@example.test",
     password: (await readFile(join(directory, "initial-admin-password"), "utf8")).trim(),
   });
   async function request(method, path, payload, expectedStatus = 200) {
-    const response = await fetch(`${endpoint}${path}`, {
+    const response = await localFetch(`${endpoint}${path}`, {
       method,
       headers: authenticatedHeaders(session, {
         origin: authBaseURL,
@@ -158,8 +169,7 @@ try {
     );
     assert.equal(installation.name, "Operator installation");
     assert.equal(savedConfiguration.values.logging.consoleLevel, "warn");
-    await writeFile(
-      join(directory, "saved-state.json"),
+    process.stdout.write(
       JSON.stringify({
         installation,
         namespaceId: namespace.id,
@@ -167,10 +177,8 @@ try {
         custom,
         savedConfiguration,
       }),
-      { mode: 0o600 },
     );
   } else {
-    const saved = JSON.parse(await readFile(join(directory, "saved-state.json"), "utf8"));
     assert.deepEqual(installation, saved.installation);
     const presetsPath = `/namespaces/${saved.namespaceId}/presets`;
     for (const preset of [saved.edited, saved.custom]) {
@@ -192,7 +200,6 @@ try {
       assert.deepEqual(await request("GET", `/namespaces/${namespace.id}/presets`), []);
     }
   }
-  process.stdout.write(`preset preservation phase ${phase}: passed\n`);
 } finally {
   if (worker !== undefined) {
     await worker.stop();
