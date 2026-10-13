@@ -318,8 +318,9 @@ function stripUrlEdges(value) {
 // The chart runs its character checks on the decoded host too. Node drops some invisible
 // characters such as U+00AD and U+200B from a host, so https://ex%C2%ADample.com parses here
 // and fails in the chart; check the decoded written host. (Node already refuses the chart's
-// compatibility characters, encoded or not.) Go's URL parser also refuses an IPv4-mapped IPv6
-// host (::ffff:0:0/96) in any spelling, which Node accepts and publishes as [::ffff:x:y].
+// compatibility characters, encoded or not.) Helm built with Go 1.24.9 (Helm 3.19.2) refuses
+// an IPv4-mapped IPv6 host (::ffff:0:0/96) in any spelling, which newer Go and Node accept
+// (Node publishes [::ffff:x:y]). Refuse it so the outcome does not depend on the Helm build.
 function httpOrigin(value) {
   const stripped = stripUrlEdges(value);
   if (
@@ -366,7 +367,7 @@ function httpOrigin(value) {
   if (url.hostname.startsWith("[")) {
     const groups = ipv6Groups(url.hostname.slice(1, -1));
     if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-      return "host must not be an IPv4-mapped IPv6 address; the chart's URL parser rejects it. Write the IPv4 address instead.";
+      return "host must not be an IPv4-mapped IPv6 address, which Helm 3.19.2's URL parser rejects; write the IPv4 address instead.";
     }
   }
   return true;

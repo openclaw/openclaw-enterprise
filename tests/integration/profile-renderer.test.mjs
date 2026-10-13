@@ -1456,7 +1456,7 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
 test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible characters", () => {
   const refusals = [
     [
-      "host must not be an IPv4-mapped IPv6 address; the chart's URL parser rejects it. Write the IPv4 address instead.",
+      "host must not be an IPv4-mapped IPv6 address, which Helm 3.19.2's URL parser rejects; write the IPv4 address instead.",
       ["https://[::ffff:192.0.2.1]", "https://[::FFFF:c000:201]:8443", "https://[::ffff:0:0]"],
     ],
     [

@@ -725,9 +725,8 @@ test("runtime image references get Compute's verdict in preflight", () =>
     },
   ));
 
-// Go's URL parser refuses an IPv4-mapped IPv6 host in any spelling, and the chart checks the
-// percent-decoded host for invisible characters that Node's host parser drops.
-const ipv4MappedHost = /invalid IPv6 host/;
+// The chart checks the percent-decoded host for invisible characters that Node's host
+// parser drops.
 const invisibleHost = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
 fieldParity("auth base URLs get the same verdict from preflight and the chart", {
   cases: [
@@ -736,10 +735,6 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
     ["https://[64:ff9b::192.0.2.1]:8443", true],
     ["https://[::ffff:1:2:3]", true],
     ["https://ex%C3%A4.com", true],
-    ["https://[::ffff:192.0.2.1]", false, ipv4MappedHost],
-    ["https://[::FFFF:c000:201]:8443", false, ipv4MappedHost],
-    ["https://[0:0:0:0:0:ffff:0:1]", false, ipv4MappedHost],
-    ["https://[::ffff:0:0]", false, ipv4MappedHost],
     ...["%C2%AD", "%E2%80%8B", "%E2%81%A0", "%EF%BB%BF", "%E1%A0%8E", "%F0%9D%85%B3"].map(
       (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
     ),
@@ -749,6 +744,36 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
   controlPlane: (url) => ({ authBaseUrl: url }),
   values: (url) => ({ auth: { baseUrl: url } }),
 });
+
+// Helm built with Go 1.24.9 (Helm 3.19.2) refuses an IPv4-mapped IPv6 host in any spelling
+// as an invalid IPv6 host; Helm built with newer Go accepts it. Preflight refuses it, so the
+// outcome does not depend on the Helm build.
+test(
+  "IPv4-mapped auth base URL hosts fail preflight under every Helm build",
+  { skip: helmSkip },
+  () =>
+    each(
+      [
+        "https://[::ffff:192.0.2.1]",
+        "https://[::FFFF:c000:201]:8443",
+        "https://[0:0:0:0:0:ffff:0:1]",
+        "https://[::ffff:0:0]",
+      ],
+      (url) =>
+        withProfile(input({ authBaseUrl: url }), async ({ directory, renderer }) => {
+          assert.equal(renderer.ok, false, `${url}: renderer\n${renderer.output}`);
+          assert.match(renderer.output, /authBaseUrl host must not be an IPv4-mapped IPv6 address/);
+          assert.equal(existsSync(join(directory, "values.yaml")), false);
+          const chart = await helmTemplate([
+            await baselineValues(),
+            writeOverride(directory, { auth: { baseUrl: url } }),
+          ]);
+          if (!chart.ok) {
+            assert.match(chart.output, /invalid IPv6 host/, url);
+          }
+        }),
+    ),
+);
 
 fieldParity(
   "repository credential image references get the same verdict from preflight and the chart",
