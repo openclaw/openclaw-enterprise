@@ -1,10 +1,10 @@
 # Keycloak OIDC lane
 
 The `keycloak-oidc` lane checks OIDC sign-in against a real, digest-pinned Keycloak
-instead of the `fakeOidc` fixture. It runs as the `Keycloak OIDC` job in the
-[CI workflow](../../.github/workflows/ci.yml) in full-mode pull request CI and on pushes to
-`main`, and in the Full Integration `all` run. It is **not** a `CI Required`
-dependency yet. The proposed design is RFC-0019 ([#1117](https://github.com/openclaw/openclaw-enterprise/pull/1117)).
+instead of the `fakeOidc` fixture. It runs as the `Keycloak OIDC` lane of the
+[CI workflow](../../.github/workflows/ci.yml) in full-mode pull request CI, in test-only
+pull requests that change its test, on pushes to `main`, and in the Full Integration
+`all` run. `CI Required` requires it. RFC-0019 ([#1117](https://github.com/openclaw/openclaw-enterprise/pull/1117)) describes the design.
 
 ## What it runs
 
@@ -131,3 +131,33 @@ a line. Observed behaviour:
 To bump Keycloak, change `image.json` to a new 26.x digest and rerun the lane; the
 login-form selectors (`#username`, `#password`, `#kc-login`) are tied to that version.
 The Full Integration `openshell` lane's refresh proof shares the pin, so run it too.
+
+## Local launcher coverage
+
+The `dev-up-k3d` lane owns two additional cases in
+[`dev-up-k3d-real.test.mjs`](../../tests/integration/dev-up-k3d-real.test.mjs).
+They run in advisory CI for trusted pull requests, or through the local lane or an
+explicit [hosted dispatch](README.md#run-the-hosted-local-installation-lane).
+`CI Required` and `all` do not select them. For local runs, prepare the CLI and
+Chromium with the [local installation setup](kubernetes.md#local-kubernetes-installation) first.
+
+```sh
+OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
+```
+
+Run only on an
+owned disposable engine with enough capacity for the launcher and its image
+builds, free and bindable host loopback port 443, and prepared Playwright Chromium
+with its sandbox supported. Do not run beside the standalone Keycloak CI fixture.
+The cases use `occ dev up` with Kubernetes compute/control plane and sandbox
+`none`; they preserve enforcing NetworkPolicies and use generated fixture
+credentials only. They cover HTTPS discovery, Alice attached to the development
+administrator, recovery-password success, ordinary-password denial, API egress isolation
+after the OIDC upgrade, and fresh login with a changed password
+after a Keycloak Pod restart, and `occ dev down`. The failure case refuses the
+second Helm command and first owned cluster deletion to verify rollback and
+retained state, then retries real cleanup. Failed cleanup preserves that state.
+The browser follows the printed steps: it trusts the two printed CA files
+through a fresh NSS database (`certutil`) under a private `HOME`, resolves the
+printed hosts line with a process-local resolver rule, and passes no
+certificate-error bypass. It does not edit the host's `/etc/hosts`.

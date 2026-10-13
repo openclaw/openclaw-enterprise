@@ -190,12 +190,13 @@ same-repository PR. Compose and Kubernetes run in separate jobs. The same workfl
 visible, but these jobs are outside `CI Required` and must not be configured as
 required branch checks. New pushes cancel superseded runs. Fork and Dependabot
 PRs report that a trusted run is needed; they do not receive model credentials.
+The same workflow runs the `dev-up-k3d` local installation lane as a separate
+advisory job without a protected environment or provider credentials. Its six
+cases and result artifact are described in the [hosted local installation guide](README.md#run-the-hosted-local-installation-lane).
 
-The advisory workflow uses `integration-qa-pr`: no required reviewers, deployment
-branch policies allowing `refs/pull/*/merge` and `main`, and the
-`CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` secrets. The OpenShell job uses
-`OPENAI_API_KEY` with `OCC_TEST_OPENAI_MODEL`; the two QA matrix jobs use
-`CODEX_ACCESS_TOKEN`. Set the Codex model and Calendar
+The QA matrix and OpenShell jobs use `integration-qa-pr`: no required reviewers, deployment
+branch policies allowing `refs/pull/*/merge` and `main`, and only the
+`CODEX_ACCESS_TOKEN` secret. Set the Codex model and Calendar
 variables from the table above; the Codex account must have Calendar connected.
 These credentials are available to trusted PR code. Manual dispatch on `main`
 can replay the same selection. Runner resources are disposable; always-run steps
@@ -307,5 +308,5 @@ policy and credential enforcement, and first-Agent deployment and reuse with
 each mode. One job runs all four files, rejecting skips and cleaning up its
 owned clusters and databases. It builds runtime images from the tested revision
 and covers credential projection. The `integration-qa-pr` environment
-supplies `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; the existing protected
+supplies `CODEX_ACCESS_TOKEN` and `OCC_TEST_OPENAI_MODEL`; the existing protected
 manual OpenShell environment remains available for targeted dispatch.

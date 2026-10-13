@@ -1,4 +1,4 @@
-import type { AgentRevision, Namespace } from "./index.ts";
+import type { AgentRevision, Namespace, SandboxHarnessLostCode } from "./index.ts";
 
 /**
  * Runtime log classes. OCC classifies every record; a source never sets the class.
@@ -107,11 +107,26 @@ export interface AgentRuntimeLogSource {
   readonly retention: string;
 }
 
+/**
+ * A provider-owned Harness Sandbox as its Sandbox Driver records it; `unknown` when unreadable.
+ * `HARNESS_RESTARTING` (state `starting`) carries the last exit code and the restart number.
+ */
+export interface AgentRuntimeHarnessStatus {
+  readonly state: "running" | "starting" | "lost" | "unknown";
+  readonly code?: SandboxHarnessLostCode | "HARNESS_RESTARTING" | "UNAVAILABLE";
+  /** Present only with `HARNESS_RESTARTING`. */
+  readonly exitCode?: number;
+  /** Present only with `HARNESS_RESTARTING`. */
+  readonly restarts?: number;
+}
+
 export interface AgentRuntimeDescription {
   readonly revisionId: string;
   readonly observedAt: string;
   readonly pods: readonly AgentRuntimePodStatus[];
   readonly sources: readonly AgentRuntimeLogSource[];
+  /** Present only for a dedicated Harness whose Sandbox Driver records its lifecycle. */
+  readonly harness?: AgentRuntimeHarnessStatus;
 }
 
 /** Narrows a description for a log read, which needs one source's Pods and no Events. */

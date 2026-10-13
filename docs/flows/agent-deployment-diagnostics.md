@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-10
-last_updated_session: fix-1022-1019
+updated: 2026-10-11
+last_updated_session: issue-2142
 ---
 
 # Agent deployment diagnostics flow
@@ -82,8 +82,10 @@ currently returns no channel checks.
 runtime status. A runtime that held startup, such as a Gateway with an unusable
 peer configuration record or an Agent whose model check failed, reports its
 failure there. The Driver lists it first as a `failed` check named after the
-startup step, with the failure code; diagnostics do not rerun that step. A
-failed or invalid status read adds nothing.
+startup step, with the failure code; diagnostics do not rerun that step. The
+private boundary accepts only real UTC timestamps, normalizing a valid whole-second
+value to the public millisecond form. A failed, impossible-date, or otherwise
+invalid status read adds nothing.
 
 An [OpenShell](../reference/drivers/openshell-sandbox.md) Harness listens inside
 its Sandbox's own network namespace, not the Pod's, so the Kubernetes API
@@ -92,6 +94,16 @@ as not serving. Its `agent` `runtime-status` check is always `unknown` with code
 `UNAVAILABLE`, whether the Harness is healthy or holding a startup failure, and
 no held-failure check appears for it. Gateway checks, including a held Gateway
 failure, are unaffected.
+
+Beside Compute's checks, `OpenClawController.diagnoseAgentDeployment` asks the
+revision's Sandbox Driver for its record of a dedicated Harness Sandbox
+(`observeHarness`, bounded at ten seconds). The result leads the list as an
+`agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
+such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
+revision, `failed` with `HARNESS_RESTARTING` while OpenShell restarts a Harness
+process that exited, and `unknown` on a first start (code `STARTING`), when the
+record is unreadable (`UNAVAILABLE`), or when a revision that is not the running
+Agent's active one has no Sandbox, such as a stopped Agent's.
 
 ### 3. Return validated evidence
 
@@ -112,7 +124,11 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   code, because these checks do not test model credentials.
 - A `failed` check named after a startup step, such as `peer-bridge-record`,
   means the runtime is holding that failure. Its Logs tab shows the remedy.
-- On an OpenShell Harness, the `agent` check says nothing about its health.
+- On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
+  its health; the `agent` `sandbox` check does. A failed one means the Sandbox
+  is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
+  A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
+  exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
   `RUNTIME_MODEL_PROBE_FAILED`. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
@@ -134,6 +150,12 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 14:30: Reject impossible private runtime timestamps before returning held failure evidence. (issue-2142)
+
+- 2026-10-10 18:30: Report a Harness that OpenShell is restarting as `HARNESS_RESTARTING`. (fix-1043)
+
+- 2026-10-10 15:30: Lead OpenShell diagnostics with the Harness Sandbox lifecycle check. (fix-1027)
 
 - 2026-10-10 14:30: Document that an OpenShell Harness's runtime status is unreachable to diagnostics. (fix-1022-1019)
 

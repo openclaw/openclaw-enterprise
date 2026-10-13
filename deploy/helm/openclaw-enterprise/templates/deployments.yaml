@@ -1,4 +1,6 @@
 {{- range $component := list "api" "worker" }}
+{{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
+{{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +53,18 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if $oidcCa }}
+        - name: oidc-ca
+          secret:
+            secretName: {{ $.Values.auth.oidc.caSecretName | quote }}
+            items:
+              - key: {{ $.Values.auth.oidc.caSecretKey | quote }}
+                path: ca.crt
+        - name: api-extra-ca
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Mi
+        {{- end }}
         {{- if $.Values.executionCluster.enabled }}
         - name: execution-kubeconfig
           secret:
@@ -159,9 +173,6 @@ spec:
         {{- if or (not $chatgpt.secretName) (not $chatgpt.key) }}
         {{- fail "backend.chatgpt requires a dedicated admin Secret name and key" }}
         {{- end }}
-        {{- if or (eq $chatgpt.secretName $.Values.installation.secretName) (eq $chatgpt.secretName $.Values.database.secretName) (eq $chatgpt.secretName $.Values.auth.secretName) }}
-        {{- fail "backend.chatgpt admin credentials must use a dedicated Secret" }}
-        {{- end }}
         - name: chatgpt-admin
           secret:
             secretName: {{ $chatgpt.secretName | quote }}
@@ -174,6 +185,53 @@ spec:
           emptyDir:
             sizeLimit: 1Mi
         {{- end }}
+      {{- if $oidcCa }}
+      initContainers:
+        - name: assemble-api-ca
+          image: {{ $.Values.images.controller | quote }}
+          command: ["node"]
+          args:
+            - --input-type=module
+            - -e
+            - {{ required "chart is missing files/assemble-api-ca.mjs" ($.Files.Get "files/assemble-api-ca.mjs") | quote }}
+            - /etc/openclaw/api-extra-ca/ca.crt
+            - /etc/openclaw/oidc-ca/ca.crt
+            {{- if $gatewayCa }}
+            - /etc/openclaw/gateway-ca/ca.crt
+            {{- end }}
+          env:
+            # Errors name the operator's Secret and key, not the fixed mount paths.
+            {{- $caSources := dict "/etc/openclaw/oidc-ca/ca.crt" (printf "auth.oidc.caSecretName Secret %q key %q" $.Values.auth.oidc.caSecretName $.Values.auth.oidc.caSecretKey) }}
+            {{- if $gatewayCa }}
+            {{- if $.Values.gatewayRouting.issuerRef.name }}
+            {{- $_ := set $caSources "/etc/openclaw/gateway-ca/ca.crt" (printf "gatewayRouting.caSecretName Secret %q key %q" $.Values.gatewayRouting.caSecretName $.Values.gatewayRouting.caSecretKey) }}
+            {{- else }}
+            {{- $_ := set $caSources "/etc/openclaw/gateway-ca/ca.crt" (printf "chart-managed Gateway root Secret %q key \"tls.crt\"" (include "openclaw.gatewayRouting.rootSecretName" $)) }}
+            {{- end }}
+            {{- end }}
+            - name: OCC_CA_SOURCES
+              value: {{ toJson $caSources | quote }}
+          securityContext:
+            {{- include "openclaw.containerSecurity" $ | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: oidc-ca
+              mountPath: /etc/openclaw/oidc-ca
+              readOnly: true
+            {{- if $gatewayCa }}
+            - name: gateway-ca
+              mountPath: /etc/openclaw/gateway-ca
+              readOnly: true
+            {{- end }}
+            - name: api-extra-ca
+              mountPath: /etc/openclaw/api-extra-ca
+      {{- end }}
       {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
       # The receipt server must remain available while the broker drains.
       initContainers:
@@ -186,7 +244,14 @@ spec:
           {{- end }}
           image: {{ $.Values.images.controller | quote }}
           args:
+            {{- if $oidcCa }}
+            - --import
+            - {{ printf "data:text/javascript;base64,%s" (required "chart is missing files/check-api-database-ca.mjs" ($.Files.Get "files/check-api-database-ca.mjs") | b64enc) | quote }}
+            {{- end }}
             - apps/controller/src/{{ ternary "server" "worker" (eq $component "api") }}.mjs
+            {{- if $oidcCa }}
+            - {{ printf "%s/%s" (trimSuffix "/" $.Values.database.caMountPath) $.Values.database.caKey | quote }}
+            {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:
@@ -211,10 +276,18 @@ spec:
             {{- if $.Values.gatewayRouting.enabled }}
             - name: OCC_GATEWAY_API_KEY_PATH
               value: /etc/openclaw/gateway-api-key/key
-            {{- if or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName }}
+            {{- end }}
+            {{- if $oidcCa }}
+            - name: OCC_DATABASE_CA_SOURCE
+              value: {{ printf "database.caSecretName Secret %q key %q" $.Values.database.caSecretName $.Values.database.caKey | quote }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/openclaw/api-extra-ca/ca.crt
+            # Harness node enrollment trusts the Gateway CA only; empty means no private Gateway CA.
+            - name: OCC_GATEWAY_CA_PATH
+              value: {{ ternary "/etc/openclaw/gateway-ca/ca.crt" "" (not (not $gatewayCa)) | quote }}
+            {{- else if $gatewayCa }}
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/openclaw/gateway-ca/ca.crt
-            {{- end }}
             {{- end }}
             {{- if eq $component "api" }}
             - name: OCC_HOST
@@ -319,6 +392,11 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if $oidcCa }}
+            - name: api-extra-ca
+              mountPath: /etc/openclaw/api-extra-ca
+              readOnly: true
+            {{- end }}
             {{- if $.Values.executionCluster.enabled }}
             - name: execution-kubeconfig
               mountPath: /etc/openclaw/execution

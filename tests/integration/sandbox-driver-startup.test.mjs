@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
@@ -352,6 +355,7 @@ function codexSandboxFixture(
     environment: [
       { name: "HOME", value: "/home/node" },
       { name: "CODEX_HOME", value: "/home/node/.codex" },
+      { name: "NODE_PATH", value: "/home/node_modules" },
       { name: "OPENCLAW_NODE_STATE_DIR", value: "/home/node/.openclaw-node" },
       { name: "OPENCLAW_WORKSPACE_DIR", value: "/home/node/workspace" },
       {
@@ -892,6 +896,82 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   await assert.rejects(provision(), /exists without its exact bearer-passthrough Harness service/);
 });
 
+test("OpenShell has the gateway restart an exited Harness and still adopts Sandboxes created without that policy", async () => {
+  // Finding 1029: with no policy OpenShell persists NEVER, and an exited Harness stays down until
+  // the Agent is deployed again. A signalled Harness exits 0, so only ALWAYS restarts it.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const creates = [];
+  gatewayClient.getSandbox = async ({ name }) => sandboxes.get(name);
+  gatewayClient.getService = async (_workspace, sandbox, service) => {
+    const url = sandboxes.get(sandbox)?.serviceUrls[""];
+    return url === undefined
+      ? undefined
+      : { sandbox, name: service, targetPort: 8080, authorizationMode: 2, advertisedUrl: url, url };
+  };
+  gatewayClient.createSandbox = async (request) => {
+    creates.push(request);
+    const sandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: { ...request.annotations },
+      spec: request.spec,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    return sandbox;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000001029",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000001029",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const provision = () =>
+    driver.provisionHarness({ ...context, revision, requirements: codexRequirements(revision) });
+
+  const first = await provision();
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+
+  // The gateway reports the stored policy by enum name, or by number from an older decoder.
+  // A Sandbox stored before the policy existed (NEVER, or unset) is still this revision's own.
+  const stored = sandboxes.get(first.resourceName);
+  for (const policy of [
+    "SANDBOX_RESTART_POLICY_ALWAYS",
+    3,
+    "SANDBOX_RESTART_POLICY_NEVER",
+    1,
+    "SANDBOX_RESTART_POLICY_UNSPECIFIED",
+    0,
+    undefined,
+  ]) {
+    const { restart_policy: _omitted, ...spec } = stored.spec;
+    sandboxes.set(first.resourceName, {
+      ...stored,
+      spec: policy === undefined ? spec : { ...spec, restart_policy: policy },
+    });
+    assert.deepEqual(await provision(), first, `adopts a Sandbox stored with ${String(policy)}`);
+  }
+  // OCC never asks for ON_FAILURE, so a Sandbox stored with it is not this revision's.
+  for (const policy of ["SANDBOX_RESTART_POLICY_ON_FAILURE", 2]) {
+    sandboxes.set(first.resourceName, {
+      ...stored,
+      spec: { ...stored.spec, restart_policy: policy },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  }
+  assert.equal(creates.length, 1);
+});
+
 test("OpenShell moves a revision's create to a fresh request_id after the gateway refuses the old one", async () => {
   // OpenShell admits a request_id before running CreateSandbox and leaves it unresolved
   // forever if the handler errors, so reusing the revision UUID would never provision.
@@ -1300,6 +1380,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.equal(requests[0].spec.environment.HOME, "/sandbox/.openclaw-runtime/home");
   assert.equal(requests[0].spec.environment.TMPDIR, "/tmp");
   assert.equal(requests[0].spec.environment.CODEX_HOME, "/sandbox/.openclaw-runtime/home/.codex");
+  assert.equal(requests[0].spec.environment.NODE_PATH, "/home/node_modules");
   const nodeStateDirectory = requests[0].spec.environment.OPENCLAW_NODE_STATE_DIR;
   assert.match(nodeStateDirectory, /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u);
   assert.equal(requests[0].spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
@@ -1926,6 +2007,83 @@ test("startup rejects OpenShell network policies without binary identities", asy
   );
 });
 
+test("shipped startup names a rejected OpenShell policy without logging its name", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-policy-name-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const template = sandboxInstallation().drivers.sandbox.configuration.policy.networkPolicies[0];
+  const planted = "planted-policy-token";
+
+  function start(policies) {
+    const configuration = sandboxInstallation();
+    configuration.drivers.sandbox.configuration.policy.networkPolicies = policies;
+    const path = join(directory, "installation.yaml");
+    return writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
+      spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+        cwd: process.cwd(),
+        env: {
+          PATH: process.env.PATH,
+          NODE_ENV: "development",
+          OCC_HOST: "127.0.0.1",
+          OCC_PORT: "18081",
+          OCC_CONFIG_PATH: path,
+        },
+        encoding: "utf8",
+        timeout: 20_000,
+      }),
+    );
+  }
+
+  function diagnostic(server) {
+    assert.equal(server.status, 1, server.stderr);
+    const event = server.stderr
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .find((line) => line.event === "startup-error");
+    assert.ok(event, server.stderr);
+    return event;
+  }
+
+  const duplicate = await start([
+    { ...template, name: planted },
+    { ...template, name: planted },
+  ]);
+  const duplicateEvent = diagnostic(duplicate);
+  assert.equal(duplicateEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
+  assert.equal(duplicateEvent.reason, "rename-or-merge");
+  assert.equal(`${duplicate.stdout}${duplicate.stderr}`.includes(planted), false);
+
+  const reserved = await start([
+    { ...template, name: "model-egress" },
+    { ...template, name: "workspace-node-enrollment" },
+  ]);
+  const reservedEvent = diagnostic(reserved);
+  assert.equal(reservedEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
+  assert.equal(reservedEvent.reason, "rename-or-merge");
+  assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
+});
+
+test("startup rejects duplicate OpenShell network policy names", async (t) => {
+  const configuration = sandboxInstallation();
+  const template = configuration.drivers.sandbox.configuration.policy.networkPolicies[0];
+  configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
+    ...template,
+    name: "model-egress",
+  });
+
+  await assert.rejects(
+    loadInstallationFile(t, configuration),
+    /OpenShell network policy name model-egress must be unique/,
+  );
+
+  configuration.drivers.sandbox.configuration.policy.networkPolicies[1].name =
+    "workspace-node-enrollment";
+  await assert.rejects(
+    loadInstallationFile(t, configuration),
+    /OpenShell network policy name workspace-node-enrollment is reserved/,
+  );
+});
+
 test("startup rejects inherited OpenShell network enum property names", async (t) => {
   const cases = [
     ["tls", "toString", /TLS mode must be one of: skip, terminate/],
@@ -1970,6 +2128,12 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
     timeoutMs: 0,
   };
 
+  await assert.rejects(
+    loadInstallationFile(t, configuration),
+    /OpenShell gateway readiness timeout must be a positive safe integer/,
+  );
+
+  delete configuration.drivers.sandbox.configuration.gateway.readiness.timeoutMs;
   await assert.rejects(
     loadInstallationFile(t, configuration),
     /OpenShell gateway readiness timeout must be a positive safe integer/,
@@ -2243,13 +2407,22 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
       },
     ],
   );
-  // The model profile stays limited to the Harness binaries.
-  await driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000f4"), {
+  // A model source owns its profile too, limited to the Harness binaries.
+  const profileOf = (sourceId) =>
+    profiles.get(
+      [...providers.values()].find(
+        ({ labels }) => labels["openclaw.dev/credential-source-id"] === sourceId,
+      )?.type,
+    );
+  const model = "cs_00000000-0000-4000-8000-0000000000f4";
+  await driver.registerSource(context(model), {
     type: "openai",
     config: {},
     secrets: { api_key: "synthetic-openai-key" },
   });
-  assert.deepEqual(profiles.get("oce-openai").binaries, ["/usr/local/bin/codex"]);
+  assert.equal(profileOf(model).inferenceCapable, true);
+  assert.deepEqual(profileOf(model).binaries, ["/usr/local/bin/codex"]);
+  assert.equal(profiles.has("oce-openai"), false, "no profile is shared between sources");
 
   // Two sources on one revision cannot share a placeholder variable.
   await driver.registerSource(context(second), tokenInput(endpoint));
@@ -2293,15 +2466,19 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   assert.deepEqual(deletedProfiles, [provider.name]);
   assert.equal(profiles.has(provider.name), false);
   assert.equal(profiles.size, 2);
-  // The shared model profile stays while another model source still uses it.
-  await driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000f5"), {
+  // Removing one model source removes only its profile; the other model source keeps its own.
+  const secondModel = "cs_00000000-0000-4000-8000-0000000000f5";
+  await driver.registerSource(context(secondModel), {
     type: "openai",
     config: {},
     secrets: { api_key: "synthetic-openai-key" },
   });
-  await driver.removeSource(context("cs_00000000-0000-4000-8000-0000000000f4"));
-  assert.deepEqual(deletedProfiles, [provider.name]);
-  assert.equal(profiles.has("oce-openai"), true);
+  const modelProfile = profileOf(model).id;
+  const secondModelProfile = profileOf(secondModel).id;
+  assert.notEqual(modelProfile, secondModelProfile);
+  await driver.removeSource(context(model));
+  assert.deepEqual(deletedProfiles, [provider.name, modelProfile]);
+  assert.equal(profiles.has(secondModelProfile), true);
 });
 
 /** A bearer-token source of the recording store, registered under `driver`. */
@@ -2379,7 +2556,7 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
   await narrowed.attachForRevision(revisionContext([updated, deployed]));
   assert.deepEqual(profileWrites, []);
 
-  // The shared model profile follows the Harness binaries the same way.
+  // A model source's profile follows the Harness binaries the same way.
   const model = "cs_00000000-0000-4000-8000-000000000103";
   await narrowed.registerSource(gateway.context(model), gateway.input());
   const retargeted = driverWith({
@@ -2387,7 +2564,7 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
     toolBinaries: ["/usr/bin/curl"],
   });
   await retargeted.attachForRevision(revisionContext([gateway.source(model)]));
-  assert.deepEqual(profiles.get("oce-openai").binaries, ["/opt/codex/bin/codex"]);
+  assert.deepEqual(profileOf(gateway.source(model)).binaries, ["/opt/codex/bin/codex"]);
 });
 
 test("an OpenShell profile write that lost a race to the same profile still attaches", async () => {

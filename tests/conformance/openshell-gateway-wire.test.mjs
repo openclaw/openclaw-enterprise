@@ -273,6 +273,7 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
             },
           },
         },
+        restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS",
       },
     };
     const created = await client.createSandbox(request, AbortSignal.timeout(2_000));
@@ -343,6 +344,8 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
       websocket_credential_rewrite: true,
       credential_binding: { provider: "oce-runtime-example" },
     });
+    // Field 15 of the pinned gateway's SandboxSpec (finding 1029).
+    assert.equal(createRequests[0].spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
     assert.deepEqual(createRequests[0].spec.policy.network_policies.model.binaries, [
       { path: "/app/bin/model-client" },
     ]);
@@ -571,6 +574,68 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
         workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
       },
     ]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client reads the pinned gateway's Harness restart state from GetSandbox", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  // SandboxStatus fields 6, 9 and 14 as the gateway sets them (finding 1043).
+  const statuses = {
+    "sandbox-restarting": { phase: "SANDBOX_PHASE_STARTING", exit_code: 137, restart_count: 4 },
+    "sandbox-exited-zero": { phase: "SANDBOX_PHASE_STARTING", exit_code: 0, restart_count: 1 },
+    "sandbox-first-start": { phase: "SANDBOX_PHASE_STARTING" },
+    "sandbox-recovered": { phase: "SANDBOX_PHASE_READY", restart_count: 3 },
+  };
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      callback(null, {
+        sandbox: {
+          metadata: { id: "sandbox-id", name: call.request.name, workspace: "tenant-workspace" },
+          status: statuses[call.request.name],
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const signal = AbortSignal.timeout(2_000);
+  try {
+    const read = async (name) => {
+      const { phase, exitCode, restartCount } = await client.getSandbox(
+        { name, workspace: "tenant-workspace" },
+        signal,
+      );
+      return { phase, exitCode, restartCount };
+    };
+    assert.deepEqual(await read("sandbox-restarting"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: 137,
+      restartCount: 4,
+    });
+    // `exit_code` is a proto3 optional: a clean exit is present as 0, not absent.
+    assert.deepEqual(await read("sandbox-exited-zero"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: 0,
+      restartCount: 1,
+    });
+    assert.deepEqual(await read("sandbox-first-start"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: undefined,
+      restartCount: undefined,
+    });
+    assert.deepEqual(await read("sandbox-recovered"), {
+      phase: "SANDBOX_PHASE_READY",
+      exitCode: undefined,
+      restartCount: 3,
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
@@ -1350,7 +1415,62 @@ test("OpenShell client reads v0.1.3-pre.2 sandbox logs with nanosecond times", a
       ),
       /RFC 3339/,
     );
+    await assert.rejects(
+      client.getSandboxLogs(
+        {
+          workspace: "tenant-workspace",
+          sandbox: "sb-0123",
+          lines: 5,
+          sinceTime: "2026-02-30T11:59:00Z",
+        },
+        AbortSignal.timeout(2_000),
+      ),
+      /RFC 3339/,
+    );
     assert.equal(requests.length, 1);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client refuses a sandbox log response over its 4 MiB receive limit", async () => {
+  // OpenShell does not bound a log line, and OCC buffers the whole read before it
+  // withholds oversized lines. The receive limit is that read's memory bound.
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server({ "grpc.max_send_message_length": 16 * 1024 * 1024 });
+  server.addService(OpenShell.service, {
+    GetSandboxLogs(call, callback) {
+      // Each line carries a 1 MiB message: three fit in 4 MiB, four do not.
+      callback(null, {
+        logs: Array.from({ length: call.request.lines }, (_, index) => ({
+          sandbox_id: "sandbox-object-id",
+          level: "INFO",
+          message: `${index}`.padEnd(1024 * 1024, "x"),
+        })),
+        buffer_total: call.request.lines,
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const read = (lines) =>
+    client.getSandboxLogs(
+      { workspace: "tenant-workspace", sandbox: "sb-0123", lines },
+      AbortSignal.timeout(10_000),
+    );
+  try {
+    const fitting = await read(3);
+    assert.equal(fitting.lines.length, 3);
+    assert.equal(fitting.lines[2].message.length, 1024 * 1024);
+    await assert.rejects(read(4), (error) => {
+      assert.equal(error.code, grpc.status.RESOURCE_EXHAUSTED);
+      return true;
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

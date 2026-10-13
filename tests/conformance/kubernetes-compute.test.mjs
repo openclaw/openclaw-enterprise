@@ -27,7 +27,10 @@ import {
   SETUP_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  presetTemplateDefaultsWithPlaceholders,
+} from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
   harnessStateRemovalScript,
@@ -43,6 +46,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   ComputeGatewaySettingError,
+  ComputePreparationFailedError,
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
@@ -55,6 +59,7 @@ import {
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
+  withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -1273,7 +1278,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
                   ],
                 },
               }
-            : {}),
+            : { status: { phase: "Running", podIP: "10.42.0.12" } }),
         },
       ],
     };
@@ -4732,23 +4737,46 @@ test("Kubernetes drivers require explicit authentication, images, and production
     [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/1e1"] } }, /CIDR/i],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["0.0.0.0/0"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::/0"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0:0/96"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0.0.0.0/96"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
+    ],
+    // The status proxy sources follow the trusted proxy rule (bughunt F2).
+    ...["0.0.0.0/0", "::/0", "::ffff:0:0/96", "::ffff:0.0.0.0/96"].map((cidr) => [
+      { network: { ...baseNetwork, pluginStatusProxySourceCidrs: ["192.0.2.20/32", cidr] } },
+      /Plugin status proxy CIDRs cannot cover every address\./,
+    ]),
+    [
+      { network: { ...baseNetwork, pluginStatusProxySourceCidrs: ["10.42.0.1/"] } },
+      /Plugin status proxy CIDR 0 must be a valid/,
     ],
     [{ servicePrincipalCredentials: undefined }, /credential|projection/i],
   ]) {
     assert.throws(() => createKubernetesComputeDriver(options(invalid)), expected);
+  }
+
+  // Narrower sources, the Pod CIDR included, start: preflight warns about them instead.
+  for (const pluginStatusProxySourceCidrs of [
+    ["10.42.0.1/32"],
+    ["10.42.0.0/16"],
+    ["::/96"],
+    ["2001:db8::1/128"],
+  ]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ network: { ...baseNetwork, pluginStatusProxySourceCidrs } }),
+      ),
+    );
   }
 
   for (const gatewayTrustedProxyCidrs of [
@@ -4776,7 +4804,14 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   };
   assert.doesNotThrow(() => createKubernetesComputeDriver(options({ runtime })));
 
-  for (const proxyUrl of ["http://10.42.0.15:3128", "https://[2001:db8::15]:8443"]) {
+  for (const proxyUrl of [
+    "http://10.42.0.15:3128",
+    "http://127.0.0.1:8080",
+    " http://192.0.2.10:8080 ",
+    // URL parsing lowercases the scheme; the written IPv4 host is still 10.42.0.15.
+    "HTTP://10.42.0.15:3128",
+    "https://[2001:db8::15]:8443",
+  ]) {
     const channels = { proxyUrl };
     assert.doesNotThrow(() =>
       createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
@@ -4823,6 +4858,50 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
       /HTTP\(S\) IP endpoint/i,
+    );
+  }
+  for (const proxyUrl of [
+    "http://0177.0.0.1:8080",
+    "http://192.168.1:8080",
+    "http://2130706433:8080",
+    "http://127.1:8080",
+    "http://10.42.0.015:3128",
+  ]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
+      {
+        message:
+          "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+      },
+    );
+  }
+  // An unspecified host reaches the gateway Pod itself, and an IPv4-mapped host leaves as
+  // IPv4 traffic that the IPv6 egress ipBlock never matches.
+  for (const proxyUrl of [
+    "http://0.0.0.0:3128",
+    "http://[::]:3128",
+    "http://[0:0:0:0:0:0:0:0]:3128",
+    "https://[::ffff:10.42.0.15]:8443",
+    "https://[::FFFF:0A2A:000F]:8443",
+    "https://[0:0:0:0:0:ffff:10.42.0.15]:8443",
+    "https://[::ffff:0:0]:8443",
+  ]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
+      {
+        message:
+          "Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.",
+      },
+      proxyUrl,
+    );
+  }
+  for (const proxyUrl of ["https://[::ffff:1:2:3]:8443", "https://[::1]:8443"]) {
+    assert.doesNotThrow(
+      () =>
+        createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
+      proxyUrl,
     );
   }
   for (const channels of [
@@ -5751,7 +5830,7 @@ test("direct service account token is confined to the model container and exact 
         revision.harnessAuth,
         revision.configuration,
       ),
-    /incompatible.*topology/i,
+    /Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode\./,
   );
   assert.throws(
     () =>
@@ -5904,19 +5983,81 @@ test("OAuth Harness authentication requires Compute-owned dedicated Codex", () =
     provisionHarness() {},
   };
   const sandboxed = new KubernetesComputeDriver(options(), { sandboxDriver });
-  for (const harness of [codex, { id: "openclaw", version: "1.0.0", mode: "dedicated" }]) {
+  // A Sandbox Driver is an Installation dependency: fixed text.
+  assert.throws(
+    () => sandboxed.validateHarnessAuth(codex, oauth, configuration),
+    /OAuth requires the Compute-owned dedicated Codex Harness/,
+  );
+  // Dedicated OpenClaw never takes OAuth: the Agent's setting is named, with or without one.
+  for (const compute of [driver, sandboxed]) {
     assert.throws(
       () =>
-        sandboxed.validateHarnessAuth(
-          harness,
+        compute.validateHarnessAuth(
+          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
           oauth,
-          harness.id === "codex"
-            ? configuration
-            : createHarnessConfiguration("openclaw", "gpt-4o-mini"),
+          createHarnessConfiguration("openclaw", "gpt-4o-mini"),
+          // Agent save: without a Sandbox Driver, deployment refuses dedicated OpenClaw first.
+          null,
         ),
-      /OAuth requires the Compute-owned dedicated Codex Harness/,
+      (error) =>
+        error instanceof ConfigurationHarnessError &&
+        error.message ===
+          "Agent setting harnessAuth.method must be api_key or credential_source for Dedicated OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
     );
   }
+});
+
+test("Harness authentication method admission names the Agent setting for its topology", () => {
+  const driver = new KubernetesComputeDriver(options());
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const native = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const openclawConfiguration = createHarnessConfiguration("openclaw", "gpt-4o-mini");
+  const codexConfiguration = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const message = (accepted) =>
+    `Agent setting harnessAuth.method must be ${accepted} on Kubernetes Compute: change harnessAuth${
+      accepted.endsWith("Dedicated Codex") ? "" : " or executionMode"
+    }.`;
+  for (const [harness, configuration, accepted, refused] of [
+    [
+      embedded,
+      openclawConfiguration,
+      "api_key for embedded OpenClaw",
+      ["runtime", "codex_pat", "oauth", "credential_source"],
+    ],
+    [
+      native,
+      openclawConfiguration,
+      "api_key or credential_source for Dedicated OpenClaw",
+      ["runtime", "codex_pat", "oauth"],
+    ],
+    [
+      codex,
+      codexConfiguration,
+      "api_key, codex_pat, oauth or credential_source for Dedicated Codex",
+      ["runtime"],
+    ],
+  ]) {
+    for (const method of refused) {
+      const auth = method === "runtime" ? { method } : { ...apiKeyAuth, method };
+      // Agent save (null bindings) and deployment give the same named refusal.
+      for (const bindings of [null, {}]) {
+        if (harness === native && bindings !== null) {
+          continue; // Deployment refuses dedicated OpenClaw without a Sandbox Driver first.
+        }
+        assert.throws(
+          () => driver.validateHarnessAuth(harness, auth, configuration, bindings),
+          (error) =>
+            error instanceof ConfigurationHarnessError && error.message === message(accepted),
+          `${harness.mode} ${harness.id} ${method}`,
+        );
+      }
+    }
+  }
+  // The accepted methods pass this rule; api_key passes admission on every topology.
+  driver.validateHarnessAuth(embedded, apiKeyAuth, openclawConfiguration, null);
+  driver.validateHarnessAuth(native, apiKeyAuth, openclawConfiguration, null);
+  driver.validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, null);
 });
 
 test("dedicated Codex admission rejects settings its Gateway entrypoint cannot rewrite", () => {
@@ -5933,6 +6074,12 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     withCodexConfig(null),
     { ...withCodexConfig({}), cron: { enabled: true, triggers: { enabled: true } } },
     { ...withCodexConfig({}), cron: null },
+    {
+      ...withCodexConfig({}),
+      agents: {
+        defaults: { ...base.agents.defaults, compaction: { memoryFlush: { enabled: true } } },
+      },
+    },
     // Without the plugin entry the entrypoint leaves cron alone.
     { ...base, cron: "off" },
     {
@@ -5957,6 +6104,20 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     [withCodexConfig("on"), "plugins.entries.codex.config must be an object"],
     [{ ...withCodexConfig({}), cron: "off" }, "cron must be an object"],
     [{ ...withCodexConfig({}), cron: { triggers: true } }, "cron.triggers must be an object"],
+    [
+      {
+        ...withCodexConfig({}),
+        agents: { defaults: { ...base.agents.defaults, compaction: "off" } },
+      },
+      "agents.defaults.compaction must be an object",
+    ],
+    [
+      {
+        ...withCodexConfig({}),
+        agents: { defaults: { ...base.agents.defaults, compaction: { memoryFlush: true } } },
+      },
+      "agents.defaults.compaction.memoryFlush must be an object",
+    ],
     [{ ...base, models: "none" }, "models must be an object"],
     [{ ...base, models: { providers: [] } }, "models.providers must be an object"],
     [
@@ -5968,7 +6129,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
       "models.providers. OpenAI  must be an object",
     ],
     [
-      { ...base, models: { providers: { codex: { models: {} } } } },
+      { ...base, models: { providers: { codex: { models: [null] } } } },
       "models.providers.codex.models must be a list of objects",
     ],
     [
@@ -5992,7 +6153,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   for (const [providers, start, rule] of [
     [{ [`${" ".repeat(300)}openai`]: "stub" }, " ".repeat(8), " must be an object"],
     [
-      { [`Codex${"\u3000".repeat(400)}`]: { models: {} } },
+      { [`Codex${"\u3000".repeat(400)}`]: { models: ["gpt-5"] } },
       `Codex${"\u3000".repeat(8)}`,
       ".models must be a list of objects",
     ],
@@ -6029,6 +6190,174 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
       message: `Configuration setting models.providers.${" ".repeat(room - 5)}Open… must be an object${wording}`,
     },
   );
+});
+
+test("deployment admission refuses Gateway breakers before a dedicated deployment stops its predecessors", () => {
+  // A dedicated deployment stops the running revision before preparing the next one, and
+  // nothing rolls back. Each shape below used to pass deployment admission and provisioning,
+  // then fail in preparation or crash-loop the Gateway entrypoint, taking a working Agent down
+  // (findings 1112-1115). Admission now refuses each and names the setting.
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const provisioning = { id: "codex", version: "provisioning", mode: "dedicated" };
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const embeddedBase = { agents: { defaults: { model: "openai/gpt-5" } } };
+  const named = (setting, requirement) => (error) =>
+    error instanceof ConfigurationHarnessError &&
+    error.message === `Configuration setting ${setting} ${requirement}.`;
+  // An Installation with runtime storage, gateway routing and node enrollment: every dedicated
+  // Gateway hosts the Agent's workspace node.
+  const routed = new KubernetesComputeDriver(routedOptions({ runtime }), { nodeEnrollment: {} });
+  const sandboxDriver = {
+    id: "sandbox-openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    provisionHarness() {},
+  };
+  const routedNative = new KubernetesComputeDriver(routedOptions({ runtime }), {
+    nodeEnrollment: {},
+    sandboxDriver,
+  });
+  const unrouted = new KubernetesComputeDriver(options());
+  // Without node enrollment or runtime storage no Gateway hosts a workspace node.
+  const withoutNode = [
+    unrouted,
+    new KubernetesComputeDriver(routedOptions({ runtime })),
+    new KubernetesComputeDriver(routedOptions(), { nodeEnrollment: {} }),
+  ];
+
+  // f1112: the entrypoint exits at every start without the file-transfer plugin.
+  const workspaceNode = "the Agent's workspace node requires the file-transfer plugin";
+  for (const [plugins, setting, requirement] of [
+    [{ deny: ["file-transfer"] }, "plugins.deny", `must not list file-transfer: ${workspaceNode}`],
+    [
+      { entries: { "file-transfer": { enabled: false } } },
+      "plugins.entries.file-transfer.enabled",
+      `must not be false: ${workspaceNode}`,
+    ],
+  ]) {
+    for (const harness of [codex, provisioning]) {
+      assert.throws(
+        () => routed.validateHarnessAuth(harness, apiKeyAuth, { ...base, plugins }),
+        named(setting, requirement),
+      );
+    }
+    assert.throws(
+      () =>
+        routedNative.validateHarnessAuth(
+          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+          apiKeyAuth,
+          { ...createHarnessConfiguration("openclaw", "gpt-4o-mini"), plugins },
+        ),
+      named(setting, requirement),
+    );
+    // A Gateway without a workspace node does not need the plugin.
+    for (const driver of withoutNode) {
+      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+    }
+    routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins });
+  }
+  routed.validateHarnessAuth(codex, apiKeyAuth, {
+    ...base,
+    plugins: { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
+  });
+
+  // f1113 and f1114: gateway settings preparation refused, now refused by deployment admission
+  // (validateGatewaySettings) and provisioning (validateAgentProvisioning) with the same text.
+  const approvalPolicy = "plugins.entries.codex.config.appServer.approvalPolicy";
+  const withPolicy = (policy) => ({
+    ...base,
+    plugins: { entries: { codex: { config: { appServer: { approvalPolicy: policy } } } } },
+  });
+  const passwordRule =
+    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
+  const withPassword = (password) => ({ ...base, gateway: { auth: { password } } });
+  for (const [configuration, setting, requirement] of [
+    [withPolicy("always"), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
+    [withPolicy("on_request"), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
+    [withPolicy(1), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
+    [
+      { ...base, plugins: { entries: { codex: { config: { appServer: "never" } } } } },
+      "plugins.entries.codex.config.appServer",
+      "must be an object",
+    ],
+    [withPassword("literal-gateway-password"), "gateway.auth.password", passwordRule],
+    [
+      withPassword({ source: "env", provider: "default", id: "MY_GATEWAY_PASSWORD" }),
+      "gateway.auth.password",
+      passwordRule,
+    ],
+    [withPassword("${OPENCLAW_GATEWAY_PASSWORD}"), "gateway.auth.password", passwordRule],
+  ]) {
+    const label = JSON.stringify(configuration);
+    for (const validate of [
+      () => routed.validateGatewaySettings(configuration),
+      () => routed.validateAgentProvisioning({ executionMode: "dedicated", configuration }),
+    ]) {
+      assert.throws(
+        validate,
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.message === `Configuration setting ${setting} ${requirement}.`,
+        label,
+      );
+    }
+  }
+  for (const configuration of [
+    withPolicy("never"),
+    withPolicy("on-request"),
+    withPolicy("on-failure"),
+    // The Gateway entrypoint replaces a null plugin config.
+    { ...base, plugins: { entries: { codex: { config: null } } } },
+    withPassword({ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+  ]) {
+    routed.validateGatewaySettings(configuration);
+    routed.validateAgentProvisioning({ executionMode: "dedicated", configuration });
+  }
+
+  // f1115: enabled channels need a dedicated workload and the Installation's channel runtime.
+  const slack = { channels: { slack: { enabled: true } } };
+  assert.throws(
+    () => unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, ...slack }),
+    named(
+      "channels.slack",
+      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and a reviewed proxy",
+    ),
+  );
+  const withChannels = new KubernetesComputeDriver(
+    options({ runtime: { ...runtime, channels: { proxyUrl: "http://10.42.0.15:3128" } } }),
+  );
+  assert.throws(
+    () => withChannels.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, ...slack }),
+    named("channels.slack", "is enabled, but channels require a dedicated Agent workload"),
+  );
+  withChannels.validateHarnessAuth(codex, apiKeyAuth, { ...base, ...slack });
+  // Agent save (null bindings) leaves the Installation's channel runtime to deployment, and
+  // still refuses channels on an embedded Agent, which the Agent's own mode decides.
+  unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, ...slack }, null);
+  assert.throws(
+    () => unrouted.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, ...slack }, null),
+    named("channels.slack", "is enabled, but channels require a dedicated Agent workload"),
+  );
+  // A disabled channel, and channel defaults, need neither.
+  for (const channels of [{ slack: { enabled: false } }, { defaults: { groupPolicy: "open" } }]) {
+    unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, channels });
+    unrouted.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, channels });
+  }
+});
+
+test("preparation still refuses a gateway password Compute does not generate", async () => {
+  // Admission refuses it first; preparation runs the same rule on the revision it renders.
+  for (const password of ["literal-gateway-password", { source: "env", id: "OTHER" }]) {
+    const { driver, revision, context } = workspaceSetupFixture(false);
+    revision.configuration = structuredClone(revision.configuration);
+    revision.configuration.gateway.auth.password = password;
+    await assert.rejects(driver.prepareRevision(revision, context), {
+      message:
+        'Configuration setting gateway.auth.password must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates.',
+    });
+  }
 });
 
 test("credential-source authentication renders no model Secret and requires the paired gateway", () => {
@@ -6211,7 +6540,7 @@ test("credential-source authentication renders no model Secret and requires the 
         {},
         sourceType,
       ),
-    /incompatible.*topology/i,
+    /Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode\./,
   );
 });
 
@@ -6363,6 +6692,13 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       ),
     /requires a provisioning SandboxDriver with networking, filesystem, and process containment/,
   );
+  // Agent save (null bindings) leaves the Installation's Sandbox Driver to deployment.
+  createKubernetesComputeDriver(driverOptions).validateHarnessAuth(
+    revision.harness,
+    revision.harnessAuth,
+    revision.configuration,
+    null,
+  );
   assert.doesNotThrow(() =>
     driver.validateHarnessAuth(revision.harness, revision.harnessAuth, revision.configuration),
   );
@@ -6380,7 +6716,11 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
         ...revision.configuration,
         cloudWorkers: { requiredProfile: "user-selected" },
       }),
-    /required profile.*owned by the selected Compute Driver/i,
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting cloudWorkers.requiredProfile must be unset on Dedicated OpenClaw: Kubernetes Compute owns the dedicated-native profile.",
+    },
   );
   // OpenClaw's default Agent (sole entry, or a named session store or system owner) keeps its
   // own workspace, while the Gateway, file transfer and workspace files address main.
@@ -7254,7 +7594,7 @@ test("native channel providers require Secret bindings and project them only to 
         diagnostics: { otel: { logs: false } },
       },
     }),
-    /Unsupported OpenClaw channel provider "discord"\./,
+    /Configuration setting channels\.discord is not a supported channel: use slack or msteams, or set its enabled to false\./,
   );
   assert.throws(
     () =>
@@ -7272,7 +7612,27 @@ test("native channel providers require Secret bindings and project them only to 
         },
         { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN },
       ),
-    /Secret bindings/i,
+    // The caller fixes its own Configuration, so admission names the channel, not the reference.
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting channels.slack uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings.",
+    },
+  );
+  // Agent save passes null bindings: a Configuration may stage its bindings after its values.
+  driver.validateHarnessAuth(
+    revision.harness,
+    revision.harnessAuth,
+    {
+      agents: { defaults: { model: "codex/gpt-5" } },
+      channels: {
+        slack: {
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        },
+      },
+    },
+    null,
   );
 
   const ipv6 = createKubernetesComputeDriver(
@@ -7358,7 +7718,11 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
         "openclaw.dev/workload-role": role,
       },
     },
-    status: { containerStatuses: [{ name: role, containerID: `${role}-container-1` }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.10",
+      containerStatuses: [{ name: role, containerID: `${role}-container-1` }],
+    },
   });
   const pods = { agent: pod("agent"), gateway: pod("gateway") };
   const proxyReads = [];
@@ -7560,6 +7924,12 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     },
     (role) => ({ ...held(role), podUid: "replaced-pod-uid" }),
     (role) => ({ ...held(role), runtimeFailure: { ...heldFailure, code: "not a code" } }),
+    // Date.parse accepts this impossible date and normalizes it to March 2. The
+    // private runtime boundary must not turn it into different failure evidence.
+    (role) => ({
+      ...held(role),
+      runtimeFailure: { ...heldFailure, checkedAt: "2026-02-30T11:59:00.000Z" },
+    }),
     // Parseable, but outside the timestamps OCC accepts.
     (role) => ({
       ...held(role),
@@ -7623,7 +7993,11 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
         "openclaw.dev/workload-role": "agent",
       },
     },
-    status: { containerStatuses: [{ name: "agent", containerID: "agent-container-1" }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.11",
+      containerStatuses: [{ name: "agent", containerID: "agent-container-1" }],
+    },
   };
   let podLists = 0;
   driver.apiClients = Promise.resolve({
@@ -7677,6 +8051,8 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
     ),
     undefined,
   );
+  // The proxy answered; the re-list after it saw the second Pod.
+  assert.equal(podLists, 2);
 
   // A status port that is not serving yet (503) is an answer, read once and not retried.
   podLists = 0;
@@ -7700,6 +8076,90 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
   );
   assert.equal(proxied, 1);
   assert.deepEqual(waits, []);
+});
+
+// f1103: a deleted Gateway Pod's replacement is Pending with no IP while the
+// Deployment still counts the old one ready. The apiserver refuses to proxy to
+// it (400 "address not allowed"), so the readback must not try.
+test("Kubernetes status readback skips a replacement Pod that is not Running with an IP", async () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+  );
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const revision = routedRevision(driver, {
+    id: "revision-runtime-readback-replacement",
+    agentId: "agent-runtime-readback-replacement",
+    configurationId: "cfg_runtime_readback_replacement",
+    servicePrincipalId: "service-principal-runtime-readback-replacement",
+  });
+  const pod = (name, status, deletionTimestamp) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name,
+      namespace: namespace.name,
+      uid: `${name}-uid`,
+      ...(deletionTimestamp === undefined ? {} : { deletionTimestamp }),
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+    },
+    status: { ...status, containerStatuses: [{ name: "agent", containerID: `${name}-c` }] },
+  });
+  const terminating = pod(
+    "agent-terminating",
+    { phase: "Running", podIP: "10.42.0.40" },
+    "2026-10-11T10:18:57Z",
+  );
+  let items = [];
+  const proxied = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespacedPod() {
+        return { apiVersion: "v1", kind: "PodList", items: structuredClone(items) };
+      },
+      async connectGetNamespacedPodProxyWithPath({ name }) {
+        proxied.push(name);
+        const target = items.find((candidate) => `${candidate.metadata.name}:18791` === name);
+        if (!target?.status?.podIP) {
+          throw Object.assign(new Error("address not allowed"), { code: 400, headers: {} });
+        }
+        return { revisionId: revision.id, container: "agent", podUid: target.metadata.uid };
+      },
+    },
+  });
+  const read = () =>
+    driver.privateStatusReadback(revision, namespace, "agent", "/openclaw/runtime/status");
+
+  for (const status of [
+    { phase: "Pending" },
+    { phase: "Pending", podIP: "10.42.0.41" },
+    { phase: "Running" },
+    { phase: "Running", podIP: "" },
+    { phase: "Succeeded", podIP: "10.42.0.41" },
+    {},
+  ]) {
+    items = [terminating, pod("agent-replacement", status)];
+    assert.equal(await read(), undefined, JSON.stringify(status));
+  }
+  assert.deepEqual(proxied, []);
+
+  // Once the replacement runs with an IP, the readback reaches exactly that Pod.
+  items = [terminating, pod("agent-replacement", { phase: "Running", podIP: "10.42.0.41" })];
+  assert.deepEqual(await read(), {
+    status: {
+      revisionId: revision.id,
+      container: "agent",
+      podUid: "agent-replacement-uid",
+    },
+    podUid: "agent-replacement-uid",
+    containerId: "agent-replacement-c",
+  });
+  assert.deepEqual(proxied, ["agent-replacement:18791"]);
 });
 
 test("runtime diagnostics proxy ingress remains available without enabled plugins", () => {
@@ -7798,6 +8258,105 @@ test("Kubernetes cached runtime failure evidence is native-only and readiness-pa
     ),
     (error) => error === cancellation,
   );
+});
+
+// A provider-fenced Harness admits only its Gateway's transport: the status proxy policy
+// selects ordinary Pods and the provider's fence denies the API server. No Pod proxy read can
+// answer, so Compute sends none to the Harness and keeps reading the Gateway (bughunt F4).
+test("Kubernetes status readback skips provider-fenced Harness Pods", async () => {
+  const driver = new KubernetesComputeDriver(
+    routedOptions({
+      network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] },
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    }),
+    { sandboxDriver: { id: "sandbox-provider", async provisionHarness() {} } },
+  );
+  const ordinary = routedRevision(driver, { id: "revision-fenced-status" });
+  const fenced = { ...ordinary, sandboxDriverId: "sandbox-provider" };
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const proxyReads = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespacedPod({ labelSelector }) {
+        const role = labelSelector.includes("openclaw.dev/workload-role=agent")
+          ? "agent"
+          : "gateway";
+        return {
+          apiVersion: "v1",
+          kind: "PodList",
+          items: [
+            {
+              apiVersion: "v1",
+              kind: "Pod",
+              metadata: {
+                name: `${role}-fenced-status-pod`,
+                namespace: namespace.name,
+                uid: `${role}-fenced-status-uid`,
+                labels: {
+                  "openclaw.dev/agent": ordinary.agentId,
+                  "openclaw.dev/revision": ordinary.id,
+                  "openclaw.dev/workload-role": role,
+                },
+              },
+              status: {
+                phase: "Running",
+                podIP: "10.42.0.10",
+                containerStatuses: [{ name: role, containerID: `${role}-container` }],
+              },
+            },
+          ],
+        };
+      },
+      async connectGetNamespacedPodProxyWithPath({ name, path }) {
+        const role = name.startsWith("agent-") ? "agent" : "gateway";
+        proxyReads.push(`${role} ${path}`);
+        return {
+          revisionId: ordinary.id,
+          container: role,
+          podUid: `${role}-fenced-status-uid`,
+          startupId: `${role}-startup`,
+          phase: "ready",
+          successfulPluginIds: [],
+          failures: [],
+          observedAt: "2026-10-11T12:00:00.000Z",
+          checks: [],
+        };
+      },
+    },
+  });
+  const observe = async (revision) => {
+    proxyReads.length = 0;
+    await driver.safeRuntimeFailureObservation(revision, namespace);
+    const agentStatus = await driver.pluginRuntimeStatus(revision, namespace, "agent");
+    const gatewayStatus = await driver.pluginRuntimeStatus(revision, namespace, "gateway");
+    const agentChecks = await driver.runtimeDiagnosticChecks(revision, namespace, "agent");
+    return { reads: [...proxyReads], agentStatus, gatewayStatus, agentChecks };
+  };
+
+  const fencedObservation = await observe(fenced);
+  assert.deepEqual(fencedObservation.reads, [
+    "gateway openclaw/runtime/status",
+    "gateway openclaw/plugin-runtime/status",
+  ]);
+  assert.equal(fencedObservation.agentStatus, undefined);
+  assert.equal(fencedObservation.agentChecks, undefined);
+  assert.notEqual(fencedObservation.gatewayStatus, undefined);
+
+  // The same revision without the provider's Harness still reads both containers.
+  const ordinaryObservation = await observe(ordinary);
+  assert.deepEqual(ordinaryObservation.reads, [
+    "agent openclaw/runtime/status",
+    "gateway openclaw/runtime/status",
+    "agent openclaw/plugin-runtime/status",
+    "gateway openclaw/plugin-runtime/status",
+    "agent openclaw/runtime/diagnostics",
+  ]);
+  assert.notEqual(ordinaryObservation.agentStatus, undefined);
 });
 
 async function exerciseEmbeddedReplacement({ providerId, model, environmentName, api, baseUrl }) {
@@ -8355,32 +8914,60 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
     "${ANTHROPIC_AUTH_TOKEN}",
     { source: "env", provider: "model", id: "OPENAI_API_KEY" },
   ]) {
+    // The caller owns the Configuration, so admission names the setting (finding 1116).
     assert.throws(
       () =>
         driver.validateHarnessAuth(embedded, apiKeyAuth, {
           ...configuration,
           models: { providers: { anthropic: { apiKey } } },
         }),
-      /credentials must use.*binding/i,
+      {
+        name: "ConfigurationHarnessError",
+        message:
+          "Configuration setting models.providers.anthropic.apiKey must be ${ANTHROPIC_API_KEY} or an env SecretRef to ANTHROPIC_API_KEY, which the Agent's Harness authentication binding supplies.",
+      },
     );
   }
-  for (const conflicting of [
-    { env: { ANTHROPIC_API_KEY: "fixture" } },
-    { env: { vars: { ANTHROPIC_AUTH_TOKEN: "fixture" } } },
-    { auth: { profiles: { alternate: { provider: "anthropic", mode: "token" } } } },
-    { models: { providers: { anthropic: { headers: { "x-api-key": "fixture" } } } } },
-    {
-      models: {
-        providers: {
-          anthropic: { models: [{ id: "claude-sonnet-4-5", headers: { "x-api-key": "fixture" } }] },
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential)`;
+  for (const [conflicting, message] of [
+    [
+      { env: { ANTHROPIC_API_KEY: "fixture" } },
+      `Configuration setting env.ANTHROPIC_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.`,
+    ],
+    [
+      { env: { vars: { ANTHROPIC_AUTH_TOKEN: "fixture" } } },
+      `Configuration setting env.vars.ANTHROPIC_AUTH_TOKEN must not be set: the Agent's Harness authentication binding owns model provider environment.`,
+    ],
+    [
+      { auth: { profiles: { alternate: { provider: "anthropic", mode: "token" } } } },
+      `Configuration setting auth must be empty: ${binding}.`,
+    ],
+    [
+      { models: { providers: { anthropic: { headers: { "x-api-key": "fixture" } } } } },
+      `Configuration setting models.providers.anthropic.headers ${credentialHeader("x-api-key")}: ${binding}.`,
+    ],
+    [
+      {
+        models: {
+          providers: {
+            anthropic: {
+              models: [{ id: "claude-sonnet-4-5", headers: { "x-api-key": "fixture" } }],
+            },
+          },
         },
       },
-    },
+      `Configuration setting models.providers.anthropic.models.0.headers ${credentialHeader("x-api-key")}: ${binding}.`,
+    ],
   ]) {
-    assert.throws(
+    // Every topology refuses these, so Configuration save runs the same rule.
+    for (const check of [
       () => driver.validateHarnessAuth(embedded, apiKeyAuth, { ...configuration, ...conflicting }),
-      /credentials must use.*binding/i,
-    );
+      () => driver.validateConfiguration({ ...configuration, ...conflicting }),
+    ]) {
+      assert.throws(check, { name: "ConfigurationHarnessError", message });
+    }
   }
   for (const selection of [
     { primary: model, fallbacks: ["openai/gpt-5"] },
@@ -8405,6 +8992,394 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
       ),
     /compatible model provider/i,
   );
+});
+
+test("a Preset header name that waits on a variable is checked once filled", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
+  // The name up to its first invalid character, with a placeholder as written, or the code point
+  // of an invalid first character (finding 1251).
+  const invalidName =
+    /^Configuration setting \S+ must use valid HTTP header names, not (?:"(?:[\w-]|\{\{ vars\.\w+ \}\})*…"|one that starts with U\+[0-9A-F]{4,})\.$/;
+  const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
+  // The Preset save's render: the values with defaults, and where it left placeholders.
+  const preset = (values) => {
+    const { settings, unresolved } = presetTemplateDefaultsWithPlaceholders({
+      variables: { header: { type: "string" }, p: { type: "string" } },
+      configuration: { values },
+    });
+    return [settings.configuration.values, { unresolved }];
+  };
+  // Finding 1207: on a Preset save, a header name that waits on an unfilled variable is checked
+  // once filled, as on every Compute; a name the rule matches around it is still refused.
+  for (const headers of [
+    { headers: { "{{ vars.header }}": "v" } },
+    { request: { headers: { "{{ vars.header }}": "v" } } },
+    { models: [{ id: "m", headers: { "{{ vars.header }}": "v" } }] },
+    { headers: { "Authorization-{{ vars.header }}": "v" } },
+  ]) {
+    const [values, saving] = preset(provider("p", headers));
+    driver.validateConfiguration(values, saving);
+    assert.throws(() => driver.validateConfiguration(values), {
+      name: "ConfigurationHarnessError",
+      message: invalidName,
+    });
+  }
+  // Finding 1244: so is one the text around the variable names, as the variable filled empty.
+  for (const name of [
+    "{{ vars.p }}-Authorization",
+    "Authorization{{ vars.p }}",
+    "X-Api-Key{{ vars.p }}",
+  ]) {
+    assert.throws(
+      () => driver.validateConfiguration(...preset(provider("p", { headers: { [name]: "v" } }))),
+      {
+        name: "ConfigurationHarnessError",
+        message: `Configuration setting models.providers.p.headers ${credentialHeader(name)}.`,
+      },
+    );
+  }
+  // Finding 1221: the text around the variable must be valid too. Finding 1220: an escaped token
+  // that reads like a placeholder in another provider stays literal.
+  for (const values of [
+    provider("p", { headers: { "{{ vars.header }} ": "v" } }),
+    provider("p", { models: [{ id: "m", headers: { "{{ vars.header }}\u200b": "v" } }] }),
+    provider("p", { request: { headers: { "\\{{ vars.p }}-{{ vars.header }}": "v" } } }),
+    {
+      models: {
+        providers: {
+          a: { headers: { "{{ vars.header }}": "v" } },
+          b: { headers: { "\\{{ vars.header }}": "v" } },
+        },
+      },
+    },
+  ]) {
+    assert.throws(() => driver.validateConfiguration(...preset(values)), {
+      name: "ConfigurationHarnessError",
+      message: invalidName,
+    });
+  }
+});
+
+test("model provider credential headers and request auth are refused on every provider and path", () => {
+  // Findings 1142 and 1143: OpenClaw also merges request.headers and request.auth into provider
+  // requests, and reaches providers the primary model does not select (imageModel, pdfModel,
+  // subagents, channels.modelByChannel, /model switches). Every topology refuses them, so
+  // Configuration save, Agent save and deployment give the same message.
+  const driver = createKubernetesComputeDriver(options());
+  const harnesses = [
+    [{ id: "openclaw", version: "1.0.0", mode: "embedded" }, "openai/gpt-5"],
+    [{ id: "codex", version: "1.0.0", mode: "dedicated" }, "codex/gpt-5"],
+  ];
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  // Finding 1208: the refusal names the header, never its value.
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
+  const requestAuth = `must be unset or {mode: "provider-default"}: ${binding}`;
+  // Finding 1218: the refusal names the header up to its first invalid character, never past it.
+  const invalidName = (name) => `must use valid HTTP header names, not ${JSON.stringify(name)}`;
+  const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
+  const cases = [
+    [
+      provider("p", { request: { headers: { Authorization: "Bearer sk-literal" } } }),
+      "models.providers.p.request.headers",
+      credentialHeader("Authorization"),
+    ],
+    [
+      provider("p", { request: { headers: { "x-api-key": "${K}" } } }),
+      "models.providers.p.request.headers",
+      credentialHeader("x-api-key"),
+    ],
+    [
+      provider("p", { models: [{ id: "m", request: { headers: { authorization: "x" } } }] }),
+      "models.providers.p.models.0.request.headers",
+      credentialHeader("authorization"),
+    ],
+    [
+      provider("p", { request: { auth: { mode: "authorization-bearer", token: "sk-literal" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    [
+      provider("p", {
+        request: { auth: { mode: "header", headerName: "x-api-key", value: "${K}" } },
+      }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    [
+      provider("p", { request: { auth: { mode: "Authorization-Bearer", token: "x" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    [provider("p", { request: { auth: null } }), "models.providers.p.request.auth", requestAuth],
+    // Finding 1186: a models record would hide its rows' credentials from the walk above, and
+    // OpenClaw accepts only a list there.
+    ...[{ m: { id: "m", request: { headers: { authorization: "x" } } } }, null, "m"].map(
+      (models) => [
+        provider("p", { models }),
+        "models.providers.p.models",
+        "must be an array of model entries",
+      ],
+    ),
+    [
+      provider("p", { request: { auth: { mode: "provider-default", token: "${K}" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    ...[
+      "Proxy-Authorization",
+      "x-goog-api-key",
+      "x-auth-token",
+      "Cookie",
+      "apikey",
+      "x-portkey-api-key",
+      "helicone-auth",
+      "ocp-apim-subscription-key",
+      "x-amz-security-token",
+      "x-client-secret",
+      "x-password",
+      "x_api_key",
+      "api_key",
+      "x-rapidapi-key",
+      "x-functions-key",
+      "x-aws-secret-access-key",
+      "x-master-key",
+      // Finding 1185: real-world credential headers whose last word is any key, or a
+      // credential, passphrase, passcode, signature or bearer word.
+      "Authorization",
+      "x-api-key",
+      "api-key",
+      "Private-Token",
+      "cf-aig-authorization",
+      "CF-Access-Client-Secret",
+      "x-litellm-api-key",
+      "x-vault-token",
+      "X-License-Key",
+      "x-access-key",
+      "X-Auth-Key",
+      "DD-APPLICATION-KEY",
+      "X-Private-Key",
+      "X-Client-Key",
+      "x-app-key",
+      "X-Service-Key",
+      "X-Account-Key",
+      "X-Admin-Key",
+      "x-key",
+      "Key",
+      "X-Signing-Key",
+      "x-portkey-virtual-key",
+      "X-Credential",
+      "X-Credentials",
+      "X-Passphrase",
+      "X-Passcode",
+      "X-Signature",
+      "X-Hub-Signature-256",
+      "X-Bearer",
+      "x-tokens",
+      "x-keys",
+      // Finding 1189: authentication, JWT, assertion, HMAC, one-time and PIN words, short
+      // password words, a license, a version suffix and dot separators. A request or routing
+      // key can be a credential, and the WebSocket key is refused like any other key.
+      "Authentication",
+      "X-Authentication",
+      "X-JWT",
+      "X-JWT-Assertion",
+      "X-Client-Assertion",
+      "X-Hmac",
+      "X-Otp",
+      "X-Pin",
+      "X-Pwd",
+      "X-Pass",
+      "X-License",
+      "X-Api-Key-V2",
+      "X-Auth-Token-V2",
+      "x-signature-v1",
+      "x.authorization",
+      "x.token",
+      "x.secret",
+      "x.cookie",
+      "X-Request-Key",
+      "X-Routing-Key",
+      "Sec-WebSocket-Key",
+      "x-authorizations",
+      "X-Bearers",
+      "X-Otps",
+      "X-Hmacs",
+      // Finding 1196: a trailing algorithm word, a digit glued to a key and the Vercel
+      // protection bypass secret.
+      "X-Signature-Ed25519",
+      "X-HMAC-SHA256",
+      "x-signature-sha256",
+      "X-Signature-SHA-256",
+      "x-hub-signature-sha256-v2",
+      "X-Signature-RS256",
+      "x-signature-blake2b",
+      "x-signature-rsa-sha256",
+      "x-api-key2",
+      "x-api-keyv2",
+      "X-Api-Key2-V3",
+      "x-vercel-protection-bypass",
+    ].map((name) => [
+      provider("p", { headers: { [name]: "${K}" } }),
+      "models.providers.p.headers",
+      credentialHeader(name),
+    ]),
+    // Finding 1251: an invalid first character is named by its code point.
+    ...[
+      ["authorization ", invalidName("authorization…")],
+      [" x-api-key", "must use valid HTTP header names, not one that starts with U+0020"],
+      ["Authorization\u200b", invalidName("Authorization…")],
+      ["\u0410uthorization", "must use valid HTTP header names, not one that starts with U+0410"],
+      ["x api key", invalidName("x…")],
+      ["", invalidName("")],
+    ].map(([name, requirement]) => [
+      provider("p", { headers: { [name]: "v" } }),
+      "models.providers.p.headers",
+      requirement,
+    ]),
+    [
+      provider("p", { request: { headers: { "authorization\t": "v" } } }),
+      "models.providers.p.request.headers",
+      invalidName("authorization…"),
+    ],
+    [
+      provider("p", { headers: { "X-Trace": "t", "Bad Header": "v" } }),
+      "models.providers.p.headers",
+      invalidName("Bad…"),
+    ],
+    // A value pasted into the name is never echoed.
+    [
+      provider("p", { headers: { "Authorization: Bearer sk-fixture-0123456789": "v" } }),
+      "models.providers.p.headers",
+      invalidName("Authorization…"),
+    ],
+  ];
+  for (const [harness, model] of harnesses) {
+    const selected = { agents: { defaults: { model } } };
+    for (const [values, path, requirement] of cases) {
+      const label = `${harness.id}: ${JSON.stringify(values)}`;
+      const message = `Configuration setting ${path} ${requirement}.`;
+      // Not selected by agents.*.model: the rule covers every configured provider.
+      const configuration = { ...selected, ...values };
+      for (const check of [
+        () => driver.validateConfiguration(configuration),
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, null),
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
+      ]) {
+        assert.throws(check, { name: "ConfigurationHarnessError", message }, label);
+      }
+    }
+  }
+  // Finding 1208: a long header name is cut so the message keeps its 256-character cap.
+  const longName = `x-${"a".repeat(300)}-token`;
+  assert.throws(
+    () => driver.validateConfiguration(provider("p", { headers: { [longName]: "${K}" } })),
+    (error) =>
+      error.name === "ConfigurationHarnessError" &&
+      error.message.length <= 256 &&
+      error.message ===
+        `Configuration setting models.providers.p.headers ${credentialHeader(`x-${"a".repeat(37)}…`)}.`,
+  );
+  // Providers reached only through other selection keys are refused too.
+  for (const agents of [
+    { defaults: { model: "openai/gpt-5", imageModel: "anthropic/claude-x" } },
+    { defaults: { model: "openai/gpt-5", pdfModel: { primary: "anthropic/claude-x" } } },
+    { defaults: { model: "openai/gpt-5", subagents: { model: "anthropic/claude-x" } } },
+    {
+      defaults: { model: "openai/gpt-5" },
+      entries: { main: { voiceModel: "anthropic/claude-x" } },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateConfiguration({
+          agents,
+          ...provider("anthropic", { headers: { "x-api-key": "${K}" } }),
+        }),
+      {
+        name: "ConfigurationHarnessError",
+        message: `Configuration setting models.providers.anthropic.headers ${credentialHeader("x-api-key")}.`,
+      },
+    );
+  }
+  // Transport headers without a credential, and the provider's own authentication, still save.
+  for (const values of [
+    provider("p", {
+      headers: {
+        "X-Custom-Transport": "route",
+        "x-api-key-id": "a",
+        "x-auth-mode": "b",
+        "anthropic-version": "2023-06-01",
+        "idempotency-key": "c",
+        "x-cache-key": "d",
+        "x-stainless-retry-count": "0",
+      },
+    }),
+    // Finding 1185: a key that names no credential (idempotency, cache, a key's id or name),
+    // an id after a credential word, and common transport headers.
+    ...[
+      "Content-Type",
+      "Idempotency-Key",
+      "X-Idempotency-Key",
+      "x_idempotency_key",
+      "X-Cache-Key",
+      "x-prompt-cache-key",
+      "x-api-key-id",
+      "x-api-key-name",
+      "X-Token-Id",
+      "X-Session",
+      "OpenAI-Organization",
+      "OpenAI-Project",
+      "anthropic-beta",
+      "X-Request-Id",
+      "User-Agent",
+      "X-Title",
+      "HTTP-Referer",
+      "x-stainless-lang",
+      "X-Keyword",
+      "x-cache-key-2",
+      "X-Idempotent-Key",
+      // Finding 1189: partition, shard, sort and deduplication keys, and words that only
+      // start with a credential word.
+      "X-Partition-Key",
+      "X-Shard-Key",
+      "X-Sort-Key",
+      "X-Dedup-Key",
+      "X-Deduplication-Key",
+      "x-cache-key-v2",
+      "X-Passthrough",
+      "X-Bypass",
+      "X-Pinned-Version",
+      "Public-Key-Pins",
+      "X-Licensed-To",
+      "x-api-key-version",
+      "x.trace.id",
+      // Finding 1196: an algorithm word after a word that names no credential, a cache key
+      // with a glued digit, and a bypass without the protection word.
+      "x-amz-content-sha256",
+      "X-Signature-Version",
+      "x-cache-key2",
+      "x-idempotency-key-sha256",
+      "x-ed25519",
+    ].map((name) => provider("p", { request: { headers: { [name]: "v" } } })),
+    provider("p", {
+      request: { headers: { "OpenAI-Organization": "org" }, auth: { mode: "provider-default" } },
+    }),
+    provider("p", { request: { proxy: { mode: "env-proxy" }, allowPrivateNetwork: true } }),
+    provider("p", { models: [{ id: "m", headers: { "x-tokens-per-minute": "10" } }] }),
+  ]) {
+    assert.doesNotThrow(
+      () =>
+        driver.validateConfiguration({
+          agents: { defaults: { model: "openai/gpt-5" } },
+          ...values,
+        }),
+      JSON.stringify(values),
+    );
+  }
 });
 
 test("embedded startup probes its selected provider and allows graceful Gateway shutdown", async (t) => {
@@ -8458,6 +9433,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         "unknown",
         "MODEL_PROBE_FAILED",
         { kind: "PROBE_STATUS", detail: "unknown" },
+      ],
+      // A provider 429, usage limit or exhausted quota: OpenClaw's "rate_limit" bucket.
+      [
+        "provider rate limit",
+        "rate_limit",
+        "MODEL_PROBE_FAILED",
+        { kind: "PROBE_STATUS", detail: "rate_limit" },
       ],
       // An unknown model or invalid provider settings: OpenClaw's "format" bucket.
       [
@@ -8815,6 +9797,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
+        // The log line keeps the provider's HTTP status from its error, never the text.
+        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();
@@ -9422,11 +10406,20 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
   );
 });
 
+/** What an OpenShell-like Driver labels a revision's workspace-node relay Pod with. */
+function supervisorPeerLabels(revisionId) {
+  return {
+    "openshell.ai/sandbox-id": `sandbox-${digest(revisionId)}`,
+    "openshell.ai/boundary-role": "supervisor",
+  };
+}
+
 function providerReadinessFixture({
   provisionHarness,
   harnessEndpoint,
   lifecycleDrivers = [],
   nodeEnrollment,
+  workspaceNodePeerLabels = async ({ revision }) => supervisorPeerLabels(revision.id),
 } = {}) {
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -9469,6 +10462,7 @@ function providerReadinessFixture({
           assert.fail("activation must only observe the previously provisioned Harness");
         },
         ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
+        workspaceNodePeerLabels,
       },
     },
   );
@@ -9664,6 +10658,15 @@ test("provider Harness readiness requires exactly one live matching Pod", async 
   const stringTimestamp = structuredClone(terminating);
   stringTimestamp.metadata.deletionTimestamp = "2026-08-25T00:00:00Z";
   cases.push(["serialized deletion timestamp", [ready, stringTimestamp], true]);
+  for (const fraction of [".5", ".123456", ".123456789"]) {
+    const fractional = structuredClone(terminating);
+    fractional.metadata.deletionTimestamp = `2026-08-25T00:00:00${fraction}Z`;
+    cases.push([
+      `serialized deletion timestamp with ${fraction} fraction`,
+      [ready, fractional],
+      true,
+    ]);
+  }
 
   for (const [name, items, expected] of cases) {
     await t.test(name, async () => {
@@ -9710,6 +10713,25 @@ test("provider Harness readiness rejects malformed or incomplete Pod observation
     ["null deletion timestamp", (pod) => (pod.metadata.deletionTimestamp = null)],
     ["invalid deletion date", (pod) => (pod.metadata.deletionTimestamp = new Date(NaN))],
     ["invalid deletion string", (pod) => (pod.metadata.deletionTimestamp = "0")],
+    // Date would roll these over to a plausible wrong day; the frontier rule refuses them.
+    [
+      "impossible deletion date",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-02-30T00:00:00Z"),
+    ],
+    ["non-leap February 29", (pod) => (pod.metadata.deletionTimestamp = "2026-02-29T00:00:00Z")],
+    ["hour 24 deletion time", (pod) => (pod.metadata.deletionTimestamp = "2026-08-24T24:00:00Z")],
+    [
+      "offset deletion time",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T00:00:00+00:00"),
+    ],
+    [
+      "nonzero offset deletion time",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T02:00:00.000+02:00"),
+    ],
+    [
+      "ten fraction digits",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T00:00:00.1234567890Z"),
+    ],
     ["null status", (pod) => (pod.status = null)],
     ["array status", (pod) => (pod.status = [])],
     ["object conditions", (pod) => (pod.status.conditions = {})],
@@ -9829,7 +10851,15 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
   let workspaceNodeConnected = true;
+  const peerLookups = [];
   const fixture = providerReadinessFixture({
+    // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
+    async workspaceNodePeerLabels({ revision: target }) {
+      peerLookups.push(target.id);
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
       assert.equal(
@@ -10064,6 +11094,25 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     }
   }
   driver.apiClients = Promise.resolve(clients);
+  // What the workspace-node policy admitted each time Compute observed the
+  // provider Harness after provisioning: the relay must already be admitted.
+  const relayPeersAtHarnessObservation = [];
+  const listPods = core.listNamespacedPod;
+  core.listNamespacedPod = async (request) => {
+    if (
+      provisions.length > 0 &&
+      !request.labelSelector.includes("openclaw.dev/workload-role=gateway")
+    ) {
+      const latest = writes
+        .filter(
+          ({ metadata }) =>
+            metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+        )
+        .at(-1);
+      relayPeersAtHarnessObservation.push(latest?.spec.ingress[0]?.from.length ?? 0);
+    }
+    return listPods(request);
+  };
   const expected = { namespaceId: tenant.id, agentId: revision.agentId, revisionId: revision.id };
 
   // The Agent Gateway must be available to mint node setup material. Its first
@@ -10151,13 +11200,14 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     true,
     "the provider-fenced Harness must retain exact workspace-node Gateway egress",
   );
-  const supervisorNodePolicy = objects.get(
-    key("NetworkPolicy", `allow-workspace-node-gateway-${digest(revision.agentId)}`, namespace),
+  // The supervisor's egress is OpenShell's own (egress to every destination);
+  // Compute writes no supervisor-selecting policy (finding 1127).
+  assert.equal(
+    objects.has(
+      key("NetworkPolicy", `allow-workspace-node-gateway-${digest(revision.agentId)}`, namespace),
+    ),
+    false,
   );
-  assert.deepEqual(supervisorNodePolicy.spec.podSelector, {
-    matchLabels: { "openshell.ai/boundary-role": "supervisor" },
-  });
-  assert.deepEqual(supervisorNodePolicy.spec.egress[0].ports, [{ protocol: "TCP", port: 8080 }]);
   const gatewayNodePolicy = objects.get(
     key(
       "NetworkPolicy",
@@ -10165,16 +11215,29 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
       gatewayNamespace,
     ),
   );
-  assert.deepEqual(gatewayNodePolicy.spec.ingress[0].from, [
+  // Only this revision's own supervisor, never every supervisor in the namespace.
+  assert.deepEqual(gatewayNodePolicy.spec.ingress, [
     {
-      namespaceSelector: {
-        matchLabels: { "kubernetes.io/metadata.name": namespace },
-      },
-      podSelector: {
-        matchLabels: { "openshell.ai/boundary-role": "supervisor" },
-      },
+      from: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": namespace },
+          },
+          podSelector: { matchLabels: supervisorPeerLabels(revision.id) },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 8080 }],
     },
   ]);
+  // Before the Sandbox existed the policy admitted no relay at all; the policy is
+  // re-applied right after provisioning, before the workspace node is awaited.
+  const workspaceNodeWrites = writes.filter(
+    ({ metadata }) => metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+  );
+  assert.deepEqual(workspaceNodeWrites[0].spec.ingress, []);
+  assert.ok(relayPeersAtHarnessObservation.length > 0);
+  assert.ok(relayPeersAtHarnessObservation.every((peers) => peers === 1));
+  assert.ok(peerLookups.every((id) => id === revision.id));
   const gatewayContainer = objects.get(key("Deployment", gatewayName, gatewayNamespace)).spec
     .template.spec.containers[0];
   assert.equal(
@@ -10246,13 +11309,53 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     deletedPolicies.push(name);
     objects.delete(key("NetworkPolicy", name, target));
   };
+  // Upgrade: an earlier controller's pair admitted every supervisor Pod in the
+  // namespace. Activation replaces the ingress half and deletes the egress half.
+  const legacySupervisor = { "openshell.ai/boundary-role": "supervisor" };
+  const legacyIngressName = `allow-gateway-workspace-node-${digest(revision.agentId)}`;
+  const legacyIngress = objects.get(key("NetworkPolicy", legacyIngressName));
+  save({
+    ...legacyIngress,
+    spec: {
+      ...legacyIngress.spec,
+      ingress: [
+        {
+          from: [
+            {
+              namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": namespace } },
+              podSelector: { matchLabels: legacySupervisor },
+            },
+          ],
+          ports: [{ protocol: "TCP", port: 8080 }],
+        },
+      ],
+    },
+  });
+  const legacyEgress = driver.manifest(
+    "networking.k8s.io/v1",
+    "NetworkPolicy",
+    `allow-workspace-node-gateway-${digest(revision.agentId)}`,
+    { namespaceId: tenant.id, agentId: revision.agentId },
+    { name: namespace, plane: "execution" },
+  );
+  save({
+    ...legacyEgress,
+    metadata: { ...legacyEgress.metadata, uid: "legacy-egress-uid" },
+    spec: {
+      podSelector: { matchLabels: legacySupervisor },
+      policyTypes: ["Egress"],
+      egress: [{ ports: [{ protocol: "TCP", port: 8080 }] }],
+    },
+  });
   fixture.setObservation({ items: [fixture.pod("ready")] });
   await driver.activateRevision(revision, authContext(revision));
   assert.equal(endpoints.length, 6);
-  assert.deepEqual(deletedPolicies, [plainRuntime.metadata.name]);
-  for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
-    assert.ok(objects.has(key("NetworkPolicy", `${name}-${digest(revision.agentId)}`)), name);
-  }
+  assert.deepEqual(deletedPolicies, [legacyEgress.metadata.name, plainRuntime.metadata.name]);
+  assert.equal(objects.has(key("NetworkPolicy", legacyEgress.metadata.name)), false);
+  assert.deepEqual(
+    objects.get(key("NetworkPolicy", legacyIngressName)).spec.ingress[0].from[0].podSelector,
+    { matchLabels: supervisorPeerLabels(revision.id) },
+  );
   assert.equal(
     objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
@@ -10728,7 +11831,11 @@ test("revision lifecycle rejects another driver or missing identity before clust
           },
         },
       ),
-    /cost metadata/,
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting models.providers.openai.models.0 must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw.",
+    },
   );
   assert.throws(
     () =>
@@ -10747,8 +11854,77 @@ test("revision lifecycle rejects another driver or missing identity before clust
           },
         },
       ),
-    /approved OpenAI API endpoint/,
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw.",
+    },
   );
+  // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
+  // preparation applies the same rule to the admitted revision.
+  const openaiRow = dedicatedNativeConfiguration.models.providers.openai;
+  const withOpenAI = (openai) => ({
+    ...dedicatedNativeConfiguration,
+    models: { providers: { openai } },
+  });
+  const withEntry = (entry) =>
+    withOpenAI({ ...openaiRow, models: [{ ...openaiRow.models[0], ...entry }] });
+  for (const [configuration, setting, requirement] of [
+    [
+      withOpenAI(undefined),
+      "models.providers.openai.models",
+      "must list the selected OpenAI models: Dedicated OpenClaw requires an explicit native model catalog",
+    ],
+    [
+      withOpenAI({ ...openaiRow, headers: { "x-feature": "on" } }),
+      "models.providers.openai.headers",
+      "must be unset on Dedicated OpenClaw",
+    ],
+    [
+      withOpenAI({ ...openaiRow, models: [openaiRow.models[0], openaiRow.models[0]] }),
+      "models.providers.openai.models",
+      "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
+    ],
+    [
+      withEntry({ headers: { "x-feature": "on" } }),
+      "models.providers.openai.models.0.headers",
+      "must be unset on Dedicated OpenClaw",
+    ],
+    [
+      withEntry({ baseUrl: "not a url" }),
+      "models.providers.openai.models.0.baseUrl",
+      "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+    ],
+    [
+      withEntry({ reasoning: "yes" }),
+      "models.providers.openai.models.0.reasoning",
+      "must be true or false",
+    ],
+    [
+      withEntry({ input: ["audio"] }),
+      "models.providers.openai.models.0.input",
+      'must be a nonempty list of "text" and "image"',
+    ],
+    [
+      withEntry({ thinkingLevelMap: { high: 3 } }),
+      "models.providers.openai.models.0.thinkingLevelMap",
+      "must map thinking levels to strings or null",
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        production.validateHarnessAuth(
+          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+          apiKeyAuth,
+          configuration,
+        ),
+      {
+        name: "ConfigurationHarnessError",
+        message: `Configuration setting ${setting} ${requirement}.`,
+      },
+      setting,
+    );
+  }
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
   const serviceAccount = {
     method: "codex_pat",
@@ -10777,14 +11953,25 @@ test("revision lifecycle rejects another driver or missing identity before clust
   };
 
   // Operator credentials do not weaken either managed Kubernetes topology.
-  for (const mode of ["embedded", "dedicated"]) {
+  for (const [mode, accepted] of [
+    [
+      "embedded",
+      "api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode",
+    ],
+    [
+      "dedicated",
+      "api_key, codex_pat, oauth or credential_source for Dedicated Codex on Kubernetes Compute: change harnessAuth",
+    ],
+  ]) {
     await assert.rejects(
       production.prepareRevision({
         ...accessTokenRevision,
         harness: { id: mode === "embedded" ? "openclaw" : "codex", version: "1.0.0", mode },
         harnessAuth: { method: "runtime" },
       }),
-      /incompatible.*topology/i,
+      {
+        message: `Agent setting harnessAuth.method must be ${accepted}.`,
+      },
     );
   }
   // Unsupported access-token execution and cross-account references fail before cluster access.
@@ -10793,7 +11980,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
       ...accessTokenRevision,
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     }),
-    /incompatible.*topology/i,
+    /Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode\./,
   );
   for (const secretRef of [
     { ...serviceAccount.credential.secretRef, name: "service-account-another" },
@@ -10839,7 +12026,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
           models: { providers: { openai: { apiKey } } },
         },
       }),
-      /credentials must use.*binding/i,
+      /Harness authentication binding/,
     );
   }
   for (const apiKey of [
@@ -10881,7 +12068,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
         ...embeddedRevision,
         configuration: { ...embeddedRevision.configuration, ...conflicting },
       }),
-      /credentials must use.*binding/i,
+      /Harness authentication binding/,
     );
   }
   // Channel credentials must never enter the combined embedded Agent and gateway workload.
@@ -11087,6 +12274,35 @@ test("real gateways require an explicit SQLite-compatible storage class", () => 
           }),
         ),
       /SQLite-compatible gateway storage class must be explicitly configured/,
+    );
+  }
+});
+
+test("gateway storage class names must be Kubernetes resource names", () => {
+  for (const gatewayStorageClassName of [
+    "Bad_Class",
+    "bad class",
+    "-local-path",
+    "a".repeat(254),
+  ]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(
+          options({
+            runtime: {
+              transportSecretPrefix: "transport",
+              gatewayStorageClassName,
+            },
+          }),
+        ),
+      /SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name/,
+    );
+  }
+  for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ runtime: { transportSecretPrefix: "transport", gatewayStorageClassName } }),
+      ),
     );
   }
 });
@@ -12220,12 +13436,13 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
-test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
-  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
-  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
-  // Any other stop drains the Gateway into the running Harness first.
+// A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
+// `agentPodsLeft` observations. `events` records the Pod observations and the Agent Deployment's
+// deletion, in order; `gatewayReads` counts reads of the Gateway's Deployment, which its removal
+// repeats.
+function stopOrderFixture(id) {
   const driver = new KubernetesComputeDriver(options());
-  const revision = routedRevision(driver, { id: "revision-refused-stop-order" });
+  const revision = routedRevision(driver, { id });
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceResource = {
     apiVersion: "v1",
@@ -12274,9 +13491,16 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
       },
     },
   };
-  let events = [];
-  let deploymentPresent = true;
-  let gatewayPodsLeft = 0;
+  const agentPod = structuredClone(gatewayPod);
+  agentPod.metadata.name = "refused-stop-order-agent-pod";
+  agentPod.metadata.labels["openclaw.dev/workload-role"] = "agent";
+  const fixture = {
+    events: [],
+    deploymentPresent: true,
+    gatewayPodsLeft: 0,
+    agentPodsLeft: 0,
+    gatewayReads: 0,
+  };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
@@ -12308,33 +13532,49 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
         const role = Object.fromEntries(
           request.labelSelector.split(",").map((entry) => entry.split("=")),
         )["openclaw.dev/workload-role"];
-        events.push(`list ${role} Pods`);
-        if (role === "gateway" && gatewayPodsLeft > 0) {
-          gatewayPodsLeft -= 1;
+        fixture.events.push(`list ${role} Pods`);
+        if (role === "gateway" && fixture.gatewayPodsLeft > 0) {
+          fixture.gatewayPodsLeft -= 1;
           return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
+        }
+        if (role === "agent" && fixture.agentPodsLeft > 0) {
+          fixture.agentPodsLeft -= 1;
+          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(agentPod)] };
         }
         return { apiVersion: "v1", kind: "PodList", items: [] };
       },
     },
     apps: {
       async readNamespacedDeployment({ name }) {
-        if (name === deploymentName && deploymentPresent) {
+        if (name.startsWith("gateway-")) {
+          fixture.gatewayReads += 1;
+        }
+        if (name === deploymentName && fixture.deploymentPresent) {
           return structuredClone(deployment);
         }
         throw notFound();
       },
       async deleteNamespacedDeployment({ name }) {
         assert.equal(name, deploymentName);
-        events.push("delete Agent Deployment");
-        deploymentPresent = false;
+        fixture.events.push("delete Agent Deployment");
+        fixture.deploymentPresent = false;
       },
     },
     objects: {},
   });
 
+  return Object.assign(fixture, { driver, revision });
+}
+
+test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
+  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
+  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
+  // Any other stop drains the Gateway into the running Harness first.
+  const fixture = stopOrderFixture("revision-refused-stop-order");
+  const { driver, revision } = fixture;
   // Other Work is waiting, so the refused candidate's stop yields at the Gateway wait, after
   // the Harness's deletion was issued.
-  gatewayPodsLeft = 1;
+  fixture.gatewayPodsLeft = 1;
   await assert.rejects(
     withComputeWorkWaiting(
       async () => true,
@@ -12342,23 +13582,96 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
     ),
     (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
   );
-  assert.deepEqual(events, ["delete Agent Deployment", "list agent Pods", "list gateway Pods"]);
-  assert.equal(deploymentPresent, false);
+  assert.deepEqual(fixture.events, [
+    "delete Agent Deployment",
+    "list agent Pods",
+    "list gateway Pods",
+  ]);
+  assert.equal(fixture.deploymentPresent, false);
 
   // Any other stop drains the Gateway before it deletes the Harness, and does not yield.
-  events = [];
-  deploymentPresent = true;
-  gatewayPodsLeft = 1;
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.gatewayPodsLeft = 1;
   await withComputeWorkWaiting(
     async () => true,
     () => driver.stopRevision(revision),
   );
-  assert.deepEqual(events, [
+  assert.deepEqual(fixture.events, [
     "list gateway Pods",
     "list gateway Pods",
     "delete Agent Deployment",
     "list agent Pods",
   ]);
+});
+
+test("an Agent stop's Gateway drain yields to due work and keeps the Harness until it ends", async () => {
+  // Finding 1088: an ordinary stop held the serial worker for the Gateway's whole drain (up to
+  // about 340 s). Under withYieldingGatewayDrain only that wait yields; the stop keeps its order,
+  // so the Harness the Gateway drains into runs until a retry sees the Gateway's Pods gone.
+  const fixture = stopOrderFixture("revision-ordinary-stop-yield");
+  const { driver, revision } = fixture;
+  const stop = (waiting) =>
+    withComputeWorkWaiting(
+      async () => waiting,
+      () => withYieldingGatewayDrain(() => driver.stopRevision(revision)),
+    );
+  const yielded = (error) =>
+    error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message);
+
+  // Other Work is waiting: the Gateway is removed, one observation still lists its Pod, and the
+  // stop yields before it touches the Harness.
+  fixture.gatewayPodsLeft = 2;
+  await assert.rejects(stop(true), yielded);
+  assert.deepEqual(fixture.events, ["list gateway Pods"]);
+  assert.equal(fixture.deploymentPresent, true);
+  const firstReads = fixture.gatewayReads;
+  assert.ok(firstReads > 0, "the stop removes the Gateway");
+
+  // A retry repeats the idempotent removal and yields again while the Gateway still drains.
+  fixture.events = [];
+  await assert.rejects(stop(true), yielded);
+  assert.deepEqual(fixture.events, ["list gateway Pods"]);
+  assert.equal(fixture.gatewayReads, 2 * firstReads);
+  assert.equal(fixture.deploymentPresent, true);
+
+  // Once the Gateway's Pods are gone the retry deletes the Harness. Its own wait never yields,
+  // even with Work waiting, so the stop completes.
+  fixture.events = [];
+  fixture.agentPodsLeft = 1;
+  await stop(true);
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+    "list agent Pods",
+  ]);
+  assert.equal(fixture.deploymentPresent, false);
+
+  // With nothing waiting, the drain is awaited in the same pass, as before.
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.gatewayPodsLeft = 1;
+  await stop(false);
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+
+  // A refused candidate's stop still yields on its Harness's wait too.
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.agentPodsLeft = 1;
+  await assert.rejects(
+    withComputeWorkWaiting(
+      async () => true,
+      () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    yielded,
+  );
+  assert.deepEqual(fixture.events, ["delete Agent Deployment", "list agent Pods"]);
 });
 
 test("stopping a provider-owned Kubernetes revision waits for Sandbox workload termination", async () => {
@@ -12895,6 +14208,9 @@ for (const stopped of [false, true]) {
           async harnessEndpoint() {
             return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
           },
+          async workspaceNodePeerLabels({ revision: target }) {
+            return supervisorPeerLabels(target.id);
+          },
           async cleanup(context) {
             cleanupCalls.push(context.revision.id);
           },
@@ -12928,13 +14244,21 @@ for (const stopped of [false, true]) {
       save(gateway);
     }
     const policies = [
-      ...driver.agentNetworkPolicies(revision, target).map(({ resource }) => resource),
+      ...driver
+        .agentNetworkPolicies(revision, target, {}, [supervisorPeerLabels(revision.id)])
+        .map(({ resource }) => resource),
       driver.channelNetworkPolicy(revision, [], target),
+      // An earlier controller's supervisor egress policy (finding 1127).
+      driver.manifest(
+        "networking.k8s.io/v1",
+        "NetworkPolicy",
+        `allow-workspace-node-gateway-${digest(revision.agentId)}`,
+        ownership,
+        target,
+      ),
     ];
     const policyNames = policies.map(({ metadata }) => metadata.name);
-    for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
-      assert.ok(policyNames.includes(`${name}-${digest(revision.agentId)}`), name);
-    }
+    assert.ok(policyNames.includes(`allow-gateway-workspace-node-${digest(revision.agentId)}`));
     for (const policy of policies) {
       save(policy);
     }
@@ -13016,6 +14340,159 @@ for (const stopped of [false, true]) {
   });
 }
 
+// Finding 1127: the workspace-node ingress admitted every OpenShell supervisor in the
+// namespace, so one Agent's supervisor reached another Agent's Gateway port.
+test("an OpenShell supervisor reaches only its own Agent's Gateway", async () => {
+  const sandboxIds = new Map([
+    ["revision-d1", "d1"],
+    ["revision-d2", "d2"],
+    ["revision-f1", "f1"],
+  ]);
+  let peerLabels = ({ revision: target }) =>
+    sandboxIds.has(target.id)
+      ? {
+          "openshell.ai/sandbox-id": `sandbox-${sandboxIds.get(target.id)}`,
+          "openshell.ai/boundary-role": "supervisor",
+        }
+      : undefined;
+  const installation = () =>
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: {
+        ...options().network,
+        providerHarness: {
+          namespace: "openshell-system",
+          podLabels: { app: "openshell-gateway" },
+          address: "10.43.0.50",
+          port: 8080,
+        },
+      },
+    });
+  const driver = new KubernetesComputeDriver(installation(), {
+    sandboxDriver: {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      async provisionHarness() {
+        assert.fail("rendering policies must not provision a Harness");
+      },
+      async harnessEndpoint() {
+        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+      },
+      async workspaceNodePeerLabels(context) {
+        assert.equal(context.namespace.id, context.revision.namespaceId);
+        return peerLabels(context);
+      },
+      async cleanup() {},
+    },
+  });
+  driver.apiClients = Promise.resolve({ objects: {} });
+  const d = routedRevision(driver, {
+    id: "revision-d1",
+    agentId: "agent-openshell-d",
+    sandboxDriverId: "sandbox-provider",
+  });
+  const f = { ...d, id: "revision-f1", agentId: "agent-openshell-f" };
+  const namespace = kubernetesNamespaceName(d.namespaceId);
+  const target = { name: namespace, plane: "execution" };
+  const render = async (revision, preparation) =>
+    (await driver.agentNetworkPoliciesWithPeers(revision, target, preparation)).map(
+      ({ resource }) => resource,
+    );
+  const ingressOf = (policies, revision) =>
+    policies.find(
+      ({ metadata }) =>
+        metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+    );
+  const supervisor = (id, sourceNamespace = namespace) => ({
+    namespace: sourceNamespace,
+    labels: {
+      "openshell.ai/managed-by": "openshell",
+      "openshell.ai/component": "supervisor",
+      "openshell.ai/boundary-role": "supervisor",
+      ...(id === undefined ? {} : { "openshell.ai/sandbox-id": `sandbox-${id}` }),
+    },
+  });
+  // NetworkPolicies are additive: a connection is admitted if any policy selecting
+  // the Gateway Pod admits the source on the Gateway port.
+  const admitted = (policies, gatewayLabels, source, port = 8080) =>
+    policies.some(
+      (policy) =>
+        (policy.spec.policyTypes ?? []).includes("Ingress") &&
+        selectorMatches(policy.spec.podSelector, gatewayLabels) &&
+        (policy.spec.ingress ?? []).some(
+          (rule) =>
+            rule.from.some(
+              (peer) =>
+                selectorMatches(peer.namespaceSelector, {
+                  "kubernetes.io/metadata.name": source.namespace,
+                }) && selectorMatches(peer.podSelector, source.labels),
+            ) && rule.ports.some((entry) => entry.port === port),
+        ),
+    );
+  const dPolicies = await render(d);
+  const fPolicies = await render(f);
+  const all = [...dPolicies, ...fPolicies];
+  const dGateway = { ...ingressOf(dPolicies, d).spec.podSelector.matchLabels };
+  const fGateway = { ...ingressOf(fPolicies, f).spec.podSelector.matchLabels };
+  assert.equal(admitted(all, dGateway, supervisor("d1")), true, "D's own supervisor");
+  assert.equal(admitted(all, fGateway, supervisor("f1")), true, "F's own supervisor");
+  assert.equal(admitted(all, dGateway, supervisor("f1")), false, "F's supervisor -> D's Gateway");
+  assert.equal(admitted(all, fGateway, supervisor("d1")), false, "D's supervisor -> F's Gateway");
+  assert.equal(admitted(all, dGateway, supervisor(undefined)), false, "an unscoped supervisor");
+  assert.equal(admitted(all, dGateway, supervisor("d1", "other-tenant")), false, "other tenant");
+  assert.equal(admitted(all, dGateway, supervisor("d1"), 8081), false, "another port");
+  // The supervisor's egress is OpenShell's own: no Compute policy selects it.
+  for (const policy of all) {
+    assert.equal(
+      selectorMatches(policy.spec.podSelector, supervisor("d1").labels),
+      false,
+      policy.metadata.name,
+    );
+  }
+
+  // Preparing D's successor while rev-d1 serves keeps that supervisor connected.
+  const d2 = { ...d, id: "revision-d2", revision: d.revision + 1 };
+  const preparing = await render(d2, { anyRevision: true, predecessorRevisionId: d.id });
+  assert.equal(admitted(preparing, dGateway, supervisor("d1")), true, "serving predecessor");
+  assert.equal(admitted(preparing, dGateway, supervisor("d2")), true, "candidate");
+  assert.equal(admitted(preparing, dGateway, supervisor("f1")), false, "other Agent");
+  // Activation pins the peer to the active revision's Sandbox.
+  const active = await render(d2);
+  assert.equal(admitted(active, dGateway, supervisor("d2")), true);
+  assert.equal(admitted(active, dGateway, supervisor("d1")), false);
+
+  // Before its Sandbox exists a revision admits no relay: an empty `from` would
+  // admit every source, so the policy carries no rule at all.
+  const unprovisioned = ingressOf(await render({ ...d, id: "revision-d3" }), d);
+  assert.deepEqual(unprovisioned.spec.ingress, []);
+  assert.equal(admitted([unprovisioned], dGateway, supervisor("d1")), false);
+
+  // Labels a Driver returns are validated like any configured peer.
+  peerLabels = () => ({});
+  await assert.rejects(render(d), /Workspace-node peer Pod labels cannot be empty/);
+  peerLabels = () => ({ "not a key": "x" });
+  await assert.rejects(render(d), /Workspace-node peer label keys/);
+
+  // An OpenShell Driver that cannot name its relay fails closed with a cause.
+  const unnamed = new KubernetesComputeDriver(installation(), {
+    sandboxDriver: {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      async provisionHarness() {
+        assert.fail("rendering policies must not provision a Harness");
+      },
+      async harnessEndpoint() {
+        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+      },
+      async cleanup() {},
+    },
+  });
+  assert.throws(
+    () => unnamed.agentNetworkPolicies(d, target),
+    /OpenShell SandboxDriver must implement workspaceNodePeerLabels/,
+  );
+});
+
 // Finding 861: the Agent-scoped policies share one name per Agent and each revision
 // applied its set additively, so after a revision left OpenShell the workspace-node
 // pair kept selecting its new Gateway and admitting every supervisor Pod.
@@ -13047,14 +14524,27 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
         async harnessEndpoint() {
           return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
         },
+        async workspaceNodePeerLabels({ revision: target }) {
+          return supervisorPeerLabels(target.id);
+        },
       },
     },
   );
   const predecessor = { ...revision, sandboxDriverId: "sandbox-provider" };
   const pair = [`allow-workspace-node-gateway-${suffix}`, `allow-gateway-workspace-node-${suffix}`];
-  const seeded = openShell
-    .agentNetworkPolicies(predecessor, target)
-    .map(({ resource }) => resource);
+  // An earlier controller wrote both halves; this one writes only the Gateway ingress.
+  const seeded = [
+    ...openShell
+      .agentNetworkPolicies(predecessor, target, {}, [supervisorPeerLabels(predecessor.id)])
+      .map(({ resource }) => resource),
+    openShell.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      pair[0],
+      { namespaceId: predecessor.namespaceId, agentId: predecessor.agentId },
+      target,
+    ),
+  ];
   assert.deepEqual(
     pair.filter((name) => !seeded.some(({ metadata }) => metadata.name === name)),
     [],
@@ -13069,7 +14559,7 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
   const siblings = openShell
     .agentNetworkPolicies({ ...predecessor, agentId: "agent-openshell-sibling" }, target)
     .map(({ resource }) => resource)
-    .filter(({ metadata }) => metadata.name.startsWith("allow-workspace-node-gateway-"));
+    .filter(({ metadata }) => metadata.name.startsWith("allow-gateway-workspace-node-"));
   assert.equal(siblings.length, 1);
   for (const policy of siblings) {
     objects.set(policyKey(policy.metadata.name), {
@@ -13831,6 +15321,15 @@ function workspaceSetupFixture(
           readyReplicas: 1,
         };
       }
+      if (kind === "Job") {
+        observed.status = {
+          conditions: state.jobFailure
+            ? [{ type: "Failed", status: "True", reason: state.jobFailure }]
+            : state.ready
+              ? [{ type: "Complete", status: "True" }]
+              : [],
+        };
+      }
       return observed;
     };
   const write = async ({ body }) => {
@@ -13874,9 +15373,14 @@ function workspaceSetupFixture(
                 uid: `gateway-uid-${revisionId}`,
                 labels,
               },
+              status: { phase: "Running", podIP: "10.42.0.14" },
             },
           ],
         };
+      }
+      if (state.jobPods !== undefined && labels["openclaw.dev/namespace"] === undefined) {
+        // Job-owned pods; the termination wait (namespace-labelled selector) sees none.
+        return { items: structuredClone(state.jobPods) };
       }
       return {
         items: state.failedInitializer
@@ -13952,6 +15456,11 @@ function workspaceSetupFixture(
       readNamespacedDeployment: read("Deployment"),
       patchNamespacedDeployment: write,
       deleteNamespacedDeployment: remove("Deployment"),
+    },
+    batch: {
+      readNamespacedJob: read("Job"),
+      createNamespacedJob: write,
+      deleteNamespacedJob: remove("Job"),
     },
     objects: {
       read: async (object) =>
@@ -14064,10 +15573,17 @@ for (const dualCluster of [false, true]) {
       "claimed",
     );
     const bootstrap = [...objects.values()].find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("oauth-bootstrap-"),
+      ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
     );
     assert.ok(bootstrap);
     const seedPod = bootstrap.spec.template.spec;
+    assert.equal(bootstrap.spec.backoffLimit, 2);
+    assert.equal(bootstrap.spec.activeDeadlineSeconds, 300);
+    assert.equal(bootstrap.spec.parallelism, 1);
+    assert.equal(bootstrap.spec.completions, 1);
+    assert.equal(bootstrap.spec.podReplacementPolicy, "Failed");
+    assert.equal(seedPod.restartPolicy, "Never");
+    assert.equal(seedPod.containers[0].readinessProbe, undefined);
     assert.equal(seedPod.automountServiceAccountToken, false);
     // Containment rests on the missing profile label: namespace default-deny then applies.
     assert.equal(
@@ -14076,8 +15592,8 @@ for (const dualCluster of [false, true]) {
     );
     assert.equal(seedPod.containers[0].securityContext.readOnlyRootFilesystem, true);
     assert.deepEqual(seedPod.containers[0].securityContext.capabilities.drop, ["ALL"]);
-    // The idle seed writer and its init step run under tini, never as PID 1, so deleting
-    // the bootstrap Pod stops them on SIGTERM instead of waiting for SIGKILL.
+    // Tini preserves an interrupted writer's nonzero exit; only completed
+    // credential verification can satisfy the Job.
     assert.deepEqual(seedPod.containers[0].command, [...SETUP_WRAPPER_COMMAND]);
     // The process holding the seed sees only codex-home, never the rest of the Harness claim.
     const seedClaim = seedPod.volumes.find(({ persistentVolumeClaim }) => persistentVolumeClaim);
@@ -14091,11 +15607,7 @@ for (const dualCluster of [false, true]) {
       seedPod.containers[0].env.find(({ name }) => name === "CODEX_HOME").value,
       "/auth",
     );
-    assert.match(
-      seedPod.containers[0].readinessProbe.exec.command[2],
-      /"\/auth\/\.oce-oauth\.json"/,
-    );
-    assert.equal(seedPod.containers[0].readinessProbe.httpGet, undefined);
+
     // Only a credential-free init step sees the claim root, to create codex-home as uid 1000
     // (a kubelet-created subPath is root-owned and world-writable).
     assert.deepEqual(
@@ -14139,7 +15651,7 @@ for (const dualCluster of [false, true]) {
       "claimed",
     );
     assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    for (const kind of ["Deployment", "Secret"]) {
+    for (const kind of ["Job", "Secret"]) {
       assert.ok(
         [...objects.values()].some(
           (object) => object.kind === kind && object.metadata.name.startsWith("oauth-bootstrap-"),
@@ -14147,7 +15659,7 @@ for (const dualCluster of [false, true]) {
       );
     }
 
-    // Transport reports the seed writer ready; production preparation must clear the source first.
+    // Transport reports Job completion; preparation must clear the source first.
     state.ready = true;
     assert.equal((await driver.prepareRevision(revision, context)).ready, true);
     const consumed = objects.get(sourceKey);
@@ -14248,6 +15760,139 @@ for (const dualCluster of [false, true]) {
     );
   });
 }
+
+for (const [reason, code] of [
+  ["BackoffLimitExceeded", "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"],
+  ["DeadlineExceeded", "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT"],
+]) {
+  test(`Kubernetes OAuth ${reason} fails preparation without consuming or recreating the bootstrap`, async () => {
+    const { driver, revision, namespace, objects, records, state, context } =
+      workspaceSetupFixture(false);
+    const sourceKey = stageReadyOAuthSource(objects, revision, context);
+    // A running Job is named, so the worker can retire it if the deadline passes now.
+    const running = await driver.prepareRevision(revision, context);
+    assert.equal(running.ready, false);
+    assert.equal(running.pendingReason, "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING");
+    const job = [...objects.values()].find(({ kind }) => kind === "Job");
+    const creations = records.filter(({ kind }) => kind === "Job").length;
+    state.jobFailure = reason;
+
+    // Reobserving a terminal Job must not reset its retry/deadline budget or
+    // surrender the only usable credential source to a runtime that never starts.
+    for (let pass = 0; pass < 2; pass += 1) {
+      await assert.rejects(
+        driver.prepareRevision(revision, context),
+        (error) => error instanceof ComputePreparationFailedError && error.code === code,
+      );
+    }
+    assert.equal(records.filter(({ kind }) => kind === "Job").length, creations);
+    assert.equal(
+      objects.get(`Job:${namespace}:${job.metadata.name}`).metadata.uid,
+      job.metadata.uid,
+    );
+    assert.equal(
+      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+    assert.equal(
+      records.some(
+        ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
+      ),
+      false,
+    );
+
+    // The worker's durable retirement calls the same supported stop path.
+    await driver.stopRevision(revision);
+    assert.equal(
+      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+      false,
+    );
+    assert.equal(
+      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+  });
+}
+
+test("Kubernetes OAuth failure evidence lists Job pods newest first by creation time", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+  stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(({ kind }) => kind === "Job");
+  // The client returns Date timestamps. String(Date) starts with the weekday, so
+  // text order puts Sunday 23:59 before Monday 00:01, and September before October.
+  const created = {
+    "pod-week-before": new Date("2026-09-27T23:59:00Z"),
+    "pod-sunday": new Date("2026-10-04T23:59:00Z"),
+    "pod-monday": new Date("2026-10-05T00:01:00Z"),
+  };
+  state.jobPods = Object.entries(created).map(([name, creationTimestamp]) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name,
+      namespace,
+      uid: `${name}-uid`,
+      creationTimestamp,
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+      ownerReferences: [{ kind: "Job", name: job.metadata.name, uid: job.metadata.uid }],
+    },
+    spec: { containers: [{ name: "oauth-bootstrap" }] },
+    status: { phase: "Failed" },
+  }));
+  state.jobFailure = "BackoffLimitExceeded";
+  await assert.rejects(driver.prepareRevision(revision, context), (error) => {
+    assert.ok(error instanceof ComputePreparationFailedError);
+    assert.deepEqual(
+      error.evidence.pods.map(({ name }) => name),
+      ["pod-monday", "pod-sunday", "pod-week-before"],
+    );
+    return true;
+  });
+});
+
+test("Kubernetes OAuth reobserves an API-defaulted Job without changing its generation", async () => {
+  const { driver, revision, objects, records, context } = workspaceSetupFixture(
+    false,
+    true,
+    undefined,
+    {
+      resources: {
+        ...options().resources,
+        agent: { requests: { cpu: "0.1", memory: "1.5Gi" }, limits: { cpu: "0.5", memory: "2Gi" } },
+      },
+    },
+  );
+  stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(({ kind }) => kind === "Job");
+  const uid = job.metadata.uid;
+  // The API serializes supported quantities by value, without changing this Job.
+  for (const container of [
+    ...job.spec.template.spec.containers,
+    ...job.spec.template.spec.initContainers,
+  ]) {
+    container.resources.requests = { cpu: "100m", memory: "1536Mi" };
+    container.resources.limits = { cpu: "500m", memory: "2048Mi" };
+  }
+  job.spec.template.spec.dnsPolicy = "ClusterFirst";
+  job.spec.template.spec.containers[0].terminationMessagePath = "/dev/termination-log";
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  assert.equal(records.filter(({ kind }) => kind === "Job").length, 1);
+  assert.equal(job.metadata.uid, uid);
+
+  job.spec.template.spec.containers[0].resources.requests.memory = "1537Mi";
+  await assert.rejects(driver.prepareRevision(revision, context), /Job changed during handoff/);
+  job.spec.template.spec.containers[0].resources.requests.memory = "1536Mi";
+
+  // An owned name alone cannot admit a writer with different storage or network grants.
+  job.spec.template.metadata.labels["openclaw.dev/network-profile"] = "broad-egress-v1";
+  await assert.rejects(driver.prepareRevision(revision, context), /Job changed during handoff/);
+});
 
 function stageReadyOAuthSource(objects, revision, context) {
   revision.harnessAuth = { ...apiKeyAuth, method: "oauth" };
@@ -14610,7 +16255,7 @@ test("Kubernetes workspace setup rejects foreign identities and unsupported stor
     mutate(fixture);
     await assert.rejects(
       fixture.driver.prepareRevision(fixture.revision, fixture.context),
-      /Workspace setup/,
+      /Workspace setup|for initial workspace files/,
     );
     assert.equal(fixture.records.length, 0);
   }
@@ -14872,6 +16517,11 @@ for (const embedded of [true, false]) {
       { finishedAt: null },
       { finishedAt: undefined },
       { finishedAt: "not-a-time" },
+      // Refused strings are unusable times, not a rolled-over or shifted day.
+      { finishedAt: "2026-02-30T00:00:00Z" },
+      { finishedAt: "2026-09-22T00:00:00+00:00" },
+      // A serialized fraction other than milliseconds is a real instant, kept at millisecond precision.
+      { finishedAt: "2026-09-22T00:00:00.123456Z", expected: "2026-09-22T00:00:00.123Z" },
     ]) {
       const fixture = workspaceSetupFixture(embedded);
       fixture.state.failedInitializer = true;
@@ -14900,7 +16550,12 @@ for (const embedded of [true, false]) {
       assert.equal(result.ready, false);
       assert.equal(result.runtimeFailure.code, "WORKSPACE_SETUP_FAILED");
       const checkedAt = Date.parse(result.runtimeFailure.checkedAt);
-      if (scenario.finishedAt instanceof Date && !Number.isNaN(scenario.finishedAt.getTime())) {
+      if (scenario.expected !== undefined) {
+        assert.equal(result.runtimeFailure.checkedAt, scenario.expected);
+      } else if (
+        scenario.finishedAt instanceof Date &&
+        !Number.isNaN(scenario.finishedAt.getTime())
+      ) {
         assert.equal(checkedAt, scenario.finishedAt.getTime());
       } else {
         assert.ok(checkedAt >= before && checkedAt <= after);
@@ -15723,6 +17378,8 @@ test("runtime image provenance survives missing metadata but never crosses Pod o
                 initContainers: [{ name: "initialize", image: "runtime:mutable" }],
               },
               status: {
+                phase: "Running",
+                podIP: "10.42.0.13",
                 containerStatuses: [
                   { name: role, imageID: "sha256:runtime", containerID: `${role}-${generation}` },
                   { name: "sidecar", imageID: "sha256:sidecar", containerID: "sidecar" },
@@ -16684,37 +18341,44 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
         "openclaw.dev/workload-role": role,
       },
     },
-    spec: state.nodeName === undefined ? {} : { nodeName: state.nodeName },
+    spec: {
+      containers: [{ name: state.containerName ?? role }],
+      initContainers: state.initContainers ?? [],
+      ...(state.nodeName === undefined ? {} : { nodeName: state.nodeName }),
+    },
     status: {
       phase:
         state.waitingReason === undefined || state.waitingReason === "CrashLoopBackOff"
           ? "Running"
           : "Pending",
       conditions: [{ type: "Ready", status: state.waitingReason === undefined ? "True" : "False" }],
-      containerStatuses: [
-        {
-          name: role,
-          ready: state.waitingReason === undefined,
-          restartCount: state.restartCount[role],
-          state:
-            state.waitingReason === undefined
-              ? { running: { startedAt: new Date("2026-09-30T11:00:00Z") } }
-              : { waiting: { reason: state.waitingReason } },
-          ...(state.containerId === undefined ? {} : { containerID: state.containerId }),
-          ...(state.restartCount[role] === 0
-            ? {}
-            : {
-                lastState: {
-                  terminated: {
-                    reason: "OOMKilled",
-                    exitCode: 137,
-                    finishedAt: new Date("2026-09-30T10:59:00Z"),
-                  },
-                },
-              }),
-          ...state.containerStatus,
-        },
-      ],
+      initContainerStatuses: state.initContainerStatuses ?? [],
+      containerStatuses: state.noMainStatus
+        ? []
+        : [
+            {
+              name: state.containerName ?? role,
+              ready: state.waitingReason === undefined,
+              restartCount: state.restartCount[role],
+              state:
+                state.waitingReason === undefined
+                  ? { running: { startedAt: new Date("2026-09-30T11:00:00Z") } }
+                  : { waiting: { reason: state.waitingReason } },
+              ...(state.containerId === undefined ? {} : { containerID: state.containerId }),
+              ...(state.restartCount[role] === 0
+                ? {}
+                : {
+                    lastState: {
+                      terminated: {
+                        reason: "OOMKilled",
+                        exitCode: 137,
+                        finishedAt: new Date("2026-09-30T10:59:00Z"),
+                      },
+                    },
+                  }),
+              ...state.containerStatus,
+            },
+          ],
     },
   });
   const calls = [];
@@ -16936,6 +18600,47 @@ test("Kubernetes runtime description reads each plane's Pods and only their own 
   );
 });
 
+test("Kubernetes runtime description reports declared main and init containers independently", async () => {
+  const fixture = runtimeLogDriverFixture();
+  fixture.state.containerName = "oauth-bootstrap";
+  fixture.state.initContainers = [{ name: "prepare-private-state" }];
+  fixture.state.initContainerStatuses = [
+    {
+      name: "prepare-private-state",
+      state: { terminated: { reason: "Completed", exitCode: 0 } },
+    },
+  ];
+  // Kubernetes can report the completed init container before the main has started.
+  // Its successful exit must not stand in for the main container's missing status.
+  fixture.state.noMainStatus = true;
+  const describe = () =>
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const pending = await describe();
+  assert.deepEqual(
+    pending.pods[0].containers.map(({ name, state, lastTermination }) => ({
+      name,
+      state,
+      exitCode: lastTermination?.exitCode ?? null,
+    })),
+    [
+      { name: "oauth-bootstrap", state: "unknown", exitCode: null },
+      { name: "prepare-private-state", state: "terminated", exitCode: 0 },
+    ],
+  );
+  fixture.state.noMainStatus = false;
+  fixture.state.containerStatus = {
+    ready: false,
+    state: { terminated: { reason: "Error", exitCode: 1 } },
+  };
+  const failed = await describe();
+  assert.equal(failed.pods[0].containers[0].lastTermination.exitCode, 1);
+  assert.equal(failed.pods[0].containers[1].lastTermination.exitCode, 0);
+  assert.deepEqual(
+    failed.sources[0].pods.map(({ container }) => container),
+    ["oauth-bootstrap", "prepare-private-state"],
+  );
+});
+
 test("Kubernetes runtime description retains newest Events across API pages", async () => {
   const fixture = runtimeLogDriverFixture();
   const event = (index, type = "Normal") => ({
@@ -17109,6 +18814,109 @@ for (const scenario of [
     }
   });
 }
+
+test("Kubernetes runtime times keep real UTC instants and refuse rolled-over or offset strings", async (t) => {
+  const describe = (fixture) =>
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const withContainerState = (state) => {
+    const fixture = runtimeLogDriverFixture();
+    fixture.state.containerStatus = { state };
+    return fixture;
+  };
+  const accepted = [
+    // The typed client hands a Date; a valid one keeps its exact instant.
+    [new Date("2026-09-30T11:00:00.123Z"), "2026-09-30T11:00:00.123Z"],
+    ["2026-09-30T11:00:00Z", "2026-09-30T11:00:00.000Z"],
+    ["2026-09-30T11:00:00.5Z", "2026-09-30T11:00:00.500Z"],
+    ["2026-09-30T11:00:00.123456Z", "2026-09-30T11:00:00.123Z"],
+    ["2026-09-30T11:00:00.123456789Z", "2026-09-30T11:00:00.123Z"],
+    ["2024-02-29T00:00:00Z", "2024-02-29T00:00:00.000Z"],
+  ];
+  const refused = [
+    "2026-02-30T00:00:00Z",
+    "2026-02-29T00:00:00Z",
+    "2026-04-31T12:00:00.000Z",
+    "2026-09-30T24:00:00Z",
+    "2026-09-30T11:60:00Z",
+    "2026-09-30T11:00:00+00:00",
+    "2026-09-30T13:00:00.000+02:00",
+    "2026-09-30T11:00:00",
+    "2026-09-30T11:00:00.1234567890Z",
+    "2026-09-30",
+    "not-a-time",
+    new Date(Number.NaN),
+    Date.UTC(2026, 8, 30, 11),
+  ];
+  const invalidTime = (error) =>
+    error instanceof DependencyUnavailableError && /invalid timestamp/.test(error.message);
+  for (const [value, expected] of accepted) {
+    await t.test(`accepts ${inspect(value)}`, async () => {
+      const running = await describe(withContainerState({ running: { startedAt: value } }));
+      for (const pod of running.pods) {
+        assert.equal(pod.containers[0].startedAt, expected, pod.role);
+      }
+      const exited = await describe(
+        withContainerState({ terminated: { reason: "Error", exitCode: 1, finishedAt: value } }),
+      );
+      for (const pod of exited.pods) {
+        assert.equal(pod.containers[0].lastTermination.finishedAt, expected, pod.role);
+      }
+      const fixture = runtimeLogDriverFixture();
+      fixture.state.extraEvents = [
+        { type: "Warning", reason: "Series", series: { count: 2, lastObservedTime: value } },
+        { type: "Normal", reason: "Micro", eventTime: value, lastTimestamp: null },
+      ];
+      const observed = await describe(fixture);
+      for (const pod of observed.pods) {
+        for (const reason of ["Series", "Micro"]) {
+          assert.equal(
+            pod.events.find((event) => event.reason === reason)?.lastObservedAt,
+            expected,
+            `${pod.role} ${reason}`,
+          );
+        }
+      }
+    });
+  }
+  for (const value of refused) {
+    await t.test(`refuses ${inspect(value)}`, async () => {
+      await assert.rejects(
+        describe(withContainerState({ running: { startedAt: value } })),
+        invalidTime,
+      );
+      await assert.rejects(
+        describe(
+          withContainerState({ terminated: { reason: "Error", exitCode: 1, finishedAt: value } }),
+        ),
+        invalidTime,
+      );
+      // A refused newer field does not fall back to an older valid one.
+      const fixture = runtimeLogDriverFixture();
+      fixture.state.extraEvents = [
+        {
+          type: "Warning",
+          reason: "Series",
+          series: { count: 2, lastObservedTime: value },
+          lastTimestamp: new Date("2026-09-30T11:00:00Z"),
+        },
+      ];
+      await assert.rejects(describe(fixture), invalidTime);
+      // A log read re-reads the Pod status and refuses the same time.
+      const reader = withContainerState({ running: { startedAt: value } });
+      await assert.rejects(
+        reader.driver.readAgentRuntimeLogs(reader.binding, reader.request("gateway")),
+        invalidTime,
+      );
+    });
+  }
+  // Absent times stay absent rather than refused.
+  for (const running of [{ startedAt: null }, {}]) {
+    const absent = await describe(withContainerState({ running }));
+    for (const pod of absent.pods) {
+      assert.equal(pod.containers[0].startedAt, null, pod.role);
+    }
+  }
+});
 
 test("Kubernetes runtime description drops only a settled VolumeBinding conflict", async () => {
   const fixture = runtimeLogDriverFixture();
@@ -17469,5 +19277,69 @@ test("embedded redeploy repairs a never-served unready Gateway while workspace s
   assert.equal(
     objects.get(gatewayKey).metadata.annotations["openclaw.dev/agent-revision-id"],
     successor.id,
+  );
+});
+
+// Finding 1144: a Sandbox Harness carries no workspace initializer, so admission and
+// preparation refuse initial workspace files for it before the workspace-path rule, which
+// would otherwise name the Sandbox-forced path the caller never wrote.
+test("Kubernetes refuses initial workspace files for a Sandbox Harness before the path rule", () => {
+  const { driver, revision, context } = workspaceSetupFixture(false);
+  const forced = {
+    ...revision.configuration,
+    agents: { ...revision.configuration.agents, defaults: { workspace: "/sandbox/data" } },
+  };
+  const sandboxed = /cannot be delivered to a Harness in a Sandbox/;
+  for (const configuration of [revision.configuration, forced]) {
+    assert.throws(
+      () => driver.validateWorkspaceSetup(revision.harness, configuration, "sandbox-provider"),
+      // Not a Configuration setting: OCC answers it as an Installation refusal (409).
+      (error) => !(error instanceof ConfigurationHarnessError) && sandboxed.test(error.message),
+    );
+  }
+  driver.validateWorkspaceSetup(revision.harness, revision.configuration);
+  assert.throws(
+    () => driver.validateWorkspaceSetup(revision.harness, forced),
+    /agents\.defaults\.workspace must be/,
+  );
+  assert.throws(
+    () =>
+      driver.workspaceSetupForRevision(
+        { ...revision, configuration: forced, sandboxDriverId: "sandbox-provider" },
+        context,
+      ),
+    sandboxed,
+  );
+  assert.equal(driver.workspaceSetupForRevision(revision, context), context.workspaceSetup);
+});
+
+// Finding 1144: a `Main` roster entry is OpenClaw's main Agent, so embedded setup writes to
+// its workspace, not to agents.defaults.workspace.
+test("Kubernetes embedded setup uses a Main roster entry's workspace", async () => {
+  const { driver, revision, objects, context } = workspaceSetupFixture(true);
+  const configured = {
+    ...revision,
+    configuration: {
+      ...revision.configuration,
+      agents: {
+        defaults: { ...revision.configuration.agents.defaults, workspace: "/srv/elsewhere" },
+        entries: { Main: { workspace: "/home/node/.openclaw/workspace" } },
+      },
+    },
+  };
+  assert.equal((await driver.prepareRevision(configured, context)).ready, false);
+  const gateway = [...objects.values()].find(
+    ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
+  );
+  const initializer = gateway.spec.template.spec.initContainers.find(
+    ({ name }) => name === "initialize-workspace",
+  );
+  assert.equal(
+    initializer.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_DIR").value,
+    "/home/node/.openclaw/workspace",
+  );
+  assert.equal(
+    containerProgram(gateway.spec.template.spec.containers[0]).includes("/srv/elsewhere"),
+    false,
   );
 });

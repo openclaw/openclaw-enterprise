@@ -218,7 +218,59 @@ export class KubernetesSecretDriver implements SecretDriver {
       await this.discardFailedCreate(client, namespace, name, identity);
       throw error;
     }
-    return this.checkedBackendRef(observed, identity, namespace);
+    try {
+      const reference = this.checkedBackendRef(observed, identity, namespace);
+      // An answer under another name would record a backendRef that does not name what this
+      // create stored, so it is refused like any other nonconforming answer (finding 1121).
+      if (reference.name !== name) {
+        throw new SecretOwnershipError("Secret backend does not match exact OCC ownership.");
+      }
+      return reference;
+    } catch (error) {
+      await this.discardRefusedCreate(client, namespace, name, observed);
+      throw error;
+    }
+  }
+
+  /**
+   * A create the API server stored but answered with an object that fails the ownership check
+   * (a mutating admission webhook rewrote it, or a nonconforming server) is refused, yet the
+   * stored object holds the value and no OCC metadata names it (finding 1111). Re-checking
+   * ownership, as discardFailedCreate does, would find the same rewrite and keep it. So the
+   * driver deletes the object it was answered with, by its own name with the answered uid and
+   * resourceVersion as preconditions: a different object under that name, or a later version,
+   * is never deleted. When that delete cannot finish, the outcome is reported as unknown, as it
+   * is when nothing is found under that name but the answer named another object, which may
+   * be where it was stored (finding 1121).
+   */
+  private async discardRefusedCreate(
+    client: CoreV1Api,
+    namespace: string,
+    name: string,
+    observed: V1Secret,
+  ): Promise<void> {
+    const uid = observed.metadata?.uid;
+    const resourceVersion = observed.metadata?.resourceVersion;
+    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+      throw this.unknownCreateOutcome();
+    }
+    try {
+      await this.request(
+        () =>
+          client.deleteNamespacedSecret({
+            namespace,
+            name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        "delete",
+        { mutating: true },
+      );
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError && observed.metadata?.name === name) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
+    }
   }
 
   /**

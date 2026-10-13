@@ -10,14 +10,12 @@ import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
-import { link, message, namespacePath, rejectionMessage } from "./list.mjs";
+import { GENERIC_CONFLICT, link, message, namespacePath, rejectionMessage } from "./list.mjs";
 
 // The API's duplicate-name sentence. Other Agent conflicts reach the client as generic text,
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
-// The API's text for a conflict whose reason it does not name.
-const GENERIC_CONFLICT = "The requested platform resource already exists.";
 // The API's Agent name limit, in characters (code points).
 const AGENT_NAME_MAX_CHARACTERS = 200;
 
@@ -147,8 +145,9 @@ function canRetryFailedProvisioning(job) {
   // A rejection after the job created its Agent (stopped, no versions) still owns that name;
   // only the job's retry can finish it.
   return (
-    !PERMANENT_PROVISIONING_CODES.has(job.error?.code) ||
-    (job.error?.code === "PROVISIONING_REJECTED" && typeof job.agentId === "string")
+    job.revisionId === undefined &&
+    (!PERMANENT_PROVISIONING_CODES.has(job.error?.code) ||
+      (job.error?.code === "PROVISIONING_REJECTED" && typeof job.agentId === "string"))
   );
 }
 
@@ -167,6 +166,8 @@ async function waitForProvisioning({ request, status, first }) {
   status.textContent = provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
+    error.provisioningAgentId = current?.agentId;
+    error.provisioningRevisionId = current?.revisionId;
     error.provisioningTerminal = true;
     error.provisioningFailed = current?.status === "failed";
     error.canRetryProvisioning = error.provisioningFailed && canRetryFailedProvisioning(current);
@@ -1622,23 +1623,38 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT
           ? error.serverMessage
           : "The provisioning job can no longer be retried.";
-      const detail =
-        outcomeUnknown && attempt.acknowledged
-          ? "Outcome unknown after provisioning admission. Retry resumes the accepted provisioning job, or retries it if it failed. If the API refuses because the job finished, select Create Agent to resend the same request ID."
-          : outcomeUnknown
-            ? "Outcome unknown. Retry resubmits the same request ID and saved references."
-            : error.provisioningTerminal && error.canRetryProvisioning
-              ? `${error.message} Retry uses the accepted provisioning job.`
-              : error.provisioningFailed
-                ? `${error.message} Select Create Agent to submit a new request.`
-                : retryRefused
-                  ? `${retryRefusal} Select Create Agent to submit a new request.`
-                  : error.status === undefined && error.message
-                    ? error.message
-                    : recovering && error.status === 409
-                      ? "The provisioning job can no longer be retried; it may have finished. Select Create Agent to resend the same request ID and open its result."
-                      : rejectionMessage(error, mutationStarted);
+      let detail;
+      if (outcomeUnknown && attempt.acknowledged) {
+        detail =
+          "Outcome unknown after provisioning admission. Retry resumes the accepted provisioning job, or retries it if it failed. If the API refuses because the job finished, select Create Agent to resend the same request ID.";
+      } else if (outcomeUnknown) {
+        detail = "Outcome unknown. Retry resubmits the same request ID and saved references.";
+      } else if (error.provisioningTerminal && error.canRetryProvisioning) {
+        detail = `${error.message} Retry uses the accepted provisioning job.`;
+      } else if (error.provisioningRevisionId) {
+        detail = `${error.message} Open this Agent, correct the cause and deploy a new version.`;
+      } else if (error.provisioningFailed) {
+        detail = `${error.message} Select Create Agent to submit a new request.`;
+      } else if (retryRefused) {
+        detail = `${retryRefusal} Select Create Agent to submit a new request.`;
+      } else if (error.status === undefined && error.message) {
+        detail = error.message;
+      } else if (recovering && error.status === 409) {
+        detail =
+          "The provisioning job can no longer be retried; it may have finished. Select Create Agent to resend the same request ID and open its result.";
+      } else {
+        detail = rejectionMessage(error, mutationStarted);
+      }
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      if (error.provisioningRevisionId && error.provisioningAgentId) {
+        feedback.append(
+          link(
+            " Open Agent and deployment details",
+            `agents/${error.provisioningAgentId}?revision=${error.provisioningRevisionId}`,
+            context,
+          ),
+        );
+      }
       // A 400 to an unacknowledged request means the API never admitted it: a resend of
       // an admitted request returns that job before validation.
       requestAdmitted =

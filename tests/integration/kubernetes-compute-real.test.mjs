@@ -1107,13 +1107,18 @@ test(
       ),
     );
 
-    // Editing the draft mode does not move the deployed revision or its private storage.
+    // Agent save refuses a dedicated draft its Configuration cannot serve (no native model
+    // catalog), with deployment's message; the deployed revision and its storage stay.
     const updatedEmbedded = await request(
       "PATCH",
       `/namespaces/${namespaceIds[1]}/agents/${embeddedDelete.id}`,
       { configurationId: embeddedDelete.configurationId, executionMode: "dedicated" },
     );
-    assert.equal(updatedEmbedded.status, 200, JSON.stringify(updatedEmbedded.error));
+    assert.equal(updatedEmbedded.status, 400, JSON.stringify(updatedEmbedded.error));
+    assert.match(
+      updatedEmbedded.error.message,
+      /^Configuration setting models\.providers\.openai\.models must list the selected OpenAI models/,
+    );
     // Deleting an active embedded Agent must not finalize until its gateway Pod is gone.
     const deletingEmbedded = await request(
       "DELETE",
@@ -1499,12 +1504,15 @@ test(
       ),
     );
 
+    // Agent save refuses an embedded draft of this Codex Agent, as deployment would; the
+    // running revision is unaffected.
     const updatedDedicated = await request(
       "PATCH",
       `/namespaces/${adopted.data.id}/agents/${adoptedTenant.id}`,
       { configurationId: adoptedTenant.configurationId, executionMode: "embedded" },
     );
-    assert.equal(updatedDedicated.status, 200, JSON.stringify(updatedDedicated.error));
+    assert.equal(updatedDedicated.status, 400, JSON.stringify(updatedDedicated.error));
+    assert.match(updatedDedicated.error.message, /^The Configuration selects the Codex Harness, /);
     // Public deletion of an active dedicated Agent must remove persisted ownership only after
     // every real Agent-owned Kubernetes effect, including its live Pods, has been removed.
     const deleting = await request(

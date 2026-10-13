@@ -35,9 +35,10 @@ the endpoint capability retain ordinary Service or private routing.
 
 For Compute-owned startup failure evidence, plugin reporting, and on-demand
 deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
-Kubernetes API server's source addresses for Pod proxy requests, preferably
-individual `/32` or `/128` addresses. On overlay networks, the source may be the
-control-plane node's overlay address rather than its node IP; verify it across
+Kubernetes API server's source addresses for Pod proxy requests, as `/32` or
+`/128` addresses: wider ranges warn and all-address ranges fail. On overlay
+networks, the source may be the control-plane node's overlay address rather than
+its node IP; verify it across
 nodes with enforced policies. The policy allows those sources only to the private
 status port, TCP/18791, even when an Agent has no enabled plugins. Worker and API
 ServiceAccounts each need namespace-local `get` on `pods/proxy`. An omitted list
@@ -63,8 +64,7 @@ identity `occ-workspace-files` with `operator.admin`, and
 `gateway.allowRealIpFallback: true`. Configuration and Console starters
 can omit these fields. Unsupported auth fields or conflicting trust fields fail
 deployment; matching CIDR lists are accepted regardless of order. Deployment and
-provisioning check the same fields and answer `409 RESOURCE_CONFLICT` naming the setting and requirement, for example `Configuration setting gateway.auth.mode must be
-trusted-proxy: …`, never its value. `trustedProxy.allowUsers` is checked later:
+provisioning check the same fields and answer `409 RESOURCE_CONFLICT` naming the setting and requirement, never its value. `trustedProxy.allowUsers` is checked later:
 provisioning returns fixed `409` text with the reason in the API log; deployment
 is admitted, then fails with `DEPENDENCY_UNAVAILABLE` and the reason in the
 worker's `worker.compute-prepare-failed` line. `trustedProxy.allowLoopback` must be omitted or false:
@@ -84,7 +84,7 @@ readiness gates; Gateway probes HTTP. `gateway.tls.enabled: true` is refused
 before revision creation. Envoy terminates TLS. Docker/SSH
 retain managed-password defaults and explicit trusted-proxy HTTP.
 
-Verify that configured CIDRs contain the proxy's
+Configured CIDRs must contain the proxy's
 source addresses and exclude untrusted sources. CIDRs do not authenticate a
 proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization.
@@ -162,8 +162,9 @@ the expected template profile.
 
 Harness Pods provisioned by a SandboxDriver, such as OpenShell, carry
 `provider-fenced-v1` instead. The provider fences their egress, so Compute grants
-them only Gateway transport and plugin-status ingress (`allow-agent-runtime` is
-ingress-only for them): no DNS, workspace-node, model or authentication egress.
+them only Gateway transport and status ingress (`allow-agent-runtime` is
+ingress-only for them) and the workspace-node route: no DNS, model or
+authentication egress.
 Provider Harness readiness and activation reject a Pod with any other profile.
 
 Existing policy names remain stable; upgrading the controller restarts no Pod.
@@ -184,10 +185,10 @@ revision: redeploy the Agent revision. For development, follow the
 [development recovery procedure](../../../guides/deploy/local-operations.md#build-images-for-local-kubernetes).
 
 The separately installed OpenShell gateway needs its own scoped DNS/API and
-callback policies. Its caller is the OpenShell supervisor Pod
-(`openshell.ai/managed-by=openshell`, `openshell.ai/boundary-role=supervisor`),
-which carries no `openclaw.dev` labels; supervisor-labelled peers admit it, not
-the ordinary profile. Platform services retain their existing Helm policy selectors.
+callback policies. Its caller, the OpenShell supervisor Pod
+(`openshell.ai/boundary-role=supervisor`), carries no `openclaw.dev` labels, so
+supervisor-labelled peers admit it; an Agent Gateway admits only its Sandbox's.
+Platform services keep their Helm policy selectors.
 
 Profile assignment is a trusted controller decision. The label qualifies a Pod
 for network grants but does not supply workload identity or authorization to

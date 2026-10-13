@@ -31,23 +31,31 @@ function stripUrlEdges(value: string): string {
   return value.slice(start, end);
 }
 
-export function refuseRewrittenIpv4AuthHost(raw: string, parsed: URL): void {
+// Refuses a URL whose IPv4 host Node rewrote: the written host must be the parsed one, in
+// strict decimal (isIP already rules out an octet above 255). `setting` names the
+// URL in the error (OCC_AUTH_BASE_URL, observability.url).
+export function refuseRewrittenIpv4Host(setting: string, raw: string, parsed: URL): void {
   if (isIP(parsed.hostname) !== 4) {
     return;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
-  const octets = parsed.hostname.split(".");
-  if (
-    written === parsed.hostname &&
-    strictDecimalIpv4.test(parsed.hostname) &&
-    octets.every((octet) => Number(octet) <= 255)
-  ) {
+  if (written === parsed.hostname && strictDecimalIpv4.test(parsed.hostname)) {
     return;
   }
   throw new Error(
-    "OCC_AUTH_BASE_URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    `${setting} IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`,
   );
+}
+
+// Node drops an empty user info (https://@host, https://:@host, https:@host) and publishes the
+// host alone, while the chart refuses any @ in auth.baseUrl. Like URL parsing, this drops tabs
+// and newlines and skips slashes or backslashes after the scheme, so any @ before the host
+// counts. `setting` names the URL in the error.
+export function refuseWrittenUserinfo(setting: string, raw: string): void {
+  if (/^[a-z][a-z\d+.-]*:[/\\]*[^/\\?#]*@/i.test(stripUrlEdges(raw).replace(/[\t\n\r]/g, ""))) {
+    throw new Error(`${setting} must not contain user info or an @ before the host.`);
+  }
 }
 
 // A bare ? or # (https://host? or https://host#) parses to an empty search or hash, but it

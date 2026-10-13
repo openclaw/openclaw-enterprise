@@ -9,6 +9,7 @@ import { registerResourceCleanup, closeAndDispose } from "./cleanup.mjs";
 import { appModule } from "./runtime.mjs";
 import { startCredentialServiceFixture, gatewayRequest } from "./service.mjs";
 import { runInFixtureContainer } from "./container.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
 
 async function runningProcessesMentioning(marker) {
   const running = [];
@@ -272,7 +273,7 @@ export function registerCredentialFixtureRegressions() {
 
   test("control cleanup rejects unavailable and pending disposal through the actual operator client", async (t) => {
     const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
-    const directory = await temporaryDirectory(t, "cleanup-control-");
+    const directory = await socketDirectory(t, "cleanup-control-");
     const socket = join(directory, "control.sock");
     const sessionId = "cleanup-session";
     const resolved = {

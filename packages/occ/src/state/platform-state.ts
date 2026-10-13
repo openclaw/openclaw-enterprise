@@ -231,6 +231,11 @@ export interface AgentRevisionReadRepository {
 }
 
 export interface AgentRevisionRepository extends AgentRevisionReadRepository {
+  /**
+   * Returns the stored revision. A store with a database clock stamps `createdAt` on that
+   * clock, the one that stamps controller work, so the worker can order a revision against a
+   * stop or deletion without controller clock skew (finding 1195); use the returned value.
+   */
   createRevision(revision: AgentRevision): Promise<Readonly<AgentRevision>>;
 }
 

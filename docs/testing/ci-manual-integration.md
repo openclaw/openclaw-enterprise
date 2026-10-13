@@ -1,7 +1,7 @@
 # Integration tests outside automatic CI
 
 These integrations have coverage outside automatic required CI. The QA matrix
-has an [advisory PR selection](qa-matrix.md#ci-evidence-and-recovery), and the
+and `dev-up-k3d` have an [advisory PR selection](qa-matrix.md#ci-evidence-and-recovery), and the
 [full OpenShell lane runs automatically](qa-matrix.md#automatic-openshell-coverage).
 A green `CI Required` check does not establish their coverage. This inventory describes workflow selection, not
 local or hosted test results.
@@ -28,7 +28,7 @@ manual lanes do not run as part of automatic `CI Required`.
 
 Full coverage of these files runs when selected in
 [Full Integration](../../.github/workflows/full-integration.yml), using the listed
-lane or `all` (`all` excludes `qa-matrix`).
+lane or `all` (`all` excludes `qa-matrix` and `dev-up-k3d`).
 Model/service lanes require configured credentials and infrastructure.
 `helper-timeout` is separate because it spends five minutes testing the helper deadline.
 
@@ -46,10 +46,6 @@ Model/service lanes require configured credentials and infrastructure.
 | `k3d-otel`         | [harness-topology-k3d-otel-real.test.mjs](../../tests/integration/harness-topology-k3d-otel-real.test.mjs)       | Actual OTLP logs emitted during embedded and dedicated runtime model turns.                                                                                               |
 
 ## No GitHub workflow entrypoint
-
-[dev-up-k3d-real.test.mjs](../../tests/integration/dev-up-k3d-real.test.mjs)
-belongs to the CLI-only `dev-up-k3d` lane, outside both workflow groups and
-Full Integration dispatch. See [run the local installation lane](README.md#run-the-local-installation-lane).
 
 [repository-credentials-k3d-real.test.mjs](../../tests/integration/repository-credentials-k3d-real.test.mjs)
 belongs to the explicitly selected `repository-credentials-installed` CLI lane,

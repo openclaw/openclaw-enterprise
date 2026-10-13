@@ -172,6 +172,15 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 50) {
         return "preCredentialWithdrawalRequester";
       }
+      if (receipts.length === 51) {
+        return "preProvisioningDeploymentOutcome";
+      }
+      if (receipts.length === 52) {
+        return "preComputePreparationFailureEvidence";
+      }
+      if (receipts.length === 53) {
+        return "preCredentialSourcePat";
+      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -263,6 +272,15 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 50) {
     return "preCredentialWithdrawalRequester";
+  }
+  if (receipts.length === 51) {
+    return "preProvisioningDeploymentOutcome";
+  }
+  if (receipts.length === 52) {
+    return "preComputePreparationFailureEvidence";
+  }
+  if (receipts.length === 53) {
+    return "preCredentialSourcePat";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

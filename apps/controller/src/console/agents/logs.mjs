@@ -96,7 +96,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   );
   const sourceSelect = element("select", { id: "runtime-log-source", disabled: true });
   const podSelect = element("select", { id: "runtime-log-pod", hidden: true });
-  const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod");
+  const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod / container");
   const podPicker = element(
     "div",
     { className: "log-picker log-pod-picker", hidden: true },
@@ -200,7 +200,11 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   function selectedPod() {
     const source = selectedSource();
-    return source?.pods.find(({ name }) => name === podSelect.value) ?? source?.pods[0];
+    return (
+      source?.pods.find(
+        ({ name, container }) => JSON.stringify([name, container]) === podSelect.value,
+      ) ?? source?.pods[0]
+    );
   }
 
   // A sandbox source has no Pods: OCC derives the Sandbox from the revision.
@@ -213,6 +217,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     const query = new URLSearchParams({ source: source.id });
     if (source.kind !== "sandbox" && pod) {
       query.set("pod", pod.name);
+      query.set("container", pod.container);
     }
     if (previous.checked) {
       query.set("previous", "true");
@@ -264,12 +269,20 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     const source = selectedSource();
     const chosenPod = podSelect.value;
     podSelect.replaceChildren(
-      ...(source?.pods ?? []).map((pod) => element("option", { value: pod.name }, pod.name)),
+      ...(source?.pods ?? []).map((pod) =>
+        element(
+          "option",
+          { value: JSON.stringify([pod.name, pod.container]) },
+          `${pod.name} / ${pod.container}`,
+        ),
+      ),
     );
     podSelect.hidden = (source?.pods.length ?? 0) <= 1;
     podLabel.hidden = podSelect.hidden;
     podPicker.hidden = podSelect.hidden;
-    if (source?.pods.some(({ name }) => name === chosenPod)) {
+    if (
+      source?.pods.some(({ name, container }) => JSON.stringify([name, container]) === chosenPod)
+    ) {
       podSelect.value = chosenPod;
     }
     retention.textContent = source?.retention ?? "";

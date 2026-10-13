@@ -166,22 +166,21 @@ replace a denied selection. Normal creation authorization still applies.
 empty templates, reset and Harness transitions, adding model routing. Installed
 Namespace templates are never exposed by that module.
 
-The user
-reviews prefilled scalar defaults and fills typed inputs. Inputs for referenced
-variables without defaults are required, so the browser flags an empty one
-before rendering; defaulted or unreferenced variables stay optional. The bound password
-variable offers a new masked token or an existing same-Namespace Secret. The
-chooser fetches only Secret metadata, validates the original template, and replaces
-the password token with the selected reference in a temporary copy. Mode changes
-clear discarded tokens; stale catalog responses cannot replace a later selection.
+The chooser prefills typed defaults. String controls accept multiple lines;
+untouched defaults and restored drafts retain exact line endings, while edits use
+browser LF. Empty strings override defaults. Referenced variables without defaults
+are required; defaulted or unused variables are optional. The password variable
+offers a masked new token or an existing same-Namespace Secret. The chooser reads
+Secret metadata, validates the original template, then substitutes the selected
+reference in a temporary copy. Changing mode discards tokens; stale catalog
+responses cannot replace a later selection.
 The user then selects **Use Preset**. The shared
 [`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
-Rendering makes no requests and fetches no credentials. On success, the chooser
-is replaced by the ordinary Agent form; the form keeps only the rendered
-settings and, when selected, ephemeral existing-Secret metadata for access grants.
+Rendering makes no requests. Success opens the ordinary Agent form with rendered
+settings and optional ephemeral Secret metadata for access grants.
 The chooser lists Presets alphabetically by display name.
 Password values move into the ordinary masked credential input; the
 chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
@@ -295,6 +294,8 @@ or an immutable admitted revision.
 - 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
 
 - 2026-10-10 06:42: Preserve referenced fallback model metadata and retire obsolete primary catalog entries during Console selection. (authoring-run/d6d98411-224c-4a17-8bb9-5bd060b1dd59 - f27f55ce2bfb3d54b8e95c8c3f0f670425717a52)
+
+- 2026-10-10 04:52: Preserve multiline strings and exact restored defaults in the Preset chooser. (authoring-run/0f2600bb-f524-4114-9ba6-7ff3cbee3d29 - 64dff25990334c8cf1e9372d5452c38cdcadfa61)
 
 - 2026-10-09 19:46: Authorize Preset writes before reading the body. (authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320 - deeb84b5e)
 

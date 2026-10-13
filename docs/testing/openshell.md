@@ -131,11 +131,21 @@ the Agent Gateway. Exact workload identity, approved mounts and privileges,
 source withdrawal, denied egress, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
-The Codex scenario then updates the source through the API, withdraws it from
-the running Agent, waits for `revoked`, and expects the next model turn in the
-same process to fail. It accepts any turn failure, so it does not yet tell a
-credential rejection from a transport error or a restarted process. The trusted pull-request QA lane runs the Codex source and withdrawal proof with
-the `integration-qa-pr` environment credential.
+After the tool-source turns, the Codex scenario deploys a second Agent that
+attaches one of the tool sources. When the first Agent withdraws that source,
+the second Agent still receives its token. The scenario then checks that:
+
+- no Pod of the Agent mounts or references the stored source Secret;
+- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
+  files hold no upstream credential. Files are matched outside the Pod, so no
+  credential-derived value enters it;
+- deployment diagnostics, runtime status and logs, and the Namespace's audit
+  events hold neither a credential nor an OpenShell placeholder.
+
+The Codex scenario updates and withdraws the source, waits for `revoked`, then
+expects a failed model turn. It does not distinguish credential rejection from
+transport failure or process restart. Trusted PR QA runs this proof with the
+`integration-qa-pr` credential.
 
 `OCC_TEST_OPENSHELL_HARNESS` defaults to `codex`. Select `openclaw` to verify
 that the native Harness requests no inbound OpenShell service exposure and
@@ -196,9 +206,9 @@ and the OpenShell development profile disables projected workload identity.
 Explicitly requesting that identity fails before provisioning.
 
 The fixture gives that gateway its own scoped DNS/API access. Ordinary Harness
-DNS comes from Compute. Workspace-node policies select the OpenShell supervisor
-label (`openshell.ai/boundary-role=supervisor`) and the tenant's Agent Gateway
-Service in both directions, because the supervisor originates the proxied call.
+DNS comes from Compute. The supervisor originates the proxied node call, so each
+Agent Gateway admits only its own Sandbox's supervisor (`openshell.ai/sandbox-id`
+from the Driver's `workspaceNodePeerLabels`); supervisor egress is OpenShell's own.
 The test requires the provider Harness Pod to carry `provider-fenced-v1`; it
 receives no ordinary Compute model or authentication egress. Older fixtures
 may retain broad policies or Sandbox templates without the profile. Inspect

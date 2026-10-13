@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -182,6 +182,23 @@ function assertPersistenceBoundary(output, event) {
   assert.doesNotMatch(output, /The platform persistence repository is unavailable/);
 }
 
+function assertStartupFailureCode(output, event, code) {
+  const diagnostic = output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return undefined;
+      }
+    })
+    .find((line) => line?.event === event);
+  assert.ok(diagnostic, output);
+  assert.equal(diagnostic.code, code);
+}
+
 async function productionFixture(t) {
   const fixture = await mkdtemp(join(tmpdir(), "oce-production-image-"));
   await chmod(fixture, 0o755);
@@ -239,6 +256,58 @@ test(
     assert.equal(failure.code, 1);
     const output = imageFailureOutput(failure);
     assertPersistenceBoundary(output, "startup-error");
+    assertNoPackagingFailure(output);
+  },
+);
+
+test(
+  "production image startup rejects an invalid gateway StorageClass before persistence",
+  imageTestOptions,
+  async (t) => {
+    const fixture = await productionFixture(t);
+    const path = join(fixture, "installation.json");
+    const installation = JSON.parse(await readFile(path, "utf8"));
+    installation.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+
+    let failure;
+    try {
+      await runDocker([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--mount",
+        `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+        "-e",
+        "NODE_ENV=production",
+        "-e",
+        "OCC_HOST=10.0.0.5",
+        "-e",
+        "OCC_PORT=3000",
+        "-e",
+        "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+        "-e",
+        "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
+        "-e",
+        "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+        "-e",
+        "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
+        image,
+      ]);
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, "invalid gateway StorageClass must stop startup");
+    assert.equal(failure.code, 1);
+    const output = imageFailureOutput(failure);
+    assertStartupFailureCode(output, "startup-error", "GATEWAY_STORAGE_CLASS_INVALID");
+    assert.doesNotMatch(output, /SQLite-compatible gateway storage class/);
+    assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },
 );

@@ -1,4 +1,4 @@
-import { refuseRewrittenIpv4AuthHost } from "./auth/configuration.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -12,7 +12,7 @@ import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -59,11 +59,17 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
+  if (/observability\.url IPv4 host must be four decimal octets/.test(message)) {
+    return "OBSERVABILITY_URL_INVALID";
+  }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
   }
   if (/OCC_DATABASE_URL|PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
+  }
+  if (/SQLite-compatible gateway storage class/.test(message)) {
+    return "GATEWAY_STORAGE_CLASS_INVALID";
   }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
@@ -74,7 +80,8 @@ function startupFailureCode(error) {
 function startupFailure(logger, error) {
   emitOccLogEvent(logger, {
     event: "startup-error",
-    ...(startupDependencyFailure(error) ?? { code: startupFailureCode(error) }),
+    ...(startupDependencyFailure(error) ??
+      startupPolicyNameFailure(error) ?? { code: startupFailureCode(error) }),
   });
   process.exitCode = 1;
 }
@@ -224,7 +231,8 @@ function configuration() {
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must be a valid absolute URL.");
   }
-  refuseRewrittenIpv4AuthHost(configuredAuthBaseURL, parsedAuthBaseURL);
+  refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
+  refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
   const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
   if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {
     throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");

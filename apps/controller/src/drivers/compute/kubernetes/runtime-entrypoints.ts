@@ -1979,6 +1979,15 @@ function holdFailedAuthentication(check = "model-probe", code = "UNAVAILABLE", c
 function probeFailure(kind, detail) {
   return { code: "MODEL_PROBE_FAILED", cause: detail === undefined ? { kind } : { kind, detail } };
 }
+// The probe log line names the provider's HTTP status and a known error code read
+// from its message, never the message: provider text can echo the credential.
+const PROVIDER_ERROR_CODES = ["usage_limit_reached", "rate_limit_exceeded", "rate_limit_error", "insufficient_quota", "invalid_api_key", "model_not_found", "server_error", "overloaded_error"];
+function providerErrorSummary(text) {
+  if (typeof text !== "string") return {};
+  const status = /(?:\bstatus:? |\bHTTP |^)([45][0-9]{2})\b/i.exec(text)?.[1];
+  const code = PROVIDER_ERROR_CODES.find((name) => text.includes(name));
+  return { ...(status && { providerStatus: Number(status) }), ...(code && { providerCode: code }) };
+}
 function probeExitFailure({ error, status, signal }) {
   return probeFailure("PROCESS_EXIT", /^E[A-Z0-9]{1,15}$/.test(error?.code) ? "error-" + error.code
     : Number.isInteger(status) && status > 0 && status < 1000 ? "exit-" + status
@@ -2015,11 +2024,11 @@ function probeOpenClawAuthenticationFailure() {
   const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
   const read = (name) => (name === "cpu.pressure" ? /^some .*total=(\d+)/m : /throttled_usec (\d+)/).exec(cgroup(name))?.[1] / 1000;
   const startedAt = Date.now(), pressure = read("cpu.pressure"), metric = Number.isFinite(pressure) ? "cpu.pressure" : "cpu.stat", before = metric === "cpu.pressure" ? pressure : read(metric);
-  let code = runOpenClawAuthenticationProbe(fs, capMs), cause;
-  if (typeof code === "object") ({ code, cause } = code);
+  let code = runOpenClawAuthenticationProbe(fs, capMs), cause, provider;
+  if (typeof code === "object") ({ code, cause, ...provider } = code);
   const elapsedMs = Date.now() - startedAt, after = read(metric), cpuWaitMs = Math.round(Number.isFinite(after) && after >= before ? after - before : NaN);
   if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
-  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, code: code ?? "READY", cause }));
+  console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, code: code ?? "READY", cause, ...provider }));
   return code === undefined ? undefined : { code, cause };
 }
 
@@ -2113,7 +2122,7 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
     if (status === "timeout") return "MODEL_PROBE_TIMEOUT";
-    return probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other");
+    return { ...probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other"), ...providerErrorSummary(results[0].error) };
   } catch {
     return probeFailure("WRAPPER_ERROR");
   } finally {
@@ -2275,6 +2284,7 @@ function configureNativeWorkerProfile() {
   });
 }
 
+// Admission applies the same rule (configuration-rules.ts); a parity test pins the two.
 function requireWorkspaceNodePlugins(config) {
   const plugins = isPlainObject(config.plugins) ? config.plugins : {};
   if (
@@ -2351,12 +2361,16 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
 // its dynamic tools in the Gateway process, so these would list, read, write or
 // run commands in the Gateway Pod instead. Codex's native tools cover them in
 // the Harness, and the file-transfer tools reach its workspace through the node.
-// "terminal" types into shells running in the Gateway Pod, and "openclaw"
-// delegates Gateway configuration changes, which could drop this list.
+// "terminal" types into shells running in the Gateway Pod, and "portal" proxies
+// ports in it. The control-plane tools act on the Gateway itself and run with
+// the operator's admin scope on every operator chat: "openclaw" delegates
+// configuration changes, which could drop this list, "plugins" installs,
+// enables or disables plugins in the Gateway process, and "gateway" runs its
+// self-update. OCC owns the Gateway's plugins, configuration and version.
 const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
   "ls", "read", "write", "edit", "apply_patch",
   "exec", "process", "gateway_exec", "gateway_process",
-  "terminal", "openclaw",
+  "terminal", "portal", "openclaw", "plugins", "gateway",
 ];
 
 function excludeGatewayLocalCodexTools(config) {
@@ -2387,6 +2401,20 @@ function excludeGatewayLocalCodexTools(config) {
   }
   const overridden = triggers.enabled === undefined || triggers.enabled === false ? [] : ["cron.triggers.enabled"];
   triggers.enabled = false;
+  // The pre-compaction memory flush is a model run that gets OpenClaw's read and
+  // write tools despite the exclusions above, so it would read Gateway Pod files
+  // and write its memory to the Gateway's empty workspace, never the Harness.
+  let flush = config;
+  const flushPath = [];
+  for (const key of ["agents", "defaults", "compaction", "memoryFlush"]) {
+    flushPath.push(key);
+    flush = flush[key] ??= {};
+    if (!isPlainObject(flush)) {
+      throw new Error("The " + flushPath.join(".") + " setting must be an object.");
+    }
+  }
+  if (flush.enabled !== undefined && flush.enabled !== false) overridden.push("agents.defaults.compaction.memoryFlush.enabled");
+  flush.enabled = false;
   logOverriddenSettings([...overridden, ...pinCodexProviderTransport(config)]);
 }
 
@@ -3056,7 +3084,7 @@ if (followsPeerStatus) {
 }
 `;
 
-export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
+const CODEX_OAUTH_BOOTSTRAP_WRITER = String.raw`
 try {
 const fs = require("node:fs");
 const path = require("node:path");
@@ -3099,6 +3127,8 @@ if (receipt?.sourceUid === expected.sourceUid) {
   // A new source starts from an empty Codex home: no previous login, sessions, or links.
   // rmSync removes symbolic links themselves and never follows them.
   for (const entry of fs.readdirSync(directory)) {
+    // Keep the locked inode: deleting it would let another writer lock a new file.
+    if (entry === ".oce-oauth-bootstrap.lock") continue;
     fs.rmSync(path.join(directory, entry), { recursive: true, force: true });
   }
   const writeJson = (target, value) => {
@@ -3121,7 +3151,7 @@ if (receipt?.sourceUid === expected.sourceUid) {
   } finally {
     fs.closeSync(descriptor);
   }
-  // Readiness reports only a verified final state.
+  // Successful exit reports only a verified final state.
   const written = readRegularJson(receiptPath);
   if (
     !validAuth(readRegularJson(authPath)) ||
@@ -3130,6 +3160,40 @@ if (receipt?.sourceUid === expected.sourceUid) {
   ) {
     throw new Error("OAuth bootstrap could not verify private credentials.");
   }
+}
+} catch {
+  throw new Error("OAuth bootstrap could not initialize private credentials.");
+}
+`;
+
+export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
+try {
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const directory = process.env.CODEX_HOME;
+if (!directory) throw new Error();
+if (fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() === false) {
+  throw new Error();
+}
+fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+const descriptor = fs.openSync(
+  path.join(directory, ".oce-oauth-bootstrap.lock"),
+  fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW,
+  0o600,
+);
+try {
+  if (!fs.fstatSync(descriptor).isFile()) throw new Error();
+  // The pinned runtime base supplies flock. Kernel locks release on process
+  // death, so an interrupted Pod cannot leave a stale ownership marker. Pass
+  // the already-opened inode to avoid following a link planted in the home.
+  const result = spawnSync("/usr/bin/flock", [
+    "--exclusive", "--timeout", "60", "/proc/self/fd/3",
+    process.execPath, "-e", ${JSON.stringify(CODEX_OAUTH_BOOTSTRAP_WRITER)},
+  ], { stdio: ["ignore", "inherit", "inherit", descriptor] });
+  if (result.error || result.status !== 0) throw new Error();
+} finally {
+  fs.closeSync(descriptor);
 }
 } catch {
   throw new Error("OAuth bootstrap could not initialize private credentials.");
@@ -3439,6 +3503,16 @@ function isRecoveredNativeStreamError(event) {
   if (attempt > limit || limit > MAX_RECOVERED_STREAM_RETRIES) return false;
   return !/auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(event.message);
 }
+// Codex reports a provider 429, a rate limit or an exhausted usage quota (such as
+// "You've hit your usage limit" or "exceeded retry limit, last status: 429 Too Many
+// Requests") as a fatal error event or failed turn; the probe names it rate_limit.
+function codexRateLimited(message) {
+  return typeof message === "string" &&
+    /too many requests|\bstatus:? 429\b|rate[ _-]?limit|usage[ _-]?limit|spend cap|insufficient_quota|exceeded your current quota|(?<!disk )quota exceeded/i.test(message);
+}
+function codexProbeStatusFailure(message, detail) {
+  return { ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail), ...providerErrorSummary(message) };
+}
 
 function probeCodexAuthentication(timeout) {
   let result;
@@ -3515,13 +3589,13 @@ function probeCodexAuthentication(timeout) {
       if (event.type === "turn.started") turnStarted = true;
       if (event.type === "error") {
         if (!turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
-          ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(probeFailure("PROBE_STATUS", "error-event"));
+          ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
         continue;
       }
+      if (event.type === "turn.failed") return finish(codexProbeStatusFailure(event.error?.message, "turn-failed"));
       if (!allowed.has(event.type) ||
         (event.type.startsWith("item.") && !["agent_message", "reasoning", "error"].includes(event.item?.type))) {
-        return finish(probeFailure("PROBE_STATUS", event.type === "turn.failed" ? "turn-failed"
-          : event.type.startsWith("item.") ? "tool-event" : "unexpected-event"));
+        return finish(probeFailure("PROBE_STATUS", event.type.startsWith("item.") ? "tool-event" : "unexpected-event"));
       }
       if (event.type === "turn.completed") turnCompleted = true;
     }
@@ -3562,6 +3636,8 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     signal: result.signal,
     code: result.code ?? "READY",
     cause: result.cause,
+    providerStatus: result.providerStatus,
+    providerCode: result.providerCode,
   }));
   if (result.code === "MODEL_PROBE_TIMEOUT" && attempt === 1 && performance.now() + 1000 < deadline) {
     setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);

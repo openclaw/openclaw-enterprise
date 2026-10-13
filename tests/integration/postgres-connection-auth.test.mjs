@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { rootCertificates } from "node:tls";
+import { createServer as createTlsServer, rootCertificates } from "node:tls";
+import { promisify } from "node:util";
+import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 
 const requireOcc = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { Client } = requireOcc("pg");
+const execute = promisify(execFile);
 
 test("password authentication preserves the existing pg connection configuration", async () => {
   const pool = await createPostgresPool("postgresql://occ_app:test-only@localhost/occ", {
@@ -214,3 +219,281 @@ test(
     assert.ok(writes.some((line) => JSON.parse(line).code === "57P01"));
   },
 );
+
+test("verify-full checks the server certificate against an IP database host", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ip-tls-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const pki = await databaseCertificates(directory);
+  const caPath = join(directory, "ca.pem");
+  const servers = { v4: await tlsServer(context, "127.0.0.1", pki.dnsLocalhost) };
+  servers.v6 = await tlsServer(context, "::1", pki.dnsLocalhost).catch(() => undefined);
+  const verified = `sslmode=verify-full&sslrootcert=${encodeURIComponent(caPath)}`;
+  // Direct negotiation starts TLS on connect; the server closes after the handshake,
+  // so no SQL, authentication or token is involved.
+  const url = (host, port, search = verified) =>
+    `postgresql://occ_app@${host}:${port}/occ?sslnegotiation=direct&${search}`;
+  const handshake = async (server, connectionUrl, authMode = "password") => {
+    const before = server.accepted;
+    const pool = await createPostgresPool(connectionUrl, {
+      authMode,
+      max: 1,
+      connectionTimeoutMillis: 3000,
+    });
+    try {
+      const client = await pool.connect();
+      client.release(true);
+      return { code: "CONNECTED", accepted: server.accepted - before };
+    } catch (error) {
+      return { code: error.code ?? null, accepted: server.accepted - before };
+    } finally {
+      await pool.end();
+    }
+  };
+  const refused = { code: "ERR_TLS_CERT_ALTNAME_INVALID", accepted: 0 };
+  const { v4, v6 } = servers;
+
+  // pg sends no servername for an IP host, so Node used to check "localhost":
+  // a database-CA-signed DNS:localhost leaf passed verify-full for any IP.
+  assert.deepEqual(await handshake(v4, url("127.0.0.1", v4.port)), refused);
+  // API and worker startup name the refusal, without the address or the certificate.
+  const statePool = await createPostgresPool(url("127.0.0.1", v4.port), { max: 1 });
+  const startupError = await new PostgresPlatformState(statePool)
+    .loadInstallation()
+    .then(
+      () => assert.fail("loadInstallation must fail"),
+      (error) => error,
+    )
+    .finally(() => statePool.end());
+  const startupFields = startupDependencyFailure(startupError);
+  assert.deepEqual(startupFields, {
+    code: "DATABASE_TLS_CERTIFICATE_INVALID",
+    reason: "ERR_TLS_CERT_ALTNAME_INVALID",
+  });
+  assert.doesNotMatch(JSON.stringify(startupFields), /127\.0\.0\.1|BEGIN CERTIFICATE/);
+  // A host= override selects the IP even when the URL authority is a DNS name.
+  assert.deepEqual(
+    await handshake(v4, url("localhost", v4.port, `${verified}&host=127.0.0.1`)),
+    refused,
+  );
+  const previous = { PGHOST: process.env.PGHOST, PGPORT: process.env.PGPORT };
+  try {
+    Object.assign(process.env, { PGHOST: "127.0.0.1", PGPORT: String(v4.port) });
+    assert.deepEqual(
+      await handshake(v4, `postgresql://occ_app@/occ?sslnegotiation=direct&${verified}`),
+      refused,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+  const environment = {
+    AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000001",
+    AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
+    AZURE_FEDERATED_TOKEN_FILE: join(directory, "unused-token"),
+  };
+  const azurePrevious = Object.fromEntries(
+    Object.keys(environment).map((key) => [key, process.env[key]]),
+  );
+  try {
+    Object.assign(process.env, environment);
+    assert.deepEqual(
+      await handshake(v4, url("127.0.0.1", v4.port), "azure-workload-identity"),
+      refused,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(azurePrevious)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+
+  // DNS hosts keep pg's servername-based check and an unchanged configuration.
+  assert.deepEqual(await handshake(v4, url("localhost", v4.port)), {
+    code: null,
+    accepted: 1,
+  });
+  // The matching iPAddress SAN is accepted, as with libpq.
+  v4.use(pki.ipLoopback);
+  assert.deepEqual(await handshake(v4, url("127.0.0.1", v4.port)), { code: null, accepted: 1 });
+  // Another IP's SAN is not.
+  v4.use(pki.ipOther);
+  assert.deepEqual(await handshake(v4, url("127.0.0.1", v4.port)), refused);
+
+  if (v6) {
+    assert.deepEqual(
+      await handshake(v6, url("localhost", v6.port, `${verified}&host=::1`)),
+      refused,
+    );
+    v6.use(pki.ipLoopback);
+    assert.deepEqual(await handshake(v6, url("localhost", v6.port, `${verified}&host=::1`)), {
+      code: null,
+      accepted: 1,
+    });
+  } else {
+    context.diagnostic("IPv6 loopback unavailable; skipped the ::1 handshake");
+  }
+});
+
+test("the IP host identity check leaves other connection configurations unchanged", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ip-config-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const certificate = join(directory, "root.crt");
+  await writeFile(certificate, rootCertificates[0]);
+  const unchanged = [
+    "postgresql://occ_app@db.internal/occ?sslmode=verify-full",
+    "postgresql://occ_app@127.0.0.1/occ",
+    "postgresql://occ_app@127.0.0.1/occ?sslmode=disable",
+    "postgresql://occ_app@127.0.0.1/occ?sslmode=no-verify",
+    `postgresql://occ_app@127.0.0.1/occ?sslmode=verify-ca&uselibpqcompat=true&sslrootcert=${encodeURIComponent(certificate)}`,
+    `postgresql://occ_app@localhost/occ?sslmode=verify-full&host=${encodeURIComponent("/var/run/postgresql")}`,
+  ];
+  for (const url of unchanged) {
+    const pool = await createPostgresPool(url, { authMode: "password", max: 2 });
+    try {
+      assert.equal(pool.options.connectionString, url);
+      assert.equal(pool.options.Client, undefined, url);
+      assert.equal(pool.options.ssl, undefined, url);
+    } finally {
+      await pool.end();
+    }
+  }
+  const ip = "postgresql://occ_app:test-only@127.0.0.1/occ?sslmode=verify-full&application_name=a";
+  const pool = await createPostgresPool(ip, { authMode: "password", max: 2 });
+  try {
+    assert.equal(pool.options.connectionString, ip);
+    assert.equal(typeof pool.options.Client, "function");
+    const client = new pool.options.Client(pool.options);
+    assert.equal(client.user, "occ_app");
+    assert.equal(client.password, "test-only");
+    assert.equal(client.connectionParameters.application_name, "a");
+    assert.equal(client.connectionParameters.host, "127.0.0.1");
+    assert.equal(typeof client.ssl.checkServerIdentity, "function");
+  } finally {
+    await pool.end();
+  }
+  // pg reads sslrootcert per connection, so a file that is unreadable now is
+  // checked when a connection reads it; pool construction still succeeds.
+  const missing = `postgresql://occ_app@127.0.0.1/occ?sslmode=verify-full&sslrootcert=${encodeURIComponent(join(directory, "later.pem"))}`;
+  const deferred = await createPostgresPool(missing, { authMode: "password" });
+  try {
+    await writeFile(join(directory, "later.pem"), rootCertificates[0]);
+    const client = new deferred.options.Client(deferred.options);
+    assert.equal(typeof client.ssl.checkServerIdentity, "function");
+  } finally {
+    await deferred.end();
+  }
+  const nested = new URL("postgresql://occ_app@127.0.0.1/occ?sslmode=verify-full");
+  nested.searchParams.set("connectionString", "postgresql://occ_app@127.0.0.1/occ?sslmode=disable");
+  await assert.rejects(
+    createPostgresPool(nested.toString(), { authMode: "password" }),
+    /IP host does not allow nested connection strings/,
+  );
+});
+
+async function databaseCertificates(directory) {
+  const file = (name) => join(directory, name);
+  const run = (args) => execute("openssl", args, { timeout: 10000 });
+  await run([
+    "req",
+    "-x509",
+    "-newkey",
+    "ec",
+    "-pkeyopt",
+    "ec_paramgen_curve:prime256v1",
+    "-nodes",
+    "-days",
+    "2",
+    "-subj",
+    "/CN=occ-test-database-ca",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign",
+    "-keyout",
+    file("ca.key"),
+    "-out",
+    file("ca.pem"),
+  ]);
+  const leaf = async (name, subjectAltName) => {
+    await run([
+      "req",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-subj",
+      "/CN=localhost",
+      "-keyout",
+      file(`${name}.key`),
+      "-out",
+      file(`${name}.csr`),
+    ]);
+    await writeFile(
+      file(`${name}.ext`),
+      `subjectAltName=${subjectAltName}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
+    );
+    await run([
+      "x509",
+      "-req",
+      "-in",
+      file(`${name}.csr`),
+      "-CA",
+      file("ca.pem"),
+      "-CAkey",
+      file("ca.key"),
+      "-CAcreateserial",
+      "-days",
+      "2",
+      "-extfile",
+      file(`${name}.ext`),
+      "-out",
+      file(`${name}.pem`),
+    ]);
+    return {
+      key: await readFile(file(`${name}.key`), "utf8"),
+      cert: await readFile(file(`${name}.pem`), "utf8"),
+    };
+  };
+  return {
+    dnsLocalhost: await leaf("dns-localhost", "DNS:localhost"),
+    ipLoopback: await leaf("ip-loopback", "IP:127.0.0.1,IP:::1"),
+    ipOther: await leaf("ip-other", "IP:192.0.2.10"),
+  };
+}
+
+async function tlsServer(context, host, identity) {
+  const state = { accepted: 0 };
+  const sockets = new Set();
+  const server = createTlsServer(identity, (socket) => {
+    state.accepted++;
+    socket.once("data", () => socket.destroy());
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  server.on("tlsClientError", () => {});
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, resolve);
+  });
+  context.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve) => server.close(resolve));
+  });
+  return Object.assign(state, {
+    port: server.address().port,
+    use: (next) => server.setSecureContext(next),
+  });
+}

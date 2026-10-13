@@ -123,7 +123,9 @@ function tokens(text, definitions, path) {
   return parts;
 }
 
-function substitute(text, definitions, inputs, path, key, partial) {
+// `located(literals, text, type)` receives the literal text around the placeholders left in
+// `text`, and the declared type of a variable that is the whole value.
+function substitute(text, definitions, inputs, path, key, partial, located) {
   const parts = tokens(text, definitions, path);
   const refs = parts.filter((part) => typeof part !== "string");
   if (!refs.length) {
@@ -146,23 +148,75 @@ function substitute(text, definitions, inputs, path, key, partial) {
       return definitions[name].default;
     }
     if (partial) {
-      return `{{ vars.${name} }}`;
+      return undefined;
     }
     fail(path, `variable ${name} requires a value.`);
   };
   if (whole) {
-    return resolve(refs[0]);
+    const value = resolve(refs[0]);
+    if (value !== undefined) {
+      return value;
+    }
   }
-  return parts.map((part) => (typeof part === "string" ? part : resolve(part))).join("");
+  // The literal text around each placeholder left for a variable without a value. An escaped
+  // token renders to the same text as a placeholder but stays literal once filled, so it is part
+  // of the literal text, and a string with no placeholder is never named.
+  const literals = [""];
+  let result = "";
+  for (const part of parts) {
+    const value = typeof part === "string" ? part : resolve(part);
+    if (value === undefined) {
+      literals.push("");
+      result += `{{ vars.${part.name} }}`;
+    } else {
+      literals[literals.length - 1] += value;
+      result += value;
+    }
+  }
+  if (literals.length > 1) {
+    located?.(literals, result, whole ? definitions[refs[0].name].type : undefined);
+  }
+  return result;
 }
 
-function walk(value, definitions, inputs, path, keys, partial) {
+// Admission names a configuration.values string by its path there, so the same text elsewhere
+// is not mistaken for it; an object key's path ends in the rendered key, unique in its object.
+function placeholderLocation(path, key) {
+  return JSON.stringify([key ? "key" : "value", ...path]);
+}
+
+// Where admission finds the declared type of a variable without a value that is a whole value.
+function wholeVariableLocation(path) {
+  return JSON.stringify(["type", ...path]);
+}
+
+// `placeholders` collects admission's placeholder locations; `at` is the path in
+// configuration.values (undefined outside it).
+function walk(value, definitions, inputs, path, keys, partial, placeholders, at) {
+  const located = (key) =>
+    placeholders && at
+      ? (literals, text, type) => {
+          placeholders.set(placeholderLocation(key ? [...at, text] : at, key), literals);
+          if (type !== undefined) {
+            placeholders.set(wholeVariableLocation(at), type);
+          }
+        }
+      : undefined;
   if (typeof value === "string") {
-    return substitute(value, definitions, inputs, path, false, partial);
+    return substitute(value, definitions, inputs, path, false, partial, located(false));
   }
   if (Array.isArray(value)) {
     return value.map((child, index) =>
-      walk(child, definitions, inputs, `${path}[${index}]`, keys, partial),
+      walk(
+        child,
+        definitions,
+        inputs,
+        `${path}[${index}]`,
+        keys,
+        partial,
+        placeholders,
+        placeholders && at && [...at, index],
+      ),
     );
   }
   if (!record(value)) {
@@ -171,7 +225,9 @@ function walk(value, definitions, inputs, path, keys, partial) {
   const entries = [];
   const seen = new Set();
   for (const [key, child] of Object.entries(value)) {
-    const nextKey = keys ? substitute(key, definitions, inputs, `${path} key`, true, partial) : key;
+    const nextKey = keys
+      ? substitute(key, definitions, inputs, `${path} key`, true, partial, located(true))
+      : key;
     if (!keys && RESERVED.test(key)) {
       fail(path, "variable field names are only supported in configuration.values.");
     }
@@ -179,6 +235,7 @@ function walk(value, definitions, inputs, path, keys, partial) {
       fail(path, "variable substitution produces duplicate object keys.");
     }
     seen.add(nextKey);
+    const values = path === "configuration" && key === "values";
     entries.push([
       nextKey,
       walk(
@@ -186,8 +243,10 @@ function walk(value, definitions, inputs, path, keys, partial) {
         definitions,
         inputs,
         `${path}.${key}`,
-        keys || (path === "configuration" && key === "values"),
+        keys || values,
         partial,
+        placeholders,
+        placeholders && (values ? [] : at && [...at, nextKey]),
       ),
     ]);
   }
@@ -275,7 +334,32 @@ export function presetTemplateDefaults(template) {
   return render(template, {}, true);
 }
 
-function render(template, inputs, partial) {
+/** Like presetTemplateDefaults, and also locate the configuration.values strings (values and
+ * object keys) a placeholder for a variable without a value went into, which admission checks
+ * once filled. `unresolved(path, key)` returns the literal text around the placeholders of the
+ * string at `path` (an object key: `key` true, `path` ending in the rendered key), or undefined.
+ * Escaped tokens and defaults that read like tokens are literal text: elsewhere they are checked
+ * as written, and beside a placeholder they are part of its literal text. `unresolvedType(path)`
+ * returns the declared type of such a variable that is the whole value at `path`: a number or
+ * boolean variable fills it with no string (finding 1257).
+ * @param {import('./presets.ts').PresetTemplate} template
+ * @returns {{
+ *   settings: import('./presets.ts').PresetLaunchSettings,
+ *   unresolved: (path: readonly (string | number)[], key?: boolean) => readonly string[] | undefined,
+ *   unresolvedType: (path: readonly (string | number)[]) => import('./presets.ts').PresetVariable['type'] | undefined,
+ * }}
+ */
+export function presetTemplateDefaultsWithPlaceholders(template) {
+  const placeholders = new Map();
+  const settings = render(template, {}, true, placeholders);
+  return {
+    settings,
+    unresolved: (path, key = false) => placeholders.get(placeholderLocation(path, key)),
+    unresolvedType: (path) => placeholders.get(wholeVariableLocation(path)),
+  };
+}
+
+function render(template, inputs, partial, placeholders) {
   validatePresetTemplate(template);
   checkJson(inputs, "inputs");
   checkSize(inputs);
@@ -296,7 +380,17 @@ function render(template, inputs, partial) {
       .filter((section) => Object.hasOwn(template, section))
       .map((section) => [
         section,
-        walk(template[section], definitions, inputs, section, false, partial),
+        walk(
+          template[section],
+          definitions,
+          inputs,
+          section,
+          false,
+          partial,
+          placeholders,
+          // Admission checks configuration values only, so agent text is never located.
+          undefined,
+        ),
       ]),
   );
   checkInitialWorkspaceFiles(result.agent?.initialWorkspaceFiles, "agent.initialWorkspaceFiles");
@@ -323,18 +417,21 @@ function validateRepositorySettings(agent, partial) {
   if (entries === undefined) {
     return;
   }
+  const listPath =
+    access !== undefined ? "agent.repositoryAccess.repositories" : "agent.repositoryBindings";
+  const limitPath = access !== undefined ? "agent.repositoryAccess" : "agent.repositoryBindings";
   if (!Array.isArray(entries) || entries.length > 16) {
-    fail("agent.repositoryAccess", "requires at most 16 repository selections.");
+    fail(limitPath, "requires at most 16 repository selections.");
   }
   const seen = new Set();
   for (const entry of entries) {
-    closedObject(entry, ["repositoryRef", "profile"], "agent.repositoryAccess.repositories");
-    selector(entry.repositoryRef, "agent.repositoryAccess.repositories.repositoryRef");
+    closedObject(entry, ["repositoryRef", "profile"], listPath);
+    selector(entry.repositoryRef, `${listPath}.repositoryRef`);
     if (Object.hasOwn(entry, "profile")) {
-      selector(entry.profile, "agent.repositoryAccess.repositories.profile");
+      selector(entry.profile, `${listPath}.profile`);
     }
-    if (!partial && seen.has(entry.repositoryRef)) {
-      fail("agent.repositoryAccess.repositories", "repository references must be unique.");
+    if (seen.has(entry.repositoryRef)) {
+      fail(listPath, "repository references must be unique.");
     }
     seen.add(entry.repositoryRef);
   }

@@ -28,6 +28,10 @@ and log polling. `agent_runtime_output.go` owns runtime log text, notices, and P
 diagnostics. `output.go` owns resource tables, structured output, and shared
 formatting helpers.
 
+Within `internal/occdev/`, `openshell_assets.go` owns local OpenShell chart and
+manifest selection, verified downloads, and source extraction. `openshell.go`
+owns their deployment, workspace resource rendering, and image import.
+
 ## Source ownership
 
 | Path                                                      | Responsibility                                                                                               |
@@ -116,6 +120,9 @@ selected emitted modules and minimal manifests in
 the standalone service/client images do not include the controller dependency
 graph. The full `deploy/runtime/Dockerfile` uses the repository root as its build
 context to include the emitted client router in the Agent image.
+
+Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
+and are embedded in rendered container commands; they ship with the chart.
 
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,

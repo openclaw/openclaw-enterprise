@@ -84,6 +84,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.provisionHarness === "function") &&
       (candidate.readSandboxLogs === undefined ||
         typeof candidate.readSandboxLogs === "function") &&
+      (candidate.observeHarness === undefined || typeof candidate.observeHarness === "function") &&
       typeof candidate.cleanup === "function"
     );
   }

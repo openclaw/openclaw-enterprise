@@ -103,7 +103,10 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer active revision: the worker
-marks it superseded without calling Compute. Sibling Agents have independent
+marks it superseded without calling Compute. A stop or deletion owns the
+revisions admitted before it was requested. PostgreSQL stamps both times on
+its own clock, so controller clock skew cannot exempt a running revision.
+Sibling Agents have independent
 queue lanes, while revisions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
 but rejects harness bindings for Agent deployment; manual
@@ -200,7 +203,8 @@ pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from the original operation creation time. Exceeding it fails the operation with
+measured from the original operation creation time on PostgreSQL's clock, so
+controller clock skew cannot move it. Exceeding it fails the operation with
 `CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
 credential rejection fails the deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
@@ -227,6 +231,16 @@ no longer matches the Agent's Backend, or whose credential is no longer issued,
 fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
+
+Terminal credential preparation also fails at once through
+[`ComputePreparationFailedError`](../drivers/compute.md#core-lifecycle-operations).
+The worker saves failure and exact revision cleanup in one transaction. Cleanup
+continues after worker restart and does not reopen the failed deployment. The
+selected Compute Driver owns the external failure condition and resource cleanup.
+It may supply bounded preparation evidence through the public contracts type;
+OCC validates and persists it before deleting resources. Deployment status exposes
+cleanup separately and retains failure evidence after cleanup and restart;
+see [Kubernetes OAuth bootstrap](../drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
 
 Replacement behavior depends on the Harness. Dedicated Codex prepares its
 revision-specific workload before the worker switches the Agent Service, but the
