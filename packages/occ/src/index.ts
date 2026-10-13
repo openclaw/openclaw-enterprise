@@ -858,6 +858,10 @@ const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_
  * sent again. A late original then meets an existing ConfigMap and fails AlreadyExists.
  */
 const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
+
+// What a Preset variable without a default renders to in a template's default values.
+const PRESET_VARIABLE_PLACEHOLDER = /\{\{ vars\.[A-Za-z_][A-Za-z0-9_]* \}\}/;
+
 /**
  * The most references a Secret read or delete examines. Each one costs authorization work,
  * so the bound keeps both the response and the IAM work small. Delete makes those decisions
@@ -4256,8 +4260,11 @@ export class OpenClawController {
         );
       }
       // The model provider and Compute rules first, as on Configuration create and update, so
-      // a value they refuse gets the same message wherever it is written.
-      validateModelProviderSettings(values);
+      // a value they refuse gets the same message wherever it is written. A variable without a
+      // default is still a placeholder here; the Configuration it fills is checked on create.
+      validateModelProviderSettings(values, {
+        unresolved: (text) => PRESET_VARIABLE_PLACEHOLDER.test(text),
+      });
       this.validateComputeConfiguration(values);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values);

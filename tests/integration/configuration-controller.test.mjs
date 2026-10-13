@@ -1456,6 +1456,8 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       invalidName("models.providers.gateway.models.0.request.headers"),
     ],
     [gateway({ models: {} }), listMessage],
+    // The list first, as on Kubernetes Compute, when a header name is refused too.
+    [gateway({ models: {}, headers: { "x-api-key ": sentinel } }), listMessage],
     [gateway({ models: { m: { id: "m", headers: { "x-api-key": sentinel } } } }), listMessage],
     [
       gateway({ baseUrl: "ftp://models.example.test" }),
@@ -1530,6 +1532,44 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     body: { name: "Accepted", template: { configuration: { values: accepted } } },
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  // A variable without a default is checked when its Configuration is created, not before.
+  const variables = {
+    url: { type: "string" },
+    api: { type: "string" },
+    header: { type: "string" },
+  };
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: gateway({
+            baseUrl: "{{ vars.url }}",
+            api: "{{ vars.api }}",
+            models: [{ id: "m", baseUrl: "https://{{ vars.url }}/v1" }],
+            headers: { "{{ vars.header }}": "v" },
+          }),
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+  // A default is checked like any value.
+  const defaulted = await request(context.app, "POST", presets, {
+    body: {
+      name: "Defaulted",
+      template: {
+        variables: { url: { type: "string", default: "ftp://models.example.test" } },
+        configuration: { values: gateway({ baseUrl: "{{ vars.url }}" }) },
+      },
+    },
+  });
+  assert.equal(defaulted.status, 400, JSON.stringify(defaulted.body));
+  assert.equal(
+    defaulted.body.error.message,
+    "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+  );
 });
 
 test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {

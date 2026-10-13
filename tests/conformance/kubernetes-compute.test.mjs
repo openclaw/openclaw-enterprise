@@ -9046,6 +9046,10 @@ test("model provider credential headers and request auth are refused on every pr
       "X-Request-Key",
       "X-Routing-Key",
       "Sec-WebSocket-Key",
+      "x-authorizations",
+      "X-Bearers",
+      "X-Otps",
+      "X-Hmacs",
     ].map((name) => [
       provider("p", { headers: { [name]: "${K}" } }),
       "models.providers.p.headers",

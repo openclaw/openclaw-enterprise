@@ -556,6 +556,7 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
             headers: {
               Authorization: "Bearer ${MODEL_TOKEN}",
               Authentication: "Bearer ${MODEL_TOKEN}",
+              "X-Authorization-V2": "Bearer ${MODEL_TOKEN}",
               "x-goog-api-key": "${GOOGLE_KEY}",
             },
             request: {

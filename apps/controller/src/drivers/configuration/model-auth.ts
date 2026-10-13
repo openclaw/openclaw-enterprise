@@ -100,7 +100,7 @@ export function validateModelCredentialReferences(
             validateReference(
               value,
               pointer(...headersPath, name),
-              /auth(?:entication|orization)$/i.test(name),
+              /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(name),
             );
           }
         }

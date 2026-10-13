@@ -26,7 +26,8 @@ A later change also matches the words `authentication`, `assertion`, `hmac`,
 `jwt`, `license`, `otp`, `pass`, `pin` and `pwd`, suffixes such as `-v2` and
 `.` separators, but saves partition, shard, sort and dedup keys; on every
 Compute, Configuration and Preset saves refuse a header name that is not a
-valid HTTP field name, and Preset saves check `models`, `baseUrl` and `api`.
+valid HTTP field name, and Preset saves check `models`, `baseUrl` and `api`
+(a variable without a default is checked once filled).
 
 **Who is affected.** Configurations with such a header, or with a `models`
 record, `null` or string on any provider.
