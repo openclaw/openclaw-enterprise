@@ -8926,8 +8926,7 @@ test("a Preset header name that waits on a variable is checked once filled", () 
     driver.validateConfiguration(values, { unresolved });
     assert.throws(() => driver.validateConfiguration(values), {
       name: "ConfigurationHarnessError",
-      message:
-        /^Configuration setting \S+ must use valid HTTP header names, not "\{\{ vars\.header \}\}"\.$/,
+      message: /^Configuration setting \S+ must use valid HTTP header names, not "…"\.$/,
     });
   }
   assert.throws(
@@ -8958,7 +8957,7 @@ test("model provider credential headers and request auth are refused on every pr
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
   const requestAuth = `must be unset or {mode: "provider-default"}: ${binding}`;
-  // Finding 1218: the refusal names the header, as the credential header refusal does.
+  // Finding 1218: the refusal names the header up to its first invalid character, never past it.
   const invalidName = (name) => `must use valid HTTP header names, not ${JSON.stringify(name)}`;
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
   const cases = [
@@ -9117,18 +9116,23 @@ test("model provider credential headers and request auth are refused on every pr
     ].map((name) => [
       provider("p", { headers: { [name]: "v" } }),
       "models.providers.p.headers",
-      // A zero-width character shows as ?.
-      invalidName(name.replace("\u200b", "?")),
+      invalidName(name === "" ? "" : `${/^[\w-]*/.exec(name)[0]}…`),
     ]),
     [
       provider("p", { request: { headers: { "authorization\t": "v" } } }),
       "models.providers.p.request.headers",
-      invalidName("authorization?"),
+      invalidName("authorization…"),
     ],
     [
       provider("p", { headers: { "X-Trace": "t", "Bad Header": "v" } }),
       "models.providers.p.headers",
-      invalidName("Bad Header"),
+      invalidName("Bad…"),
+    ],
+    // A value pasted into the name is never echoed.
+    [
+      provider("p", { headers: { "Authorization: Bearer sk-fixture-0123456789": "v" } }),
+      "models.providers.p.headers",
+      invalidName("Authorization…"),
     ],
   ];
   for (const [harness, model] of harnesses) {

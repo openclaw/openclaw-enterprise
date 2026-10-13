@@ -128,10 +128,12 @@ export function validateModelProviderSettings(
 /**
  * The requirement for a model provider header name that is not an HTTP field name. It names the
  * header, as the credential header refusal does, so a name a Preset variable filled is found
- * (finding 1218); never its value. A header name is not a secret; a long one is cut to fit the cap.
+ * (finding 1218), but only up to its first invalid character: a value pasted into the name
+ * ("Authorization: Bearer …") is never echoed, and the cut shows where the name went wrong.
  */
 export function invalidHeaderNameRequirement(name: string): string {
-  return `must use valid HTTP header names, not ${quotedSettingKey(name, 40)}`;
+  const valid = HTTP_FIELD_NAME_START.exec(name)?.[0] ?? "";
+  return `must use valid HTTP header names, not ${quotedSettingKey(valid.length < name.length ? `${valid}…` : valid, 40)}`;
 }
 
 // Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
@@ -160,6 +162,7 @@ function validateHeaderNames(
 // RFC 9110 field-name token. A name outside it (whitespace, zero-width or non-ASCII
 // lookalikes) is not a header any HTTP client sends, so it is refused rather than matched.
 const HTTP_FIELD_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HTTP_FIELD_NAME_START = /^[!#$%&'*+.^_`|~0-9A-Za-z-]*/;
 
 /** Whether `name` is a valid HTTP field name (an RFC 9110 token). */
 export function isHttpFieldName(name: string): boolean {
