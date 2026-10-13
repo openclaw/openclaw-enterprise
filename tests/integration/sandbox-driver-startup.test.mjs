@@ -1441,6 +1441,36 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
           compute.getGatewayEndpoint(target),
         ),
     });
+  // Account fields are opaque claims, even when their text resembles a Harness path.
+  const account = {
+    accountId: "workspace/home/node/account",
+    planType: "business",
+    userId: "user/home/node/identity",
+    accountUserId: "account-user/home/node/identity",
+    email: "dev/home/node/alice@example.test",
+    isFedramp: false,
+  };
+  const accountJson = JSON.stringify(account);
+  revision.harnessAuth = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000001",
+    credentialGatewayId: "openshell-credentials",
+    sourceType: "codex-oauth",
+    loginMode: "chatgptAuthTokens",
+  };
+  requirements.credentialAttachments[0] = {
+    ...requirements.credentialAttachments[0],
+    sourceId: revision.harnessAuth.sourceId,
+    externalChatgptAuth: {
+      accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
+      ...account,
+    },
+  };
+  requirements.loginMode = revision.harnessAuth.loginMode;
+  requirements.environment.push(
+    { name: "CODEX_LOGIN_MODE", value: requirements.loginMode },
+    ...compute.credentialSourceEnvironment(revision, requirements.credentialAttachments),
+  );
   assert.match(nodeSetup.url, new RegExp(`^wss://${routeHost.replaceAll(".", "\\.")}/`));
 
   await driver.ensureNamespace(context);
@@ -1466,6 +1496,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.equal(requests[0].spec.environment.TMPDIR, "/tmp");
   assert.equal(requests[0].spec.environment.CODEX_HOME, "/sandbox/.openclaw-runtime/home/.codex");
   assert.equal(requests[0].spec.environment.NODE_PATH, "/home/node_modules");
+  assert.equal(requests[0].spec.environment.OCE_CODEX_CHATGPT_ACCOUNT, accountJson);
   const nodeStateDirectory = requests[0].spec.environment.OPENCLAW_NODE_STATE_DIR;
   assert.match(nodeStateDirectory, /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u);
   assert.equal(requests[0].spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/custom-workspace");

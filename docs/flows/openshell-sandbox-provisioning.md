@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-13
-last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
+last_updated_session: authoring-run/a67c01b5-f0f7-434b-8183-d2dcc6941836
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -161,22 +161,20 @@ and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
 For a dedicated revision with `provisionHarness`, Compute derives Harness image,
 command, labels, environment, workspace mounts, optional workload identity, and
 resources from the same Deployment shape used by the regular Kubernetes path.
-For a first revision, Compute starts the dedicated Agent Gateway with its
-existing fail-closed transport target while the direct Agent Service remains
-inactive. It returns an incomplete readiness result until that Gateway is ready
-and its Agent-owned workspace-node setup Secret exists. No credential attachment,
-runtime provider, or Sandbox creation occurs during that wait. Compute then adds
-the setup Secret reference to the derived workload before invoking the Sandbox
-Driver.
-The local OpenShell profile disables projected workload identity. If it is
-enabled, OpenShell rejects the revision before Gateway mutation because the
-pinned API cannot preserve the exact Agent ServiceAccount and token.
-For a `credential_source` revision it renders only `CODEX_LOGIN_MODE=api_key`,
-no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
-attachments, one provider name per source, go into
-`requirements.credentialAttachments`. Compute passes those requirements and the
-immutable revision to OpenShell instead of creating the Deployment itself.
-For Codex, it reads the exact Agent transport Secret in the control plane and
+Compute starts the first Agent Gateway with a fail-closed target; the Agent
+Service stays inactive. Preparation waits for Gateway readiness and the
+Agent-owned workspace-node setup Secret before attaching credentials or creating
+a runtime provider or Sandbox, then passes the Secret reference with Harness
+requirements.
+OpenShell refuses projected workload identity before Gateway mutation: the pinned
+API cannot preserve the exact Agent ServiceAccount and token. The local profile
+disables it.
+For `credential_source`, Compute calls `CredentialGatewayDriver.attachForRevision`
+without a model Secret. Attachments carry provider names in
+`requirements.credentialAttachments`; external ChatGPT sources carry a
+placeholder and account metadata for `CODEX_LOGIN_MODE=chatgptAuthTokens`.
+Other sources use `api_key`. OpenShell provisions the frozen revision.
+For Codex, Compute reads the exact Agent transport Secret in the control plane and
 adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
 plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
 requirements and removes their ConfigMap paths from the remaining environment.
@@ -185,10 +183,10 @@ requirements and removes their ConfigMap paths from the remaining environment.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-OpenShell accepts only dedicated Codex or OpenClaw revisions pinned to the
-selected Driver. It serializes Kubernetes, filesystem, process, and
-binary-scoped network policy using v0.1 messages covered by the independent
-`v0.1.3-pre.2` wire fixture.
+OpenShell accepts dedicated Codex or OpenClaw revisions pinned to this Driver.
+It serializes Kubernetes, filesystem, process, and binary-scoped network policy
+using v0.1 messages covered by the independent `v0.1.3-pre.2` wire fixture.
+`environment` preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation.
 Landlock is a hard requirement; unsupported enum spellings, inherited object
 keys, the old `passthrough` TLS spelling, or policies without executable paths
 fail before launch. Gateway readiness requires positive `timeoutMs`. Startup
@@ -357,6 +355,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 18:22: Preserve opaque account metadata during Sandbox environment relocation. (authoring-run/a67c01b5-f0f7-434b-8183-d2dcc6941836 - 7c25b823f17e93f62d7ba8abea23e65df4b36fef)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 

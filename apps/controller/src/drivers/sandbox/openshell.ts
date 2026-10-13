@@ -408,9 +408,12 @@ function environment(
         `The pinned OpenShell release cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
+    // Account claims are opaque data, not paths inside the Harness filesystem.
     result[nonempty(entry.name, "Environment variable name")] =
-      workspaceMountPaths.get(entry.value) ??
-      entry.value.replaceAll(/\/home\/node(\/|$)/g, `${OPENSHELL_HOME}$1`);
+      entry.name === "OCE_CODEX_CHATGPT_ACCOUNT"
+        ? entry.value
+        : (workspaceMountPaths.get(entry.value) ??
+          entry.value.replaceAll(/\/home\/node(\/|$)/g, `${OPENSHELL_HOME}$1`));
   }
   result.HOME = OPENSHELL_HOME;
   result.TMPDIR = OPENSHELL_TEMPORARY;
