@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-09
-last_updated_session: fix-962-964
+updated: 2026-10-10
+last_updated_session: authoring-run/cda14eba-9150-4d7e-9956-e276bfed4c64
 ---
 
 # Installation Driver Package Loading Flow
@@ -22,8 +22,7 @@ without startup YAML uses the defaults traced in [platform startup](platform-sta
 - Source:
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
   `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`,
-  `apps/controller/src/composition/production.ts:composeProduction`, and
-  `apps/controller/src/worker.ts:ControllerWorker.start`.
+  `apps/controller/src/composition/production.ts:composeProduction`.
 - Assumptions: An operator has installed and selected the reviewed package;
   [Install Driver packages](../reference/drivers/selection.md) owns installation,
   package formats, configuration examples, private registries, and deployment.
@@ -60,7 +59,9 @@ graph TD
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
-implementation identity comes from its installed metadata. Secret selection is
+implementation identity comes from its installed metadata. The installed root
+`package.json` accepts one leading UTF-8 byte order mark, as Node does; remaining
+text must still be a JSON object with the selected name and exact version. Secret selection is
 required in this YAML path and accepts only bundled Kubernetes Secrets.
 Optional `service_account` selection identifies the bundled Backend member;
 it has no package-loading path. The
@@ -78,7 +79,9 @@ ends that condition branch. The selected target is resolved as a URL inside the
 package and percent-decoded; it must name an existing file exactly, with no
 extension, directory index or `main` lookup, and an encoded separator or
 directory is refused. Package containment, the compiled ESM check, and import
-must then succeed before Driver construction. The entry must be `.mjs`, or `.js`
+must then succeed before Driver construction. Containment rejects only a parent
+directory path; an in-package filename that begins with two dots remains valid,
+matching Node's export resolution. The entry must be `.mjs`, or `.js`
 whose nearest `package.json` (searched from the entry's directory up to the
 package root, stopping at a `node_modules` directory, as Node's import does)
 declares `"type": "module"`. The refusal names that `package.json`, or says the
@@ -173,6 +176,10 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 21:02: Keep valid in-package Driver entry filenames that begin with two dots while still refusing parent-directory escapes. (issue-2323 - 5fad4d023a8896ac6bc05a201e6733ee256845b9)
+
+- 2026-10-10 11:34: Read installed Driver root manifests with Node-compatible leading UTF-8 byte order marks. (authoring-run/cda14eba-9150-4d7e-9956-e276bfed4c64 - f8a837e33b5c03bc0c92065e979485ee06960150)
 
 - 2026-10-09 17:39: Name the deciding `package.json` in the compiled ESM refusal. (fix-962-964)
 

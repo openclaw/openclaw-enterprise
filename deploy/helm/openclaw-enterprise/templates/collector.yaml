@@ -6,25 +6,6 @@
 {{- if or (not $collector.configSecretName) (not $collector.envSecretName) -}}
 {{- fail "logging.collector requires dedicated operator-created config and environment Secrets" -}}
 {{- end -}}
-{{- $protected := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName "chatgpt" .Values.backend.chatgpt.secretName -}}
-{{- if and .Values.auth.github .Values.auth.github.enabled -}}{{- $_ := set $protected "GitHub sign-in" .Values.auth.github.secretName -}}{{- end -}}
-{{- if and .Values.auth.google .Values.auth.google.enabled -}}{{- $_ := set $protected "Google sign-in" .Values.auth.google.secretName -}}{{- end -}}
-{{- if and .Values.auth.oidc .Values.auth.oidc.enabled -}}{{- $_ := set $protected "OIDC sign-in" .Values.auth.oidc.secretName -}}{{- end -}}
-{{- if .Values.gatewayRouting.enabled -}}{{- $_ := set $protected "gateway API key" .Values.gatewayRouting.apiKeySecretName -}}{{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
-{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
-{{- $_ := set $protected (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key) -}}
-{{- end -}}
-{{- end -}}
-{{- if .Values.executionCluster.enabled -}}
-{{- $_ := set $protected "execution API kubeconfig" .Values.executionCluster.apiKubeconfigSecretName -}}
-{{- $_ := set $protected "execution worker kubeconfig" .Values.executionCluster.workerKubeconfigSecretName -}}
-{{- end -}}
-{{- range $name, $secret := $protected -}}
-{{- if and $secret (or (eq $collector.configSecretName $secret) (and $collector.envSecretName (eq $collector.envSecretName $secret))) -}}
-{{- fail (printf "logging.collector Secrets must be dedicated and cannot reuse the %s Secret" $name) -}}
-{{- end -}}
-{{- end -}}
 {{- $exporter := $collector.exporter -}}
 {{- if ne (empty $exporter.namespaceLabels) (empty $exporter.podLabels) -}}
 {{- fail "logging.collector.exporter requires both namespaceLabels and podLabels" -}}
@@ -199,10 +180,10 @@ spec:
         {{- else }}
         - namespaceSelector:
             matchLabels:
-              {{- toYaml $exporter.namespaceLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.exporter.namespaceLabels" "value" $exporter.namespaceLabels) | nindent 14 }}
           podSelector:
             matchLabels:
-              {{- toYaml $exporter.podLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.exporter.podLabels" "value" $exporter.podLabels) | nindent 14 }}
         {{- end }}
       ports:
         - protocol: TCP
@@ -224,10 +205,10 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              {{- toYaml $collector.metrics.scraperNamespaceLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.metrics.scraperNamespaceLabels" "value" $collector.metrics.scraperNamespaceLabels) | nindent 14 }}
           podSelector:
             matchLabels:
-              {{- toYaml $collector.metrics.scraperPodLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "logging.collector.metrics.scraperPodLabels" "value" $collector.metrics.scraperPodLabels) | nindent 14 }}
       ports:
         - protocol: TCP
           port: 8888

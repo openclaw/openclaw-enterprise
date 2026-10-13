@@ -1631,7 +1631,9 @@ test(
       [48, "preCodexPatSources"],
       [49, "preAgentCredentialSources"],
       [50, "preCredentialWithdrawalRequester"],
-      [51, "preCanonicalHarnessAuth"],
+      [51, "preProvisioningDeploymentOutcome"],
+      [52, "preComputePreparationFailureEvidence"],
+      [53, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1665,7 +1667,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "externalchatgpt", { prefix: 51 });
+    const db = await historyDatabase(context, fixture, "externalchatgpt", { prefix: 53 });
     const namespaceId = await seedCanonicalData(db);
     const sourceId = `cs_${randomUUID()}`;
     await db.app.query(
@@ -1975,7 +1977,9 @@ test(
       [48, "preCodexPatSources"],
       [49, "preAgentCredentialSources"],
       [50, "preCredentialWithdrawalRequester"],
-      [51, "preCanonicalHarnessAuth"],
+      [51, "preProvisioningDeploymentOutcome"],
+      [52, "preComputePreparationFailureEvidence"],
+      [53, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2055,7 +2059,9 @@ test(
       [48, "preCodexPatSources"],
       [49, "preAgentCredentialSources"],
       [50, "preCredentialWithdrawalRequester"],
-      [51, "preCanonicalHarnessAuth"],
+      [51, "preProvisioningDeploymentOutcome"],
+      [52, "preComputePreparationFailureEvidence"],
+      [53, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2067,7 +2073,7 @@ test(
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT follows both trigger replacements; prefix 51 instead
-        // rejects 0052's function replacement before its auth-grammar validation.
+        // rejects 0054's function replacement before its auth-grammar validation.
         await historyAdmin(
           db,
           db.name,

@@ -173,6 +173,12 @@ function classifyReceipts(receipts, manifest) {
         return "preCredentialWithdrawalRequester";
       }
       if (receipts.length === 51) {
+        return "preProvisioningDeploymentOutcome";
+      }
+      if (receipts.length === 52) {
+        return "preComputePreparationFailureEvidence";
+      }
+      if (receipts.length === 53) {
         return "preCanonicalHarnessAuth";
       }
       return "providerCompleted";
@@ -268,6 +274,12 @@ function classifyReceipts(receipts, manifest) {
     return "preCredentialWithdrawalRequester";
   }
   if (receipts.length === 51) {
+    return "preProvisioningDeploymentOutcome";
+  }
+  if (receipts.length === 52) {
+    return "preComputePreparationFailureEvidence";
+  }
+  if (receipts.length === 53) {
     return "preCanonicalHarnessAuth";
   }
   refuse("an incomplete or unsupported development history is installed");

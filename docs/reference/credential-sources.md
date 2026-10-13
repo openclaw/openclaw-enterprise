@@ -122,22 +122,29 @@ deploy it.
 
 ## Update a source
 
+Device-authorized sources reject PATCH with `409` before reading Secrets or
+changing refresh state. Sign in again and replace the Agent binding instead.
+
 Updating the underlying Secret does not change the gateway's copy. To push a new
 value, send
 `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`. The
 caller needs exact `credential_source:update` and `secret:operate` on every
 Secret the update reads:
 
-- An empty body `{}` re-reads the source's current Secrets.
+- An empty body `{}` re-reads the source's current Secrets. An
+  `oauth2-refresh-token` source refuses it; see below.
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
   instead.
 
-Updates require a `ready` source and return `200` with live gateway `status`.
-Gateway failures return `503` without changing Secret references. The gateway
-updates before OCC commits; repeating an interrupted request converges. An
-`absent` gateway copy also returns `503`; delete and re-register the source.
+A successful update returns `200` with the source and its live gateway `status`.
+Only a `ready` source can be updated. A gateway failure returns `503` and leaves
+the Secret references unchanged; once the gateway may have changed, the failure
+is audited. The gateway is updated before OCC commits, so
+if the request fails after that, repeating the same request converges. If the
+gateway no longer holds a copy (`absent`), the update also returns `503`;
+delete the source and register it again.
 
 Migration `0048_administrator_credential_source_grants` adds the current
 `credential_source` grants, including `update`, to an unchanged built-in
@@ -152,14 +159,21 @@ Updated static values reach new Harness processes only. To rotate a key:
    `secrets` if you created a new Secret.
 3. Redeploy each Agent that uses the source.
 
-A `refresh`-type source keeps no static value: an update replaces its refresh
+A Secret-backed `refresh` source keeps no static value: an update replaces its refresh
 material and mints a new token, and OCC commits replacement Secret references
 only after that mint succeeds. If the mint fails, the update returns `503`, but
 the gateway keeps the new material; the source stays `ready` and its
 `status.refresh` reports the failure. OCC does not restore the previous
-material. Send `{}` to re-apply the recorded Secrets, or update with corrected
-ones. Running Agents lose the source's token within about 10 seconds of an
-update, even a failed one, and receive none until you redeploy them.
+material; update again with corrected Secrets. Running Agents lose the source's
+token within about 10 seconds of an update, even a failed one, and receive none
+until you redeploy them.
+
+The issuer can replace an `oauth2-refresh-token` source's refresh token each
+time the gateway uses it, so the recorded Secret may hold an already-used
+token. Re-sending it can fail or make the issuer revoke the sign-in, so an
+update that keeps the `refresh_token` Secret, including `{}`, returns `409`.
+Complete a new sign-in, store its refresh token in a new Secret, and reference
+that Secret.
 
 ## Rotate a refresh source
 
@@ -170,12 +184,14 @@ immediately, for example after a suspected leak, send
 or run `occ credential-source rotate ID`. The caller needs exact
 `credential_source:update`; rotation reads no Secret. The request returns `200`
 with the source and its `status.refresh`, `409` for a static source, and `503`
-when the gateway is unavailable or minting fails. Rotation does not revoke the
-previous token at the issuer, and Agents need no redeploy.
+when the gateway is unavailable or minting fails; a failed mint is audited.
+Rotation does not revoke the previous token at the issuer, and Agents need no
+redeploy.
 
 When `status.refresh.recoveryAction` is `reauthorize`, the issuer revoked the
-refresh token. Complete a new sign-in, store its refresh token in a Secret, and
-update the source to reference it.
+refresh token. For a Secret-backed source, store new authorization material in a
+new Secret and update the source. For device authorization, sign in again and
+replace the Agent binding.
 
 ## Withdraw a source from an Agent
 

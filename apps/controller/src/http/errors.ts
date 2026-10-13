@@ -109,7 +109,9 @@ function cappedPointer(segments: readonly string[]): string {
     }
     if (path === "") {
       path = "/";
-      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
+      // At most 511 characters of the first segment fit, so only its first 1,024 are split
+      // into pieces: a multi-megabyte key costs no more than a short one (finding 1131).
+      for (const piece of segment.slice(0, 1024).match(/~[01]|[^]/gu) ?? []) {
         if (path.length + piece.length > 512) {
           break;
         }

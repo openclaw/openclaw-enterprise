@@ -97,11 +97,6 @@
       "count": 1
     }
   },
-  "tests/conformance/secret-occ.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "tests/conformance/test-files.test.mjs": {
     "no-empty": {
       "count": 1
@@ -110,11 +105,6 @@
   "tests/helpers/ci-logging.mjs": {
     "no-unused-vars": {
       "count": 5
-    }
-  },
-  "tests/helpers/dev-up.mjs": {
-    "no-unused-vars": {
-      "count": 1
     }
   },
   "tests/helpers/envoy-workspace-gateway.mjs": {

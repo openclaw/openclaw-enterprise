@@ -1361,6 +1361,28 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     agentId: agent.id,
     configurationId: codexConfiguration.id,
   });
+  const mismatch = (error) =>
+    error instanceof ConfigurationHarnessError &&
+    error.message ===
+      "The Configuration selects the Codex Harness, which needs dedicated execution; this Agent uses embedded execution. Change the Agent's execution mode or its Configuration.";
+  // Agent save given the deploy route's Harness resolver refuses the same pair with the same
+  // message (finding 1117). The update above, without it, stands in for an Agent stored earlier.
+  await assert.rejects(
+    controller.updateAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id, configurationId: codexConfiguration.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    mismatch,
+  );
+  await assert.rejects(
+    controller.createAgent(
+      administrator,
+      { namespaceId: namespace.id, name: "Mismatched", configurationId: codexConfiguration.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    mismatch,
+  );
 
   // An explicit Codex selection cannot run in an embedded Agent or use OpenClaw's approval.
   // The mismatch is the caller's to fix, so it is named rather than reported as a missing dependency.

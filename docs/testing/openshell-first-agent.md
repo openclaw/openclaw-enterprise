@@ -13,9 +13,11 @@ branch `feat/openshell-first-agent-codex`. Start a new session with
 
 The successful path depends on all of these behaviors:
 
-- The development launcher installs the pinned OpenShell `v0.1.3-pre.2`
-  gateway, sandbox runtime, supervisor, Agent Sandbox controller, cert-manager,
-  and private Envoy routing into a fresh k3d cluster.
+- The checkpoint used OpenShell `v0.1.3-pre.2`. The development launcher now
+  selects the [current pins](openshell-oauth.md#prepare-images-and-trust); repeat
+  the proof for those images. It installs the gateway, sandbox runtime, supervisor,
+  Agent Sandbox controller, cert-manager, and private Envoy routing into a fresh
+  k3d cluster.
 - Single-cluster Kubernetes Compute creates one tenant namespace containing the
   dedicated Gateway and the provider-owned Harness. The OpenShell Workspace uses
   that same physical name.

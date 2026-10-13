@@ -112,7 +112,8 @@ packages, and development dependencies are unsupported. Installation and image
 builds disable npm lifecycle scripts, so packages must contain precompiled
 JavaScript.
 
-A standard npm package manifest provides identity and an ESM entry point:
+A standard npm package manifest provides identity and an ESM entry point. One
+leading UTF-8 byte order mark is accepted, as it is by Node:
 
 ```json
 {

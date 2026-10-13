@@ -183,6 +183,15 @@ export const AgentRuntimeLogsQuery = Type.Object(
     pod: Type.Optional(
       Type.String({ minLength: 1, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }),
     ),
+    container: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 253,
+        pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+        description:
+          "Actual container in an owned Pod, including init containers. Defaults to the first advertised main container.",
+      }),
+    ),
     previous: Type.Optional(Type.Union([Type.Literal("true"), Type.Literal("false")])),
     tailLines: Type.Optional(
       Type.String({
@@ -208,7 +217,7 @@ export const AgentRuntimeLogsQuery = Type.Object(
     cursor: Type.Optional(
       Type.String({
         maxLength: 2048,
-        pattern: "^v1\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
+        pattern: "^v[12]\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
         description: "Opaque cursor returned by the previous page of the same view.",
       }),
     ),
@@ -354,7 +363,7 @@ export const UpdateCredentialSourceBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
   },
 );
 

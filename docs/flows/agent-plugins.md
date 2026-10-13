@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-09
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-13
+last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
 ---
 
 # Agent Plugin Deployment Flow
@@ -135,7 +135,22 @@ release metadata, and configuration resolve later.
 `apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeSpecForRevision`
 
 Compute validates admitted state, Driver, and Harness. Kubernetes projects the
-nonsecret request; Docker uses bounded environment delivery.
+nonsecret request; Docker uses bounded environment delivery. For Codex, Compute
+writes the policy the Gateway runs into native `approval_policy` before startup
+validation: the configured `appServer.approvalPolicy`, with `on-failure` as
+`on-request`. Omission preserves native defaults; incompatible explicit policies
+remain subject to reviewer checks. At Agent save, provisioning and deployment, the Codex
+PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
+`on-failure`, because an omitted policy lets the Gateway pick one the startup
+check cannot see. Configuration save and Compute Drivers refuse policies the
+Gateway refuses at load, such as `untrusted`.
+
+The Kubernetes ConfigMap is immutable and per revision. A revision prepared
+by an earlier controller keeps its earlier `config.toml` (without
+`[plugins._default]` (#508), without `approval_policy` (#1995), or with
+`on-failure` as written) until the Agent is deployed again; `KubernetesComputeDriver.reconcilePluginRuntimeConfigMap` refuses any
+other difference. OpenShell dedicated Codex has no such allowance and needs a
+new deployment after that upgrade.
 
 SSH Compute rejects nonempty plugin maps and Agent default plugin approver
 policies before host effects.
@@ -256,6 +271,14 @@ revoke access to a still-running old Harness or an established connection. For a
 changed peer, the supervisor publishes non-ready, restarts only OpenClaw and
 rechecks peer startup, Pod, successes and failures after it serves. Changed or
 unavailable peers trigger container restart.
+For writable native-admin configuration, recovery reads the bridge baseline from
+the read-only managed snapshot. A Pod-local record binds the last and pending
+generated bridges to the revision and snapshot hash before configuration writes.
+Process and same-Pod container restarts rebuild only a matching generated bridge.
+Other native edits survive; conflicting bridge edits retain the existing refusal.
+An unreadable or mismatched record holds startup unready, reporting runtime
+failure `peer-bridge-record` (`UNAVAILABLE`), and logs the remedy: replace the
+Pod, which restores the snapshot and clears this private record.
 During an outage, the supervisor reports unready. Kubernetes propagates that
 state asynchronously, so the signal alone is not a per-request traffic fence.
 If OpenClaw exits while the supervisor waits for its peer, the wrapper exits
@@ -325,6 +348,20 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
+- 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
+
+- 2026-10-10 04:49: Preserve writable native configuration during Harness peer recovery and same-Pod container restarts. (codex/thirty-compute-07-oct10 - 8e5a06ce)
+
+- 2026-10-10 04:10: Check the Codex automatic reviewer policy at Agent create and update too. (fix-994-995)
+
+- 2026-10-10 04:00: Hold an unusable writable-configuration peer bridge record unready with its file and remedy named. (fix-994-995)
+
+- 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
+
+- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
 
 - 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
 

@@ -114,7 +114,7 @@ block deployment and require operator investigation. A
 successful `202` means the immutable revision was admitted and its work queued;
 it does not mean the workload is ready. Later Configuration edits or changes to
 an account's selected credential reference affect only future deployments. A
-snapshot freezes a Secret reference, not the value stored at that reference.
+snapshot freezes a Secret reference, not its stored value.
 
 The separate PostgreSQL controller worker prepares the exact Agent gateway and
 revision, sets `activeRevisionId`, activates its route, and retires its
@@ -126,8 +126,7 @@ and topologies before deployment. Kubernetes Compute starts either an Agent-owne
 Codex workload with its separate ServiceAccount, or one embedded combined
 gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
-Both embedded and dedicated modes are supported in production, subject to the
-selected Drivers' mode constraints. Unless Compute requests
+Unless Compute requests
 [exclusive replacement](../drivers/compute.md#production-revision-stages), as
 Kubernetes does for dedicated Agents, a replacement must preserve its
 predecessor's Service selector until activation succeeds. Without an
@@ -138,8 +137,7 @@ the worker passes private setup state to Compute before starting execution.
 Compute must support initialization in the exact Agent's durable workspace;
 unsupported Drivers or storage layouts fail deployment. Native setup, file
 application, and the durable completion marker must succeed before the gateway
-or Harness runs. A `202` deployment response does not establish that this gate
-has passed. After activation, OCC clears staged contents and retains setup
+or Harness runs. After activation, OCC clears staged contents and retains setup
 identity and completion metadata. Later revisions check completion without
 reapplying the original text, preserving edits made in the live workspace.
 
@@ -162,17 +160,18 @@ the setting and what is accepted, never its value, before any revision is create
 ### Pending deployment progress
 
 While a revision is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live Pod
+when Compute knows. Kubernetes reports `HARNESS_CREDENTIAL_BOOTSTRAP_PENDING`
+while an OAuth bootstrap Job runs, `REVISION_UNSCHEDULABLE` when a live Pod
 of the revision has `PodScheduled` `False` with reason `Unschedulable`, for
 example for want of node memory, and `WORKSPACE_NODE_PENDING` when the Harness
 and gateway are ready and only the workspace node's gateway connection is
 outstanding. Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
-not connected. Otherwise the code is `REVISION_INCOMPLETE`. These codes change no
-outcome: the revision stays pending until it is ready, a held runtime failure
-ends it, or the convergence deadline passes. The worker rechecks an unready
-revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
+not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
+pending until it is ready, a held runtime failure ends it, or the convergence
+deadline passes, which also retires a pending bootstrap. The worker rechecks an
+unready revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
 apply its workspace node, so activation fails at once with
@@ -186,14 +185,33 @@ A dependency that fails while it converges is pending too.
 through its route yet (for example, the route answers 404 until the gateway
 proxy has the new route, or 503 until it has the ready Pod), and
 `KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
-connect, or got 429 or 5xx. Both codes apply during preparation and
-activation alike. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
+connect, or got 429 or 5xx. Both apply during preparation and
+activation. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
 refuses new requests from the controller because it holds OpenShell's limit of
 durable request admissions; see the
 [OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
 The worker retries on the same cadence without spending its
 `OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the convergence
 deadline fails the deployment with its own code.
+
+`REFUSED_CANDIDATE_STOP_PENDING` means the worker refused the candidate but could
+not yet stop its workload, such as Pods stuck terminating. The
+message names the refusal, such as `AUTHORIZATION_DENIED`, which `error` carries
+once the stop succeeds. The wait has no deadline or attempt limit, since the
+refused version could still serve. Each failed stop doubles the recheck, from the
+cadence above up to 5 minutes, and waits at least four times the stop's duration;
+every try moves `lastAttempt.at`, and the worker log's `worker.completed` `cause`
+says why the stop fails. If an
+authorization or backend refusal lifts (`deploy` granted again), the deployment
+continues, or past its convergence deadline stops the candidate and fails
+`CONVERGENCE_DEADLINE_EXCEEDED`; other refusals stand. A deployment that a
+newer revision supersedes still finishes the stop, even of a lifted refusal, and
+then ends superseded.
+
+`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
+still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
+the previous version's gateway to drain. Meanwhile the worker runs other due work,
+then repeats the stop without spending attempts.
 
 ### Model check failure cause
 
@@ -202,15 +220,16 @@ deployment error's `data.runtimeFailure` names the runtime component, check,
 time and, when the runtime classified it, a `cause`: a `kind` and an optional
 `detail` token from this closed vocabulary.
 
-| `kind`           | Meaning                                                    | `detail`                                                                                                                                                           |
-| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                      |
-| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
-| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                 |
-| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                               |
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
+| ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                                    |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
 
 OpenClaw's `format` covers an unknown model and a request the provider rejected
-as malformed, such as invalid provider settings. A rejected credential is
+as malformed, such as invalid provider settings. A 429 or usage limit is
+`rate_limit`. A rejected credential is
 `RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
 neither has a cause. The runtime builds a cause only from these tokens, and
 Compute drops any other cause while keeping the code, so it never carries
@@ -228,7 +247,16 @@ activation finishes.
 If a revision fails before the worker sets the pointer, the pointer is
 unchanged. After a failed first deployment, the Agent has no active revision.
 With [exclusive replacement](../drivers/compute.md#production-revision-stages),
-the unchanged pointer names a predecessor that was already stopped.
+the unchanged pointer names a predecessor that was already stopped, so nothing
+serves until a new revision activates. When the worker refuses such a candidate
+or any first deployment, for example because its deploying actor lost `deploy`
+or a credential source was revoked, it stops the candidate's workload and
+records the refusal only after the stop succeeds (until then it waits as
+[`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
+candidates stay until a later successful deployment, stop or delete. A candidate
+whose runtime failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
+show the cause; the next deployment stops them.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
 shared gateway, and the new gateway runs the startup model probe. If that

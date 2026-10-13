@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
   AgentId,
@@ -1088,6 +1089,24 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    cleanup: Type.Union(
+      [
+        Type.Null(),
+        Type.Object(
+          {
+            status: Type.Union(
+              ["queued", "running", "succeeded", "failed"].map((status) => Type.Literal(status)),
+            ),
+            nextAttemptAt: Type.Union([Timestamp, Type.Null()]),
+          },
+          { additionalProperties: false },
+        ),
+      ],
+      {
+        description:
+          "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed.",
+      },
+    ),
     progress: Type.Union(
       [
         Type.Null(),
@@ -1132,6 +1151,10 @@ export const AgentDeploymentStatusSchema = Type.Object(
             message: Type.String({ minLength: 1 }),
             data: Type.Optional(
               Type.Union([
+                Type.Object(
+                  { preparation: ComputePreparationFailureEvidenceSchema },
+                  { additionalProperties: false },
+                ),
                 Type.Object(
                   {
                     timeoutMs: Type.Integer({ minimum: 1 }),
@@ -1420,7 +1443,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
               },
               { additionalProperties: false },
             ),
-            { maxItems: 16 },
+            { maxItems: 256 },
           ),
           available: Type.Boolean(),
           unavailableCode: Type.Optional(Type.Literal("NO_POD")),
@@ -1429,6 +1452,50 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
         { additionalProperties: false },
       ),
       { maxItems: 4 },
+    ),
+    harness: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Union([
+            Type.Literal("running"),
+            Type.Literal("starting"),
+            Type.Literal("lost"),
+            Type.Literal("unknown"),
+          ]),
+          code: Type.Optional(
+            Type.Union([
+              Type.Literal("SANDBOX_MISSING"),
+              Type.Literal("SANDBOX_DELETING"),
+              Type.Literal("SANDBOX_STOPPED"),
+              Type.Literal("SANDBOX_FAILED"),
+              Type.Literal("HARNESS_EXITED"),
+              Type.Literal("HARNESS_RESTARTING"),
+              Type.Literal("UNAVAILABLE"),
+            ]),
+          ),
+          exitCode: Type.Optional(
+            Type.Integer({
+              minimum: -2147483648,
+              maximum: 2147483647,
+              description:
+                "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+            }),
+          ),
+          restarts: Type.Optional(
+            Type.Integer({
+              minimum: 1,
+              maximum: 4294967295,
+              description:
+                "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+            }),
+          ),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+        },
+      ),
     ),
   },
   { additionalProperties: false },

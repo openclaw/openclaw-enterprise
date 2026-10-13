@@ -210,7 +210,8 @@ the two-cluster profile applies them separately to each physical target. The
 [installation profiles](../../guides/deploy/installation-profiles.md) explain
 the measured memory defaults. Production requires
 `images.requireImmutableDigest: true` and lowercase `@sha256:` image digests.
-Quote whole-core quantities, such as `cpu: "4"`.
+Quote quantities, such as `cpu: "4"`. Each CPU/memory request must fit its limit;
+startup refuses invalid pairs before resource creation.
 
 See [network configuration](kubernetes-compute/networking-and-isolation.md#networking)
 for DNS, gateway clients, proxy trust, and egress requirements.

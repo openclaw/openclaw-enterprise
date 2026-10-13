@@ -5,22 +5,22 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
 
-const openShellVersion = "0.1.3-pre.2";
-const openShellRevision = "021400be8af471f8669369e679de3e18cf0bd672";
+const openShellVersion = "0.1.4-dev.47+g6a6401b9c";
+const openShellRevision = "6a6401b9c359b66a3202f584a715fc24c13429d6";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
   "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
 const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellWorkspaceChartArchive = `openshell-workspace-${openShellVersion}.tgz`;
-const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
-const openShellSourceRoot = `OpenShell-${openShellVersion}`;
-const openShellSourceSha256 = "77afc69ad28e55f11a05cbc68d6dc5a6cc5c989a68d0f9d55ae0868af2b3f476";
+const openShellSourceArchive = `openshell-${openShellRevision}.tar.gz`;
+const openShellSourceRoot = `OpenShell-${openShellRevision}`;
+const openShellSourceSha256 = "e75496cad832538be22f067613d89ef75e4516af99818173f2cfa7f9ea72b688";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
-const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellRevision}@sha256:17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea`;
-const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellRevision}@sha256:b46ed57b080946d0fe80490dbe1441ebf4a83c6eec79369ddbcfc49ec19dc0cf`;
-const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellRevision}@sha256:971d71f45f677a7b1084385322bae4ac6fd09e9450e680684ab79a04d07c5c9f`;
+const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellRevision}@sha256:b89e0c40f9a21b6e518d9e8613cb9d236ead88b71ac638a00c98900d380f3ea3`;
+const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellRevision}@sha256:521607576cab69b9b2ba6f47b04f03088d3e6f7442170c67b23c7d8028a265cc`;
+const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellRevision}@sha256:6d31430ea860125fca0cb1b1d3c184d93c4a3a74f3df6f877b9c9199215d6810`;
 const podSecurityAdmissionConfigName = "openshell-pod-security-admission.yaml";
 const podSecurityAdmissionContainerPath = `/etc/openclaw-ci/${podSecurityAdmissionConfigName}`;
 
@@ -92,7 +92,7 @@ async function ensurePrivateDirectory(path) {
 }
 
 function openShellSourceUrl() {
-  return `https://github.com/NVIDIA/OpenShell/archive/refs/tags/v${openShellVersion}.tar.gz`;
+  return `https://codeload.github.com/NVIDIA/OpenShell/tar.gz/${openShellRevision}`;
 }
 
 function agentSandboxManifestUrl() {

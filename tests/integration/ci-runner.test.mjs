@@ -15,9 +15,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+
+// Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
+// checkout. Stop Git's repository search at tmpdir() so the runner never reads
+// that checkout's HEAD as the fixture's source SHA.
+const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "ci-runner-"));
@@ -40,15 +46,19 @@ function runnerEnv(env = {}) {
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
     CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
+    // The fixture runners never inherit the lane's own deadline.
+    CI_RUNNER_DEADLINE_MS: "",
+    ...fixtureGitEnv,
     ...env,
   };
 }
 
-function run(root, args, env = {}) {
+function run(root, args, env = {}, { timeout } = {}) {
   return spawnSync(process.execPath, [runnerPath, ...args], {
     cwd: repositoryRoot,
     encoding: "utf8",
     env: runnerEnv(env),
+    timeout,
   });
 }
 
@@ -457,6 +467,9 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       'test("child env contains only explicit CI selectors", () => {',
       '  assert.equal(process.env.OCC_TEST_REQUIRED_SELECTOR, "required");',
       '  assert.equal(process.env.OCC_TEST_LANE_SELECTOR, "lane");',
+      '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
+      '  assert.equal(process.env.OCC_TEST_OPTIONAL_EMPTY, "");',
+      "  assert.equal(process.env.OCC_TEST_OPTIONAL_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_LEAKED_SELECTOR, undefined);",
       '  assert.equal(process.env.OCC_PROBE_REQUIRED_SELECTOR, "required");',
       "  assert.equal(process.env.OCC_PROBE_LEAKED_SELECTOR, undefined);",
@@ -474,6 +487,12 @@ test("run clears inherited selectors and keep flags while preserving explicit la
           OCC_TEST_LANE_SELECTOR: "lane",
         },
         requiredEnv: ["OCC_TEST_REQUIRED_SELECTOR", "OCC_PROBE_REQUIRED_SELECTOR"],
+        optionalEnv: [
+          "OCC_TEST_OPTIONAL_SELECTOR",
+          "OCC_TEST_OPTIONAL_EMPTY",
+          "OCC_TEST_OPTIONAL_ABSENT",
+          "OCC_TEST_LANE_SELECTOR",
+        ],
         files: [{ path: "tests/integration/env-isolation.test.mjs" }],
       },
     },
@@ -501,12 +520,82 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       OCC_RUNTIME_KEEP: "1",
       OCC_TEST_LEAKED_SELECTOR: "1",
       OCC_TEST_REQUIRED_SELECTOR: "required",
+      OCC_TEST_OPTIONAL_SELECTOR: "selected",
+      OCC_TEST_OPTIONAL_EMPTY: "",
+      OCC_TEST_LANE_SELECTOR: "inherited",
       OCC_PROBE_LEAKED_SELECTOR: "1",
       OCC_PROBE_REQUIRED_SELECTOR: "required",
     },
   );
 
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("QA lane forwards selected models and observer input and retains outcomes at the requested path", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/qa-matrix.json"), "utf8"),
+  );
+  const observer = join(root, "observer.txt");
+  const artifacts = join(root, "evidence");
+  await writeFile(observer, "synthetic-observer", { mode: 0o600 });
+  await mkdir(artifacts);
+  const file = "tests/integration/qa-inputs.test.mjs";
+  // Exercise the shipped lane definition with a small child that consumes its
+  // inputs. This proves transport and artifact placement, not a live model turn.
+  await writeFile(
+    join(root, file),
+    `import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+test("QA inputs", async () => {
+  assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
+  assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
+  assert.equal(process.env.OCC_TEST_CODEX_CALENDAR_PROMPT, "selected calendar read");
+  assert.equal(await readFile(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, "utf8"), "synthetic-observer");
+  assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
+  assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar");
+  await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { "qa-matrix": { ...lane, files: [{ path: file }] } },
+    groups: { qa: ["qa-matrix"] },
+  });
+  const result = run(
+    root,
+    [
+      "run",
+      "qa-matrix",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/qa.json",
+      "--results",
+      "results/qa.json",
+    ],
+    {
+      ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
+      OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
+      OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
+      OCC_TEST_CODEX_CALENDAR_PROMPT: "selected calendar read",
+      OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: observer,
+      OCC_TEST_QA_ARTIFACTS: artifacts,
+      OCC_TEST_QA_INSTALLATION: "compose",
+      OCC_TEST_QA_PRESET: "Codex",
+      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(await readFile(join(artifacts, "matrix.json"), "utf8")), {
+    outcome: "inputs received",
+  });
 });
 
 test("run records timeout cancellation without leaking child output", async (t) => {
@@ -1608,7 +1697,16 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.mjs");
   const secrets = failureSecrets([
     { GITHUB_REPOSITORY_OWNER: "openclaw", JOB_ONLY_KEY: "jobonlyopaque123" },
-    { CHILD_URL: "postgres://app:childpw77@db/app", JOB_ONLY_KEY: "otheropaque456" },
+    {
+      CHILD_URL: syntheticCredentialUrl({
+        protocol: "postgres",
+        username: "app",
+        password: "childpw77",
+        host: "db",
+        pathname: "/app",
+      }),
+      JOB_ONLY_KEY: "otheropaque456",
+    },
   ]);
   const render = async (cause) => {
     let text = "";
@@ -1625,14 +1723,34 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   };
   const credentials = [
     "Authorization: Bearer abcdefghijklmnop0123",
-    "postgres://occ:hunter2pass@db.internal:5432/occ",
+    syntheticCredentialUrl({
+      protocol: "postgres",
+      username: "occ",
+      password: "hunter2pass",
+      host: "db.internal",
+      port: 5432,
+      pathname: "/occ",
+    }),
     "token=ghp_0123456789abcdefghijABCDEFGHIJ",
     'password: "correct-horse"',
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.c2lnbmF0dXJl",
     "sk-proj-0123456789abcdef",
     "xoxb-1234-5678-abcdefgh",
     "xapp-1-A0123-4567-abcdef",
-    "redis://:redispw99@cache:6379 https://tokenvalue123@git.example",
+    [
+      syntheticCredentialUrl({
+        protocol: "redis",
+        username: "",
+        password: "redispw99",
+        host: "cache",
+        port: 6379,
+      }),
+      syntheticCredentialUrl({
+        username: "tokenvalue123",
+        password: "",
+        host: "git.example",
+      }).replace(":@", "@"),
+    ].join(" "),
     '{"privateKey":"pkvalue123"}',
     "-----BEGIN RSA PRIVATE KEY-----\nMIIEabc\n-----END RSA PRIVATE KEY-----",
     "job jobonlyopaque123 child otheropaque456 password childpw77",
@@ -1757,7 +1875,12 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
   assert.equal(detail.stack, "at helper (tests/a.mjs:2:3)\nat next (b.mjs:4:5)");
   assert.equal(redactFailureDetail(undefined, secrets, "/repo"), undefined);
   assert.equal(
-    redactOutputLine("stdout: proxy https://user:pw@example.test", secrets, "/repo", 1_000),
+    redactOutputLine(
+      `stdout: proxy ${syntheticCredentialUrl({ username: "user", password: "pw", host: "example.test" })}`,
+      secrets,
+      "/repo",
+      1_000,
+    ),
     "[redacted credential-bearing line]",
   );
   assert.equal(
@@ -1844,6 +1967,170 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
   assert.equal(cutLines.length, 2);
   assert.equal(cutLines[0].length, 16_384);
   assert.equal(cutLines[1], "stdout: next line");
+});
+
+test("the redactor removes URL userinfo of any shape and multi-line private keys", async () => {
+  const { failureSecrets, redactFailure, redactLogLine, redactOutputLine, redactOutputLines } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.mjs");
+  const secrets = failureSecrets([{ JOB_ONLY_KEY: "jobonlyopaque123" }]);
+  // Synthetic userinfo: a password with "/", one with an unescaped "@", a hex one,
+  // and a user-only token.
+  const slash = syntheticCredentialUrl({
+    protocol: "postgresql",
+    username: "occ_app",
+    password: "pa/ss0123456789",
+    host: "postgres",
+    port: 5432,
+    pathname: "/occ",
+  });
+  const at = syntheticCredentialUrl({
+    protocol: "redis",
+    username: "cache",
+    password: "p@ssw0rd-tail",
+    host: "cache",
+    port: 6379,
+  });
+  const hex = syntheticCredentialUrl({
+    protocol: "postgresql",
+    username: "occ_app",
+    password: "0123abcd4567ef89",
+    host: "postgres",
+    pathname: "/occ",
+  });
+  const user = syntheticCredentialUrl({
+    username: "tokenvalue123",
+    password: "",
+    host: "git.example",
+  }).replace(":@", "@");
+  assert.equal(
+    redactLogLine(`db ${slash} down`, secrets, 1_000),
+    "db postgresql://[redacted]@postgres:5432/occ down",
+  );
+  assert.equal(redactLogLine(`cache ${at}`, secrets, 1_000), "cache redis://[redacted]@cache:6379");
+  assert.equal(redactLogLine(hex, secrets, 1_000), "postgresql://[redacted]@postgres/occ");
+  assert.equal(redactLogLine(user, secrets, 1_000), "https://[redacted]@git.example");
+  const failure = redactFailure(
+    { message: `${slash}\n${at}`, frame: `at x (${slash})` },
+    secrets,
+    "",
+  );
+  assert.doesNotMatch(JSON.stringify(failure), /pa\/ss|ssw0rd|0123456789/);
+  // Any scheme's userinfo drops the whole output line, as http(s) did.
+  for (const url of [slash, at, hex, user]) {
+    assert.equal(
+      redactOutputLine(`stderr: connect ${url}`, secrets, "", 1_000),
+      "[redacted credential-bearing line]",
+    );
+  }
+  // A password with both "@" and "/", and a user part with "?" or "#", lose it all.
+  const mixed = syntheticCredentialUrl({
+    username: "u",
+    password: "p@ss/w0rd-tail",
+    host: "host",
+    port: 1,
+    pathname: "/db",
+  });
+  assert.equal(redactLogLine(mixed, secrets, 1_000), "https://[redacted]@host:1/db");
+  for (const odd of ["https://user?x@host/p", "https://user#x@host/p"]) {
+    assert.equal(redactLogLine(odd, secrets, 1_000), "https://[redacted]@host/p");
+  }
+  // A path "@" (an npm scope) is not userinfo, and plain URLs stay readable.
+  for (const line of [
+    "stdout: GET https://registry.npmjs.org/@openclaw/cli 404",
+    "stdout: see https://example.test:8443/docs/install for details",
+  ]) {
+    assert.equal(redactOutputLine(line, secrets, "", 1_000), line);
+  }
+
+  // A plain-text private key loses its body lines too, not only its header and footer.
+  const body = ["MIIEsyntheticBodyLineOneAAAA", "syntheticBodyLineTwoBBBBBBBB"];
+  const key = ["-----BEGIN RSA PRIVATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----"];
+  const marker = "[redacted credential-bearing line]";
+  assert.deepEqual(
+    redactOutputLines(
+      ["stdout: before", ...key.map((line) => `stderr: ${line}`), "stdout: after"],
+      secrets,
+      "",
+      1_000,
+    ),
+    ["stdout: before", marker, marker, marker, marker, "stdout: after"],
+  );
+  // An unterminated key runs to the end; a tail that starts inside a key loses
+  // every line above its END; a control character cannot hide the header.
+  assert.deepEqual(redactOutputLines(["start", ...key.slice(0, 3)], secrets, "", 1_000), [
+    "start",
+    marker,
+    marker,
+    marker,
+  ]);
+  assert.deepEqual(redactOutputLines([...key.slice(1), "after"], secrets, "", 1_000), [
+    marker,
+    marker,
+    marker,
+    "after",
+  ]);
+  assert.deepEqual(
+    redactOutputLines(
+      ["-----BEGIN RSA PRIV\u0000ATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----", "end"],
+      secrets,
+      "",
+      1_000,
+    ),
+    [marker, marker, marker, marker, "end"],
+  );
+  // A PGP key block counts; an element holding "\n" itself keeps the mapping.
+  assert.deepEqual(
+    redactOutputLines(
+      [
+        "x\ny",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        ...body,
+        "-----END PGP PRIVATE KEY BLOCK-----",
+        "after",
+      ],
+      secrets,
+      "",
+      1_000,
+    ),
+    ["x\ny", marker, marker, marker, marker, "after"],
+  );
+  // An orphan END masks a bounded number of lines above it, not the whole tail.
+  const orphan = redactOutputLines(
+    [...Array.from({ length: 1_100 }, (_, index) => `line ${index}`), ...key.slice(1)],
+    secrets,
+    "",
+    1_000,
+  );
+  assert.equal(orphan.length, 1_103);
+  assert.equal(orphan[0], "line 0");
+  assert.equal(orphan[1_099], marker);
+  assert.equal(orphan.filter((line) => line === marker).length, 1_025);
+  // Lines without a key keep the per-line behaviour.
+  assert.deepEqual(redactOutputLines(["plain", "key jobonlyopaque123"], secrets, "", 1_000), [
+    "plain",
+    "key [env:JOB_ONLY_KEY]",
+  ]);
+
+  // The container log projection follows the same rules.
+  const projected = projectContainerLog(
+    {
+      lines: ["ready", ...key, `dial ${slash}`, "Authori\u0000zation: synthetic-xyz123", "done"],
+      stream: { error: ["follow failed", ...key].join("\n") },
+    },
+    secrets,
+  );
+  assert.deepEqual(projected.lines, [
+    "ready",
+    marker,
+    marker,
+    marker,
+    marker,
+    marker,
+    marker,
+    "done",
+  ]);
+  assert.doesNotMatch(JSON.stringify(projected), /synthetic|pa\/ss/);
 });
 
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
@@ -2133,6 +2420,478 @@ test("run records a timeout that came before any test started", async (t) => {
   assert(record.elapsedMs >= 2000, String(record.elapsedMs));
 });
 
+// Finding 1209: a file hung in its teardown for 22 minutes, past the job's 25-minute timeout,
+// under the 60-minute per-file timeout. GitHub cancelled the job, so the results file was never
+// written and nothing named the test. The lane deadline stops the file first and names it.
+test("run stops a hung file at the lane deadline, names its test and starts nothing after it", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/deadline.json");
+  const resultsPath = join(root, "results/deadline.json");
+  const marker = join(root, "state/later-started");
+  await writeFile(
+    join(root, "tests/integration/teardown.test.mjs"),
+    [
+      'import test from "node:test";',
+      'test("passes first", () => {});',
+      'test("hangs in its teardown", async (t) => {',
+      "  // Like a worker stop that never returns; the interval keeps the file alive.",
+      "  t.after(() => new Promise(() => setInterval(() => {}, 1_000)));",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/later.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      'test("would start past the deadline", () => writeFileSync(process.env.CI_RUNNER_MARKER, ""));',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      deadline: {
+        files: [
+          { path: "tests/integration/teardown.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["deadline"] },
+  });
+
+  const started = Date.now();
+  const result = run(
+    root,
+    [
+      "run",
+      "deadline",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    // No per-file timeout: the default (60 minutes) is far past the deadline.
+    {
+      CI_RUNNER_TEST_TIMEOUT_MS: "",
+      CI_RUNNER_DEADLINE_MS: String(started + 4_000),
+      CI_RUNNER_MARKER: marker,
+    },
+    // Without the deadline the runner would wait out the 60-minute default.
+    { timeout: 60_000 },
+  );
+
+  assert.equal(result.error, undefined, "the deadline stopped the lane");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [teardown, later] = summary.files;
+  assert.equal(teardown.status, "failed");
+  const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
+  assert.equal(timeout.file, "tests/integration/teardown.test.mjs");
+  assert.match(timeout.message, /cut to the lane deadline/);
+  assert.match(timeout.message, /while running "hangs in its teardown"$/);
+  // The job log names it too, not only the diagnostics artifact.
+  assert.match(
+    result.stderr,
+    /run-tests: issue test-timeout tests\/integration\/teardown\.test\.mjs: .* while running "hangs in its teardown"\n/,
+  );
+  const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
+  assert.equal(record.reason, "timeout");
+  assert.equal(record.laneDeadline, true);
+  assert(record.timeoutMs > 0 && record.timeoutMs <= 4_000, String(record.timeoutMs));
+  assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 3 }]);
+  // The serial file behind it never started.
+  assert.equal(later.status, "failed");
+  assert.equal(later.counts.total, 0);
+  assert.deepEqual(
+    later.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("run starts no file with under a second left before the lane deadline", async (t) => {
+  // Finding 1215: a file whose turn came within a second of the deadline was started and
+  // stopped at once, then reported as selected-zero and a test-timeout naming no test.
+  const root = await fixture(t);
+  const statePath = join(root, "state/near-deadline.json");
+  const resultsPath = join(root, "results/near-deadline.json");
+  const marker = join(root, "state/started");
+  // The preparation returns half a second before the deadline.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile() {",
+      "  const left = Number(process.env.CI_RUNNER_DEADLINE_MS) - Date.now();",
+      "  await new Promise((resolve) => setTimeout(resolve, left - 500));",
+      "  return {};",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/late.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      'writeFileSync(process.env.CI_RUNNER_MARKER, "");',
+      'test("starts too late", () => new Promise((resolve) => setTimeout(resolve, 5_000)));',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { near: { files: [{ path: "tests/integration/late.test.mjs" }] } },
+    groups: { ci: ["near"] },
+  });
+
+  const result = run(
+    root,
+    laneArgs(root, "near", statePath, resultsPath),
+    { CI_RUNNER_DEADLINE_MS: String(Date.now() + 5_000), CI_RUNNER_MARKER: marker },
+    { timeout: 30_000 },
+  );
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1, result.stderr);
+  const [late] = JSON.parse(await readFile(resultsPath, "utf8")).files;
+  // A loaded host can run the preparation into the deadline instead; either way, nothing starts.
+  const codes = late.issues.map((entry) => entry.code);
+  assert.deepEqual(
+    codes,
+    codes.includes("prepare-timeout") ? ["prepare-timeout"] : ["lane-deadline"],
+  );
+  assert.equal(late.nodeExitCode, null);
+  assert.equal(late.counts.total, 0);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("a runner timeout while no test was running says so", async (t) => {
+  // Finding 1215: a file stopped in a hook or teardown named no test, which read like a
+  // reporting gap rather than where it hung.
+  const root = await fixture(t);
+  const statePath = join(root, "state/hook.json");
+  const resultsPath = join(root, "results/hook.json");
+  await writeFile(
+    join(root, "tests/integration/hook.test.mjs"),
+    [
+      'import test, { after } from "node:test";',
+      'test("passes", () => {});',
+      "// Ends by itself in case the runner leaves it behind.",
+      "after(() => new Promise((resolve) => setTimeout(resolve, 30_000)));",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { hook: { files: [{ path: "tests/integration/hook.test.mjs" }] } },
+    groups: { ci: ["hook"] },
+  });
+
+  const result = run(
+    root,
+    laneArgs(root, "hook", statePath, resultsPath),
+    // Long enough for a loaded host to finish "passes" before the timeout; the hook outlasts it.
+    { CI_RUNNER_TEST_TIMEOUT_MS: "8000" },
+    { timeout: 60_000 },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
+  assert.equal(
+    timeout.message,
+    "selected file exceeded the runner timeout (8000 ms): tests/integration/hook.test.mjs; no test was running (stopped in a hook, teardown or top-level code)",
+  );
+});
+
+// Finding 1210: the lane deadline stopped only the test process. A preparation or cleanup that
+// never returned (it runs in the runner itself) still ran on to the job timeout with no results.
+// These fixtures hang forever, and their intervals keep the runner alive unless it gives up.
+const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
+
+function laneArgs(root, lane, statePath, resultsPath) {
+  return [
+    "run",
+    lane,
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ];
+}
+
+test("run gives up on a preparation still running at the lane deadline and names it", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/hung-prepare.json");
+  const resultsPath = join(root, "results/hung-prepare.json");
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('hung.test.mjs')) {",
+      `    await ${hangForever};`,
+      "  }",
+      "  return {};",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["hung", "later"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      prepare: {
+        files: [
+          { path: "tests/integration/hung.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["prepare"] },
+  });
+
+  const deadline = Date.now() + 5_000;
+  const result = run(
+    root,
+    laneArgs(root, "prepare", statePath, resultsPath),
+    { CI_RUNNER_DEADLINE_MS: String(deadline) },
+    // Without a limit the preparation would hold the runner forever.
+    { timeout: 30_000 },
+  );
+
+  assert.equal(result.error, undefined, "the runner gave up on the preparation");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [hung, later] = summary.files;
+  assert.deepEqual(
+    hung.issues.map(({ code, file, step }) => ({ code, file, step })),
+    [{ code: "prepare-timeout", file: "tests/integration/hung.test.mjs", step: "prepare" }],
+  );
+  const { timeoutMs } = hung.issues[0];
+  assert(timeoutMs > 0 && timeoutMs <= 5_000, String(timeoutMs));
+  // Its tests never started. What the preparation made is left to the job's Cleanup lane step.
+  assert.equal(hung.nodeExitCode, null);
+  assert.equal(hung.counts.total, 0);
+  assert.equal(hung.cleanup, null);
+  // The file behind it starts nothing past the deadline.
+  assert.deepEqual(
+    later.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  assert.match(
+    result.stderr,
+    /run-tests: issue prepare-timeout tests\/integration\/hung\.test\.mjs: prepareFile did not finish within \d+ ms, cut to the lane deadline/,
+  );
+});
+
+test("run gives up on a hung cleanup after its allowance, ends its commands and starts no later file", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/hung-cleanup.json");
+  const resultsPath = join(root, "results/hung-cleanup.json");
+  const cleaned = join(root, "state/later-cleaned");
+  // The hung cleanup waits for a command that started one of its own (as `docker compose`
+  // or `pnpm` would). Both record their pids.
+  const pidsPath = join(root, "state/command-pids");
+  const commandPath = join(root, "command.cjs");
+  await writeFile(
+    commandPath,
+    [
+      'const { spawn } = require("node:child_process");',
+      'const { appendFileSync } = require("node:fs");',
+      'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
+      '  stdio: "ignore",',
+      "});",
+      `appendFileSync(${JSON.stringify(pidsPath)}, process.pid + "\\n" + descendant.pid + "\\n");`,
+      "setInterval(() => {}, 1_000);",
+      "",
+    ].join("\n"),
+  );
+  const running = (pid) => {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
+    }
+    // A zombie (state Z) still answers kill(pid, 0), but it has exited.
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat[stat.lastIndexOf(")") + 2] !== "Z";
+    } catch {
+      return true;
+    }
+  };
+  const pids = [];
+  t.after(() => {
+    for (const pid of pids.filter(running)) {
+      process.kill(pid, "SIGKILL");
+    }
+  });
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      'import { spawn } from "node:child_process";',
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('hung.test.mjs')) {",
+      "    return {",
+      "      cleanup: async () => {",
+      `        spawn(process.execPath, [${JSON.stringify(commandPath)}], { stdio: "ignore" });`,
+      // Hang only once both pids are on record (one write).
+      `        while (!(await readFile(${JSON.stringify(pidsPath)}, "utf8").catch(() => ""))) {`,
+      "          await delay(20);",
+      "        }",
+      `        return ${hangForever};`,
+      "      },",
+      "    };",
+      "  }",
+      '  return { cleanup: () => writeFile(process.env.CI_RUNNER_CLEANUP_MARKER, "") };',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["hung", "later"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      cleanup: {
+        files: [
+          { path: "tests/integration/hung.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["cleanup"] },
+  });
+
+  const result = run(
+    root,
+    laneArgs(root, "cleanup", statePath, resultsPath),
+    { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
+    { timeout: 30_000 },
+  );
+  pids.push(...(await readFile(pidsPath, "utf8")).split("\n").filter(Boolean).map(Number));
+
+  assert.equal(result.error, undefined, "the runner gave up on the cleanup");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [hung, later] = summary.files;
+  // Its tests passed; only the cleanup failed it.
+  assert.equal(hung.counts.passed, 1);
+  assert.equal(hung.status, "failed");
+  assert.deepEqual(hung.cleanup, { status: "timeout", timeoutMs: 2000 });
+  assert.deepEqual(
+    hung.issues.map(({ code, step, message }) => ({ code, step, message })),
+    [
+      {
+        code: "cleanup-timeout",
+        step: "cleanup",
+        message: "cleanup did not finish within 2000 ms: tests/integration/hung.test.mjs",
+      },
+    ],
+  );
+  // The abandoned cleanup may still hold the CI state lock, so the next file never starts.
+  assert.deepEqual(
+    later.issues.map(({ code, file }) => ({ code, file })),
+    [{ code: "setup-abandoned", file: "tests/integration/later.test.mjs" }],
+  );
+  assert.equal(later.counts.total, 0);
+  await assert.rejects(readFile(cleaned), { code: "ENOENT" });
+  // The runner ended the abandoned cleanup's command and its descendant before it exited, so
+  // neither is left running as an orphan (finding 1225).
+  assert.equal(pids.length, 2, "the command recorded itself and its descendant");
+  for (let attempt = 0; pids.some(running) && attempt < 50; attempt += 1) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  assert.deepEqual(
+    pids.filter(running),
+    [],
+    "the abandoned cleanup's commands outlived the runner",
+  );
+});
+
+test("run ends the cleanups of files the deadline stopped together one allowance past it", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/hung-cleanups.json");
+  const resultsPath = join(root, "results/hung-cleanups.json");
+  const files = ["one", "two", "three", "four"].map((name) => `tests/integration/${name}.test.mjs`);
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `export async function prepareFile() {\n  return { cleanup: () => ${hangForever} };\n}\n`,
+  );
+  for (const file of files) {
+    await writeFile(
+      join(root, file),
+      `import test from "node:test";\ntest("hangs", () => ${hangForever});\n`,
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      together: {
+        fileConcurrency: 4,
+        parallelFiles: files,
+        files: files.map((path) => ({ path })),
+      },
+    },
+    groups: { ci: ["together"] },
+  });
+
+  const allowanceMs = 5_000;
+  const started = Date.now();
+  const deadline = started + 5_000;
+  const result = run(
+    root,
+    laneArgs(root, "together", statePath, resultsPath),
+    {
+      CI_RUNNER_DEADLINE_MS: String(deadline),
+      CI_RUNNER_CLEANUP_TIMEOUT_MS: String(allowanceMs),
+      CI_RUNNER_FILE_CONCURRENCY: "4",
+    },
+    { timeout: 60_000 },
+  );
+  const ended = Date.now();
+
+  assert.equal(result.error, undefined, "the runner gave up on the cleanups");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.files.map((file) => [file.path, file.cleanup?.status]),
+    files.map((file) => [file, "timeout"]),
+  );
+  // Cleanups run one at a time. One allowance each would end 20 s past the deadline; the window
+  // they share closes one allowance past it, so the queued ones never start.
+  const timeouts = summary.issues.filter((entry) => entry.code === "cleanup-timeout");
+  assert.equal(timeouts.length, files.length);
+  assert(
+    timeouts.some((entry) => /window after the lane deadline closed/.test(entry.message)),
+    JSON.stringify(timeouts),
+  );
+  // The test processes get 5 s to report after the deadline's SIGTERM; then the window closes.
+  assert(ended - deadline < allowanceMs + 8_000, `ended ${ended - deadline} ms past the deadline`);
+});
+
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/prepare.json");
@@ -2145,8 +2904,9 @@ test("run records a preparation failure's redacted message in the diagnostics re
       "  if (file.path.endsWith('broken.test.mjs')) {",
       "    // The lane state's env holds prepared values the job env never had.",
       "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' } }));",
+      `    const pullUrl = ${JSON.stringify(syntheticCredentialUrl({ username: "user", password: "hunter2pass", host: "registry.example", pathname: "/x" }))};`,
       "    const error = new Error(",
-      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull https://user:hunter2pass@registry.example/x`,",
+      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
       "    );",
       "    error.stderr = 'child output secretauthvalue-stderr';",
       "    throw error;",
@@ -2205,7 +2965,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
     record.error.message,
     "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
   );
-  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:6:\d+\)/);
+  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:7:\d+\)/);
 });
 
 test("run keeps bounded Agent namespace activity from passing k3d files, alone and side by side", async (t) => {
@@ -2461,7 +3221,12 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     {
       cwd: repositoryRoot,
       encoding: "utf8",
-      env: { ...process.env, GITHUB_SHA: currentSha(), OCC_KUBECTL_BIN: kubectl },
+      env: {
+        ...process.env,
+        ...fixtureGitEnv,
+        GITHUB_SHA: currentSha(),
+        OCC_KUBECTL_BIN: kubectl,
+      },
       timeout: 30_000,
     },
   );
@@ -3045,6 +3810,35 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           probeDoneMs: 1,
           readyMs: 1,
         }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "gateway-model-probe",
+          stopped: true,
+          elapsedMs: 4_321,
+          budgetMs: 15_000,
+          extra: "secretauthvalue-extra",
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "secretauthvalue-case",
+          stopped: true,
+          elapsedMs: 1,
+          budgetMs: 15_000,
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "codex-ready",
+          stopped: "secretauthvalue-stopped",
+          elapsedMs: 1,
+          budgetMs: 15_000,
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "codex-ready",
+          stopped: false,
+          elapsedMs: 1.5,
+          budgetMs: 15_000,
+        }),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -3114,8 +3908,109 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       probeDoneMs: null,
       readyMs: null,
     },
+    {
+      kind: "runtime-sigterm",
+      case: "gateway-model-probe",
+      stopped: true,
+      elapsedMs: 4_321,
+      budgetMs: 15_000,
+    },
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+});
+
+test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/cancelled.json");
+  // GitHub cancels a step by signalling and then killing its shell, never this runner, which
+  // finishes as an orphan beside the job's own cleanup step. The second file's cleanup kills
+  // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
+  // cleanup step makes it.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('plain.test.mjs')) {",
+      "    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };",
+      "  }",
+      "  return {",
+      "    cleanup: async () => {",
+      "      const shell = process.ppid;",
+      "      process.kill(shell, 'SIGKILL');",
+      "      const deadline = Date.now() + 10_000;",
+      "      while (process.ppid === shell && Date.now() < deadline) {",
+      "        await new Promise((resolve) => setTimeout(resolve, 10));",
+      "      }",
+      "      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });",
+      "    },",
+      "  };",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["plain", "cancelled"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      cancel: {
+        files: [
+          { path: "tests/integration/plain.test.mjs" },
+          { path: "tests/integration/cancelled.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["cancel"] },
+  });
+
+  // A parent process stands in for the step's shell: it waits for the runner until the second
+  // file's cleanup kills it. No shell parses any of these arguments.
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      'require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), { stdio: "inherit" });',
+      process.execPath,
+      runnerPath,
+      "run",
+      "cancel",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      join(root, "state/cancelled.json"),
+      "--results",
+      resultsPath,
+    ],
+    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 30_000 },
+  );
+
+  assert.equal(result.signal, "SIGKILL", result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.status, "failed");
+  // A cleanup that fails while the job runs is still a cleanup failure.
+  assert.deepEqual(summary.files[0].cleanup, { status: "failed", error: { name: "Error" } });
+  // The cancelled record keeps the error's name and code, never its message.
+  assert.deepEqual(summary.files[1].cleanup, {
+    status: "cancelled",
+    error: { name: "Error", code: "ENOENT" },
+  });
+  assert.deepEqual(
+    summary.issues.map(({ code, file }) => [code, file]),
+    [
+      ["cleanup-failed", "tests/integration/plain.test.mjs"],
+      ["cleanup-cancelled", "tests/integration/cancelled.test.mjs"],
+    ],
+  );
+  assert.doesNotMatch(
+    `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`,
+    /secretauthvalue/,
+  );
 });
 
 for (const scenario of [

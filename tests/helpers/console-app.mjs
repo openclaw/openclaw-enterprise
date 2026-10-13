@@ -38,6 +38,7 @@ export const backendFixtures = Object.freeze([
 
 function computeDriver({
   repositoryCredentials = false,
+  channelRuntime = false,
   discoverHarnessModels = async () => [],
   agentProvisioning = false,
   sandboxDriver,
@@ -47,10 +48,16 @@ function computeDriver({
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
+    channelRuntime,
   });
 
   return Object.assign(driver, {
     implementation: "test-memory-lifecycle",
+    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
+    // does not provision unless repository credentials ask for them.
+    ...(channelRuntime && !repositoryCredentials
+      ? { requiresAgentRuntimeCredentials: undefined }
+      : {}),
     // Most Console cases use drafts. Branch-selection tests can retain the actual
     // Compute capability while verifying that their flow avoids the durable queue.
     ...(agentProvisioning ? {} : { agentProvisioning: undefined }),
@@ -326,6 +333,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       options.computeDriver ??
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
+        channelRuntime: options.channelRuntime === true,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,

@@ -14,7 +14,6 @@ configuration and external-auth attachments.
 Its paired Sandbox must inject live credentials for inference and hosted-app
 requests. The experimental OpenShell `codex-oauth` source requires the
 [upstream gateway and supervisor support](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
-The repository's default pinned OpenShell images do not provide this complete flow.
 
 Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 The Console keeps the **Experimental** label and reports unavailable sign-in when
@@ -28,7 +27,7 @@ the exact placeholder, account metadata, and an empty refresh token. Native Code
 does not own OAuth refresh. Restarts reconstruct this state from the admitted
 source attachment. Session and workspace persistence remain independent of auth.
 
-OCC's login-session Secret contains an opaque Gateway handle and source identity,
+OCC's login-session Secret contains an opaque Refresh Driver handle and source identity,
 never the access/refresh-token pair. The credential source survives closing or
 expiry of that session. Plugin configuration requests a usable access token from the source; the token
 service may refresh before returning it. This does not consume the deployed

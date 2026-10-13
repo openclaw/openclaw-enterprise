@@ -28,6 +28,23 @@ function parseArgs(argv) {
   return args;
 }
 
+// Every container engine and k3d command has a limit, so one that never returns cannot hold
+// the job's Cleanup lane step, or a test's database drop, until the job timeout. Past it the
+// command gets SIGTERM, then SIGKILL after a grace period. Tests shorten both.
+function positiveEnvMs(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function commandTimeoutMs() {
+  return positiveEnvMs("OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS", 5 * 60_000);
+}
+
+// DROP DATABASE ... WITH (FORCE) ends the database's sessions and returns in seconds.
+function databaseDropTimeoutMs() {
+  return Math.min(60_000, commandTimeoutMs());
+}
+
 function execFile(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
@@ -35,6 +52,21 @@ function execFile(command, args, options = {}) {
       env: { ...process.env, ...(options.env ?? {}) },
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
     });
+    const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
+    let timedOut = false;
+    let killTimer;
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(
+        () => child.kill("SIGKILL"),
+        positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000),
+      );
+    }, timeoutMs);
+    const settle = () => {
+      clearTimeout(timeoutTimer);
+      clearTimeout(killTimer);
+    };
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
@@ -43,9 +75,16 @@ function execFile(command, args, options = {}) {
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      settle();
+      reject(error);
+    });
+    // "exit", not "close": a descendant holding the output pipes cannot delay the result.
     child.on("exit", (code, signal) => {
-      if (code === 0) {
+      settle();
+      if (timedOut) {
+        reject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`));
+      } else if (code === 0) {
         resolvePromise({ stdout, stderr });
       } else {
         const message = stderr.trim() || stdout.trim() || signal || String(code);
@@ -187,7 +226,7 @@ async function cleanupDatabase(resource, state) {
       "-c",
       `DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`,
     ],
-    { env: { OCC_POSTGRES_PORT: String(compose.port) } },
+    { env: { OCC_POSTGRES_PORT: String(compose.port) }, timeoutMs: databaseDropTimeoutMs() },
   );
 }
 
@@ -319,7 +358,9 @@ async function cleanupResource(resource, state) {
   }
 }
 
-async function cleanupResourceIds(statePath, resourceIds) {
+// lockTimeoutMs limits the wait for the CI state lock (state-lock.mjs's default otherwise), so a
+// caller that has its own limit, such as a test fixture's database drop, stops waiting with it.
+async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}) {
   const path = resolve(statePath);
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
@@ -328,7 +369,9 @@ async function cleanupResourceIds(statePath, resourceIds) {
     return;
   }
   // A test may prepare and clean databases from its own process beside the runner.
-  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds));
+  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds), {
+    timeoutMs: lockTimeoutMs,
+  });
 }
 
 async function stateExists(path) {

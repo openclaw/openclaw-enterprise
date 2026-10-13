@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-09
-last_updated_session: authoring-run/b15140a3-8d21-494c-b7c5-0c2dd362b30f
+updated: 2026-10-13
+last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
 ---
 
 # Credential source refresh Flow
@@ -132,12 +132,15 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 `packages/occ/src/index.ts:updateCredentialSource`
 
-`PATCH` locks the source, reads its current or replacement Secrets, and checks
-the gateway status. For a `refresh` type it calls `configureRefresh` with a new
-request ID, then `rotate`, instead of the gateway's `updateSource`. A
-non-`ready` mint returns `503` before OCC replaces the Secret references, but
-OpenShell keeps the new material, and the next `GET` reports the failed mint.
-An update without `secrets` re-applies the recorded references. OpenShell
+`PATCH` locks the source, not the Namespace, so other Namespace writes do not
+wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
+must name a different Secret than the recorded one, or the update returns `409`
+before any Secret read: OpenShell may hold a newer token. `PATCH` then reads
+its Secrets and checks the gateway status. For a `refresh` type it calls
+`configureRefresh` with a new request ID, then `rotate`, instead of the
+gateway's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
+the Secret references, but OpenShell keeps the new material, the next `GET`
+reports the failed mint, and OCC records a `failure` audit event. OpenShell
 starts a new authorization epoch on each reconfiguration, even one whose mint
 fails, which revokes the stable placeholders of running Sandboxes, so Agents
 need a redeploy.
@@ -145,8 +148,10 @@ need a redeploy.
 `packages/occ/src/index.ts:rotateCredentialSource`
 
 `POST …/rotate` requires `credential_source:update`, a `ready` source, and a
-`refresh` type; a static type returns `409`. It calls `rotate` and returns the
-new status. The HTTP handler commits the audit event in the same transaction.
+`refresh` type; a static type returns `409`. It calls `rotate` under the source
+lock and returns the new status. The HTTP handler commits the audit event in
+the same transaction; a failed mint commits a `failure` event instead. A commit
+whose outcome is unknown records neither event.
 
 ### 5. Deletion
 
@@ -162,7 +167,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
   `recoveryAction` explain the last mint without exposing a token.
 - `oauth_token_endpoint_unavailable` means the OpenShell gateway Pod could not
   reach `token_url`; check its NetworkPolicy and trust of the issuer's CA.
-- `reauthorize` follows a revoked refresh token; supply new material with `PATCH`.
+- `reauthorize` requires new authorization: replace Secret-backed material with
+  `PATCH`; for device-authorized sources, sign in again and rebind the Agent.
 - `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` proves minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
   a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
@@ -180,6 +186,10 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
+- 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
 
 - 2026-10-09 13:29: Keep retryable issuer polling pending before code acquisition while preserving the no-replay exchange boundary. (authoring-run/b15140a3-8d21-494c-b7c5-0c2dd362b30f - 69a0a6aaa5b3ba3aecd05d8780024e8d173f3a24)
 

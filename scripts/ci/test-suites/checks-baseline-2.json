@@ -47,6 +47,7 @@
     "tests/integration/ci-download-pinned.test.mjs",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
+    "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.mjs",
     "tests/integration/plugin-driver-startup.test.mjs",
@@ -57,6 +58,7 @@
     "tests/integration/oidc-login-transport.test.mjs",
     "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
     "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.mjs",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
@@ -79,6 +81,7 @@
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.mjs",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
+    "tests/conformance/node-test-summary.test.mjs",
     "tests/conformance/repository-material-store.test.mjs",
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
@@ -92,7 +95,9 @@
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/conformance/repository-material-expiry-probe.test.mjs",
-    "tests/integration/container-promote.test.mjs"
+    "tests/integration/container-promote.test.mjs",
+    "tests/conformance/controller-stop-yields.test.mjs",
+    "tests/integration/dev-up-model-provider.test.mjs"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -115,6 +120,23 @@
         "first-Agent requires dedicated Codex for OpenShell before external calls",
         "first-Agent admits dedicated Codex with OpenShell development state",
         "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-smoke.test.mjs",
+      "expectedTests": [
+        "stop observation accepts a fast shutdown and checks Pods afterward",
+        "default stop observation covers the selected gateway grace",
+        "the second stop can wait behind the serial worker's first gateway drain",
+        "an explicit shorter deadline is authoritative and does not start a later Pod read",
+        "permanent nonconvergence retains the active-pointer assertion and bounded state",
+        "a desired-state reversal fails without accepting an empty active pointer",
+        "an empty active pointer does not accept remaining Pods",
+        "both observation stages share the explicit deadline",
+        "invalid bounds fail before any observation",
+        "an observation that returns after its explicit deadline cannot report success",
+        "failed diagnostic reads return a fixed marker without exposing or throwing the error",
+        "diagnostics project only fixed lifecycle fields"
       ]
     },
     {
@@ -148,6 +170,9 @@
     },
     {
       "path": "tests/integration/ci-cleanup.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-image-failure-output.test.mjs"
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.mjs"
@@ -202,6 +227,9 @@
     },
     {
       "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/node-test-summary.test.mjs"
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
@@ -440,6 +468,12 @@
     },
     {
       "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+    },
+    {
+      "path": "tests/conformance/controller-stop-yields.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-up-model-provider.test.mjs"
     }
   ]
 }

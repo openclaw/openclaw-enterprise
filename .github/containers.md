@@ -252,7 +252,7 @@ repositories, use [Docker Hub promotion](container-promotion.md).
 
 ## Proof boundaries
 
-Three existing CI lanes gate the selected source: Images and Packaging, and the two Image Runtime
+Four existing CI lanes gate the selected source: Images and Packaging, and the three Image Runtime
 Startup lanes. Preparation reuses their controller/runtime startup tests against the newly prepared bytes:
 source CI alone cannot prove a subsequent build with newly resolved npm
 transitives. Loading does not rebuild; each loaded config ID, its index entry, and the

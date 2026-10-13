@@ -82,7 +82,10 @@ test(
     const sessionCount = async () => (await authRowCounts(pool)).sessions;
     async function assertFailedClosed(callback, sessionsBefore) {
       assert.equal(callback.statusCode, 302);
-      assert.equal(callback.headers.location, "/console/?authError=github");
+      assert.equal(
+        callback.headers.location,
+        "/console/?authError=github&authReason=provider-unavailable",
+      );
       assert.equal(callback.headers["set-cookie"], undefined);
       assert.equal(await sessionCount(), sessionsBefore, "no session is issued");
     }
@@ -137,7 +140,7 @@ test(
       }
       assert.equal(
         (await memberGitHubSignIn("203.0.113.10")).headers.location,
-        "/console/?authError=github",
+        "/console/?authError=github&authReason=provider-unavailable",
       );
     });
 
@@ -179,6 +182,31 @@ test(
         }
         const callback = await memberGitHubSignIn(ingress);
         assert.equal(callback.headers.location, "/console/", callback.body);
+      },
+    );
+
+    await t.test(
+      "a callback that fails inside OCE says sign-in is unavailable, not to get attached",
+      async (t) => {
+        provider.mode = "error";
+        // The provider outage happens, but its denial audit cannot be written: the callback
+        // answers 503 inside OCE, which the Console reports as an outage.
+        const recordDenied = PostgresHumanAuthentication.prototype.recordDenied;
+        t.mock.method(PostgresHumanAuthentication.prototype, "recordDenied", function (...args) {
+          if (args[0] === "PROVIDER_UNAVAILABLE") {
+            return Promise.reject(new Error("fixture audit store outage"));
+          }
+          return recordDenied.apply(this, args);
+        });
+        const before = await sessionCount();
+        const callback = await memberGitHubSignIn("192.0.2.59");
+        assert.equal(callback.statusCode, 302);
+        assert.equal(
+          callback.headers.location,
+          "/console/?authError=github&authReason=unavailable",
+        );
+        assert.equal(callback.headers["set-cookie"], undefined);
+        assert.equal(await sessionCount(), before, "no session is issued");
       },
     );
 

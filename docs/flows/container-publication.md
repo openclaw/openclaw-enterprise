@@ -81,9 +81,8 @@ Each Buildx builder runs at most two steps concurrently. The default Blacksmith
 runners retain BuildKit layers on a sticky disk scoped by image and architecture,
 so builds do not export the large intermediate cache over the network. A custom
 non-Blacksmith runner uses the GitHub Actions cache with the same scope.
-Maintainers can also dispatch `container-check.yml` on a branch for native image
-verification; manual `CI` dispatches call the same workflow so branches can be
-verified before the workflow first lands on main. It has no publication job or
+Maintainers can also dispatch `container-check.yml`, or a manual `CI` run that
+calls it, on a branch for native image verification. It has no publication job or
 package-write permission.
 The build exports
 an OCI directory without registry publication or credentials.
@@ -91,13 +90,12 @@ Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
 source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
-`deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive,
-applies the stock Codex 0.163.0-alpha.1 dependency pin before extracting frozen
-installation inputs, and applies the temporary
-OpenClaw read-only-paths compatibility patch and the `connect --ephemeral`
-expired-setup patch. The build verifies all three patch hashes and records them in
-runtime provenance. The OpenClaw bridge forwards the bound
-Agent's stock network settings without modifying the Codex binary. Both installs use
+`deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive
+and applies three patches whose hashes it verifies and records in runtime provenance:
+the stock Codex 0.163.0-alpha.2 dependency pin, before extracting frozen installation
+inputs, and the temporary read-only-paths and `connect --ephemeral` expired-setup
+bridge patches. The bridge forwards the bound
+Agent's stock network settings without modifying Codex. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build tools remain in full Bookworm stages; final images
@@ -240,6 +238,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 
 - 2026-10-08 13:36: Pin the shared stock Codex dependency to 0.163.0-alpha.1 before frozen installation and record its dependency patch alongside the existing bridge patches. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - ae695e7f2b0c7bcd2416ed8146baeecb765ae233)
 

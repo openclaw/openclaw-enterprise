@@ -97,8 +97,8 @@ inactive history alone does not retain the source indefinitely.
 Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
 Credential Refresh Driver for device login, a paired Credential Gateway for
 access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
-the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc);
-the repository's default pinned images do not support this flow. There is no installation opt-in flag.
+the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
+There is no installation opt-in flag.
 
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.
@@ -119,17 +119,17 @@ who started a session can poll or close it. Source use has its own exact
 `credential_source:operate` authorization; it is not tied to the login session.
 
 The session Secret stores only an opaque login handle and source identity.
-Access and refresh tokens stay with the external service. A pending session uses
+The Refresh Driver hands exchanged credentials to the external service. A pending session uses
 the provider deadline; a completed session closes after 24 hours on its next
 access. **Close login** discards the handle without revoking the source or
 interrupting a deployed Agent. Failed and abandoned sources remain visible in
 credential-source management; delete unused sources separately and remove their
 unreferenced session Secrets. An uncertain exchange requires a new login.
 
-If sign-in is unavailable, check the selected Gateway's capabilities. For a
+If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
-upstream provider. OCC does not exchange the device code directly with the
-provider. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
+opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
 
 ## Preserve administrator recovery
 

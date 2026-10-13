@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
 updated: 2026-10-10
-last_updated_session: authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0
+last_updated_session: authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f
 ---
 
 # Common Operational Logging Flow
@@ -83,7 +83,9 @@ payloads, request/reply objects, and unsafe strings. This source boundary preced
 the separate Collector filter in step 7. For worker records, the Collector retains
 allowlisted `work.operation` values and bounded `work.id` shapes. Agent stop keys
 and credential withdrawal keys include the operation UUID; deletion keys have no
-operation suffix. Unsupported values and key shapes are excluded.
+operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
+lowercase hexadecimal characters, matching the work ID the API and worker share.
+Unsupported values and key shapes are excluded.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
 status, and bounded message. The worker never serializes the raw exception, and
@@ -184,7 +186,8 @@ keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and bounded `occ.code`;
 the local diagnostic message is excluded from remote export.
-`authentication.sign-in-limit-warning` keeps `occ.code`, and
+`authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
+`occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
@@ -280,6 +283,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 05:47: Retain admitted Agent provisioning work IDs in Collector correlation metadata. (authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f - cd30d20a297fdb0f2b712122b705aa4c168564ff)
 
 - 2026-10-10 00:44: Refuse noncanonical Collector exporter ports before Kubernetes YAML can change their meaning. (authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 

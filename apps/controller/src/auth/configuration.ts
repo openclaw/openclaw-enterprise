@@ -31,22 +31,20 @@ function stripUrlEdges(value: string): string {
   return value.slice(start, end);
 }
 
-export function refuseRewrittenIpv4AuthHost(raw: string, parsed: URL): void {
+// Refuses a URL whose IPv4 host Node rewrote: the written host must be the parsed one, in
+// strict decimal (isIP already rules out an octet above 255). `setting` names the
+// URL in the error (OCC_AUTH_BASE_URL, observability.url).
+export function refuseRewrittenIpv4Host(setting: string, raw: string, parsed: URL): void {
   if (isIP(parsed.hostname) !== 4) {
     return;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
-  const octets = parsed.hostname.split(".");
-  if (
-    written === parsed.hostname &&
-    strictDecimalIpv4.test(parsed.hostname) &&
-    octets.every((octet) => Number(octet) <= 255)
-  ) {
+  if (written === parsed.hostname && strictDecimalIpv4.test(parsed.hostname)) {
     return;
   }
   throw new Error(
-    "OCC_AUTH_BASE_URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    `${setting} IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`,
   );
 }
 

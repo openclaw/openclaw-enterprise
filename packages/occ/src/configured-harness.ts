@@ -2,6 +2,7 @@ import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contrac
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
+import { providerModelsListError } from "./model-provider-settings.ts";
 
 function configuredRuntime(value: unknown): string | undefined {
   const runtimeValue = asRecord(value)?.agentRuntime;
@@ -76,9 +77,6 @@ function isCatalogModelId(id: unknown, reference: string): boolean {
   return id === reference || id === splitModelRef(reference).id;
 }
 
-const providerModelsArrayMessage = (path: string): string =>
-  `Configuration setting ${path}.models must be an array of model entries.`;
-
 function providerModelEntry(
   providerId: string,
   provider: Readonly<Record<string, unknown>>,
@@ -89,9 +87,7 @@ function providerModelEntry(
     return undefined;
   }
   if (!Array.isArray(configured)) {
-    throw new ConfigurationHarnessError(
-      modelProviderMessage(providerId, providerModelsArrayMessage),
-    );
+    throw providerModelsListError(providerId);
   }
   const matches = configured.filter((candidate) =>
     isCatalogModelId(asRecord(candidate)?.id, model),
@@ -214,9 +210,7 @@ export function resolveConfiguredHarnessId(
       continue;
     }
     if (!Array.isArray(provider.models)) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(providerId, providerModelsArrayMessage),
-      );
+      throw providerModelsListError(providerId);
     }
     if (
       provider.models.some((value) => {

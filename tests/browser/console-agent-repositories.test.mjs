@@ -708,6 +708,36 @@ for (const count of [1, 5, 25, 140]) {
   });
 }
 
+test("Agent repository search is stable in a Turkish browser locale", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+    [
+      "acme/platform",
+      "example/one",
+      "example/two",
+      "example/three",
+      "example/four",
+      "example/five",
+    ].map((repository, index) => ({
+      repositoryRef: index === 0 ? "IBM-platform" : `repository-${index + 1}`,
+      repositoryId: String(1800 + index),
+      repository,
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    })),
+  );
+  const { page } = await newPage(t, fixture, { context: { locale: "tr-TR" } });
+  await page.addInitScript(() => {
+    const lower = String.prototype.toLocaleLowerCase;
+    String.prototype.toLocaleLowerCase = function (locales, ...options) {
+      return lower.call(this, locales ?? "tr-TR", ...options);
+    };
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const search = page.getByLabel("Find a repository");
+  await search.fill("ibm");
+  await repositoryCheckbox(page, "acme/platform").waitFor();
+});
+
 test("Repository descriptions arrive without interrupting a selection", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     backends: [...backendFixtures, repositoryBackendFixture],

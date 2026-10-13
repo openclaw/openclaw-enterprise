@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-09
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-13
+last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
 ---
 
 # Credential source lifecycle Flow
@@ -183,9 +183,9 @@ trusted account metadata. Compute's `credentialSourceEnvironment` passes them to
 the native entrypoint, which writes ephemeral external-token `auth.json` before
 the model probe and app-server startup. No refresh token reaches Codex.
 OpenShell's `sandboxCommand` wraps the stable placeholder as a JWT alias; the
-custom injector preserves credential identity across rotations. See the
+upstream injector preserves credential identity across rotations. See the
 [external-auth contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication).
-The repository's default pinned images lack the full integration; no legacy Agent refresh bundle is imported.
+No legacy Agent refresh bundle is imported.
 
 ### 7. Delete the source
 
@@ -212,18 +212,20 @@ atomically. Namespace deletion returns `NAMESPACE_NOT_EMPTY` while a record rema
 `packages/occ/src/index.ts:updateCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
-One transaction locks the Namespace/source, authorizes `credential_source:update`,
-and requires a ready source offered by the catalog (`409` otherwise). For static
-sources, it validates replacement references, authorizes every Secret read, and
-calls Gateway `updateSource` with Compute's placement. OpenShell requires matching
+One transaction authorizes `credential_source:update`, reads the Namespace,
+locks only the source, and requires a ready source offered by the catalog (`409`
+otherwise). Device-authorized sources reject PATCH before Secret reads or refresh
+changes. Static sources validate replacement references, authorize each
+`secret:operate`, and read through `withValue`. Gateway `updateSource` runs with
+Compute's placement while the source lock is held; OpenShell requires matching
 ownership and nonempty values because `UpdateProvider` merges credentials.
 Only subsequently started processes receive the update.
 
-The transaction commits replacement Secret references and audit after the
-external write. A failed write rolls back the references; a later commit failure
-leaves OpenShell newer until the request is repeated. An absent/failed source
-returns `503`. Secret-backed refresh updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotation);
-device-authorized sources reject PATCH before reading Secrets or changing refresh.
+OCC commits replacement Secret references and mutation audit after the external
+write. A failure rolls back the references; once the gateway may have changed,
+the failure is audited. A failed commit can leave OpenShell newer until the same
+request is repeated. An absent/failed source returns `503`. Secret-backed refresh
+updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotation).
 
 ### 9. Withdraw a source from an Agent
 
@@ -283,7 +285,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   Namespace gating, admission snapshots, and Secret-backed method rejection,
   with an in-process gateway double.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
-  provider, profile, update, detach, and recheck RPCs against the pinned `v0.1.3-pre.2`
+  provider, profile, update, detach, and recheck RPCs against the independent `v0.1.3-pre.2`
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
@@ -318,6 +320,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 - 2026-10-09 20:28: Retain external Harness authentication alongside explicit Agent source-list admission. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
 

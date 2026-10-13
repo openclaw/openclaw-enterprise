@@ -32,6 +32,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
+	if _, err := developmentSignIn(r.env); err != nil {
+		return err
+	}
 	if controlPlane == "kubernetes" {
 		return upK3d(ctx, opts, sandboxDriver)
 	}
@@ -194,7 +197,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
 	clusterAttempted = true
-	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", "+v1.35")
+	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", defaultK3sChannel)
 	clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
 	resolverArgs, err := r.prepareDevelopmentResolver(state)
 	if err != nil {

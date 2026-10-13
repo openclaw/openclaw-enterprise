@@ -617,17 +617,26 @@ test("Saved Agent plugin discovery denies unauthorized callers before reporting 
 test("Saved Agent plugin discovery rejects unsupported Harness authentication or execution mode without reading credentials", async (t) => {
   const fixture = await createFixture(t);
   const { path } = await createSavedAgent(fixture, "api_key");
-  // A Service Accounts Secret the Agent may operate is not enough; the Agent must also run
-  // dedicated. If create-time admission starts refusing this combination, this case is moot.
+  // A Service Accounts Secret on an embedded Agent never reaches stored discovery: Agent save
+  // refuses the pair, as deployment does (finding 1117).
   const secret = await fixture.createSecret(fixture.namespace.id, "Embedded PAT", accessToken);
-  const embedded = await fixture.createAgent(
+  const configuration = await fixture.createConfiguration(
     fixture.namespace.id,
-    `Embedded PAT Agent ${randomUUID()}`,
     createHarnessConfiguration("openclaw", "gpt-5.1"),
-    { executionMode: "embedded", harnessAuth: { method: "codex_pat", source: secret.ref } },
   );
-  grantAgentSecret(fixture, embedded, secret);
-  const embeddedPath = `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/plugins`;
+  const embedded = await fixture.request("POST", `/namespaces/${fixture.namespace.id}/agents`, {
+    body: {
+      name: `Embedded PAT Agent ${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "embedded",
+      harnessAuth: { method: "codex_pat", source: secret.ref },
+    },
+  });
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+  assert.equal(
+    embedded.body.error.message,
+    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
+  );
   // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
   // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
   const account = await fixture.state.transact((unit) =>
@@ -658,8 +667,6 @@ test("Saved Agent plugin discovery rejects unsupported Harness authentication or
   for (const [prefix, suffix, body] of [
     [path, "", {}],
     [path, "/details", { pluginId: remoteId }],
-    [embeddedPath, "", {}],
-    [embeddedPath, "/details", { pluginId: remoteId }],
     [managedPath, "", {}],
     [managedPath, "/details", { pluginId: remoteId }],
   ]) {

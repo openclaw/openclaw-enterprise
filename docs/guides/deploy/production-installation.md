@@ -303,7 +303,7 @@ history, and the repository.
 
 ## Prepare workspace access
 
-Create the controller namespace:
+Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 characters):
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
@@ -311,7 +311,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace op
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing
-settings. Rerun validation and rendering above if inputs change. Configure each
+settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
 
 ## Provision system Secrets and install
@@ -506,7 +506,8 @@ Activation is one-way: the database refuses older images' sessions and
 4. Run `helm upgrade` with the compatible image. The api Deployment uses
    `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
    and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through restricted access, verify password recovery, new session admission,
+5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, new session admission,
    the expected Namespaces and existing Agent detail, and rejected stale sessions.
    Reopen ingress only after these checks, retaining one serving controller.
 

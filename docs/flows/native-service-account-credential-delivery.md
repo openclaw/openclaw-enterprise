@@ -1,20 +1,17 @@
 ---
 created: 2026-08-24
-updated: 2026-10-09
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-13
+last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
 ---
 
 # Harness Authentication Binding Flow
 
 ## Overview
 
-An operator stores an OpenAI or Anthropic API key, or a service account token, as an OCC Secret or separately issues a
-ChatGPT account credential, then selects that source through Agent `harnessAuth`.
+Select an OCC Secret or ChatGPT account credential through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload, which
-authenticates before guarded activation. With `{ "method": "runtime" }`,
-the operator supplies credentials on an SSH host instead; OCC freezes only the
-method and checks gateway readiness without model authentication.
+authenticates before guarded activation. SSH `runtime` binds operator credentials and checks gateway readiness without model authentication.
 
 Codex OAuth device login through an external credential source is **Experimental**;
 see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
@@ -66,27 +63,25 @@ graph TD
 `packages/occ/src/index.ts:OpenClawController.startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
 
-Device login creates a credential source and asks its Credential Gateway to start
-and poll authorization. The Secret-backed session records actor, exact Namespace
-and optional Agent scope, source identity, and an opaque Gateway handle. Tokens
-remain with the external service. Ready responses return a credential-source
+Device login creates a credential source and asks its Credential Refresh Driver
+to start and poll authorization. The Secret-backed session records actor, exact Namespace
+and optional Agent scope, source identity, and an opaque Refresh Driver handle.
+The Refresh Driver hands the provider grant to the external service. Ready responses return a credential-source
 reference; Console saves a `credential_source` binding and grants the Agent
 principal exact source `operate`.
 
 Secret compare-and-swap permits one in-flight poll and fences cancellation. An
 uncertain exchange requires reconnect. Closing or expiring a session removes its
-handle without revoking the source. Plugin discovery uses the Gateway's warm
-`withSourceToken` callback with current source authorization. It continues through
+handle without revoking the source. Plugin discovery uses the Gateway's
+`withSourceToken` callback with current source authorization; the service may
+refresh before returning a usable access token. It continues through
 the saved source after the login session closes.
 
-Before saving, Console can call the selected Compute Driver's
+Console calls
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
-without storing the credential. OpenAI API-key discovery
-omits models whose valid `shutdown_date` is today or earlier in UTC, per the
-provider's [model-list contract](https://developers.openai.com/api/reference/resources/models/methods/list);
-missing, null, malformed, or future dates remain, and model age and IDs do not
-imply expiry. Anthropic and service account token catalogs are unfiltered. Discovery
-does not prove a model call will succeed.
+without storing credentials. OpenAI API-key discovery excludes models with a
+valid `shutdown_date` today or earlier in UTC; other dates and the Anthropic and
+service-account catalogs remain unfiltered. Discovery does not prove a model call.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
 `authorizeHarnessAuthSource`
@@ -202,8 +197,6 @@ isolate same-UID processes.
 attempts within one monotonic 61-second budget. Only a subprocess `ETIMEDOUT`
 schedules the second, after a one-second timer, timed out at the smaller of
 30 seconds and the remaining budget; an unexplained `SIGKILL` is nonretryable.
-With no termination handler during the delay, stopping the launcher prevents
-the second call.
 
 Embedded OpenClaw consumes the selected provider's native API key and runs one bounded native
 primary-model probe during actual gateway startup, with tools and fallback
@@ -217,8 +210,7 @@ Both runtimes capture native output and hold final failures unready with a fixed
 message. Codex publishes the existing runtime failure only after retry exhaustion or a
 nonretryable result. Readiness polling does not repeat
 provider calls; restart or deployment starts a new bounded check. Probes may
-incur usage charges and check only the primary model; see
-[probe limitations](../reference/harness-execution.md#harness-authentication).
+incur usage charges.
 
 After readiness, the [activation and recovery flow](harness-execution-topology.md#3-publish-safely-and-complete-activation-once)
 completes activation.
@@ -247,8 +239,9 @@ same receiving state from a current attachment; sessions and workspace keep thei
 independent persistence.
 
 The [credential source lifecycle](credential-source-lifecycle.md) owns source
-registration, authorization, withdrawal and deletion. This integration requires
-an external OAuth Driver and service; the bundled catalog offers API keys only.
+registration, authorization, withdrawal and deletion. The experimental
+OpenShell source uses the paired Refresh Driver and upstream Gateway/Sandbox
+integration described in the [Driver reference](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 ## Debugging and Verification
 
@@ -289,6 +282,12 @@ an external OAuth Driver and service; the bundled catalog offers API keys only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
+- 2026-10-12 11:55: Retire owned Deployment writers before Jobs and persist bounded failure evidence before resumable cleanup. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
+
+- 2026-10-09 16:40: Replace the OAuth writer Deployment with a bounded Job and persist terminal failure with resumable cleanup in the accompanying change. (authoring-run/991ba230-4db6-45cb-8456-7561ee7bd446 - f92cf60b2ae4740a93bdd41e94e8f1c7fc92218f)
 
 - 2026-10-09 17:37: Trace Refresh-owned device authorization in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 1c2fbd2bc2953430e3ddaf68882176c6943ea7b2)
 

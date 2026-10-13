@@ -23,6 +23,15 @@ function event(installation, namespace, agent, action) {
   };
 }
 
+// A database-backed store stamps a revision's admission time on its own clock, the one that
+// stamps controller work (finding 1195), so a created revision equals its input except for
+// createdAt. The input adopts the stored stamp, so later reads compare against the record.
+function assertCreatedRevision(created, input) {
+  assert.ok(Number.isFinite(Date.parse(created.createdAt)), "createdAt is a timestamp");
+  assert.deepEqual({ ...created, createdAt: input.createdAt }, input);
+  input.createdAt = created.createdAt;
+}
+
 // Both stores raise the same error class for these refusals but word them differently. The
 // memory store names the refusing check. PostgreSQL either enforces it with a constraint or
 // trigger whose violation databaseError maps to one generic message without a cause, or refuses
@@ -135,7 +144,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ]);
     await transaction.secrets.createSecret(harnessSecret);
     assert.deepEqual(await transaction.agents.createAgent(agent), agent);
-    assert.deepEqual(await transaction.revisions.createRevision(revision), revision);
+    assertCreatedRevision(await transaction.revisions.createRevision(revision), revision);
     await transaction.audit.append(audit);
     await transaction.operations.append(operation);
   });
@@ -875,7 +884,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     );
     assert.deepEqual(await transaction.agents.createAgent(accountAgent), accountAgent);
     assert.deepEqual(await transaction.agents.createAgent(sharedAccountAgent), sharedAccountAgent);
-    assert.deepEqual(await transaction.revisions.createRevision(accountRevision), accountRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(accountRevision),
+      accountRevision,
+    );
   });
 
   const oauthCredential = {
@@ -2059,7 +2071,10 @@ async function verifyCredentialSourceContract(
     await transaction.agents.createAgent(sourceAgent);
     // The Agent draft binding alone retains the source.
     assert.equal(await sourceReferences(transaction), true);
-    assert.deepEqual(await transaction.revisions.createRevision(sourceRevision), sourceRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(sourceRevision),
+      sourceRevision,
+    );
     await transaction.agents.updateConfiguration(
       sourceNamespace.id,
       sourceAgent.id,
@@ -2397,7 +2412,7 @@ async function verifyCredentialSourceContract(
     "An Agent draft's non-model source cannot be deleted.",
   );
   await store.transact(async (transaction) => {
-    assert.deepEqual(await transaction.revisions.createRevision(toolRevision), toolRevision);
+    assertCreatedRevision(await transaction.revisions.createRevision(toolRevision), toolRevision);
     await transaction.agents.compareAndSetActiveRevision(
       sourceNamespace.id,
       toolAgent.id,
@@ -2540,7 +2555,10 @@ async function verifyCredentialSourceContract(
     );
   }
   await store.transact(async (transaction) => {
-    assert.deepEqual(await transaction.revisions.createRevision(listedRevision), listedRevision);
+    assertCreatedRevision(
+      await transaction.revisions.createRevision(listedRevision),
+      listedRevision,
+    );
   });
   // A draft without sources freezes none: an empty snapshot list is not a valid form of that.
   const unlistedAgent = {

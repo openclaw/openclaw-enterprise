@@ -29,7 +29,8 @@
     "tests/integration/repository-runtime-volume.test.mjs",
     "tests/integration/production-image-qualification.test.mjs",
     "tests/integration/development-packaging.test.mjs",
-    "tests/integration/container-publication-workflow.test.mjs"
+    "tests/integration/container-publication-workflow.test.mjs",
+    "tests/integration/oidc-ca-trust.test.mjs"
   ],
   "files": [
     {
@@ -75,11 +76,13 @@
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
+        "database routing refuses invalid ports before emitting NetworkPolicies",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
         "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
+        "production peer matchLabels keep the native Kubernetes map contract",
         "Collector exporter ports preserve decimal meaning in Kubernetes YAML"
       ]
     },
@@ -123,6 +126,18 @@
         "malformed output",
         "tool event",
         "termination during backoff exits without another probe"
+      ]
+    },
+    {
+      "path": "tests/integration/oidc-ca-trust.test.mjs",
+      "expectedTests": [
+        "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
+        "OIDC CA chart refuses partial, malformed and disabled configuration",
+        "OIDC CA reserves the assembled API CA mount from database.caMountPath",
+        "OIDC CA may share a public trust bundle Secret with the Gateway CA",
+        "rendered Harness node CA carries the Gateway root and never the IdP root",
+        "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust",
+        "rendered API guard isolates real PostgreSQL TLS from IdP trust before startup"
       ]
     }
   ]

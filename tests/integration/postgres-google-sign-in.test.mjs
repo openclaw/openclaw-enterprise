@@ -405,6 +405,7 @@ test(
           { subject: memberSubject },
           "provider outage",
           "PROVIDER_UNAVAILABLE",
+          "provider-unavailable",
         );
         assert.equal((await passwordSignIn(app, origin, admin, address())).statusCode, 200);
       } finally {

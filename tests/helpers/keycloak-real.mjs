@@ -5,12 +5,16 @@ import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { readKeycloakImage } from "../../scripts/ci/keycloak.mjs";
 
 const executeFile = promisify(execFile);
 
-/** Keycloak's own release, pinned by its multi-platform index digest. */
-export const defaultKeycloakImage =
-  "quay.io/keycloak/keycloak:26.4.7@sha256:9409c59bdfb65dbffa20b11e6f18b8abb9281d480c7ca402f51ed3d5977e6007";
+/**
+ * Keycloak's own release, pinned by digest in tests/fixtures/keycloak/image.json and shared
+ * with the Keycloak sign-in lane. CI imports it into k3d before the test runs (prepare.mjs
+ * sets OCC_TEST_KEYCLOAK_IMAGE), so the cluster never pulls it.
+ */
+export const defaultKeycloakImage = await readKeycloakImage();
 
 export const keycloakRealm = "oce";
 export const keycloakServiceClient = "occ-tools";
