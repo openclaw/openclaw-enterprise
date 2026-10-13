@@ -34,8 +34,7 @@ only at sign-in; live sessions are not rechecked, which stays an open question b
 ## Motivation
 
 Without an allowlist, GitHub sign-in admits any GitHub user ID an administrator attached to an
-OCE account, whatever that person's organization or team membership (board finding 410, from
-the GitHub sign-in bug hunt). The callback exchanges the code, calls only
+OCE account, whatever that person's organization or team membership. The callback exchanges the code, calls only
 [`GET /user`](https://docs.github.com/en/rest/users/users#get-the-authenticated-user), keys
 the person by numeric user ID, and discards the token
 ([`exchangeGithubSubject`](../../apps/controller/src/auth/github.ts)). Sessions last a fixed
@@ -83,7 +82,8 @@ step in OCE. The allowlist closes the first gap, not the second.
 
 ### GitHub App, not OAuth App
 
-OCE's GitHub sign-in is a GitHub App user-to-server flow. The deployment guide registers the
+OCE's GitHub sign-in is documented (not enforced) as a GitHub App user-to-server flow; a
+classic OAuth App without `read:org` would fail the lookups. The deployment guide registers the
 repository integration's GitHub App callback, the controller requests no scopes
 (`disableDefaultScope`), and the token GitHub returns is a user access token (`ghu_…`) whose
 authority is the App's permissions intersected with the user's. That decides how membership
@@ -107,8 +107,7 @@ documentation; the tests use fakes.
 
 An operator who wants a smaller blast radius can register a sign-in-only GitHub App with just
 Members: read and no repository permissions, so the user token can do nothing else. That
-changes the client ID, which is a new provider instance and needs every identity re-attached
-(finding 52), so it is an operator choice, not part of this change.
+changes the client ID, which is a new provider instance and needs every identity re-attached, so it is an operator choice, not part of this change.
 
 ### Configuration
 
@@ -123,7 +122,8 @@ changes the client ID, which is a new provider instance and needs every identity
   deduplicates entries. Organization logins are letters, digits and hyphens, starting with a
   letter or digit, up to 39 characters (looser than GitHub's current rule, so older names still
   fit); team slugs are lowercase letters, digits, `-` and `_`, up to 100 characters. At most 10
-  entries in total, so the number of GitHub requests per sign-in stays bounded.
+  entries in total, so the number of GitHub requests per sign-in stays bounded. The controller
+  counts after deduplicating, the chart and renderer before.
 - Anything else fails startup, as does either variable without the GitHub client ID, client
   secret and recovery user ID. The chart (`templates/_helpers.tpl`) applies the same rules at
   render time and also refuses either list without `auth.github.enabled`. The installation
@@ -148,8 +148,8 @@ sequenceDiagram
     end
   end
   alt some entry is active
-    API->>State: look up attached identity, issue session
-    API-->>Browser: /console/
+    API->>State: look up attached identity and account state
+    API-->>Browser: /console/ (or the usual unattached or disabled refusal)
   else every entry answered "not a member"
     API->>State: audit MEMBERSHIP_REQUIRED
     API-->>Browser: /console/?authError=github&authReason=membership
@@ -177,16 +177,17 @@ _Implemented flow (`githubMembership` in `github.ts`, `providerMembership` in
   and the 64 KiB response cap. Requests never follow redirects. The token is used only for
   these requests and then discarded. The login used in the team URL comes from the
   same `GET /user` answer, is validated (a malformed login fails the team lookup), and is
-  URL-encoded. Once the deadline passes, no further entry is tried and the failure is a
-  timeout.
+  URL-encoded. Once the deadline passes, no further entry is tried; the first failure seen (a
+  timeout, or an earlier `503`) is what is audited.
+- A match only clears this step: an unattached identity is still refused
+  `EXTERNAL_IDENTITY_REJECTED` and a disabled account `ACCOUNT_DISABLED`. Since membership runs
+  first, a disabled account that is also off the allowlist is audited `MEMBERSHIP_REQUIRED`.
 
 ### Refusal and audit
 
-Following the reason-code precedent of #1164 and #1184, the two outcomes have their own
+Following the reason-code precedent of #1164, the two outcomes have their own
 `authentication.login` denial codes in `HumanAuthenticationDenial`
-(`packages/occ/src/state/human-authentication.ts`), beside `INVALID_CREDENTIALS`,
-`EXTERNAL_IDENTITY_REJECTED`, `SESSION_REJECTED`, `PROVIDER_UNAVAILABLE` and the later
-`ACCOUNT_DISABLED`. `MEMBERSHIP_DENIALS` in `github.ts` names them; `refuseMembership` audits
+(`packages/occ/src/state/human-authentication.ts`). `MEMBERSHIP_DENIALS` in `github.ts` names them; `refuseMembership` audits
 them, and `apps/controller/src/auth/index.ts` maps them to the Console reasons `membership`
 and `membership-unavailable`:
 
@@ -197,8 +198,8 @@ and `membership-unavailable`:
 
 This was the first denial to record the numeric subject. It is safe here because GitHub has already
 authenticated the person, and it lets an administrator answer "why can't this person sign in"
-from the audit log. Unauthenticated junk callbacks never reach this step, so the rows are
-bounded by real GitHub sign-ins.
+from the audit log. Junk callbacks never reach this step, but any GitHub user can create
+such a row by starting a sign-in.
 
 The Console (`githubMembershipFailures` in `apps/controller/src/console/console.mjs`) reads
 `authReason` only from the fixed values above, and only for `authError=github`; anything else
@@ -218,8 +219,7 @@ answer. Then:
   logins, organization names or tokens;
 - no session is issued; password sign-in is unaffected.
 
-A `403` at this step usually means configuration, not an outage: the organization blocked the
-App, its owner has not accepted Members: read, or SAML SSO enforcement wants a session the user
+A `403` here usually means configuration: the organization blocked the App, its owner has not accepted Members: read, or SAML SSO enforcement wants a session the user
 lacks. GitHub may instead answer `404` for an organization without the App installed or a
 misspelled slug, which refuses every member as `MEMBERSHIP_REQUIRED` with no warning log; the
 external sign-in reference gives the check for both. An outage in the earlier token or profile
@@ -231,8 +231,7 @@ step stays `PROVIDER_UNAVAILABLE`.
   on applies from the next sign-in after the API restarts; sessions issued before that, and
   sessions of someone removed later, run until they expire (at most 8 hours). Revoke, disable
   or detach in OCE to end them at once.
-- **Silent misconfiguration.** A `404` misconfiguration refuses everyone with no warning log
-  (above).
+- **Silent misconfiguration.** A `404` misconfiguration refuses everyone silently (above).
 - **Broader App permission.** Members: read also lets the App's installation token list each
   listed organization's members and teams.
 - **No live GitHub qualification.** All evidence uses loopback fakes of GitHub; see open
@@ -242,8 +241,7 @@ step stays `PROVIDER_UNAVAILABLE`.
 
 ## Rationale and alternatives
 
-- **Document only** (finding 410 option a). Done separately in #1225; it tells operators to
-  offboard in OCE but does not let GitHub be the gate.
+- **Document only.** Done in #1225; GitHub still is not the gate.
 - **OAuth App permissions** and the other lookups: see the table under
   [GitHub App, not OAuth App](#github-app-not-oauth-app).
 - **Silent refusal as `EXTERNAL_IDENTITY_REJECTED`**, as Google's hosted-domain check does.
@@ -310,5 +308,5 @@ Migration: none. The settings are new and default off; there is no schema change
   (bounded transport and failure causes).
 - [GitHub: organization membership for the authenticated user](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user)
   and [team membership for a user](https://docs.github.com/en/rest/teams/members#get-team-membership-for-a-user).
-- Board finding 410; PR #1225 (documented the behaviour without an allowlist); PR #1231
+- PR #1225 (documented the behaviour without an allowlist); PR #1231
   (implementation). Code comments cite this RFC by its pre-renumbering ID, RFC-0061.
