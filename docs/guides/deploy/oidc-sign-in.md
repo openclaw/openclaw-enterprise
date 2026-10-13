@@ -171,26 +171,67 @@ auth:
     caSecretKey: ca.pem
 ```
 
-Before upgrading, follow the existing
-[stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in):
-close ingress, stop independent identity, bootstrap and policy/provisioning writers,
-pause automatic restarts, and drain admitted requests. Retain one serving controller.
-After the upgrade, verify recovery sign-in, IdP sign-in and Gateway access through
-restricted access before reopening ingress; keep ingress closed on failure.
-
 Set both values or neither. Clear both when disabling OIDC. The IdP CA Secret may
 be the public trust bundle Secret named by `gatewayRouting.caSecretName` (with its
 own key), never a credential Secret or `database.caSecretName`. The API's
 `assemble-api-ca` init container validates this bundle and any selected Gateway
 CA bundle, then combines them. Each input must contain only PEM CA certificates
-and be no larger than 1 MiB. A missing Secret or key prevents startup; empty,
-malformed, non-CA or private-key content fails initialization. Before enabling
-this setting, check that any existing Gateway bundle also meets these requirements.
-For missing Secrets, inspect Pod events. For initialization errors, run:
+and be no larger than 1 MiB. Before enabling this setting, check that any
+existing Gateway bundle also meets these requirements. On the protected host,
+every certificate in the file should show `CA:TRUE`:
+
+```bash
+openssl storeutl -noout -text -certs /secure/occ/idp-ca-bundle.pem | grep -E '^ +Subject:|CA:'
+```
+
+A trust-only change, where the upgrade changes nothing but these values, needs no
+writer stop and no ingress closure, like
+[rotating the client secret](oidc-operations.md#rotate-the-client-secret). The API
+Deployment uses `Recreate`, so it answers `503` while its single Pod is replaced; the
+worker keeps running. If the same upgrade also changes the image or other sign-in
+settings, follow that change's procedure. Run `helm upgrade`, then wait for the API:
+
+```bash
+kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
+```
+
+`helm upgrade` prints `STATUS: deployed` even when the bundle is bad. The rollout then
+times out with the Pod in `Init:Error` or `Init:CrashLoopBackOff` and ingress answering
+`503`. Read the init container's error:
 
 ```bash
 kubectl -n openclaw-system logs deployment/openclaw-enterprise-api -c assemble-api-ca
 ```
+
+It is one line that names the value, Secret and key you set and the problem, for example:
+
+```text
+assemble-api-ca: auth.oidc.caSecretName Secret "occ-oidc-ca-v1" key "ca.pem": certificate 1 of 1 (CN=sso.example.com) is not a CA certificate; use the issuing root or intermediate CA, not the server certificate
+```
+
+A Gateway bundle problem names `gatewayRouting.caSecretName` (or the chart-managed
+Gateway root) the same way. A database CA problem stops the `api` container instead,
+with a `check-api-database-ca:` line naming `database.caSecretName` and its key. A
+missing Secret or key leaves the Pod at `Init:0/1`; its events
+(`kubectl -n openclaw-system describe pod -l app.kubernetes.io/component=api`) show
+`FailedMount`. To recover, restore the previous values and run `helm upgrade`, or fix the
+input as described under [Rotate the IdP CA](#rotate-the-idp-ca).
+
+Once the rollout succeeds, list the roots the API trusts. The image has no `openssl`,
+so this uses its Node and changes nothing:
+
+```bash
+kubectl -n openclaw-system exec deployment/openclaw-enterprise-api -c api -- node -e '
+const { X509Certificate } = require("node:crypto");
+const pem = require("node:fs").readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8");
+for (const block of pem.match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g)) {
+  const certificate = new X509Certificate(block);
+  console.log(certificate.subject.replace(/\n/g, ", "), "|", certificate.fingerprint256);
+}'
+```
+
+It prints the IdP roots, then any Gateway roots. Then check recovery password sign-in,
+IdP sign-in and Gateway access.
 
 This extends public trust **process-wide in the API** for clients that use
 Node's default trust. The chart does not add IdP roots to workers or Jobs, and
@@ -203,25 +244,36 @@ still apply. If the IdP certificate already chains to a root in the
 bundle also reaches workers and database clients; use these values to keep IdP trust
 API-only with isolated database trust. See the [trust contract](../../reference/settings/oidc.md).
 
-For rotation, use the same
-[stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in)
-before changing trust or replacing the Pod. Create a new versioned Secret and
-change `caSecretName`; the changed Pod template replaces the API Pod. If you
-update the contents of the IdP Secret or a combined Gateway CA Secret, explicitly
-replace the API Pod:
+### Rotate the IdP CA
+
+The init container copies the inputs once, when the Pod starts. Prefer a new
+versioned Secret for every change: changing `caSecretName` changes the Pod template,
+so `helm upgrade` alone replaces the API Pod.
+
+1. Overlap: create `occ-oidc-ca-v2` holding the old and new CA certificates together,
+   set `caSecretName: occ-oidc-ca-v2`, run `helm upgrade` and the `rollout status`
+   check above, and list the trusted roots.
+2. Move the IdP to certificates from the new CA, and check IdP sign-in.
+3. Remove the old CA: create `occ-oidc-ca-v3` holding only the new CA, and upgrade and
+   check the same way.
+4. Delete the superseded Secrets once you no longer need them to roll back:
+   `kubectl -n openclaw-system delete secret occ-oidc-ca-v1 occ-oidc-ca-v2`.
+
+Editing a Secret in place, including a combined Gateway CA Secret, changes nothing
+until the API Pod is replaced, and restarting only the API container keeps the old
+snapshot. The plain `kubectl create secret` command fails once the Secret exists, so
+replace its contents and then the Pod:
 
 ```bash
+kubectl -n openclaw-system create secret generic occ-oidc-ca-v2 \
+  --from-file=ca.pem=/secure/occ/idp-ca-bundle.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
-kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api
+kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
 ```
 
-Through restricted access, verify recovery sign-in, IdP sign-in and Gateway access
-before reopening ingress, retaining one serving controller. Replacing the single
-API replica interrupts service until it is ready. A Secret update alone does not
-refresh the assembled bundle or Node's startup trust; restarting only the API
-container keeps the init container's previous snapshot. Include old and new CA certificates together during an overlap,
-then remove the old CA and replace the Pod again. Ordinary leaf renewal under the
-same CA needs no restart.
+Replacing the single API replica interrupts service until it is ready. Ordinary leaf
+renewal under the same CA needs no restart.
 
 ## Find a person's subject
 

@@ -199,6 +199,18 @@ spec:
             {{- if $gatewayCa }}
             - /etc/openclaw/gateway-ca/ca.crt
             {{- end }}
+          env:
+            # Errors name the operator's Secret and key, not the fixed mount paths.
+            {{- $caSources := dict "/etc/openclaw/oidc-ca/ca.crt" (printf "auth.oidc.caSecretName Secret %q key %q" $.Values.auth.oidc.caSecretName $.Values.auth.oidc.caSecretKey) }}
+            {{- if $gatewayCa }}
+            {{- if $.Values.gatewayRouting.issuerRef.name }}
+            {{- $_ := set $caSources "/etc/openclaw/gateway-ca/ca.crt" (printf "gatewayRouting.caSecretName Secret %q key %q" $.Values.gatewayRouting.caSecretName $.Values.gatewayRouting.caSecretKey) }}
+            {{- else }}
+            {{- $_ := set $caSources "/etc/openclaw/gateway-ca/ca.crt" (printf "chart-managed Gateway root Secret %q key \"tls.crt\"" (include "openclaw.gatewayRouting.rootSecretName" $)) }}
+            {{- end }}
+            {{- end }}
+            - name: OCC_CA_SOURCES
+              value: {{ toJson $caSources | quote }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:
@@ -266,6 +278,8 @@ spec:
               value: /etc/openclaw/gateway-api-key/key
             {{- end }}
             {{- if $oidcCa }}
+            - name: OCC_DATABASE_CA_SOURCE
+              value: {{ printf "database.caSecretName Secret %q key %q" $.Values.database.caSecretName $.Values.database.caKey | quote }}
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/openclaw/api-extra-ca/ca.crt
             # Harness node enrollment trusts the Gateway CA only; empty means no private Gateway CA.
