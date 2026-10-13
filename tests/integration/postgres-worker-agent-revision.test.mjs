@@ -3973,12 +3973,17 @@ revisionTest(
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
-    const unpairedRevision = await fixture.revision(unpaired, 1);
+    // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
+    // and still inside the 900-second deadline.
+    const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
     const reasons = new Map([
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
     ]);
-    const delays = [];
+    const delays = new Map([
+      [unscheduledRevision.idempotencyKey, []],
+      [unpairedRevision.idempotencyKey, []],
+    ]);
     await fixture.start(
       {
         ...fixture.compute,
@@ -3994,10 +3999,10 @@ revisionTest(
         emit: (event) => {
           if (
             event.event === "worker.completed" &&
-            event.workId === unpairedRevision.idempotencyKey &&
+            delays.has(event.workId) &&
             event.outcome === "pending"
           ) {
-            delays.push(
+            delays.get(event.workId).push(
               fixture.observerPool
                 .query(
                   `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
@@ -4026,29 +4031,17 @@ revisionTest(
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
     });
-    const fresh = await delays[0];
+    const firstDelay = async (revision) => {
+      const recorded = delays.get(revision.idempotencyKey);
+      await waitFor(`a recheck of ${revision.id}`, async () => recorded.length > 0 || undefined);
+      return recorded[0];
+    };
+    const fresh = await firstDelay(unscheduledRevision);
     assert.ok(fresh > 450 && fresh <= 500, `a new deployment rechecks in 500 ms (${fresh} ms)`);
 
-    // Five minutes later, still inside the 900-second deadline, a runtime that
-    // stays unready is rechecked every 5 s, so one stuck Agent cannot take most
-    // of the serial worker (D223). The work ages on PostgreSQL's clock, which
-    // judges it (finding 1187). A pass claimed before this update keeps its
-    // younger age, so the recheck after it may still be 500 ms.
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work SET created_at = created_at - interval '300 seconds'
-       WHERE idempotency_key = $1`,
-      [unpairedRevision.idempotencyKey],
-    );
-    const seen = delays.length;
-    let old = 0;
-    for (let index = seen; index <= seen + 1 && old <= 4_500; index += 1) {
-      await waitFor(
-        "a recheck after five minutes",
-        async () => delays.length > index || undefined,
-        20_000,
-      );
-      old = await delays[index];
-    }
+    // A runtime that stays unready for five minutes is rechecked every 5 s, so
+    // one stuck Agent cannot take most of the serial worker (D223).
+    const old = await firstDelay(unpairedRevision);
     assert.ok(old > 4_500 && old <= 5_000, `an old deployment rechecks in 5 s (${old} ms)`);
   },
 );
