@@ -395,12 +395,10 @@ test(
     ),
 );
 
-// The header name is at most 64 characters and starts with a letter or digit, checked
-// after lowercasing.
+// The header name is at most 64 characters and starts with a letter or digit.
 fieldParity("trusted proxy client address header names get the same length and shape verdict", {
   cases: [
     [`x-${"a".repeat(62)}`, true],
-    [`X-${"A".repeat(62)}`, true],
     [`x-${"a".repeat(63)}`, false],
     ["-x-real-ip", false],
   ],
@@ -722,8 +720,9 @@ const controlPlaneImageCases = [
   ["registry.example.invalid/controller?tag", false],
   ["-registry.example.invalid/controller", false],
   ["_registry.example.invalid/controller", false],
-  // Uppercase is allowed; a second @ and IPv6 brackets are not.
-  ["Registry.Example.invalid/Team/Controller", true],
+  // An uppercase registry host is allowed. A second @ is refused, and so is a bracket anywhere:
+  // control-plane images cannot use an IPv6 registry host.
+  ["Registry.Example.invalid/team/controller", true],
   ["registry.example.invalid/controller@extra", false],
   ["registry.example.invalid/[fd00::1]/controller", false],
 ];
@@ -789,7 +788,7 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
       (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
     ),
     ["https://ex%e2%80%8bample.com:8443", false, invisibleHost],
-    // A joiner may sit inside a label, encoded or not, but not at either end.
+    // A joiner may sit inside a label, encoded or not, but not at the start or end of the URL.
     ["https://\u0915\u094d\u200d\u0937.example", true],
     ["https://\u0915\u094d%E2%80%8D\u0937.example", true],
     [

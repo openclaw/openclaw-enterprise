@@ -1618,7 +1618,7 @@ test("profiles pass an optional observability URL to Installation startup YAML",
       controlPlane: { ...baseInput().controlPlane, observabilityUrl: " HTTP://192.0.2.10 " },
     }),
   );
-  assert.equal(spaced.summary.ok, true, spaced.preflight.errors.join("\n"));
+  assert.equal(spaced.summary.ok, true);
   const spacedSnapshot = await loadStartupConfigurationSnapshot({
     mode: "production",
     environment: { OCC_CONFIG_PATH: join(spaced.directory, "installation.yaml") },
