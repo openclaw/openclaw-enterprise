@@ -1744,7 +1744,7 @@ export type HarnessDeviceAuthorizationResult =
 
 /**
  * Options for Configuration rules that also run on Preset defaults. `unresolved` names text its
- * writer fills in later (an unfilled Preset variable): a rule leaves a header name that holds it
+ * writer fills in later (an unfilled Preset variable): a rule defers a header name that holds one
  * to the Configuration the filled Preset creates, which is checked like any other.
  */
 export interface ConfigurationValidationOptions {

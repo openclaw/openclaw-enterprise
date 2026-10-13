@@ -362,7 +362,7 @@ const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}
 /**
  * A submitted key a message names, such as a header name, in double quotes: characters
  * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
- * so the message keeps its cap. Use it only for keys that are not secrets.
+ * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
  */
 export function quotedSettingKey(key: string, limit: number): string {
   const characters = Array.from(shownKey(key));
