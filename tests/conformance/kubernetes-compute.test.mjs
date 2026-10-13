@@ -6611,12 +6611,16 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
 });
 
 test("native provider enrollment needs no inbound Harness route", () => {
+  const peerLabels = supervisorPeerLabels("revision-native-worker");
   const sandboxDriver = {
     id: "sandbox-native-worker",
     implementation: "openshell",
     capability: "sandbox",
     async harnessEndpoint() {
       return undefined;
+    },
+    async workspaceNodePeerLabels() {
+      return peerLabels;
     },
   };
   const driverOptions = options({
@@ -6637,17 +6641,24 @@ test("native provider enrollment needs no inbound Harness route", () => {
     sandboxDriver,
   });
   const outboundPolicies = outboundDriver
-    .agentNetworkPolicies(revision, namespaceAddress)
+    .agentNetworkPolicies(revision, namespaceAddress, {}, [peerLabels])
     .map(({ resource }) => resource);
-  assert.ok(
+  // Enrollment admits only the selected Sandbox supervisor, not every supervisor
+  // in the tenant, and must not restore the old additive supervisor egress policy.
+  const enrollment = outboundPolicies.find(({ metadata }) =>
+    metadata.name.startsWith("allow-gateway-workspace-node-"),
+  );
+  assert.deepEqual(enrollment.spec.ingress, [
+    {
+      from: [outboundDriver.peer({ namespace: namespaceAddress.name, podLabels: peerLabels })],
+      ports: [{ protocol: "TCP", port: driverOptions.network.gatewayPort }],
+    },
+  ]);
+  assert.equal(
     outboundPolicies.some(({ metadata }) =>
       metadata.name.startsWith("allow-workspace-node-gateway-"),
     ),
-  );
-  assert.ok(
-    outboundPolicies.some(({ metadata }) =>
-      metadata.name.startsWith("allow-gateway-workspace-node-"),
-    ),
+    false,
   );
   assert.equal(
     outboundPolicies.some(({ metadata }) => metadata.name.startsWith("allow-gateway-agent-")),

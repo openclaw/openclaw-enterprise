@@ -801,11 +801,17 @@ export function createOpenShellKubernetesFixture({
     return pod;
   }
 
-  async function assertProviderOwnedHarness(namespace, revision, sandbox, pod) {
+  async function assertProviderOwnedHarness(
+    namespace,
+    revision,
+    sandbox,
+    pod,
+    serviceAccountName = openShellAgentName(revision.agentId),
+  ) {
     assert.equal(sandbox.metadata.namespace, namespace);
     assert.equal(pod.metadata.namespace, namespace);
     assert.ok(sandbox.metadata.name, "Sandbox must have a stable resource name.");
-    assert.equal(pod.spec.serviceAccountName, openShellAgentName(revision.agentId));
+    assert.equal(pod.spec.serviceAccountName, serviceAccountName);
     assert.equal(pod.metadata.labels?.["openclaw.dev/namespace"], revision.namespaceId);
     assert.equal(pod.metadata.labels?.["openclaw.dev/agent"], revision.agentId);
     assert.equal(pod.metadata.labels?.["openclaw.dev/revision"], revision.id);

@@ -228,7 +228,9 @@ in-cluster routing hostname or two clusters. Chmod-sensitive paths such as
 `OPENCLAW_NODE_STATE_DIR` address process-created `state` children, avoiding
 symlink ancestors and root-owned mount roots.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
-reads setup and CA into its private connect target. `sandboxCommand` gives the
+reads setup and CA into its private connect target. It starts a private readiness
+listener only when Compute supplies its status port; provider-owned Harnesses
+omit that port and use outbound node enrollment readiness. `sandboxCommand` gives the
 native process writable temporary storage, preserving the supervisor's `/tmp`.
 Restarts reread setup and reuse device identity.
 
@@ -385,7 +387,6 @@ networking. Native OpenClaw remains a separate verification-only path.
 - 2026-10-09 17:56: Allow outbound-only Harnesses to return no endpoint and skip transport observation. (authoring-run/046d9ca4-c1af-4515-b4d1-62c314d84484 - 4926e2425)
 
 - 2026-10-09 17:10: Deliver native node setup through a revision-owned provider and remove the native test bridge. (authoring-run/046d9ca4-c1af-4515-b4d1-62c314d84484 - d156330a1)
-
 
 - 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds; tighten setup prose. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
 

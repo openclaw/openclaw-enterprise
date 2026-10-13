@@ -1365,7 +1365,7 @@ async function cleanupNativeWorkspace(
   }
 }
 
-// TEMPORARY: Remove if OpenShell adds support for preparing private subpaths
+// TODO(openshell-private-subpath-preparation): Remove if OpenShell adds support for preparing private subpaths
 // and OCE adopts that support.
 // Use existing Deployment permissions; never grant OCC direct Pod creation for this.
 async function prepareNativeWorkspace(

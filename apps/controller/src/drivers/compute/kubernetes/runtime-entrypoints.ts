@@ -4107,7 +4107,10 @@ function nativeWorkerReady() {
   });
 }
 
-startRuntimeReadinessServer(nativeWorkerReady);
+// Provider-owned Harnesses use node enrollment readiness and omit Pod-local status settings.
+if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
+  startRuntimeReadinessServer(nativeWorkerReady);
+}
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();

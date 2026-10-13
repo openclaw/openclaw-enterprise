@@ -12301,12 +12301,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.mode === "dedicated" &&
       this.sandboxDriverForRevision(revision)?.harnessEndpoint !== undefined;
     if (providerOwnsHarnessEndpoint) {
-      const provider = this.options.network.providerHarness;
-      if (provider === undefined) {
-        throw new ConfigurationFailure(
-          "SandboxDriver Harness endpoint requires an exact provider network route.",
-        );
-      }
       // Only this revision's relay Pods (and, during preparation, the serving
       // predecessor's) reach the Gateway, never another Agent's Sandbox in the
       // namespace (finding 1127). No peer yet means no rule: an empty `from` would
@@ -12334,6 +12328,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             ];
       if (revision.harness.id === "openclaw") {
         return [...workspaceNodePolicies, ...statusPolicies];
+      }
+      const provider = this.options.network.providerHarness;
+      if (provider === undefined) {
+        throw new ConfigurationFailure(
+          "SandboxDriver Harness endpoint requires an exact provider network route.",
+        );
       }
       return [
         policy("allow-gateway-agent", {

@@ -7,6 +7,9 @@ packages:
   - packages/audit
   - "!legacy/**"
 
+# Running scripts must not implicitly reinstall the prepared dependency graph.
+verifyDepsBeforeRun: false
+
 # Wait seven days before accepting registry releases, including locked versions.
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true

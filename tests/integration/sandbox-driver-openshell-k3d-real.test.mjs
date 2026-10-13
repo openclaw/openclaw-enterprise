@@ -8,7 +8,6 @@ import dns from "node:dns";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { createRequire } from "node:module";
 import { connect, isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -1103,6 +1102,12 @@ function createIntegrationSandboxDriverFactory(
           context,
         ).harnessStatus(context);
       },
+      async workspaceNodePeerLabels(context) {
+        const endpoint = existingEndpointForNamespace(context);
+        return await delegate(undefined, context.namespace.name, endpoint).workspaceNodePeerLabels(
+          context,
+        );
+      },
       async readSandboxLogs(context, request) {
         const endpoint = existingEndpointForNamespace(context);
         return await delegate(undefined, context.namespace.name, endpoint).readSandboxLogs(
@@ -1866,6 +1871,8 @@ async function prepareProductionInstallation(
     pauseWorker,
     resumeWorker: startWorker,
     provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
+    waitForAgentWorkerCompleted: (agentId, revisionId) =>
+      assertWorkerCompleted({ pool: observerPool, events, namespaceId, agentId, revisionId }),
     diagnoseAgentRevision: (agentId, revisionId) =>
       writeWorkerCompletionDiagnostics({
         pool: observerPool,
@@ -3116,9 +3123,10 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
 }
 
 async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
-  const redactions = [process.env.OPENAI_API_KEY, gatewayPassword, topology.appServerToken].filter(
-    (secret) => typeof secret === "string" && secret.length > 0,
-  );
+  const secrets = failureSecrets([
+    process.env,
+    { GATEWAY_PASSWORD: gatewayPassword, APP_SERVER_TOKEN: topology.appServerToken },
+  ]);
   const sections = [];
   for (const source of [
     {
@@ -3135,7 +3143,7 @@ async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
     },
   ]) {
     try {
-      let logs = await kubectl(
+      const logs = await kubectl(
         "logs",
         source.name,
         "--namespace",
@@ -3143,9 +3151,6 @@ async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
         ...source.containerArguments,
         "--tail=300",
       );
-      for (const secret of redactions) {
-        logs = logs.replaceAll(secret, "[REDACTED]");
-      }
       const relevant = logs
         .split("\n")
         .filter((line) =>
@@ -3171,7 +3176,14 @@ async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
   } catch (error) {
     sections.push(`Harness Pod status unavailable: ${error?.message ?? String(error)}`);
   }
-  return `\n${sections.join("\n")}`;
+  return (
+    "\n" +
+    sections
+      .join("\n")
+      .split("\n")
+      .map((line) => redactLogLine(line, secrets, 1600))
+      .join("\n")
+  );
 }
 
 async function createNativeTurnRequester(context, topology) {
@@ -3188,6 +3200,17 @@ async function createNativeTurnRequester(context, topology) {
   context.after(() => forwarding.stop());
   return {
     nodeUrl: forwarding.url.replace("http:", "ws:") + "/node",
+    async failureDiagnostic(payload) {
+      const secrets = failureSecrets([
+        process.env,
+        { GATEWAY_PASSWORD: gatewayPassword, APP_SERVER_TOKEN: topology.appServerToken },
+      ]);
+      return (
+        "\nNative Gateway response: " +
+        redactLogLine(JSON.stringify(payload), secrets, 1600) +
+        (await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword))
+      );
+    },
     async turn(sessionKey) {
       const nonce = "OCC-OPENSHELL-NATIVE-" + randomUUID();
       let response;
@@ -3233,11 +3256,18 @@ async function createNativeTurnRequester(context, topology) {
 
 async function assertNativeTurn(requester, sessionKey) {
   const result = await requester.turn(sessionKey);
-  assert.equal(result.status, 200, "native model turn must complete");
-  assert.ok(
-    result.payload.choices?.[0]?.message?.content?.includes(result.nonce),
-    "a real assistant completion must contain the fresh nonce",
-  );
+  if (result.status !== 200) {
+    assert.fail(
+      `native model turn must complete; HTTP ${result.status}` +
+        (await requester.failureDiagnostic(result.payload)),
+    );
+  }
+  if (!result.payload.choices?.[0]?.message?.content?.includes(result.nonce)) {
+    assert.fail(
+      "a real assistant completion must contain the fresh nonce" +
+        (await requester.failureDiagnostic(result.payload)),
+    );
+  }
 }
 
 async function requestNativeOpenClawTurns(context, topology) {
@@ -3290,13 +3320,24 @@ async function createSecondNativeAgent(topology) {
     assert.equal(observed.status, 200);
     return observed.data.activeRevisionId === deployed.data.id ? true : undefined;
   });
+  // Activation publishes the revision before the deployment worker finishes its
+  // Gateway rollout. Use the same completion boundary as Agent A's setup.
+  await topology.waitForAgentWorkerCompleted(agent.id, deployed.data.id);
   const sandbox = await waitForSandbox(topology.placement, deployed.data);
   const harnessPod = await waitForProviderHarnessPod(topology.placement, deployed.data);
-  await assertProviderOwnedHarness(topology.placement, deployed.data, sandbox, harnessPod);
+  // Native Harnesses request no projected identity. OpenShell retains the namespace
+  // gateway's Agent A ServiceAccount; Agent B remains isolated by Gateway authority.
+  await assertProviderOwnedHarness(
+    topology.placement,
+    deployed.data,
+    sandbox,
+    harnessPod,
+    openShellAgentName(topology.agent.id),
+  );
   const gatewayPod = (await resources("pods", topology.gatewayPlacement)).find(
     (pod) =>
       pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-      pod.metadata.labels?.["openclaw.dev/agent-id"] === agent.id,
+      pod.metadata.labels?.["openclaw.dev/agent"] === agent.id,
   );
   assert.ok(gatewayPod, "Agent B must have its own live Gateway");
   assert.notEqual(gatewayPod.metadata.uid, topology.gatewayPod.metadata.uid);
@@ -3354,9 +3395,21 @@ async function assertNativeAuthorityChain(context, topology, positive) {
     "unexpected upstream setup TTL: review the live lane timeout instead of shortening authority",
   );
   const peer = await createSecondNativeAgent(topology);
+  const adminB = await connectNativeAdministrator(context, peer);
+  const peerNodeSecret = await resource(
+    "secret",
+    "workspace-node-" + hash(peer.agent.id) + "-" + hash("harness:openclaw"),
+    peer.placement,
+  );
+  const peerNodeId = Buffer.from(peerNodeSecret.data.deviceId, "base64").toString();
+  assert.ok(peerNodeId.length > 0);
+  // Sandbox readiness precedes native node enrollment. Observe the Gateway's real
+  // connection before exercising workspace operations; do not retry those mutations.
+  await waitFor("native Agent B workspace node connected", async () =>
+    (await adminB("node.describe", { nodeId: peerNodeId })).connected === true ? true : undefined,
+  );
   await assertNativeOpenClawWorkspaceFiles(peer);
   const peerTurns = await requestNativeOpenClawTurns(context, peer);
-  const adminB = await connectNativeAdministrator(context, peer);
   nativeAuthorityTrace(context, "positive-native-workspace-and-successive-turns", { agents: 2 });
 
   const deviceIdentity = createProbeDeviceIdentity();
