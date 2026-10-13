@@ -59,9 +59,10 @@ Agent that fails a check still reads; its next update must fix the pair.
   field name, and a `request.auth` other than exactly
   `{mode: "provider-default"}`. A credential header's last hyphen- or
   underscore-separated word is `auth`, `authorization`, `token`, `secret`,
-  `password`, `cookie` or a key word such as `api-key` or
-  `subscription-key`; the
+  `password`, `cookie`, `credential(s)`, `signature` or a like word, or its
+  name ends in `key` (not an idempotency or cache key); the
   [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
+  A `models` that is not a list is refused too: it would hide its rows.
 
 These close the credential slots in a provider's `headers` and `request`.
 The provider `apiKey` stays, checked against the Harness binding on selected

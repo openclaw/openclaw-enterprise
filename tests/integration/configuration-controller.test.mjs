@@ -450,6 +450,61 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   assert.deepEqual(updated.body.data.values, local);
 });
 
+test("Configuration HTTP refuses a model provider models setting that is not a list", async () => {
+  // Finding 1186: the credential rules walk only a list of model rows, so a record of rows
+  // carried a literal credential header past them into storage, and OpenClaw refused the
+  // document only when the Gateway started. Every provider is checked, selected or not.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const sentinel = "synthetic-model-credential-not-for-configuration";
+  const message = (key) => `Configuration setting ${key}.models must be an array of model entries.`;
+  for (const [values, setting] of [
+    [
+      {
+        models: {
+          providers: {
+            gateway: { models: { m: { id: "m", headers: { "x-api-key": sentinel } } } },
+          },
+        },
+      },
+      "models.providers.gateway",
+    ],
+    [
+      { models: { providers: { "my gateway": { models: null } } } },
+      'models.providers["my gateway"]',
+    ],
+    [{ models: { providers: { openai: { models: "gpt-5" } } } }, "models.providers.openai"],
+  ]) {
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assert.equal(rejected.body.error.message, message(setting));
+  }
+  assert.deepEqual(configurationDriver.storedConfigurations(), []);
+
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: createOpenClawConfiguration() },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  const failedUpdate = await request(context.app, "PATCH", item, {
+    body: { values: { models: { providers: { gateway: { models: {} } } } } },
+  });
+  assert.equal(failedUpdate.status, 400, JSON.stringify(failedUpdate.body));
+  assert.equal(failedUpdate.body.error.message, message("models.providers.gateway"));
+  const unchanged = await request(context.app, "GET", item);
+  assert.deepEqual(unchanged.body.data, created.body.data);
+  // A list, an empty one, or no models setting still saves.
+  const listed = { models: { providers: { gateway: { models: [] }, openai: {} } } };
+  const updated = await request(context.app, "PATCH", item, { body: { values: listed } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(updated.body.data.values, listed);
+});
+
 test("Configuration save refuses an agents roster every deployment refuses, with deployment's text", async () => {
   // Deployment runs the real Kubernetes Compute roster rules, as production admission does.
   const kubernetes = createTestKubernetesComputeDriver("compute-roster-integration");

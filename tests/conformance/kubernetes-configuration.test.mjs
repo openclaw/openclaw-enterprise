@@ -460,6 +460,11 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     },
     { models: { providers: { openai: { headers: { x_api_key: sentinel } } } } },
     { models: { providers: { openai: { headers: { "x-functions-key": sentinel } } } } },
+    // Any key, a credential, passphrase, passcode, signature or bearer word (finding 1185).
+    { models: { providers: { openai: { headers: { "X-Auth-Key": sentinel } } } } },
+    { models: { providers: { openai: { headers: { "x-portkey-virtual-key": sentinel } } } } },
+    { models: { providers: { openai: { request: { headers: { "X-Credentials": sentinel } } } } } },
+    { models: { providers: { openai: { headers: { "X-Hub-Signature-256": sentinel } } } } },
     // The client certificate, key and passphrase for the model endpoint and its proxy.
     { models: { providers: { openai: { request: { tls: { key: sentinel } } } } } },
     { models: { providers: { openai: { request: { tls: { passphrase: sentinel } } } } } },

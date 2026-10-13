@@ -213,6 +213,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-13 14:00: The credential header rule also matches any name ending in `key` (not an idempotency or cache key) and the words `bearer`, `credential(s)`, `passcode`, `passphrase` and `signature`; Configuration writes and Kubernetes Compute refuse a model provider `models` that is not a list, which hid its rows from the credential rules. (findings 1185-1186)
 - 2026-10-13 10:00: Kubernetes Compute refuses credential headers and non-default `request.auth` on every model provider, and the Configuration Driver requires references in the request credential slots; a stored document that predates these rules still reads and an edit replaces it, while save and deployment refuse it with the Compute message. (#2265, findings 1142-1143)
 - 2026-10-11 15:00: Kubernetes deployment admission names the caller's Configuration setting for channel, credential and dedicated OpenClaw catalog refusals; Configuration save, provisioning and Preset save run the topology-independent ones through `validateConfiguration`; Agent create and update run deployment's Agent checks. (fix-1116-1117, findings 1116-1117)
 - 2026-10-11 14:30: Every JSON request body nested more than 24 levels deep is refused with `400 TOO_DEEP` before it is parsed, instead of a `500` and hundreds of megabytes of heap on Configuration and Preset writes. (fix-1124, finding 1124)

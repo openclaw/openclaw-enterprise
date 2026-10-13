@@ -1,7 +1,12 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 
-import { ModelProviderSettingError } from "./errors.ts";
+import {
+  ConfigurationHarnessError,
+  configurationSettingMessage,
+  keyedSettingPath,
+  ModelProviderSettingError,
+} from "./errors.ts";
 
 /**
  * Model API adapter ids the pinned OpenClaw runtime accepts: `MODEL_DATA_APIS` in
@@ -61,11 +66,29 @@ function validateSettings(
   }
 }
 
+/** The requirement in `providerModelsListError`, for rules that build their own error. */
+export const PROVIDER_MODELS_LIST = "must be an array of model entries";
+
+/**
+ * The refusal for a `models.providers.<key>.models` that is not a list. OpenClaw accepts only
+ * a list there, and the credential rules walk only a list, so a record of model rows would
+ * carry their credentials past every rule. Configuration writes and Kubernetes Compute's
+ * credential rule refuse it with this message.
+ */
+export function providerModelsListError(key: string): ConfigurationHarnessError {
+  return new ConfigurationHarnessError(
+    configurationSettingMessage(
+      `${keyedSettingPath("models.providers", key)}.models`,
+      PROVIDER_MODELS_LIST,
+    ),
+  );
+}
+
 /**
  * A saved model provider `baseUrl` or `api` that the runtime cannot use otherwise fails
  * only at deployment, as an unexplained startup model check failure. Configuration writes
- * check both on each provider and on each of its models; other provider settings stay
- * the runtime's to validate.
+ * check both on each provider and on each of its models, and refuse a `models` that is not
+ * a list (`providerModelsListError`); other provider settings stay the runtime's to validate.
  */
 export function validateModelProviderSettings(values: OpenClawConfigurationDocument): void {
   const providers = asRecord(asRecord(values.models)?.providers);
@@ -77,8 +100,11 @@ export function validateModelProviderSettings(values: OpenClawConfigurationDocum
     const path = ["models", "providers", providerName] as const;
     validateSettings(settings, path, true);
     const models = settings.models;
-    if (!Array.isArray(models)) {
+    if (models === undefined) {
       continue;
+    }
+    if (!Array.isArray(models)) {
+      throw providerModelsListError(providerName);
     }
     for (const [index, model] of models.entries()) {
       const modelSettings = asRecord(model);
@@ -99,15 +125,24 @@ export function isHttpFieldName(name: string): boolean {
 }
 
 // A header whose last hyphen- or underscore-separated word names a credential: Authorization,
-// Proxy-Authorization, api-key, x_api_key, x-goog-api-key, x-functions-key, x-auth-token,
-// cookie and the like. Vendors and gateways each pick their own credential header, so a fixed
-// list would miss the next one; matching the last word keeps names such as x-api-key-id or
-// x-auth-mode, which carry no credential, out. A bare `key` is not a credential word, so
-// idempotency-key and x-cache-key stay accepted.
-const CREDENTIAL_HEADER =
-  /(?:^|[-_])(?:auth|authorization|(?:api|access|functions|license|master|rapidapi|secret|subscription)[-_]?key|token|secret|password|cookie)$/i;
+// Proxy-Authorization, x-auth-token, cookie, x-client-secret, x-credentials, x-passphrase,
+// x-signature, x-bearer and the like. Vendors and gateways each pick their own credential
+// header, so a fixed list would miss the next one; matching the last word keeps names such
+// as x-token-id or x-auth-mode, which carry no credential, out. A trailing number word, as in
+// x-hub-signature-256, is skipped.
+const CREDENTIAL_HEADER_WORD =
+  /(?:^|[-_])(?:auth|authorization|bearer|cookie|credentials?|passcode|passphrase|password|secret|signature|token)(?:[-_]\d+)?$/i;
+// Any name ending in `key` is a credential too (x-api-key, apikey, x-auth-key,
+// dd-application-key, x-portkey-virtual-key, a bare key): vendors name keys too freely to
+// list. A key's id or name (x-api-key-id) ends in another word.
+const CREDENTIAL_HEADER_KEY = /key(?:[-_]\d+)?$/i;
+// Keys that name no credential: an idempotency key and a cache key.
+const NON_CREDENTIAL_KEY = /(?:^|[-_])(?:cache|idempotency)[-_]?key$/i;
 
 /** Whether a model provider header with this name carries a credential. */
 export function isCredentialHeaderName(name: string): boolean {
-  return CREDENTIAL_HEADER.test(name);
+  return (
+    CREDENTIAL_HEADER_WORD.test(name) ||
+    (CREDENTIAL_HEADER_KEY.test(name) && !NON_CREDENTIAL_KEY.test(name))
+  );
 }

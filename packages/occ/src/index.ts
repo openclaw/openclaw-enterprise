@@ -391,7 +391,11 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
-export { isCredentialHeaderName, isHttpFieldName } from "./model-provider-settings.ts";
+export {
+  isCredentialHeaderName,
+  isHttpFieldName,
+  PROVIDER_MODELS_LIST,
+} from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };

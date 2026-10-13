@@ -3,6 +3,7 @@ import {
   isCredentialHeaderName,
   isHttpFieldName,
   keyedSettingPath,
+  PROVIDER_MODELS_LIST,
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
@@ -193,6 +194,11 @@ export function requireHarnessCredentialBinding(
   )) {
     const row = asRecord(value);
     const path = keyedSettingPath("models.providers", provider);
+    // A record of model rows would hide their headers from this walk; OpenClaw accepts only a
+    // list, and Configuration writes refuse anything else with the same message.
+    if (row?.models !== undefined && !Array.isArray(row.models)) {
+      throw createError(`${path}.models`, PROVIDER_MODELS_LIST);
+    }
     const rows: [string, unknown][] = [
       [path, row],
       ...(Array.isArray(row?.models) ? row.models : []).map((model, index): [string, unknown] => [

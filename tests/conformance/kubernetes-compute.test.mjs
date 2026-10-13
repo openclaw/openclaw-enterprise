@@ -6075,7 +6075,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
       "models.providers. OpenAI  must be an object",
     ],
     [
-      { ...base, models: { providers: { codex: { models: {} } } } },
+      { ...base, models: { providers: { codex: { models: [null] } } } },
       "models.providers.codex.models must be a list of objects",
     ],
     [
@@ -6099,7 +6099,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   for (const [providers, start, rule] of [
     [{ [`${" ".repeat(300)}openai`]: "stub" }, " ".repeat(8), " must be an object"],
     [
-      { [`Codex${"\u3000".repeat(400)}`]: { models: {} } },
+      { [`Codex${"\u3000".repeat(400)}`]: { models: ["gpt-5"] } },
       `Codex${"\u3000".repeat(8)}`,
       ".models must be a list of objects",
     ],
@@ -8957,6 +8957,15 @@ test("model provider credential headers and request auth are refused on every pr
       requestAuth,
     ],
     [provider("p", { request: { auth: null } }), "models.providers.p.request.auth", requestAuth],
+    // Finding 1186: a models record would hide its rows' credentials from the walk above, and
+    // OpenClaw accepts only a list there.
+    ...[{ m: { id: "m", request: { headers: { authorization: "x" } } } }, null, "m"].map(
+      (models) => [
+        provider("p", { models }),
+        "models.providers.p.models",
+        "must be an array of model entries",
+      ],
+    ),
     [
       provider("p", { request: { auth: { mode: "provider-default", token: "${K}" } } }),
       "models.providers.p.request.auth",
@@ -8980,6 +8989,38 @@ test("model provider credential headers and request auth are refused on every pr
       "x-functions-key",
       "x-aws-secret-access-key",
       "x-master-key",
+      // Finding 1185: real-world credential headers whose last word is any key, or a
+      // credential, passphrase, passcode, signature or bearer word.
+      "Authorization",
+      "x-api-key",
+      "api-key",
+      "Private-Token",
+      "cf-aig-authorization",
+      "CF-Access-Client-Secret",
+      "x-litellm-api-key",
+      "x-vault-token",
+      "X-License-Key",
+      "x-access-key",
+      "X-Auth-Key",
+      "DD-APPLICATION-KEY",
+      "X-Private-Key",
+      "X-Client-Key",
+      "x-app-key",
+      "X-Service-Key",
+      "X-Account-Key",
+      "X-Admin-Key",
+      "x-key",
+      "Key",
+      "X-Signing-Key",
+      "x-portkey-virtual-key",
+      "x-turnkey",
+      "X-Credential",
+      "X-Credentials",
+      "X-Passphrase",
+      "X-Passcode",
+      "X-Signature",
+      "X-Hub-Signature-256",
+      "X-Bearer",
     ].map((name) => [
       provider("p", { headers: { [name]: "${K}" } }),
       "models.providers.p.headers",
@@ -9054,6 +9095,29 @@ test("model provider credential headers and request auth are refused on every pr
         "x-stainless-retry-count": "0",
       },
     }),
+    // Finding 1185: a key that names no credential (idempotency, cache, a key's id or name),
+    // an id after a credential word, and common transport headers.
+    ...[
+      "Content-Type",
+      "Idempotency-Key",
+      "X-Idempotency-Key",
+      "x_idempotency_key",
+      "X-Cache-Key",
+      "x-prompt-cache-key",
+      "x-api-key-id",
+      "x-api-key-name",
+      "X-Token-Id",
+      "X-Session",
+      "OpenAI-Organization",
+      "OpenAI-Project",
+      "anthropic-beta",
+      "X-Request-Id",
+      "User-Agent",
+      "X-Title",
+      "HTTP-Referer",
+      "x-stainless-lang",
+      "X-Keyword",
+    ].map((name) => provider("p", { request: { headers: { [name]: "v" } } })),
     provider("p", {
       request: { headers: { "OpenAI-Organization": "org" }, auth: { mode: "provider-default" } },
     }),
