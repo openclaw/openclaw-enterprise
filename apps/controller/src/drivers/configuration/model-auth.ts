@@ -104,11 +104,16 @@ export function validateModelCredentialReferences(
       ] as const) {
         for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
           if (isCredentialHeaderName(name, options, headersPath)) {
-            // Some gateways carry the bearer token in an Authentication header.
+            // Some gateways carry the bearer token in an Authentication header. On a Preset save,
+            // the text around a name's variables is matched too, as for the credential rule.
+            const literal = options.unresolved?.([...headersPath, name], true)?.join("");
             validateReference(
               value,
               pointer(...headersPath, name),
-              /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(name),
+              [name, literal].some(
+                (text) =>
+                  text !== undefined && /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(text),
+              ),
             );
           }
         }

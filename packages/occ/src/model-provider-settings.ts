@@ -57,14 +57,15 @@ const isRuntimeUrl = (value: unknown): boolean => {
 };
 
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
-// for there: a host name or number, an empty port, an IPv6 address (the whole bracketed address,
-// whatever literal text surrounds the variable in it), or path text.
+// for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
+// address (the whole bracketed address, whatever literal text surrounds the variable in it), or
+// path text.
 type UrlPart = "slashes" | "host" | "port" | "brackets" | "path";
 
 /**
  * Whether a baseUrl that waits on variables (`literals`, the text around them) can be filled as
  * an http(s) URL, in time linear in its length. The URL parser ignores tabs and newlines and
- * trims leading spaces, as here.
+ * trims leading C0 controls and spaces, as here.
  * - When a variable comes before the scheme's colon, it completes the scheme or is the whole URL,
  *   and may end in `#` after which any text parses, so the URL is refused only when its literal
  *   start begins no `http` or `https` scheme.
@@ -130,7 +131,8 @@ function fillUrl(literals: readonly string[], hostToken: string): string {
           filledBrackets = false;
         }
       } else if (part === "brackets" && character === "]") {
-        part = "host";
+        // Only a port may follow the address, so a variable there is one (`[::1]{{ vars.port }}`).
+        part = "port";
         if (filledBrackets) {
           text = `${text.slice(0, bracket + 1)}::1`;
         }
@@ -338,7 +340,7 @@ const marksCredential = (name: string): boolean =>
  * that holds an unfilled variable (`unresolved`, at `headers`, the path of its headers object) is
  * also matched as the literal text around its variables, as filled empty, so
  * `Authorization{{ vars.suffix }}` names a credential at save (finding 1244), and is matched again
- * once filled.
+ * once filled. A variable glued to a credential word (`X-Token{{ vars.suffix }}`) counts too.
  */
 export function isCredentialHeaderName(
   name: string,

@@ -1567,15 +1567,22 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
               { id: "o", baseUrl: "http://localhost:{{ vars.port }}/v1" },
               { id: "p", baseUrl: "http://[{{ vars.url }}]:8080/v1" },
               { id: "q", baseUrl: "http{{ vars.port }}://models.example.test" },
-              // Finding 1243: a variable may split the scheme, or sit beside many others.
+              // Finding 1243: a variable may split the scheme, follow an IPv6 address as its port,
+              // or sit beside many others.
               { id: "r", baseUrl: "ht{{ vars.port }}://models.example.test" },
+              { id: "t", baseUrl: "http://[::1]{{ vars.port }}/v1" },
               {
                 id: "s",
                 baseUrl:
                   "https://{{ vars.url }}.{{ vars.api }}.{{ vars.header }}.{{ vars.port }}.test:{{ vars.port }}/{{ vars.url }}",
               },
             ],
-            headers: { "{{ vars.header }}": "v", "X-{{ vars.header }}-Trace": "t" },
+            headers: {
+              "{{ vars.header }}": "v",
+              "X-{{ vars.header }}-Trace": "t",
+              // A bearer reference under a name a variable completes, as under Authorization.
+              "Authorization{{ vars.header }}": "Bearer ${GATEWAY_TOKEN}",
+            },
           }),
         },
       },

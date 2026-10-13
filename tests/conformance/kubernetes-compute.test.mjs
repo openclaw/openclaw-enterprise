@@ -8967,7 +8967,7 @@ test("a Preset header name that waits on a variable is checked once filled", () 
   for (const name of [
     "{{ vars.p }}-Authorization",
     "Authorization{{ vars.p }}",
-    "X-Api-{{ vars.p }}Key",
+    "X-Api-Key{{ vars.p }}",
   ]) {
     assert.throws(
       () => driver.validateConfiguration(...preset(provider("p", { headers: { [name]: "v" } }))),

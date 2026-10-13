@@ -113,19 +113,22 @@ token, as written: it stays literal once filled, so such a header name,
 invalid header name refusal now quotes the header up to its first invalid
 character: `must use valid HTTP header names, not "Bad…"`. A later change
 refuses, on every Compute, a provider or model `baseUrl` with a user name or
-password, like `request.proxy.url`. Preset saves match a header name as the
-text around its variables (`Authorization{{ vars.suffix }}`), and refuse a
-literal `baseUrl` scheme other than `http` or `https` however many variables
-follow, and a `$${VAR}` escape, which is not a reference.
+password, like `request.proxy.url`, and checks a `baseUrl` or `api` that holds
+only a `$${VAR}` escape as written: it is no reference. Preset saves match a
+header name as the text around its variables (`Authorization{{ vars.suffix }}`)
+and refuse a literal `baseUrl` scheme other than `http` or `https` however many
+variables follow.
 
 **Who is affected.** Configurations with such a header, a `baseUrl` with a
 user name or password, or a `models` record, `null` or string on any provider.
 
-**How to tell.** The 2026-10-12 messages, or
-`Configuration setting models.providers.<provider>.models must be an array of model entries.`
+**How to tell.** The 2026-10-12 messages,
+`Configuration setting models.providers.<provider>.models must be an array of model entries.`,
+or `Configuration field /models/providers/<provider>/baseUrl carries a user name or password in the URL.`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
-list of model objects, or remove it.
+list of model objects, or remove it. Remove the user name and password from
+`baseUrl`, or make the whole URL a `${NAME}` reference.
 
 ## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
 
