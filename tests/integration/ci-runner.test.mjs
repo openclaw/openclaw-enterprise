@@ -2594,10 +2594,13 @@ test("a runner timeout while no test was running says so", async (t) => {
     groups: { ci: ["hook"] },
   });
 
-  const result = run(root, laneArgs(root, "hook", statePath, resultsPath), {
+  const result = run(
+    root,
+    laneArgs(root, "hook", statePath, resultsPath),
     // Long enough for a loaded host to finish "passes" before the timeout; the hook outlasts it.
-    CI_RUNNER_TEST_TIMEOUT_MS: "8000",
-  });
+    { CI_RUNNER_TEST_TIMEOUT_MS: "8000" },
+    { timeout: 60_000 },
+  );
 
   assert.equal(result.status, 1, result.stderr);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));

@@ -540,10 +540,8 @@ function fileTimeout() {
   if (deadline === undefined || deadline - Date.now() >= limitMs) {
     return { timeoutMs: limitMs, laneDeadline: false };
   }
-  return {
-    timeoutMs: Math.min(limitMs, Math.max(minStepMs, deadline - Date.now())),
-    laneDeadline: true,
-  };
+  const timeoutMs = Math.min(limitMs, Math.max(minStepMs, deadline - Date.now()));
+  return { timeoutMs, laneDeadline: timeoutMs < limitMs };
 }
 
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
