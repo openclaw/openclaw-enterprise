@@ -3472,10 +3472,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (!validPluginApprovers(revision.pluginApprovers)) {
           throw new ScopeViolationError("The AgentRevision plugin approvers are invalid.");
         }
-        await client.query(
+        // The database clock stamps admission, as it stamps controller work, so a stop or
+        // deletion orders this revision against its own creation without controller clock
+        // skew (finding 1195). The caller's createdAt is replaced, not stored.
+        const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, clock_timestamp())
+           RETURNING admitted_at`,
           [
             revision.id,
             revision.namespaceId,
@@ -3508,13 +3512,17 @@ export class PostgresPlatformState implements PlatformStateStore {
                 ? {}
                 : { credential_sources: revision.credentialSources }),
             }),
-            revision.createdAt,
           ],
         );
+        const [stamped] = rows(admitted.rows);
+        if (stamped === undefined) {
+          throw new DependencyUnavailableError("The AgentRevision admission was not recorded.");
+        }
         const { secretBindings: _providedSecretBindings, ...withoutSecretBindings } = revision;
         return immutableCopy({
           ...withoutSecretBindings,
           ...(secretBindings === undefined ? {} : { secretBindings }),
+          createdAt: timestamp(stamped, "admitted_at"),
         });
       },
     };

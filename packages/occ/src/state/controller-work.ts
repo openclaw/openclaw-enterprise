@@ -240,6 +240,20 @@ export interface ClaimedWork extends ControllerWork {
   readonly ageMs: number;
 }
 
+/**
+ * Whether a revision was admitted no later than `work` was created: the revisions a stop or
+ * deletion owns. The PostgreSQL store stamps both on its own clock, so controller clock skew
+ * cannot move a running revision past the stop (finding 1195); revisions it admitted before
+ * that fix keep the controller's stamp. Both reads are truncated to milliseconds, and a tie
+ * counts as earlier, so the stop still stops the revision.
+ */
+export function revisionAdmittedBeforeWork(
+  revision: { readonly createdAt: string },
+  work: { readonly createdAt: Date },
+): boolean {
+  return Date.parse(revision.createdAt) <= work.createdAt.getTime();
+}
+
 export interface EnqueueWork {
   readonly kind?: ControllerWorkKind;
   readonly idempotencyKey: string;

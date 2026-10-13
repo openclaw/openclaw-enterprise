@@ -4483,6 +4483,57 @@ revisionTest(
 );
 
 revisionTest(
+  "a stop orders the running revision by the database clock, not the controller clock",
+  async (fixture) => {
+    // The controller clock that stamps each admission runs five minutes ahead of PostgreSQL's
+    // for one Agent and behind for the other. The stop's creation time is on the database clock,
+    // so the admission must be too. Ahead, the running revision would read as admitted after the
+    // stop, which would finish STOP_SUPERSEDED and leave the runtime running (finding 1195).
+    const stopped = [];
+    await fixture.start({
+      ...fixture.compute,
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+    });
+    for (const [label, controllerSkewMs] of [
+      ["ahead", 300_000],
+      ["behind", -300_000],
+    ]) {
+      const owner = await fixture.agent(`stop-clock-${label}`);
+      const candidate = await fixture.revision(owner, 1, { controllerSkewMs });
+      const admitted = (
+        await fixture.observerPool.query(
+          `SELECT admitted_at, EXTRACT(EPOCH FROM clock_timestamp() - admitted_at) * 1000 AS age_ms
+           FROM occ.agent_revisions WHERE id = $1`,
+          [candidate.id],
+        )
+      ).rows[0];
+      // The store stamped admission on its own clock and returned that stamp.
+      const ageMs = Number(admitted.age_ms);
+      assert.ok(ageMs >= 0 && ageMs < 60_000, `${label}: admitted ${ageMs} ms ago`);
+      assert.equal(candidate.createdAt, admitted.admitted_at.toISOString(), label);
+      await fixture.work(candidate, "succeeded");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id, label);
+
+      const stop = await fixture.requestStop(owner);
+      await fixture.work(stop, "succeeded");
+      const audit = await fixture.observerPool.query(
+        `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
+         WHERE namespace_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.lifecycle.stop'`,
+        [fixture.namespace.id, owner.id],
+      );
+      assert.deepEqual(audit.rows, [{ reason_code: "AGENT_STOPPED" }], label);
+      assert.ok(stopped.includes(candidate.id), `${label}: the running revision was stopped`);
+      const current = await fixture.currentAgent(owner);
+      assert.equal(current.desiredRuntimeState, "stopped", label);
+      assert.equal(current.activeRevisionId, undefined, label);
+    }
+  },
+);
+
+revisionTest(
   "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
   async (fixture) => {
     // Three OAuth deployments see their bootstrap running, then the Kubernetes API fails on every
