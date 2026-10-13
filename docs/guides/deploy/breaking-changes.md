@@ -37,17 +37,26 @@ Kubernetes rules before the Configuration Driver's, so a literal gets the
 Kubernetes message.
 
 **Who is affected.** Configurations that carry such headers, `request.auth`,
-TLS client keys or proxy credentials. Stored Configurations still read;
-deployment refuses them.
+TLS client keys or proxy credentials. A stored Configuration still reads and
+an edit can replace it; saving it unchanged and deployment refuse it with the
+same message.
 
 **How to tell.** Kubernetes Compute's `400` names
 `models.providers.<provider>.headers`, `.request.headers` or `.request.auth`.
 The Configuration Driver's names a JSON pointer, such as
 `/models/providers/<provider>/request/auth/token holds a credential value inline`.
 
-**Steps.** Remove the setting and select the credential as the Agent's Harness
-authentication, or store it as a Secret and write a `${NAME}` reference, then
-save the Configuration again.
+**Steps.** Read the Configuration, then save it without the refused setting.
+The Agent's Harness authentication is the only supported path for model
+credentials; select the credential there.
+
+- On Kubernetes Compute, remove every credential header and any `request.auth`
+  other than `{mode: "provider-default"}`. A `${NAME}` reference is refused
+  there too.
+- On other Compute, the Configuration Driver accepts a `${NAME}` reference in
+  those slots instead of a literal.
+- For TLS client keys and proxy credentials, on any Compute, store the value
+  as a Secret and write a `${NAME}` reference.
 
 ## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
 

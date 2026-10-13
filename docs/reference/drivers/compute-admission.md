@@ -68,6 +68,11 @@ The provider `apiKey` stays, checked against the Harness binding on selected
 providers only. The Configuration Driver accepts the `apiKey`, the credential
 headers, `request.auth.token` and `.value` and the TLS client keys only as
 references, and refuses a `request.proxy.url` with a user name or password.
+On Kubernetes a reference does not admit a credential header or a non-default
+`request.auth`: model credentials come only from the Agent's Harness
+authentication binding. Deployment runs `validateConfiguration` on the stored
+values before the Configuration Driver validates them, so a stored
+Configuration that predates a rule gets its save message.
 A credential under a header name the rule does not match, in
 `localService.env`, or as a literal in another `env` name that a reference
 reads, still passes: the binding cannot see what a name means.

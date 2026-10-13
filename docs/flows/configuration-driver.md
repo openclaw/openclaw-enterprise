@@ -213,6 +213,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-13 10:00: Kubernetes Compute refuses credential headers and non-default `request.auth` on every model provider, and the Configuration Driver requires references in the request credential slots; a stored document that predates these rules still reads and an edit replaces it, while save and deployment refuse it with the Compute message. (#2265, findings 1142-1143)
 - 2026-10-11 15:00: Kubernetes deployment admission names the caller's Configuration setting for channel, credential and dedicated OpenClaw catalog refusals; Configuration save, provisioning and Preset save run the topology-independent ones through `validateConfiguration`; Agent create and update run deployment's Agent checks. (fix-1116-1117, findings 1116-1117)
 - 2026-10-11 14:30: Every JSON request body nested more than 24 levels deep is refused with `400 TOO_DEEP` before it is parsed, instead of a `500` and hundreds of megabytes of heap on Configuration and Preset writes. (fix-1124, finding 1124)
 - 2026-10-11 13:00: Configuration save refuses a Codex approval policy the Gateway refuses and a literal `gateway.auth.password`; Kubernetes deployment admission and provisioning refuse the gateway password, channel topology and workspace-node plugin settings that preparation or the Gateway refused only after predecessors stopped. (fix-1112-1115, findings 1112-1115)
