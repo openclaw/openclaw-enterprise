@@ -26,8 +26,8 @@ author: freeqaz
 ## Summary
 
 OCE already signs people in through Keycloak, using the generic `oidc` provider from RFC-0001.
-There is no Keycloak-specific sign-in code on `main`, and this RFC adds none. It records how
-OCE supports Keycloak around that provider. All four parts are on `main` as of 2026-10-13:
+There is no Keycloak-specific sign-in code on `main`, and this RFC adds none. All four
+supporting parts are on `main` as of 2026-10-13:
 
 1. **An operator guide (2026-10-09)**, plus an
    [operations page](../../docs/guides/deploy/oidc-operations.md) (#2291) for rotation,
@@ -35,7 +35,7 @@ OCE supports Keycloak around that provider. All four parts are on `main` as of 2
 2. **A CI job against a real, digest-pinned Keycloak**, merged 2026-10-09 and, since #2286
    (2026-10-13), part of `CI Required`, the check a PR must pass to merge.
 3. **An opt-in local Keycloak** (#1137, #1138) inside the developer's k3d cluster, from
-   `occ dev up`, OCE's Local Setup command.
+   `occ dev up`, the Local Setup command.
 4. **A private certificate authority (CA)** for Keycloak (#1774).
 
 @freeqaz accepted this scope on 2026-10-09
@@ -54,8 +54,8 @@ found two gaps the fixture could not: a provider outage left no operational log
 ([#806](https://github.com/openclaw/openclaw-enterprise/pull/806)), and an in-cluster Keycloak
 on a port other than 443 needed an undocumented NetworkPolicy
 ([#903](https://github.com/openclaw/openclaw-enterprise/pull/903)). Neither setup was saved,
-and no developer could run a real IdP locally. The qualification walk found a third gap the
-same way (finding 1193, fixed in #2291).
+and no developer could run a real IdP locally. A later qualification report identified
+another outage-message gap, fixed in #2291.
 
 <a id="scope"></a>
 
@@ -82,8 +82,8 @@ Agent credentials unchanged.
 
 ### How production sign-in works
 
-This is RFC-0001's flow with Keycloak as the provider. Keycloak checks who the person is. OCE's
-access rules (IAM) decide what their account can do. The API is the `controller` service;
+This is RFC-0001's flow with Keycloak as the provider. Keycloak authenticates the person;
+OCE access rules (IAM) authorize their account. The API is the `controller` service;
 State is OCE's PostgreSQL database.
 
 ```mermaid
@@ -151,8 +151,8 @@ Pod port needs an operator-written NetworkPolicy (#903).
 
 ### Operating it
 
-The [operations page](../../docs/guides/deploy/oidc-operations.md) owns the steps. Behavior
-measured on the qualification install:
+The [operations page](../../docs/guides/deploy/oidc-operations.md) owns the steps.
+Implemented behavior:
 
 - **Keycloak down.** Two shapes. Down before the person reaches it, the common case: the
   browser stops on its own error page and OCE writes nothing. Failing after the person left
@@ -165,8 +165,8 @@ measured on the qualification install:
   callback, uncached, so no restart is needed. A token signed by a removed key is refused.
 - **Client-secret rotation.** The API reads the secret only at startup and derives nothing
   durable from it, so rotation is one online API restart: new secret in Keycloak, replace the
-  Secret in place, `rollout restart`. Measured: about 14 seconds without sign-in, 7 of them
-  API `503`s; `client_rejected` only between Keycloak taking the new secret and the restart.
+  Secret in place, `rollout restart`. The API returns `503` while its Pod is replaced;
+  sign-in can fail with `client_rejected` until the API loads the new secret.
   The worker keeps running, sessions survive, and accounts stay attached: the provider instance
   ID is `sha256(issuer, clientId)` and excludes the secret.
 - **Issuer or client-ID change.** A new provider instance: every attachment stops matching,
@@ -187,9 +187,8 @@ Chromium fills Keycloak's real login form.
 
 Since #2286 it is a row in the CI Impact lane table and in the `ci` group, so `CI Required`
 gates it through the `pr-safe` matrix and the result aggregator. It runs in full mode, on
-every push to `main`, in tests mode when its test file changes, and in Full Integration `all`;
-documentation-only runs skip it. Before the flip: 0 failures in 184 `main` and 197
-pull-request jobs, median 74 seconds on `blacksmith-8vcpu-ubuntu-2404`.
+every push to `main`, merge-queue (`merge_group`) runs, tests mode when its test file changes,
+and Full Integration `all`; documentation-only runs skip it.
 
 The realm has two users, `alice` (attached to an OCE account) and `carol` (not). The job
 checks ([full list](../../docs/testing/keycloak.md#verified-flows)) discovery and JWKS shape;
@@ -264,7 +263,7 @@ same CA needs nothing.
 
 Without the values, every callback to a private-CA Keycloak fails as `PROVIDER_UNAVAILABLE`,
 `cause: tls`. Before #1774 the only chart-level route was an external Gateway issuer's
-`gatewayRouting.caSecretName` bundle, which also reaches workers; `oce-dogfood-b` ran that way.
+`gatewayRouting.caSecretName` bundle, which also reaches workers.
 
 ## Delivery and verification
 
@@ -276,20 +275,24 @@ State on 2026-10-13, all on `main`:
   one online restart after review confirmed the secret is read only at startup.
 - **Forwarded-request diagnosis: #2287 (`41ebd3826`)**, logged as
   `authentication.forwarded-refused-warning`.
-- **Local Keycloak profile: #1137 (`6becd3a8e`) and #1138 (`<1138-SHA>`).** Full Integration
-  `dev-up-k3d` passed 6 of 6 at #1138 head `52d6049ce`
-  ([run 38363598928](https://github.com/openclaw/openclaw-enterprise/actions/runs/38363598928)),
-  including browser sign-in through the imported CAs. No hand-run check on a developer host is
-  recorded.
-- **Private CA: #1774 (`cb63275da`).** Proven on `oce-dogfood-b` with a private CA the Gateway
-  bundle does not contain: 9 of 9 checks, including the negative control, both rotation paths
-  and Agent Pods receiving only the Gateway CA. Two guide gaps (findings 1200 and 1201) are in
-  a follow-up PR.
-- **Production qualification: recorded; awaiting a human maintainer's sign-off.** Run on
-  2026-10-13 on `oce-dogfood-b`: production-mode Keycloak 26.7.5 on PostgreSQL, TLS from a
-  private site CA, OCE on the real chart. Attach, refuse an unattached user, outage, both
-  rotations, API restart and offboarding all pass; its one bug (finding 1193) is fixed by
-  #2291. The recording is attached to PR #1117.
+- **Local Keycloak profile: #1137 (`6becd3a8e`) and #1138 (`b1695fd2a`).** Full Integration
+  `dev-up-k3d` passed 6 of 6, with no skips and cleanup passed, at final #1138 head
+  `4f0bd9b3c`
+  ([run 38370119656](https://github.com/openclaw/openclaw-enterprise/actions/runs/38370119656)).
+  Browser sign-in uses imported CAs. On macOS 26.7.1 (ARM64), Docker Desktop 4.94.0 started
+  the local profile from `0232c95a`; Console and Keycloak returned HTTP `200` with verified
+  TLS. Browser acceptance awaits OS authorization for hosts and CA trust.
+- **Private CA: #1774 (`cb63275da`).** The reported production-shaped check covers 9 of 9
+  cases, including a negative control, both rotation paths and Agent Pods receiving only the
+  Gateway CA; this RFC has no reviewer-accessible recording to verify that report.
+  [#2294](https://github.com/openclaw/openclaw-enterprise/pull/2294) (`8a117c842`) merged the
+  follow-up CA error messages and guide corrections.
+- **Production qualification: unverified; human sign-off pending.** The 2026-10-13 report
+  describes production-mode Keycloak 26.7.5 on PostgreSQL, private-CA TLS and the real OCE
+  chart, exercising attachment, unattached-user denial, outage, both rotations, API restart
+  and offboarding. No recording is linked in PR #1117. Provide a reviewer-accessible
+  recording of those checks before a human maintainer, who may be the author, signs off.
+  An agent-operated local walkthrough cannot supply that sign-off.
 
 <a id="alternatives-and-open-decisions"></a>
 
