@@ -18,16 +18,24 @@ real Installation.
 **What breaks.** Profile preflight refuses an uppercase letter in the repository
 path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
 which Kubernetes refused to pull; an uppercase registry host or tag still
-passes. Preflight, the chart, API startup and the bootstrap Job also refuse any
-`@` before the `auth.baseUrl` host (`https://@host`), which Node silently dropped, and
-preflight refuses it in `controlPlane.observabilityUrl`.
+passes. So do the chart (`images.*`, `repositoryCredentials.image`),
+`prepare-bootstrap-volume`, `upgrade-production-images`, and API and worker
+startup for the Compute gateway and Agent images. Preflight, the chart, API
+startup and the bootstrap Job also refuse any `@` before the `auth.baseUrl`
+host (`https://@host`), which Node silently dropped; preflight refuses it in
+`controlPlane.observabilityUrl`, and API and worker startup in
+`observability.url`.
 
-**Who is affected.** Profiles or values that use those spellings.
+**Who is affected.** Profiles, values, tool flags or Installation YAML that use
+those spellings.
 
-**How to tell.** Preflight reports `... repository path must be lowercase`, or the
-URL field's absolute-URL message; API startup logs `AUTH_BASE_URL_INVALID`.
+**How to tell.** Preflight, the chart and the tools report `... repository path
+must be lowercase`, or the URL field's absolute-URL message. API startup logs
+`AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` or
+`OBSERVABILITY_URL_INVALID`.
 
-**Steps.** Lowercase the repository path, or delete the `@`, then render again.
+**Steps.** Lowercase the repository path, or delete the `@`, then render or
+restart again.
 
 ## 2026-10-13: channel proxy hosts must name one proxy address
 

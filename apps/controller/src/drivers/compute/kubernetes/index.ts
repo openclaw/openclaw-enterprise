@@ -2780,6 +2780,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           `${description} image must use an immutable SHA-256 digest.`,
         );
       }
+      // Kubernetes refuses to pull an image whose repository path has an uppercase letter
+      // (InvalidImageName). Only the registry host (the first component, when a / follows it)
+      // and the tag may use uppercase, as in profile preflight and the chart.
+      if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*(?:@|$))/.test(image)) {
+        throw new ConfigurationFailure(
+          `${description} image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.`,
+        );
+      }
     }
     if (
       asRecord(options.resources) === undefined ||

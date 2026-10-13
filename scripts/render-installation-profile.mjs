@@ -48,8 +48,8 @@ const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 // prepare-bootstrap-volume) and repository credentials.
 const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 // Kubernetes refuses an image whose repository path has an uppercase letter
-// (InvalidImageName), while the chart and Compute accept it. Uppercase may appear only in the
-// registry host (the first component, when a / follows it) and in the tag.
+// (InvalidImageName); the chart, the image tools and Compute refuse it too. Uppercase may appear
+// only in the registry host (the first component, when a / follows it) and in the tag.
 function lowercaseImageRepository(value) {
   if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)/.test(value)) {
     return "repository path must be lowercase; Kubernetes refuses to pull an uppercase one. Only the registry host and the tag may use uppercase.";
@@ -1526,8 +1526,8 @@ function buildRendered(profile, parsed, diagnostics) {
     );
   }
 
-  // Same rule the controller applies to Installation observability.url at startup, except
-  // that the controller drops an empty user info (http://@host), which preflight refuses.
+  // Same rule the controller applies to Installation observability.url at startup, including
+  // its refusal of any @ before the host (http://@host).
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
   // absolute HTTP(S) message from optionalString.
   const rawObservabilityUrl = controlPlane.observabilityUrl;

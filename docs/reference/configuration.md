@@ -64,9 +64,9 @@ observability:
 
 `url` must be an absolute HTTP or HTTPS URL without embedded credentials or a
 fragment. An IPv4 host must be four decimal octets from 0 to 255 with no
-leading zeros; shorthand, hex, a single integer, or a leading zero stops API
-and worker startup with log code `OBSERVABILITY_URL_INVALID` until you write
-the four octets and restart. A DNS name is
+leading zeros; shorthand, hex, a single integer, a leading zero, or any `@`
+before the host stops API and worker startup with log code
+`OBSERVABILITY_URL_INVALID` until you correct the URL and restart. A DNS name is
 unchanged. See the
 [breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
 fail startup. The API exposes the URL only after an

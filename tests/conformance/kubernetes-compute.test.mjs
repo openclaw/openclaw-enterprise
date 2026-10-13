@@ -10217,6 +10217,53 @@ test("immutable image policy accepts digests and rejects mutable tags", () => {
   );
 });
 
+// Kubernetes refuses to pull an image whose repository path has an uppercase letter
+// (InvalidImageName), with or without a digest. Profile preflight and the chart refuse it too;
+// only the registry host (the first component, when a / follows it) and the tag may use it.
+test("Compute refuses an uppercase image repository path", () => {
+  const digest = `@sha256:${"a".repeat(64)}`;
+  for (const [requireImmutableDigest, suffix] of [
+    [true, digest],
+    [false, ""],
+  ]) {
+    for (const name of [
+      "registry.example/Team/runtime",
+      "registry.example:5000/team/Runtime:release_1",
+      "Registry.Example/team/Runtime",
+      "Runtime",
+    ]) {
+      for (const role of ["gateway", "agent"]) {
+        const images = {
+          gateway: `registry.example/gateway${suffix}`,
+          agent: `registry.example/agent${suffix}`,
+          requireImmutableDigest,
+          [role]: `${name}${suffix}`,
+        };
+        assert.throws(
+          () => createKubernetesComputeDriver(options({ images })),
+          new RegExp(
+            `${role === "gateway" ? "Gateway" : "Agent"} image repository path must be lowercase`,
+          ),
+          `${role} ${name}${suffix}`,
+        );
+      }
+    }
+    for (const name of [
+      "Registry.Example/team/runtime:Release_1",
+      "registry.example:5000/runtime:RELEASE",
+      "runtime:Release_1",
+      "[FD00::1]:5000/team/runtime",
+    ]) {
+      const images = { gateway: `${name}${suffix}`, agent: `${name}${suffix}` };
+      assert.doesNotThrow(
+        () =>
+          createKubernetesComputeDriver(options({ images: { ...images, requireImmutableDigest } })),
+        `${name}${suffix}`,
+      );
+    }
+  }
+});
+
 test("projected ServicePrincipal tokens require an audience and bounded expiration", () => {
   for (const credentials of [
     { mode: "projectedServiceAccountToken", audience: "", expirationSeconds: 900 },
