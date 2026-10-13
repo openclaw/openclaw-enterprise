@@ -469,6 +469,9 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { models: { providers: { openai: { headers: { Authentication: sentinel } } } } },
     { models: { providers: { openai: { headers: { "X-JWT-Assertion": sentinel } } } } },
     { models: { providers: { openai: { headers: { "X-Api-Key-V2": sentinel } } } } },
+    // Algorithm suffixes and a glued key digit (finding 1196).
+    { models: { providers: { openai: { headers: { "X-Signature-Ed25519": sentinel } } } } },
+    { models: { providers: { openai: { request: { headers: { "x-api-key2": sentinel } } } } } },
     {
       models: { providers: { openai: { request: { headers: { "x.authorization": sentinel } } } } },
     },

@@ -56,6 +56,8 @@ export function createControlAdmission(
     string,
     Promise<{ result: unknown; sessionId: string; created: boolean }>
   >();
+  // Fences that sweep retries for unfenced reservations; an open of the same id waits on them.
+  const refencing = new Map<string, Promise<boolean>>();
   const journal = durableRequired
     ? new RepositoryReceiptClient(config.gateway.controlSocket, randomUUID())
     : undefined;
@@ -71,8 +73,42 @@ export function createControlAdmission(
     );
     return latestWall;
   };
-  const sweep = () => {
+  // `skip` is the admission the calling open handles itself.
+  const sweep = (skip?: string) => {
     for (const [id, record] of records) {
+      // A reservation whose fence did not commit (a refused open, or a failed bind
+      // whose session is gone) is never saved: a refusal has no session, and the
+      // journal disposes only a bound receipt. Past its window, fence it again and
+      // forget it once the fence commits, so it stops counting toward capacity. A
+      // fence that fails is retried next sweep; if the bind was recorded after all,
+      // the session's disposal is recorded instead.
+      if (record.unbound && !record.saved) {
+        const status =
+          record.sessionId === undefined ? undefined : service.status(record.sessionId);
+        if (
+          (status === undefined || status.state === "DISPOSED") &&
+          clock.monotonicNow() >= record.forgetAt &&
+          id !== skip &&
+          !refencing.has(id) &&
+          !operations.has(id)
+        ) {
+          const running = fenced(id, record).then((committed) => {
+            const current =
+              disposed || committed || record.sessionId === undefined
+                ? undefined
+                : localStatus(record.sessionId);
+            if (current?.state === "DISPOSED") {
+              void persist(id, record, current).catch(() => {});
+            }
+            return committed;
+          });
+          refencing.set(
+            id,
+            running.finally(() => refencing.delete(id)),
+          );
+        }
+        continue;
+      }
       const status = record.sessionId === undefined ? undefined : service.status(record.sessionId);
       if (
         (status === undefined || status.state === "DISPOSED") &&
@@ -172,7 +208,14 @@ export function createControlAdmission(
     if (isBoundInput(admittedInput) && (!journal || input.durableAdmission !== true)) {
       throw new Error("INVALID_ADMISSION");
     }
-    sweep();
+    sweep(id);
+    const refence = refencing.get(id);
+    if (refence) {
+      await refence;
+      if (disposed) {
+        throw new Error("CONTROL_CLOSED");
+      }
+    }
     const previous = records.get(id);
     if (previous) {
       if (!sameSessionInput(previous.input, admittedInput)) {
@@ -203,6 +246,13 @@ export function createControlAdmission(
         throw new Error("ADMISSION_MISSING");
       }
       return { result: status, sessionId: previous.sessionId!, created: false };
+    }
+    if (records.size >= 2 * config.limits.sessions && refencing.size > 0) {
+      // Reservations being fenced again free their records once the fence commits.
+      await Promise.all(refencing.values());
+      if (disposed) {
+        throw new Error("CONTROL_CLOSED");
+      }
     }
     const timestamp =
       /^([0-9]{13})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.exec(id);
@@ -325,7 +375,7 @@ export function createControlAdmission(
     sessions.set(opened.session.sessionId, id);
     record.cancel = clock.schedule(
       Math.max(opened.session.deadlineWallMs - clock.wallNow(), admissionWindowMs - age, 0),
-      sweep,
+      () => sweep(),
     );
     if (isBoundInput(admittedInput)) {
       const sessionId = opened.session.sessionId;
@@ -415,6 +465,7 @@ export function createControlAdmission(
       records.clear();
       sessions.clear();
       unrecorded.clear();
+      refencing.clear();
     },
   };
 }

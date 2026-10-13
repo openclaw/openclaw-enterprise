@@ -3402,16 +3402,17 @@ test("Codex runtime gates startup and readiness on a successful native authentic
         "with credential detail",
         "Reconnecting... 1/3 stream disconnected before completion: invalid credential",
       ],
-      ["with an unknown reason", "Reconnecting... 1/3 request failed with status 500"],
+      ["with an unknown reason", "Reconnecting... 1/3 request failed with status 500", 500],
       ["with trailing reason text", "Reconnecting... 1/3 stream disconnected before completionist"],
       ["not at the start", "Error: Reconnecting... 1/3 stream disconnected before completion"],
       ["past its retry limit", "Reconnecting... 4/3 stream disconnected before completion"],
       ["above the retry budget", "Reconnecting... 1/50 stream disconnected before completion"],
       ["with a zero attempt", "Reconnecting... 0/3 stream disconnected before completion"],
-    ].map(([description, message]) => ({
+    ].map(([description, message, status]) => ({
       name: `reconnecting error ${description} remains fatal`,
       events: [started, { type: "error", message }, assistant, completed],
       cause: { kind: "PROBE_STATUS", detail: "error-event" },
+      ...(status && { provider: { status } }),
     })),
     {
       name: "unbounded reconnecting errors remain fatal",
@@ -3452,10 +3453,91 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     {
       name: "provider server error is not an authentication failure",
       cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      provider: { status: 503 },
       events: [
         started,
         { type: "turn.failed", error: { message: "unexpected status 503 Service Unavailable" } },
       ],
+      probeStatus: 1,
+    },
+    // A provider usage limit, quota or 429 is rate_limit, not a generic error-event or
+    // failed turn. The log line keeps the HTTP status and a known code, never the text.
+    {
+      // Native text for an exhausted ChatGPT-plan Codex usage limit.
+      name: "usage limit error event is a rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+      events: [
+        started,
+        {
+          type: "error",
+          message:
+            "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again in 3 days.",
+        },
+        { type: "turn.failed", error: { message: "You've hit your usage limit." } },
+      ],
+      probeStatus: 1,
+    },
+    {
+      name: "usage limit with a provider status and code is a rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+      provider: { status: 429, code: "usage_limit_reached" },
+      events: [
+        started,
+        {
+          type: "error",
+          message:
+            'unexpected status 429 Too Many Requests: {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached for fixture-api-key"}}',
+        },
+      ],
+      probeStatus: 1,
+    },
+    {
+      name: "exhausted 429 retries in a failed turn are a rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+      provider: { status: 429 },
+      events: [
+        started,
+        {
+          type: "turn.failed",
+          error: {
+            message: "exceeded retry limit, last status: 429 Too Many Requests, request id: req_1",
+          },
+        },
+      ],
+      probeStatus: 1,
+    },
+    {
+      name: "exceeded API quota is a rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+      provider: { code: "insufficient_quota" },
+      events: [
+        started,
+        {
+          type: "error",
+          message:
+            "Quota exceeded: You exceeded your current quota, please check your plan and billing details. (insufficient_quota)",
+        },
+      ],
+      probeStatus: 1,
+    },
+    {
+      // Native text when a workspace owner's spend cap blocks the account.
+      name: "workspace spend cap is a rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+      events: [
+        started,
+        {
+          type: "error",
+          message:
+            "You've reached the spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+        },
+      ],
+      probeStatus: 1,
+    },
+    {
+      name: "local disk quota is not a provider rate limit",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
+      events: [started, { type: "error", message: "failed to write session: Disk quota exceeded" }],
       probeStatus: 1,
     },
     {
@@ -3477,6 +3559,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       ],
       probeStatus: 1,
       cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      provider: { status: 400 },
     },
     {
       name: "tool event despite completed assistant turn",
@@ -3760,9 +3843,14 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           }
           assert.deepEqual(runtimeStatus.runtimeFailure.cause, scenario.cause);
           assert.deepEqual(probeDiagnostics.at(-1)?.cause, scenario.cause);
+          const { providerStatus, providerCode } = probeDiagnostics.at(-1) ?? {};
+          assert.deepEqual(
+            { providerStatus, providerCode },
+            { providerStatus: scenario.provider?.status, providerCode: scenario.provider?.code },
+          );
           assert.doesNotMatch(
             JSON.stringify(runtimeStatus) + JSON.stringify(probeDiagnostics),
-            /fixture-api-key|at-fixture-token|Bad Request|Unauthorized|Unavailable|Reconnecting/,
+            /fixture-api-key|at-fixture-token|Bad Request|Unauthorized|Unavailable|Reconnecting|usage limit|Too Many|quota exceeded/i,
           );
         }
       } finally {

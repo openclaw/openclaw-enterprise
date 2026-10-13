@@ -1178,6 +1178,71 @@ test("a disabled account's provider sign-in says the account is disabled", async
   await expectNoText(page, /disabled/);
 });
 
+test("a provider outage says sign-in is unavailable, not to get attached", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  let password = true;
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          github: true,
+          google: true,
+          oidc: true,
+          oidcSignIn: {
+            label: "Acme SSO",
+            authorizationUrl: "https://sso.example.test/realms/acme/protocol/openid-connect/auth",
+          },
+          password,
+          sessionBinding: true,
+        },
+        meta: { requestId: "browser-provider-unavailable" },
+      }),
+    }),
+  );
+  // Discovery remembers the OIDC label for the message after the callback redirect.
+  await page.goto(`${fixture.origin}/console/login`);
+  await page.getByRole("button", { name: "Continue with Acme SSO" }).waitFor();
+  for (const [provider, label] of [
+    ["github", "GitHub"],
+    ["google", "Google"],
+    ["oidc", "Acme SSO"],
+  ]) {
+    for (const [available, outage] of [
+      [true, `${label} sign-in is unavailable right now. Try again later or use your password.`],
+      [
+        false,
+        `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`,
+      ],
+    ]) {
+      password = available;
+      // The provider could not answer, or refused this Installation's client.
+      await page.goto(
+        `${fixture.origin}/console/?authError=${provider}&authReason=provider-unavailable`,
+      );
+      await page.getByText(outage, { exact: true }).waitFor();
+      await expectNoText(page, /attach your/);
+      // The callback failed inside OCE: no fallback finishes a sign-in either.
+      await page.goto(`${fixture.origin}/console/?authError=${provider}&authReason=unavailable`);
+      await page
+        .getByText(
+          `Could not finish signing in with ${label}. Sign-in is unavailable right now; try again later.`,
+          { exact: true },
+        )
+        .waitFor();
+      await expectNoText(page, /attach your|use your password/);
+    }
+  }
+  // Without a provider error the reason means nothing.
+  password = true;
+  await page.goto(`${fixture.origin}/console/?authReason=provider-unavailable`);
+  await page.getByRole("button", { name: "Login" }).waitFor();
+  await expectNoText(page, /unavailable/);
+});
+
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

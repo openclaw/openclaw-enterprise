@@ -565,6 +565,16 @@ export const scenarios = {
     description:
       "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
   },
+  recoveryOnlyProviderUnavailable: {
+    group: "Pages/Sign in",
+    name: "Recovery-only provider outage",
+    path: "/console/?authError=github&authReason=provider-unavailable",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",

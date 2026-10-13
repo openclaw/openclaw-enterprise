@@ -9050,6 +9050,20 @@ test("model provider credential headers and request auth are refused on every pr
       "X-Bearers",
       "X-Otps",
       "X-Hmacs",
+      // Finding 1196: a trailing algorithm word, a digit glued to a key and the Vercel
+      // protection bypass secret.
+      "X-Signature-Ed25519",
+      "X-HMAC-SHA256",
+      "x-signature-sha256",
+      "X-Signature-SHA-256",
+      "x-hub-signature-sha256-v2",
+      "X-Signature-RS256",
+      "x-signature-blake2b",
+      "x-signature-rsa-sha256",
+      "x-api-key2",
+      "x-api-keyv2",
+      "X-Api-Key2-V3",
+      "x-vercel-protection-bypass",
     ].map((name) => [
       provider("p", { headers: { [name]: "${K}" } }),
       "models.providers.p.headers",
@@ -9163,6 +9177,13 @@ test("model provider credential headers and request auth are refused on every pr
       "X-Licensed-To",
       "x-api-key-version",
       "x.trace.id",
+      // Finding 1196: an algorithm word after a word that names no credential, a cache key
+      // with a glued digit, and a bypass without the protection word.
+      "x-amz-content-sha256",
+      "X-Signature-Version",
+      "x-cache-key2",
+      "x-idempotency-key-sha256",
+      "x-ed25519",
     ].map((name) => provider("p", { request: { headers: { [name]: "v" } } })),
     provider("p", {
       request: { headers: { "OpenAI-Organization": "org" }, auth: { mode: "provider-default" } },
@@ -9232,6 +9253,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         "unknown",
         "MODEL_PROBE_FAILED",
         { kind: "PROBE_STATUS", detail: "unknown" },
+      ],
+      // A provider 429, usage limit or exhausted quota: OpenClaw's "rate_limit" bucket.
+      [
+        "provider rate limit",
+        "rate_limit",
+        "MODEL_PROBE_FAILED",
+        { kind: "PROBE_STATUS", detail: "rate_limit" },
       ],
       // An unknown model or invalid provider settings: OpenClaw's "format" bucket.
       [
@@ -9589,6 +9617,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
+        // The log line keeps the provider's HTTP status from its error, never the text.
+        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();

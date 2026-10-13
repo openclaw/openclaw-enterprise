@@ -444,6 +444,54 @@ test("Fastify app writes one safe HTTP completion record and bounded unexpected-
   assert.equal(JSON.stringify(output.lines).includes("sensitive query"), false);
 });
 
+test("a refused forwarded API call names the trusted-proxy cause once a minute", async () => {
+  const cases = [
+    { trustedProxies: undefined, code: "TRUSTED_PROXY_NOT_CONFIGURED" },
+    {
+      trustedProxies: { trusts: (address) => address === "10.0.0.9" },
+      code: "TRUSTED_PROXY_PEER_UNTRUSTED",
+    },
+  ];
+  for (const { trustedProxies, code } of cases) {
+    const output = memoryDestination();
+    const logger = createOccLogger({
+      component: "occ-api",
+      level: "info",
+      destination: output.destination,
+    });
+    const app = createFastifyApp({
+      iamDriver: iamDriver(),
+      computeDriver: createDevelopmentComputeDriver(),
+      configurationDriver: createTestConfigurationDriver({ id: "configuration-logging-test" }),
+      resolveHarness: () => undefined,
+      auditSink: new InMemoryAuditSink(),
+      development: { enabled: false, installationId: `ins_${randomUUID()}` },
+      auth: authStub(),
+      logger,
+      ...(trustedProxies === undefined ? {} : { trustedProxies }),
+    });
+    for (let index = 0; index < 3; index += 1) {
+      const refused = await app.inject({
+        method: "GET",
+        url: "/namespaces/ns_00000000-0000-4000-8000-000000000001",
+        remoteAddress: "192.0.2.7",
+        headers: { "x-forwarded-for": `198.51.100.${index}` },
+      });
+      assert.equal(refused.statusCode, 403, refused.body);
+      assert.match(refused.json().error.message, /configured trusted proxy/);
+    }
+    await app.close();
+    const warnings = output.lines.filter(
+      (line) => line.event === "authentication.forwarded-refused-warning",
+    );
+    assert.deepEqual(
+      warnings.map(({ severity, code: logged }) => ({ severity, code: logged })),
+      [{ severity: "WARN", code }],
+    );
+    assert.doesNotMatch(JSON.stringify(warnings), /192\.0\.2\.7|198\.51\.100/);
+  }
+});
+
 test("Fastify contract errors drop the request values that verbose validation attached", async () => {
   const output = memoryDestination();
   const logger = createOccLogger({

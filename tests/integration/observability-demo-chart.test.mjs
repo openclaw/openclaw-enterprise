@@ -355,3 +355,39 @@ test(
     assert.match(stdout, /port: 9464/);
   },
 );
+
+test(
+  "demo chart refuses cluster CIDRs that are not one IPv4 host",
+  await helmAvailable(),
+  async () => {
+    const render = (cidr) =>
+      execute(
+        helm,
+        [
+          "template",
+          "demo",
+          "deploy/helm/openclaw-observability-demo",
+          "--namespace",
+          "oce-observability-demo",
+          "--set",
+          "occ.namespace=openclaw-system",
+          "--set",
+          "occ.release=oce",
+          "--set",
+          "grafana.adminSecretName=grafana-admin",
+          "--set",
+          `cluster.cidrs[0]=${cidr}`,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    for (const cidr of ["999.1.2.3/32", "010.0.0.1/32", "10.43.0.1/24", "not-a-cidr"]) {
+      await assert.rejects(
+        render(cidr),
+        ({ stderr }) => stderr.includes("cluster.cidrs requires exact IPv4 /32 endpoints"),
+        cidr,
+      );
+    }
+    const { stdout } = await render("10.43.0.1/32");
+    assert.match(stdout, /cidr: 10\.43\.0\.1\/32/);
+  },
+);

@@ -506,7 +506,8 @@ Activation is one-way: the database refuses older images' sessions and
 4. Run `helm upgrade` with the compatible image. The api Deployment uses
    `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
    and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through restricted access, verify password recovery, new session admission,
+5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, new session admission,
    the expected Namespaces and existing Agent detail, and rejected stale sessions.
    Reopen ingress only after these checks, retaining one serving controller.
 

@@ -443,6 +443,7 @@ export type {
   RepositorySessionRepository,
 } from "./ports/repository-sessions.ts";
 export {
+  PostgresCertificateRejectedError,
   PostgresPlatformState,
   PostgresPlatformStateStore,
   type PersistedNativeIAMState,

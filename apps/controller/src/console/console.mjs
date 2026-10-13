@@ -161,6 +161,21 @@ const githubMembershipFailures = {
       : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
 };
 
+// The provider could not answer, or refused this Installation's client: an outage or a
+// configuration fault, not a refusal of the person. Where password sign-in is recovery-only,
+// only the recovery administrator has a password to fall back on.
+function providerUnavailableFailure(label) {
+  return (password) =>
+    password
+      ? `${label} sign-in is unavailable right now. Try again later or use your password.`
+      : `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`;
+}
+
+// The callback failed inside OCE (its database or audit store), so no sign-in can finish.
+function signInUnavailableFailure(label) {
+  return `Could not finish signing in with ${label}. Sign-in is unavailable right now; try again later.`;
+}
+
 // The provider authenticated an identity attached to a disabled account. Retrying, a
 // password or an attach cannot help, so only an administrator is named.
 function accountDisabledFailure(label) {
@@ -822,11 +837,17 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     : null;
   const authReason = current.url.searchParams.get("authReason");
   const reasonFailure =
-    providerError !== null && authReason === "account-disabled"
-      ? accountDisabledFailure(providerError.label)
-      : authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
-        ? githubMembershipFailures[authReason]
-        : null;
+    providerError === null
+      ? null
+      : authReason === "account-disabled"
+        ? accountDisabledFailure(providerError.label)
+        : authReason === "provider-unavailable"
+          ? providerUnavailableFailure(providerError.label)
+          : authReason === "unavailable"
+            ? signInUnavailableFailure(providerError.label)
+            : authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
+              ? githubMembershipFailures[authReason]
+              : null;
   const externalAttempt = takeExternalAttempt();
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.

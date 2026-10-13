@@ -220,15 +220,16 @@ deployment error's `data.runtimeFailure` names the runtime component, check,
 time and, when the runtime classified it, a `cause`: a `kind` and an optional
 `detail` token from this closed vocabulary.
 
-| `kind`           | Meaning                                                    | `detail`                                                                                                                                                           |
-| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                      |
-| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
-| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                 |
-| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                               |
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
+| ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                                    |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
 
 OpenClaw's `format` covers an unknown model and a request the provider rejected
-as malformed, such as invalid provider settings. A rejected credential is
+as malformed, such as invalid provider settings. A 429 or usage limit is
+`rate_limit`. A rejected credential is
 `RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
 neither has a cause. The runtime builds a cause only from these tokens, and
 Compute drops any other cause while keeping the code, so it never carries

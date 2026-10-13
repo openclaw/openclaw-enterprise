@@ -1221,6 +1221,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     "logging-collector",
     "repository-credentials-container",
     "repository-credentials-platform",
+    "keycloak-oidc",
   ];
   // A declared lane must actually have a runner in both full-coverage paths.
   // This catches a manifest/gate update that accidentally omits a new matrix job.
@@ -1238,7 +1239,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       "runtime-image-fixture",
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
-    [...lanes, "k3d-observability-demo", "keycloak-oidc"].sort(),
+    [...lanes, "k3d-observability-demo"].sort(),
   );
   await all(["docs", "full"], async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {

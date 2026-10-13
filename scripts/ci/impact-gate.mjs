@@ -21,6 +21,7 @@ const matrixLanes = [
   "logging-collector",
   "repository-credentials-container",
   "repository-credentials-platform",
+  "keycloak-oidc",
 ];
 
 const fixtureLane = "runtime-image-fixture";

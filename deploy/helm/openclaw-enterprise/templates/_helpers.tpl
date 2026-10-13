@@ -145,6 +145,19 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
+{{- $oidcCa := default dict $oidc -}}
+{{- range $key := list "caSecretName" "caSecretKey" -}}
+{{- if and (hasKey $oidcCa $key) (not (kindIs "string" (index $oidcCa $key))) -}}{{- fail (printf "auth.oidc.%s must be a string" $key) -}}{{- end -}}
+{{- end -}}
+{{- if or $oidcCa.caSecretName $oidcCa.caSecretKey -}}
+{{- if or (not (kindIs "bool" $oidcCa.enabled)) (not $oidcCa.enabled) -}}{{- fail "auth.oidc CA configuration requires auth.oidc.enabled: true" -}}{{- end -}}
+{{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
+{{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
+{{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.caSecretKey" "value" $oidcCa.caSecretKey) -}}
+{{- if not .Values.database.caSecretName -}}{{- fail "auth.oidc CA configuration requires database.caSecretName and an explicit sslrootcert in the application database URL" -}}{{- end -}}
+{{- if eq $oidcCa.caSecretName .Values.database.caSecretName -}}{{- fail "auth.oidc.caSecretName must differ from the database CA Secret" -}}{{- end -}}
+{{- end -}}
 {{- if and $oidc $oidc.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -359,6 +372,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.backend.chatgpt.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
 {{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
+{{- end -}}
 {{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
@@ -553,6 +569,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $signIn := index $.Values.auth $provider -}}
 {{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
 {{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled -}}{{- $roles = append $roles (list "auth.oidc.caSecretName" .Values.auth.oidc.caSecretName "ca") -}}{{- end -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
@@ -748,6 +765,12 @@ capabilities:
 {{/*
 Install and upgrade notice for api.trustedProxy. It warns rather than fails: installs whose
 API sees each client's own address (for example, behind a source-preserving NLB) are valid.
+Re-checked 2026-10-13 before making it a refusal: an HTTP proxy without a trusted proxy is
+already refused at runtime (every API call is 403 and the API logs
+authentication.forwarded-refused-warning); a TCP proxy that hides client addresses cannot be
+seen by the chart or the API; and forcing a value there leads operators to list the TCP proxy
+as trusted, which keys the address limits on one shared address, so a few failed sign-ins
+limit every user.
 */}}
 {{- define "openclaw.trustedProxy.notice" -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
@@ -760,11 +783,13 @@ WARNING: api.trustedProxy is not set. With GitHub, Google or OIDC sign-in, faile
 password sign-ins are then limited per email only, and external sign-in
 starts have no per-client limit, because every browser behind a proxy shares its
 address. Set api.trustedProxy unless the API sees each client's own address, as
-behind a Network Load Balancer that preserves source addresses.
+behind a Network Load Balancer that preserves source addresses. Behind an HTTP
+proxy, API calls fail with 403 until it is set.
 {{- else -}}
 NOTE: api.trustedProxy is not set, so failed password sign-ins are limited per
 email only. Set api.trustedProxy when a proxy fronts the API to add the
-per-client-address limit.
+per-client-address limit. Behind an HTTP proxy, API calls fail with 403 until it
+is set.
 {{- end -}}
 {{- end -}}
 {{- end -}}
