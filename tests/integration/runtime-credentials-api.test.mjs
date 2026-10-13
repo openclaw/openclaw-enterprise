@@ -179,13 +179,14 @@ async function createSharedApp(implementation) {
   resetPolicy();
   const auditSink = forwarder({}, () => running.auditSink);
   const platformState = new InMemoryPlatformState({ auditSink });
+  const iamDriver = new NativeIAMDriver(
+    { loadNativeIAMState: async () => policy },
+    { id: "runtime-credential-iam" },
+  );
   let controller;
   const app = createFastifyApp({
     auth,
-    iamDriver: new NativeIAMDriver(
-      { loadNativeIAMState: async () => policy },
-      { id: "runtime-credential-iam" },
-    ),
+    iamDriver,
     auditSink,
     development: { enabled: true, installationId },
     publicOrigin: origin,
@@ -310,6 +311,20 @@ async function createSharedApp(implementation) {
     };
   }
 
+  // A controller restarted on the same state with another Compute Driver, as after the
+  // Installation's Driver configuration changed.
+  function restartController(computeDriver) {
+    const restarted = new OpenClawController(controller.installation, {
+      state: platformState,
+      recordOperations: false,
+    });
+    for (const driver of [iamDriver, computeDriver]) {
+      restarted.registerDriver(driver);
+      restarted.selectDriver(driver.capability, driver.id);
+    }
+    return restarted;
+  }
+
   async function createPrincipal(label, configurePolicy) {
     if (principalsUsed === principals.length) {
       const { seed: created, signIn } = await createAccount(label, label, "none");
@@ -321,7 +336,16 @@ async function createSharedApp(implementation) {
     return pooled;
   }
 
-  return { bootstrapAgent, createPrincipal, origin, policy, request, resetPolicy };
+  return {
+    administratorId: seed.principal.id,
+    bootstrapAgent,
+    createPrincipal,
+    origin,
+    policy,
+    request,
+    resetPolicy,
+    restartController,
+  };
 }
 
 async function createFixture({
@@ -934,6 +958,31 @@ for (const [name, diagnostics] of [
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
   });
 }
+
+test("deployment diagnostics refuse a Compute Driver with the deployment's id but another implementation", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
+  const revision = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(revision.status, 202);
+  const replacement = {
+    ...createRuntimeCredentialComputeDriver(),
+    implementation: "replacement-runtime-credential-test",
+  };
+  const restarted = fixture.restartController(replacement);
+  await assert.rejects(
+    restarted.diagnoseAgentDeployment(
+      fixture.administratorId,
+      namespace.id,
+      agent.id,
+      revision.data.id,
+    ),
+    {
+      name: "DependencyUnavailableError",
+      message: "The deployment's Compute Driver is unavailable.",
+    },
+  );
+  assert.deepEqual(replacement.calls, []);
+});
 
 test("deployment diagnostics reject invalid Driver evidence", async () => {
   const diagnosticOptions = { diagnosticsResult: null };
