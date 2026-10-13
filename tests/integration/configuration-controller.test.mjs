@@ -1506,6 +1506,11 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       }),
       "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
     ],
+    // One reference set and another unset: https://setu:<password>@models.example.test.
+    [
+      gateway({ baseUrl: `https://\${A_HOST:-h/}\${B_USER:-u:${sentinel}@models.example.test}` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
     // The URL parser ends the user name at the last `@`, inside brackets too.
     [
       gateway({ baseUrl: `https://[\${MODEL_HOST}user:${sentinel}@models.example.test/]` }),
@@ -1741,6 +1746,18 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
         {
           request: {
             proxy: { mode: "explicit-proxy", url: `http://u:${sentinel}@{{ vars.url }}` },
+          },
+        },
+      ],
+      // A variable scheme may be socks5, where a backslash stays in the user name.
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: {
+              mode: "explicit-proxy",
+              url: `{{ vars.api }}://u\\x:${sentinel}@{{ vars.url }}:{{ vars.port }}`,
+            },
           },
         },
       ],

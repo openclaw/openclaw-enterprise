@@ -144,10 +144,14 @@ function fillUrl(literals: readonly string[], hostToken: string, slashesToken = 
 }
 
 // `literals` with each unescaped environment reference in them split out as one more variable:
-// the runtime fills it before it uses the value. With `fallbacks`, a reference with a
-// `:-fallback` is its fallback text instead, as the runtime renders it when the variable is unset.
-function splitEnvironmentReferences(literals: readonly string[], fallbacks: boolean): string[] {
-  const split = [""];
+// the runtime fills it before it uses the value. A reference with a `:-fallback` for whose index
+// among those `fallback` is true is its fallback text instead, as the runtime renders it when the
+// variable is unset. `split.fallbacks` counts the references with a fallback.
+function splitEnvironmentReferences(
+  literals: readonly string[],
+  fallback: (index: number) => boolean,
+): string[] & { fallbacks: number } {
+  const split = Object.assign([""], { fallbacks: 0 });
   for (const [index, literal] of literals.entries()) {
     if (index > 0) {
       split.push("");
@@ -157,7 +161,7 @@ function splitEnvironmentReferences(literals: readonly string[], fallbacks: bool
       split[split.length - 1] += literal.slice(position, match.index);
       if (match[1] !== undefined) {
         split[split.length - 1] += match[0];
-      } else if (fallbacks && match[2] !== undefined) {
+      } else if (match[2] !== undefined && fallback(split.fallbacks++)) {
         split[split.length - 1] += match[2];
       } else {
         split.push("");
@@ -181,15 +185,22 @@ function splitEnvironmentReferences(literals: readonly string[], fallbacks: bool
  * - A variable before the scheme's colon fills the scheme; one that leads the URL with no colon
  *   after it fills a scheme and a host.
  * - The authority is also read as the URL parser does, with each variable a letter: the last `@`
- *   before its end splits off userinfo, whatever brackets surround it. A literal port that only a
- *   variable supplying an `@` could make parse (`user:pass{{ vars.host }}`) counts too.
+ *   before its end splits off userinfo, whatever brackets surround it, and a backslash ends it
+ *   only on a special scheme (either way when a variable fills the scheme). A literal port that
+ *   only a variable supplying an `@` could make parse (`user:pass{{ vars.host }}`) counts too.
  * A whole reference or variable is no credential: it is checked once filled. Nor is an all-digit
- * password a variable could turn a port into (`{{ vars.u }}:4242{{ vars.host }}`).
+ * password a variable could turn a port into (`{{ vars.u }}:4242{{ vars.host }}`). A special
+ * scheme with no slashes then an `@` after an empty variable reads as userinfo
+ * (`https:{{ vars.host }}/v1@beta`).
  */
 export function urlHoldsUserinfo(value: string, literals: readonly string[] = [value]): boolean {
-  return [false, true].some((fallbacks) =>
-    holdsUserinfo(splitEnvironmentReferences(literals, fallbacks)),
-  );
+  // Every reference set, every fallback rendered, and each fallback alone with the rest set.
+  const { fallbacks } = splitEnvironmentReferences(literals, () => false);
+  return [
+    () => false,
+    () => true,
+    ...Array.from({ length: fallbacks }, (_, only) => (index: number) => index === only),
+  ].some((fallback) => holdsUserinfo(splitEnvironmentReferences(literals, fallback)));
 }
 
 function holdsUserinfo(literals: readonly string[]): boolean {
@@ -202,11 +213,11 @@ function holdsUserinfo(literals: readonly string[]): boolean {
   let scheme: string;
   let rest: string[];
   if (part[at] === ":") {
-    scheme = index === 0 ? part.slice(0, at + 1) : "https:";
+    scheme = index === 0 ? part.slice(0, at + 1) : "";
     rest = [part.slice(at + 1), ...parts.slice(index + 1)];
   } else if (index !== 0 && parts.length > 1) {
     // A variable leads the URL: an origin, or a scheme and the start of a host.
-    scheme = "https:";
+    scheme = "";
     rest = [`//${parts[0]}`, ...parts.slice(1)];
   } else {
     return false;
@@ -221,7 +232,7 @@ function holdsUserinfo(literals: readonly string[]): boolean {
     fills.push(["x", ""]);
   }
   for (const [hostToken = "x", slashesToken] of fills) {
-    const text = scheme + fillUrl(rest, hostToken, slashesToken);
+    const text = (scheme || "https:") + fillUrl(rest, hostToken, slashesToken);
     if (URL.canParse(text)) {
       const url = new URL(text);
       if (url.username !== "" || url.password !== "") {
@@ -230,20 +241,24 @@ function holdsUserinfo(literals: readonly string[]): boolean {
       parsed = true;
     }
   }
-  // The authority as the URL parser reads it: a special scheme also ends it at a backslash.
-  const special = /^(?:https?|wss?|ftp|file):$/i.test(scheme);
-  const authority = (text: string): string =>
+  // The authority as the URL parser reads it: a special scheme also ends it at a backslash. A
+  // scheme a variable fills (empty here) may be either.
+  const authority = (text: string, special: boolean): string =>
     text
       .slice(text.search(special ? /[^/\\]|$/ : /[^/]|$/))
       .split(special ? /[/\\?#]/ : /[/?#]/, 1)[0] ?? "";
-  const written = authority(rest.join("x"));
-  const sign = written.lastIndexOf("@");
-  if (sign !== -1) {
-    const userinfo = written.slice(0, sign);
-    return userinfo !== "" && userinfo !== ":";
-  }
-  const port = /^(?:\[[^\]]*\]|[^:[\]]*):(.*)$/.exec(authority(fillUrl(rest, "x")))?.[1];
-  return !parsed && rest.length > 1 && port !== undefined && /\D/.test(port);
+  const special = /^(?:https?|wss?|ftp|file):$/i.test(scheme);
+  const port = (text: string, each: boolean): string | undefined =>
+    /^(?:\[[^\]]*\]|[^:[\]]*):(.*)$/.exec(authority(text, each))?.[1];
+  return (scheme === "" ? [true, false] : [special]).some((each) => {
+    const written = authority(rest.join("x"), each);
+    const sign = written.lastIndexOf("@");
+    if (sign !== -1) {
+      return !["", ":"].includes(written.slice(0, sign));
+    }
+    const filled = port(fillUrl(rest, "x"), each);
+    return !parsed && rest.length > 1 && filled !== undefined && /\D/.test(filled);
+  });
 }
 
 function validateSettings(
