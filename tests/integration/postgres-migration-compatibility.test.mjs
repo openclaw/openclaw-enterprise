@@ -1648,6 +1648,19 @@ test(
         await assertCompletedHistory(db, receipts);
         assert.deepEqual(await canonicalData(db), before);
         await assertUpgradedAuthentication(db);
+        if (prefix === 53) {
+          const upgradedReceipts = await historyReceipts(db.migrator);
+          const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
+          child.diagnostic(
+            JSON.stringify({
+              scenario: "previous-schema-upgrade",
+              oldReceipts: receipts.length,
+              newReceipts: upgradedReceipts.length,
+              retainedSessions: sessions.rows[0].count,
+              preservedStoredRows: true,
+            }),
+          );
+        }
         // Main's existing IAM DELETE compatibility grant belongs to its later controlled-writer transition.
         assert.equal(
           (

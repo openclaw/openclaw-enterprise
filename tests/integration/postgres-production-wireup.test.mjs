@@ -963,9 +963,13 @@ test(
             logger: apiLog.logger,
           });
           let bodyAdmission;
+          let policyRequestId;
           // Observe completed production admission without replacing it or pausing a
           // handler. A real HTTP request can still be uploading its body at this point.
           app.addHook("preParsing", async (request, _reply, payload) => {
+            if (request.method === "POST" && request.url === `${policyPath}/access-bindings`) {
+              policyRequestId = request.id;
+            }
             if (
               bodyAdmission !== undefined &&
               bodyAdmission.marker === request.headers["x-test-admission"]
@@ -1130,6 +1134,16 @@ test(
                   events.some(({ kind }) => kind === "mutation"),
                   false,
                 );
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "revoked-after-http-admission",
+                    status: denied.status,
+                    persistedGrants: persisted.rowCount,
+                    denialAudit: events.filter(({ kind }) => kind === "authorization_denial")
+                      .length,
+                    successAudit: events.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
               } finally {
                 bodyAdmission = undefined;
                 upload.destroy();
@@ -1191,7 +1205,26 @@ test(
                 released = true;
                 const committed = await pendingGrant;
                 assert.equal(committed.status, 201);
-                assert.equal((await pendingLogout).status, 200);
+                const logout = await pendingLogout;
+                assert.equal(logout.status, 200);
+                const committedRows = await pool.query(
+                  "SELECT id FROM occ.iam_access_bindings WHERE id=$1",
+                  [committed.data.id],
+                );
+                assert.equal(committedRows.rowCount, 1);
+                const committedEvents = (
+                  await new PostgresPlatformState(pool).transact((unit) => unit.audit.list())
+                ).filter((event) => event.requestId === policyRequestId);
+                assert.ok(committedEvents.some(({ kind }) => kind === "mutation"));
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "cross-replica-logout",
+                    policyStatus: committed.status,
+                    logoutStatus: logout.status,
+                    persistedGrants: committedRows.rowCount,
+                    successAudit: committedEvents.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
                 assert.equal(
                   (await request("GET", `${policyPath}/roles`, undefined, assigning)).status,
                   401,
@@ -1330,6 +1363,16 @@ test(
                   events.some(({ kind }) => kind === "mutation"),
                   false,
                 );
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "expired-before-server-commit",
+                    status: denied.status,
+                    persistedGrants: persisted.rowCount,
+                    denialAudit: events.filter(({ kind }) => kind === "authorization_denial")
+                      .length,
+                    successAudit: events.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
                 const following = await request("POST", path, grant);
                 assert.equal(following.status, 201);
                 assert.equal((await request("DELETE", `${path}/${following.data.id}`)).status, 204);
@@ -1386,7 +1429,8 @@ test(
                 await delay(3_100);
                 await blocker.query("COMMIT");
                 released = true;
-                assert.equal((await pending).status, 403);
+                const denied = await pending;
+                assert.equal(denied.status, 403);
                 assert.equal(
                   (await request("GET", `${agentsPath}/${agentId}`, undefined, recipient.session))
                     .status,
@@ -1400,6 +1444,24 @@ test(
                   persisted.rowCount,
                   0,
                   "expiry must roll back the grant, not just its response",
+                );
+                const events = (
+                  await new PostgresPlatformState(pool).transact((unit) => unit.audit.list())
+                ).filter((event) => event.requestId === policyRequestId);
+                assert.ok(events.some(({ kind }) => kind === "authorization_denial"));
+                assert.equal(
+                  events.some(({ kind }) => kind === "mutation"),
+                  false,
+                );
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "expired-during-policy-wait",
+                    status: denied.status,
+                    persistedGrants: persisted.rowCount,
+                    denialAudit: events.filter(({ kind }) => kind === "authorization_denial")
+                      .length,
+                    successAudit: events.filter(({ kind }) => kind === "mutation").length,
+                  }),
                 );
                 // Another authorized session can immediately write and remove the same grant.
                 const following = await request("POST", `${policyPath}/access-bindings`, grant);
