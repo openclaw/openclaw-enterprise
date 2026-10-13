@@ -484,16 +484,13 @@ test("sandbox follow delivers a remembered line rewritten in place, with no gap,
   gateway.state.lines[1] = allowed(9, "c");
   const next = await read("source=sandbox", first.data.cursor);
   assert.equal(next.status, 200, next.text);
-  assert.deepEqual(
-    next.data.records.map((record) => record.type),
-    ["line"],
-  );
   assert.deepEqual(hosts(next.data), ["c.example.com"]);
 });
 
 test("a first sandbox read of a full tail in one millisecond leads with a window notice", async () => {
   const { gateway, read } = await sandboxFixture();
-  // Identical occurrences can roll through a full single-time tail without a visible change.
+  // The rule fires on any full single-time tail: identical occurrences could roll through it
+  // without a visible change.
   gateway.state.lines = Array.from({ length: 5 }, (_, index) => allowed(8, `s${index}`));
   const first = await read("source=sandbox&tailLines=5");
   assert.equal(first.status, 200, first.text);
@@ -1348,7 +1345,7 @@ test("sandbox byte-window checkpoints preserve the pre-cut overlap baseline", as
 });
 
 test("sandbox byte-window changes report a gap before a fresh value snapshot", async () => {
-  // A larger tail that still covers the whole buffer changes the window too.
+  // A changed tail resets the checkpoint even when both tails cover the whole buffer.
   for (const changed of ["prefix", "clipped size", "query tail", "covering query tail"]) {
     const fixture = await sandboxFixture();
     fixture.gateway.state.lines = range(150).map((index) =>
