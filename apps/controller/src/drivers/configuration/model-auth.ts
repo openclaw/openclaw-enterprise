@@ -19,6 +19,10 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 const urlCredentialMessage = (path: string): string =>
   `Configuration field ${path} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
 
+// Proxy environment variables, in any case (`HTTPS_PROXY`, `all_proxy`, `npm_config_proxy`).
+// `NO_PROXY` lists hosts, not a proxy.
+const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
+
 // The provider headers refused as literals before the 2026-10-12 notice.
 const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
 
@@ -31,7 +35,9 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * Driver refuses to read one. A document an older release saved with a literal in a slot
  * refused since still reads, so its operator can see and replace it; every write and
  * deployment checks all slots. A Preset save passes `unresolved`, so a credential header name that
- * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`).
+ * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
+ * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
+ * channel proxies, MCP server URLs and proxy environment variables.
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -63,6 +69,26 @@ export function validateModelCredentialReferences(
       return;
     }
     throw new ModelCredentialValueError(path);
+  };
+  // The refusal names the field, never its value. A Preset save passes `unresolved`, the text
+  // around each unfilled variable at that path.
+  const refuseUrlUserinfo = (
+    path: readonly (string | number)[],
+    value: unknown,
+    schemeless = false,
+  ): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const [head = "", ...tail] = options.unresolved?.(path) ?? [value];
+    if (
+      urlHoldsUserinfo(value, [head, ...tail]) ||
+      (schemeless &&
+        !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(head) &&
+        urlHoldsUserinfo(value, [`http://${head}`, ...tail]))
+    ) {
+      throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
   };
 
   const providers = asRecord(asRecord(values.models)?.providers);
@@ -129,20 +155,50 @@ export function validateModelCredentialReferences(
           validateReference(tls?.[field], pointer(...tlsPath, field));
         }
       }
-      for (const [urlPath, url] of [
-        [[...path, "baseUrl"], row?.baseUrl],
-        [[...path, "request", "proxy", "url"], proxy?.url],
-      ] as const) {
-        // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and
-        // so is a model endpoint's (fetch refuses a URL that holds one), even where a variable
-        // or an environment reference fills its host or port (finding 1250).
-        if (typeof url === "string" && urlHoldsUserinfo(url, options.unresolved?.(urlPath))) {
-          throw new ModelCredentialValueError(pointer(...urlPath), urlCredentialMessage);
+      // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and
+      // so is a model endpoint's (fetch refuses a URL that holds one), even where a variable
+      // or an environment reference fills its host or port (finding 1250).
+      refuseUrlUserinfo([...path, "baseUrl"], row?.baseUrl);
+      refuseUrlUserinfo([...path, "request", "proxy", "url"], proxy?.url);
+    }
+  }
+  const env = asRecord(values.env);
+  if (!stored) {
+    // The other native URLs a password can ride in (finding 1255): the Gateway's egress proxy,
+    // every channel's proxy and its accounts', and MCP server URLs, on the Gateway and on nodes.
+    refuseUrlUserinfo(["proxy", "proxyUrl"], asRecord(values.proxy)?.proxyUrl);
+    for (const [channel, settings] of Object.entries(asRecord(values.channels) ?? {})) {
+      const config = asRecord(settings);
+      refuseUrlUserinfo(["channels", channel, "proxy"], config?.proxy);
+      for (const [account, accountSettings] of Object.entries(asRecord(config?.accounts) ?? {})) {
+        refuseUrlUserinfo(
+          ["channels", channel, "accounts", account, "proxy"],
+          asRecord(accountSettings)?.proxy,
+        );
+      }
+    }
+    for (const at of [["mcp"], ["nodeHost", "mcp"]]) {
+      const mcp = at.reduce<Record<string, unknown> | undefined>(
+        (parent, key) => asRecord(parent?.[key]),
+        values,
+      );
+      for (const [server, settings] of Object.entries(asRecord(mcp?.servers) ?? {})) {
+        refuseUrlUserinfo([...at, "servers", server, "url"], asRecord(settings)?.url);
+      }
+    }
+    // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
+    // process it starts. Clients such as curl and git read a value without a scheme as http.
+    for (const [prefix, settings] of [
+      [["env"], env],
+      [["env", "vars"], asRecord(env?.vars)],
+    ] as const) {
+      for (const name of Object.keys(settings ?? {})) {
+        if (PROXY_ENVIRONMENT.test(name)) {
+          refuseUrlUserinfo([...prefix, name], settings?.[name], true);
         }
       }
     }
   }
-  const env = asRecord(values.env);
   for (const [prefix, settings] of [
     [["env"], env],
     [["env", "vars"], asRecord(env?.vars)],

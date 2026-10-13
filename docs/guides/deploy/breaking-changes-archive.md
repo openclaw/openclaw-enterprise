@@ -8,6 +8,26 @@ newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
 
+## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
+
+**What breaks.** `helm upgrade` of the observability demo fails when
+`cluster.port` or `occ.metricsPort` is not a decimal integer from 1 through
+65535 with no leading zero. A saved string `"010"` used to install, and
+Kubernetes applied port 8. The upgrade now stops before it writes that policy.
+
+**Who is affected.** Demo releases whose saved values use a leading zero or a
+port outside that range. Defaults 443 and 9464, and an ordinary decimal such as
+6443, upgrade unchanged.
+
+**How to tell.** Helm stops in `prometheus.yaml` with
+`cluster.port must be an integer TCP port from 1 to 65535`, or the same
+sentence for `occ.metricsPort`.
+
+**Steps.** Set the field to the decimal Kubernetes already applied (`8` for a
+saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
+The [demo install](../observability/demo.md#install-private-backends) states the
+same contract.
+
 ## 2026-10-12: cluster and execution API ports must be canonical decimals
 
 **What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`

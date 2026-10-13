@@ -1833,6 +1833,169 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   );
 });
 
+test("Configuration and Preset saves refuse a user name or password in proxy, channel proxy, MCP server and proxy environment URLs", async (t) => {
+  // Finding 1255: #2347 refused URL userinfo only in model baseUrl and request.proxy.url. The
+  // Gateway's egress proxy, channel proxies, MCP server URLs and proxy environment variables
+  // carry the same credential (a proxy sends it as Proxy-Authorization), and saved.
+  const root = await mkdtemp(join(tmpdir(), "occ-url-userinfo-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-url-userinfo");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-url-userinfo-${randomUUID()}`;
+  const message = (field) =>
+    `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const userinfo = `http://u:${sentinel}@proxy.example:3128`;
+  const refused = [
+    [{ proxy: { enabled: true, proxyUrl: userinfo } }, "/proxy/proxyUrl"],
+    [{ channels: { telegram: { proxy: userinfo } } }, "/channels/telegram/proxy"],
+    [
+      { channels: { discord: { proxy: `socks5://u:${sentinel}@proxy:1080` } } },
+      "/channels/discord/proxy",
+    ],
+    [
+      { channels: { telegram: { accounts: { ops: { proxy: userinfo } } } } },
+      "/channels/telegram/accounts/ops/proxy",
+    ],
+    [
+      { mcp: { servers: { docs: { url: `https://u:${sentinel}@mcp.example.test/mcp` } } } },
+      "/mcp/servers/docs/url",
+    ],
+    [
+      { nodeHost: { mcp: { servers: { docs: { url: `https://${sentinel}@mcp.example.test` } } } } },
+      "/nodeHost/mcp/servers/docs/url",
+    ],
+    [{ env: { vars: { HTTPS_PROXY: userinfo } } }, "/env/vars/HTTPS_PROXY"],
+    [{ env: { vars: { http_proxy: userinfo } } }, "/env/vars/http_proxy"],
+    [{ env: { ALL_PROXY: userinfo } }, "/env/ALL_PROXY"],
+    [{ env: { vars: { all_proxy: userinfo } } }, "/env/vars/all_proxy"],
+    // curl and git read a proxy without a scheme as http.
+    [{ env: { vars: { HTTPS_PROXY: `${sentinel}@proxy.example:3128` } } }, "/env/vars/HTTPS_PROXY"],
+    // As in #2347: an environment reference in the port, or a fallback that holds userinfo.
+    [
+      { channels: { telegram: { proxy: `http://u:${sentinel}@proxy.example:\${PROXY_PORT}` } } },
+      "/channels/telegram/proxy",
+    ],
+    [
+      { proxy: { proxyUrl: `\${EGRESS_PROXY:-http://u:${sentinel}@proxy.example:3128}` } },
+      "/proxy/proxyUrl",
+    ],
+  ];
+  // A Configuration to update: a refused edit leaves it as it was.
+  const original = await request(context.app, "POST", configurations, {
+    body: {
+      kind: "agent",
+      values: { env: { vars: { HTTPS_PROXY: "http://proxy.example:3128" } } },
+    },
+  });
+  assert.equal(original.status, 201, JSON.stringify(original.body));
+  const item = `${configurations}/${original.body.data.id}`;
+  for (const [values, field] of refused) {
+    for (const [method, path, body] of [
+      ["POST", configurations, { kind: "agent", values }],
+      ["PATCH", item, { values }],
+      ["POST", presets, { name: "Refused", template: { configuration: { values } } }],
+    ]) {
+      const response = await request(context.app, method, path, { body });
+      assert.equal(response.status, 400, `${method} ${path}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.error.message, message(field), `${method} ${path}`);
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    }
+  }
+  const read = await request(context.app, "GET", item);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(read.body.data.values, original.body.data.values);
+  assert.deepEqual(await readdir(join(root, namespace.id)), [`${original.body.data.id}.json`]);
+  assert.equal(
+    (await readFile(join(root, namespace.id, `${original.body.data.id}.json`), "utf8")).includes(
+      sentinel,
+    ),
+    false,
+  );
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // A Preset variable as the host, port or the whole URL is checked once filled; literal userinfo
+  // beside it, or a variable as the whole user name, is refused at save.
+  const variables = { host: { type: "string" }, port: { type: "string" }, url: { type: "string" } };
+  for (const [values, field] of [
+    [{ proxy: { proxyUrl: `http://u:${sentinel}@{{ vars.host }}:3128` } }, "/proxy/proxyUrl"],
+    [
+      { channels: { discord: { proxy: `http://u:${sentinel}@proxy.example:{{ vars.port }}` } } },
+      "/channels/discord/proxy",
+    ],
+    [
+      { mcp: { servers: { docs: { url: "https://{{ vars.url }}@{{ vars.host }}/mcp" } } } },
+      "/mcp/servers/docs/url",
+    ],
+    [{ env: { vars: { HTTPS_PROXY: `u:${sentinel}@{{ vars.host }}` } } }, "/env/vars/HTTPS_PROXY"],
+    [
+      { env: { vars: { HTTPS_PROXY: `${sentinel}@{{ vars.host }}:3128` } } },
+      "/env/vars/HTTPS_PROXY",
+    ],
+  ]) {
+    const response = await request(context.app, "POST", presets, {
+      body: { name: "Refused", template: { variables, configuration: { values } } },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, message(field));
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  }
+
+  // A proxy without userinfo, a whole reference, a fallback without userinfo, NO_PROXY and an
+  // `@` in a path still save.
+  const accepted = {
+    proxy: { enabled: true, proxyUrl: "${EGRESS_PROXY:-http://proxy.example:3128}" },
+    channels: {
+      telegram: { proxy: "http://10.42.0.15:3128", accounts: { ops: { proxy: "${OPS_PROXY}" } } },
+      discord: { proxy: "socks5://proxy.example:1080" },
+    },
+    mcp: { servers: { docs: { url: "https://mcp.example.test/v1/@scope/mcp" } } },
+    env: {
+      HTTP_PROXY: "proxy.example:3128",
+      vars: { HTTPS_PROXY: "${CORP_PROXY}", NO_PROXY: "localhost,.svc,10.0.0.0/8" },
+    },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: {
+            ...accepted,
+            proxy: { proxyUrl: "http://{{ vars.host }}:{{ vars.port }}" },
+            channels: { telegram: { proxy: "{{ vars.url }}" } },
+            env: { vars: { HTTPS_PROXY: "{{ vars.host }}:3128", ALL_PROXY: "{{ vars.url }}" } },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+
+  // A document an older release stored with one still reads, so its operator can edit it.
+  const path = join(root, namespace.id, `${original.body.data.id}.json`);
+  const stale = { proxy: { proxyUrl: userinfo }, env: { vars: { HTTPS_PROXY: userinfo } } };
+  const current = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(path, JSON.stringify({ ...current, values: stale }));
+  const staleRead = await request(context.app, "GET", item);
+  assert.equal(staleRead.status, 200, JSON.stringify(staleRead.body));
+  assert.deepEqual(staleRead.body.data.values, stale);
+  const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
+  assert.equal(resaved.status, 400, JSON.stringify(resaved.body));
+  assert.equal(resaved.body.error.message, message("/proxy/proxyUrl"));
+});
+
 test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {
   // The 2026-10-12 notice: an older release saved model credentials in a provider's request
   // transport settings. After the upgrade the bundled Driver must still read and replace that
