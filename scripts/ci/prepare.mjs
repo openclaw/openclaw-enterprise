@@ -970,8 +970,8 @@ function imageBuildArgs(state, role, localStore) {
 // image from the BuildKit cache without exporting its layers, then tag the
 // engine's image if it has the same ID. The ID is the digest of a config that
 // names every layer's content digest, so the tagged image is the one the build
-// would load. The warm job, which exports the cache, and any probe failure (a
-// timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
+// would load. The warm job, which builds every step for its export, and any probe
+// failure (a timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
 // says "absent" only when the engine reports no such image, "different" when it
 // holds another image under that reference, and "probe-failed" otherwise.
 async function reuseEngineImage(state, role, args, tag) {

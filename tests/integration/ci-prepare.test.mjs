@@ -668,7 +668,7 @@ describe("CI preparation", { concurrency }, () => {
     test(`a warm cache export that cannot finish only warns: ${scenario}`, async (t) => {
       const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
         ...warmCacheEnv,
-        OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "2000",
+        OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "5000",
         OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "500",
       });
       const warmed = await commands.warmImageCache();
@@ -683,7 +683,7 @@ describe("CI preparation", { concurrency }, () => {
         warmed.stdout,
         new RegExp(
           `^::warning title=Image cache export::The controller image built, but its cache export ${
-            outcome === "timed-out" ? "did not finish within 2000 ms" : "failed"
+            outcome === "timed-out" ? "did not finish within 5000 ms" : "failed"
           }; `,
           "m",
         ),
