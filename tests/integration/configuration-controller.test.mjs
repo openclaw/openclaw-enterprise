@@ -2323,7 +2323,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     assert.equal(response.status, 400, JSON.stringify(response.body));
     assert.equal(
       response.body.error.message,
-      "Configuration field /skills/entries/x/env/X10 holds too many URLs or ${NAME} references to check for a user name or password. Shorten it, or make the whole value a ${NAME} reference.",
+      "Configuration field /skills/entries/x/env/X10, with the environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
     );
   });
   // Nothing refused was stored.
@@ -2377,6 +2377,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     ARGS: "--proxy=http://proxy.example.test:3128/ --user=ops@example.test",
     JSON: '{"url": "https://api.example.test", "contact": "ops@example.test"}',
     ORIGINS: "http://localhost:3000,http://127.0.0.1:3000",
+    WINDOWS_FILE: "file:///C:\\Users\\ops@example.test\\notes.txt",
     NO_PROXY: "localhost,.svc,10.0.0.0/8",
     LOG_LEVEL: "debug",
   };

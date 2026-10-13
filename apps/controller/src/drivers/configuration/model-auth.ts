@@ -28,7 +28,7 @@ const urlCredentialMessage = (path: string): string =>
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
 const environmentCostMessage = (path: string): string =>
-  `Configuration field ${path} holds too many URLs or \${NAME} references to check for a user name or password. Shorten it, or make the whole value a \${NAME} reference.`;
+  `Configuration field ${path}, with the environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
 
 // The most work `environmentUrls` and the userinfo checks may do on one document's environment
 // values, in characters read (each rendering of each URL counts): about 0.1 s.
@@ -91,7 +91,7 @@ function environmentUrls(
     }
   };
   const spans: [number, number][] = [];
-  let covered = { from: 0, to: 0 };
+  let covered = { from: 0, to: 0, ends: /["/?#]/ };
   for (const { index: colon } of text.matchAll(/:/g)) {
     let start = colon;
     for (;;) {
@@ -116,17 +116,19 @@ function environmentUrls(
     if (
       colon >= covered.from &&
       authority < covered.to &&
-      (reference === -1 || !/["/?#]/.test(text.slice(reference, after.get(reference))))
+      (reference === -1 || !covered.ends.test(text.slice(reference, after.get(reference))))
     ) {
       continue;
     }
-    // A double quote ends a URL inside JSON text.
+    // A double quote ends a URL inside JSON text. A `file` URL, checked only as written (it sends
+    // no credentials, and Windows paths fill it with backslashes), also ends at a backslash.
+    const ends = /^file$/i.test(scheme) ? /["/?#\\]/ : /["/?#]/;
     let end = authority;
     while (end < text.length) {
       const skipped = after.get(end);
       if (skipped !== undefined) {
         end = skipped;
-      } else if (/["/?#]/.test(text[end] ?? "")) {
+      } else if (ends.test(text[end] ?? "")) {
         break;
       } else {
         end += 1;
@@ -139,7 +141,7 @@ function environmentUrls(
     if (work > ENVIRONMENT_URL_BUDGET) {
       return undefined;
     }
-    covered = { from: authority, to: end - 1 };
+    covered = { from: authority, to: end - 1, ends };
     spans.push([start, end]);
   }
   spent.work = work;
@@ -240,7 +242,7 @@ export function validateModelCredentialReferences(
     for (const url of urls) {
       if (
         urlHoldsUserinfo(value, url.split("\0")) ||
-        urlHoldsUserinfo(value, url.replaceAll("\\", "%5C").split("\0"))
+        (!/^file:/i.test(url) && urlHoldsUserinfo(value, url.replaceAll("\\", "%5C").split("\0")))
       ) {
         throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
       }
