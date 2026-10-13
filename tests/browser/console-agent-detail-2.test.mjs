@@ -44,9 +44,9 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 
-// Agent detail cases for deletion, Agent links, native admin access, Slack channel edits, refocus and
-// session checks, tabs, sharing, credential grants and workspace drafts. They were split from
-// console-agent-detail.test.mjs so the two halves run side by side in the Console Browser lane.
+// The second half of console-agent-detail.test.mjs: deletion, Agent links, native admin access,
+// Slack channel edits, refocus and session checks, tabs, sharing, credential grants and workspace
+// drafts. The file was split so the two halves run side by side in the Console Browser lane.
 
 test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
   const fixture = await createConsoleAppFixture(t);

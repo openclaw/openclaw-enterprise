@@ -1129,7 +1129,7 @@ test("Static Checks runs every check the CI lanes skip", () => {
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
 });
 
-test("lane lists outside the lane table name every lane they must", () => {
+test("lane lists outside the lane table name every lane they must", async () => {
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
   // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
@@ -1139,13 +1139,10 @@ test("lane lists outside the lane table name every lane they must", () => {
     [...String(expression).matchAll(/inputs\.lane == '([a-z0-9-]+)'/g)]
       .map((match) => match[1])
       .sort();
-  const cacheMap = /^const imageCacheLanes = new Map\(\[\n((?: {2}\[.*\n)+)\]\);$/m.exec(
-    read("scripts/ci/prepare.mjs"),
+  const { imageCacheLanes } = await import(
+    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
   );
-  assert.ok(cacheMap, "prepare.mjs declares imageCacheLanes");
-  const cached = [...cacheMap[1].matchAll(/^ {2}\["([a-z0-9-]+)"/gm)]
-    .map((match) => match[1])
-    .sort();
+  const cached = [...imageCacheLanes.keys()].sort();
   const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
   const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
   assert.deepEqual(lanesIn(exposeStep.if), cached);
@@ -1171,7 +1168,7 @@ test("lane lists outside the lane table name every lane they must", () => {
       .map((entry) => entry.lane)
       .sort(),
   );
-  for (const job of ["runtime-image-fixture", ...ownJobs]) {
+  for (const job of ["pr-safe-same-sha", "runtime-image-fixture", ...ownJobs]) {
     assert.ok(aggregate.needs.includes(job), `full-aggregate needs ${job}`);
   }
   assert.deepEqual(

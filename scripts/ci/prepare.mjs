@@ -3177,7 +3177,7 @@ async function main() {
   );
 }
 
-export { defaultK3sImage, prepareFile, prepareLane };
+export { defaultK3sImage, imageCacheLanes, prepareFile, prepareLane };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {
