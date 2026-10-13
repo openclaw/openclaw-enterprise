@@ -12,8 +12,8 @@ trusted Installation settings, never the backend.
 | `validateConfiguration(configuration)`                                            | Configuration create and update, Agent provisioning, and Preset create and update (values rendered with defaults)                                                             | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
 | `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update, with `null` bindings, when the binding is `runtime` or a Secret and the Configuration selects a model | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
 | `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                                                       | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
-| `validateWorkspaceSetup(harness, configuration)`                                  | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files                             | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
-| `validateRepositoryCredentials(harness, sandboxDriverId?)`                        | Deployment with repository bindings, which requires it, and Agent create and update with repository bindings                                                                  | Any error becomes a fixed `409`.                                                                                                                                     |
+| `validateWorkspaceSetup(harness, configuration, sandboxDriverId?)`                | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files                             | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
+| `validateRepositoryCredentials(harness, sandboxDriverId?)`                        | Deployment with repository bindings, which requires it, Agent create and update, and the provisioning request, with repository bindings                                       | Any error becomes a fixed `409`.                                                                                                                                     |
 
 A message names the setting and what the Driver accepts, never a submitted
 value, in at most 256 characters. Agent provisioning also calls
@@ -89,9 +89,12 @@ no Sandbox Driver; a credential source needs its paired Sandbox) stays a fixed
 The channel runtime rule stays at deployment: it depends on the execution mode
 and the Installation's `runtime.channels`.
 
-`validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone (or
-none) and the managed workspace path (or `/home/node/workspace` on a dedicated
-Harness); preparation also needs runtime storage, an Installation setting.
+`validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone, in
+any letter case (or none), and the managed workspace path (or
+`/home/node/workspace` on a dedicated Harness); preparation also needs runtime
+storage, an Installation setting. Kubernetes Compute first refuses any Harness
+in a Sandbox, with a `409` naming the Sandbox: its Sandbox carries no workspace
+initializer, and OpenShell moves the OpenClaw workspace to its mount.
 [Docker Compute](../../../apps/controller/src/drivers/compute/docker/index.ts)
 applies the same
 [shared rule](../../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts),

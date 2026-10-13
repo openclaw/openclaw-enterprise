@@ -7,7 +7,6 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   newRuntimeLogViewId,
-  runtimeLogLineHash,
   type RuntimeLogCursorBinding,
   type RuntimeLogCursorCodec,
   type RuntimeLogCursorPosition,
@@ -21,6 +20,7 @@ import {
   type RuntimeLogViewAdmission,
 } from "./read.ts";
 import {
+  createRuntimeLogSanitizeMemo,
   runtimeLogGap,
   sanitizeSandboxLogLines,
   type SanitizedRuntimeLogRecord,
@@ -93,17 +93,29 @@ function validChunk(value: unknown, requested: number): SandboxLogChunk {
 }
 
 /** Stable identity of one raw line for overlap de-duplication. */
-export function sandboxLogLineHash(line: Readonly<SandboxLogLine>): string {
+export function sandboxLogLineHash(
+  codec: RuntimeLogCursorCodec,
+  line: Readonly<SandboxLogLine>,
+): string {
   const fields = Object.keys(line.fields)
     .sort()
     .map((key) => [key, line.fields[key]]);
-  return runtimeLogLineHash(
+  return codec.lineHash(
     JSON.stringify([line.time, line.level, line.target, line.message, line.source, fields]),
   );
 }
 
-function sandboxPrefixHash(lines: readonly SandboxLogLine[], count: number): string {
-  return runtimeLogLineHash(lines.slice(0, count).map(sandboxLogLineHash).join("\0"));
+function sandboxPrefixHash(
+  codec: RuntimeLogCursorCodec,
+  lines: readonly SandboxLogLine[],
+  count: number,
+): string {
+  return codec.lineHash(
+    lines
+      .slice(0, count)
+      .map((line) => sandboxLogLineHash(codec, line))
+      .join("\0"),
+  );
 }
 
 export interface ReadSandboxLogPageInput {
@@ -258,7 +270,7 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
     !replaced &&
     checkpoint.tailLines === tailLines &&
     checkpoint.seen <= chunk.lines.length &&
-    checkpoint.hash === sandboxPrefixHash(chunk.lines, checkpoint.seen) &&
+    checkpoint.hash === sandboxPrefixHash(codec, chunk.lines, checkpoint.seen) &&
     !(
       checkpoint.total !== chunk.bufferTotal &&
       (checkpoint.total >= tailLines || chunk.bufferTotal >= tailLines)
@@ -312,7 +324,7 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
       ) {
         return false;
       }
-      const hash = sandboxLogLineHash(line);
+      const hash = sandboxLogLineHash(codec, line);
       const count = remaining.get(hash) ?? 0;
       if (count === 0) {
         return true;
@@ -372,6 +384,8 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
   );
   const issuedAt = now();
   const observedAt = new Date(issuedAt).toISOString();
+  // Every build sanitizes a prefix of `lines`; each line is sanitized once.
+  const memo = createRuntimeLogSanitizeMemo();
   return boundedRuntimeLogPage(lines.length, (end) => {
     const delivered = lines.slice(0, end);
     const pageCut = end < lines.length;
@@ -384,14 +398,14 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
             : 0
           : remaining[end - 1]!.index + 1;
     const consumedLines = eligible.filter(({ index }) => index < consumed).map(({ line }) => line);
-    const sanitized = sanitizeSandboxLogLines(stream, delivered);
+    const sanitized = sanitizeSandboxLogLines(stream, delivered, memo);
     const window = overlapWindow(
       [
         ...carried,
         ...matched,
         ...consumedLines
           .filter((line) => line.time !== null)
-          .map((line) => ({ time: line.time!, hash: sandboxLogLineHash(line) })),
+          .map((line) => ({ time: line.time!, hash: sandboxLogLineHash(codec, line) })),
       ],
       // A view's first page floors the resume time at its requested window start, so a
       // cursor poll without `sinceSeconds` (after an empty page) reads nothing older.
@@ -471,7 +485,7 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
               tailLines,
               count: consumed,
               seen: chunk.lines.length,
-              hash: sandboxPrefixHash(chunk.lines, chunk.lines.length),
+              hash: sandboxPrefixHash(codec, chunk.lines, chunk.lines.length),
               total: chunk.bufferTotal,
             },
           }

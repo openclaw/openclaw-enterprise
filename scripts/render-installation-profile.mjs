@@ -361,11 +361,6 @@ function observabilityDestination(value) {
   );
 }
 
-// The chart refuses ".", "..", and any database.caKey that is not a basename.
-function simpleBasename(value) {
-  return value !== "." && value !== ".." && /^[A-Za-z0-9._-]+$/.test(value);
-}
-
 function validateDatabaseCaMount(values, diagnostics) {
   if (!values.database.caSecretName) {
     return;
@@ -1489,10 +1484,12 @@ function buildRendered(profile, parsed, diagnostics) {
               resourceNameRule,
             ),
             caKey:
-              optionalString(databaseCa, ["controlPlane", "databaseCa", "key"], diagnostics, {
-                validate: simpleBasename,
-                description: "a simple basename",
-              }) ?? "ca.pem",
+              optionalString(
+                databaseCa,
+                ["controlPlane", "databaseCa", "key"],
+                diagnostics,
+                secretKeyRule,
+              ) ?? "ca.pem",
             caMountPath:
               optionalString(
                 databaseCa,

@@ -679,7 +679,8 @@ function workspaceNodeState(sandbox) {
 }
 
 // OpenClaw dynamic tools that execute against the Gateway Pod's local disk or shell,
-// type into its terminals, or change its configuration.
+// type into its terminals, proxy its ports, or change its configuration, plugins
+// or installed version.
 const GATEWAY_LOCAL_CODEX_TOOLS = [
   "ls",
   "read",
@@ -691,7 +692,10 @@ const GATEWAY_LOCAL_CODEX_TOOLS = [
   "gateway_exec",
   "gateway_process",
   "terminal",
+  "portal",
   "openclaw",
+  "plugins",
+  "gateway",
 ];
 
 const codexGatewayConfig = () => ({
@@ -738,6 +742,18 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   );
   // Automation triggers would run model-written commands in the Gateway Pod.
   assert.deepEqual(atStart.cron, { triggers: { enabled: false } });
+  // The memory flush run gets Gateway-local read and write despite the excludes.
+  assert.deepEqual(atStart.agents, {
+    defaults: { compaction: { memoryFlush: { enabled: false } } },
+  });
+  // Defaults the owner never set are not reported as overridden.
+  assert.ok(
+    lines.every(
+      (line) =>
+        line.event !== "runtime.gateway_settings_overridden" ||
+        !line.settings.some((name) => name.startsWith("agents.")),
+    ),
+  );
   // A built-in runtime run in the Gateway gets no reachable model.
   assert.deepEqual(atStart.models, {
     providers: { codex: { baseUrl: "http://127.0.0.1:9", api: "openai-responses" } },
@@ -1099,6 +1115,12 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
   };
   const ownerConfig = withExcludes(["web_search", "ls"]);
   ownerConfig.cron = { enabled: true, triggers: { enabled: true } };
+  ownerConfig.agents = {
+    defaults: {
+      model: "codex/gpt-test",
+      compaction: { memoryFlush: { enabled: true, softThresholdTokens: 1000 } },
+    },
+  };
   ownerConfig.models = {
     mode: "merge",
     providers: {
@@ -1155,6 +1177,7 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
       container: "gateway",
       settings: [
         "cron.triggers.enabled",
+        "agents.defaults.compaction.memoryFlush.enabled",
         "models.providers.codex.baseUrl",
         "models.providers.codex.api",
         "models.providers.codex.apiKey",
@@ -1187,6 +1210,13 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
   ]);
   // Timed automations stay; an owner cannot turn triggers back on in the Gateway Pod.
   assert.deepEqual(effective.cron, { enabled: true, triggers: { enabled: false } });
+  // An owner cannot turn the memory flush back on; its other settings stay.
+  assert.deepEqual(effective.agents, {
+    defaults: {
+      model: "codex/gpt-test",
+      compaction: { memoryFlush: { enabled: false, softThresholdTokens: 1000 } },
+    },
+  });
   // The codex row keeps its models but not a transport a built-in run could reach,
   // nor the overrides that make Codex hand a turn to the built-in runtime.
   assert.deepEqual(effective.models, {
@@ -1254,12 +1284,15 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
       }),
     /codexDynamicToolsExclude setting must be a list/,
   );
-  for (const [cron, message] of [
-    ["off", /cron setting must be an object/],
-    [{ triggers: true }, /cron\.triggers setting must be an object/],
+  for (const [settings, message] of [
+    [{ cron: "off" }, /cron setting must be an object/],
+    [{ cron: { triggers: true } }, /cron\.triggers setting must be an object/],
+    [
+      { agents: { defaults: { compaction: { memoryFlush: true } } } },
+      /agents\.defaults\.compaction\.memoryFlush setting must be an object/,
+    ],
   ]) {
-    const malformed = codexGatewayConfig();
-    malformed.cron = cron;
+    const malformed = { ...codexGatewayConfig(), ...settings };
     await assert.rejects(
       () =>
         runOpenClawRuntimeHelper(undefined, [], {
@@ -1315,6 +1348,7 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
   );
   assert.equal(localConfig.plugins.entries.codex.config.codexDynamicToolsExclude, undefined);
   assert.equal(localConfig.cron, undefined);
+  assert.equal(localConfig.agents, undefined);
   assert.deepEqual(localConfig.models, localBase.models);
 });
 

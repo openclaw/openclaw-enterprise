@@ -11,6 +11,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
+
+**What breaks.** `helm upgrade` fails when a saved `auth.github.egressCidrs`,
+`auth.google.egressCidrs`, `auth.oidc.egressCidrs`, or
+`repositoryCredentials.upstreamCidrs` entry has a leading-zero octet, such as
+`140.82.112.08/20`. That value used to render, and the apiserver accepted it
+with a warning. The upgrade now stops before it writes that policy.
+
+**Who is affected.** Saved releases that use a leading-zero octet in one of
+those lists. A canonical decimal such as `140.82.112.0/20` or `140.82.112.8/20`
+still upgrades.
+
+**How to tell.** Helm stops with
+`auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32`,
+or the same sentence for `auth.google.egressCidrs`, `auth.oidc.egressCidrs`, and
+`repositoryCredentials.upstreamCidrs`.
+
+**Steps.** Write the canonical decimal (`140.82.112.8/20` for
+`140.82.112.08/20`) and upgrade again.
+
 ## 2026-10-12: model credentials in provider headers and request auth
 
 **What breaks.** On Kubernetes Compute, Configuration create and update,
@@ -78,6 +98,31 @@ sentence for `occ.metricsPort`.
 saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
 The [demo install](../observability/demo.md#install-private-backends) states the
 same contract.
+
+## 2026-10-12: Sandbox workspace files and provisioning repository refusals
+
+**What breaks.**
+
+- With a Sandbox Driver selected (OpenShell), Agent create and provisioning with
+  `initialWorkspaceFiles`, and Agent update and deployment while those files
+  are pending, answer `409` naming the Sandbox. Before, dedicated Codex saved
+  and its first deployment failed, and dedicated OpenClaw got a `400` naming
+  `agents.defaults.workspace` or `agents.entries.main.workspace`, which the
+  Sandbox had set.
+- The Agent provisioning request, and its retry, answer `409` for
+  `repositoryBindings` that the Compute topology cannot deliver, with Agent
+  create's message. Before, the request answered `202` and the work failed.
+- Newly accepted on Kubernetes and Docker Compute: an `agents.entries` roster
+  key of `Main` (any letter case) with initial workspace files.
+
+**Who is affected.** OpenShell Installations that create Agents with initial
+workspace files, and provisioning clients that send repository bindings on a
+topology without repository credential delivery.
+
+**How to tell.** The `409` message names the Sandbox or repository credentials.
+
+**Steps.** Create the Agent without `initialWorkspaceFiles`, or without
+`repositoryBindings`.
 
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 

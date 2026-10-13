@@ -71,6 +71,12 @@ owns cleanup. The failed deployment remains failed; correcting the cause and
 explicitly deploying creates a new revision and Job. The source stays claimed,
 not consumed, when the Job fails.
 
+While the Job runs, deployment progress reports
+`HARNESS_CREDENTIAL_BOOTSTRAP_PENDING`. If the convergence deadline passes on a
+pass that observes the running Job, the deployment fails with
+`CONVERGENCE_DEADLINE_EXCEEDED` and commits the same retirement obligation, so
+the seed does not outlive its revision.
+
 The tenant worker roles in both Helm charts grant only `get`, `create`, and
 `delete` for `batch/jobs`; API identities receive no Job permissions.
 

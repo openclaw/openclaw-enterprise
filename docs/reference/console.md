@@ -123,8 +123,8 @@ OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Current version** shows `activeRevisionId`, a selected pointer, not serving health.
 **Deployment activity** shows the newest authorized outcome and the viewed version’s
 own result. The Agent list’s **Latest deployment** links failure details beside
-Current version. Unreadable results remain unavailable. Bootstrap failures retain
-safe evidence and refresh separate cleanup progress.
+Current version. Unreadable results remain unavailable. Bootstrap failures keep
+safe evidence; revision cleanup progress refreshes separately.
 
 For a failed deployment, **Open vN Logs** opens that exact version and brings
 its Logs panel into view, including when starting from the draft or another

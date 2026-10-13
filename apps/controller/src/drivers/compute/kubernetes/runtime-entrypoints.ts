@@ -2352,12 +2352,16 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
 // its dynamic tools in the Gateway process, so these would list, read, write or
 // run commands in the Gateway Pod instead. Codex's native tools cover them in
 // the Harness, and the file-transfer tools reach its workspace through the node.
-// "terminal" types into shells running in the Gateway Pod, and "openclaw"
-// delegates Gateway configuration changes, which could drop this list.
+// "terminal" types into shells running in the Gateway Pod, and "portal" proxies
+// ports in it. The control-plane tools act on the Gateway itself and run with
+// the operator's admin scope on every operator chat: "openclaw" delegates
+// configuration changes, which could drop this list, "plugins" installs,
+// enables or disables plugins in the Gateway process, and "gateway" runs its
+// self-update. OCC owns the Gateway's plugins, configuration and version.
 const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
   "ls", "read", "write", "edit", "apply_patch",
   "exec", "process", "gateway_exec", "gateway_process",
-  "terminal", "openclaw",
+  "terminal", "portal", "openclaw", "plugins", "gateway",
 ];
 
 function excludeGatewayLocalCodexTools(config) {
@@ -2388,6 +2392,20 @@ function excludeGatewayLocalCodexTools(config) {
   }
   const overridden = triggers.enabled === undefined || triggers.enabled === false ? [] : ["cron.triggers.enabled"];
   triggers.enabled = false;
+  // The pre-compaction memory flush is a model run that gets OpenClaw's read and
+  // write tools despite the exclusions above, so it would read Gateway Pod files
+  // and write its memory to the Gateway's empty workspace, never the Harness.
+  let flush = config;
+  const flushPath = [];
+  for (const key of ["agents", "defaults", "compaction", "memoryFlush"]) {
+    flushPath.push(key);
+    flush = flush[key] ??= {};
+    if (!isPlainObject(flush)) {
+      throw new Error("The " + flushPath.join(".") + " setting must be an object.");
+    }
+  }
+  if (flush.enabled !== undefined && flush.enabled !== false) overridden.push("agents.defaults.compaction.memoryFlush.enabled");
+  flush.enabled = false;
   logOverriddenSettings([...overridden, ...pinCodexProviderTransport(config)]);
 }
 
