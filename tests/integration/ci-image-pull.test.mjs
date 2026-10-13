@@ -19,6 +19,8 @@ test("image pulls retry only registry and network blips", () => {
   for (const stderr of [
     "Error response from daemon: toomanyrequests: You have reached your pull rate limit.",
     "Error response from daemon: received unexpected HTTP status: 503 Service Unavailable",
+    // The reason phrase alone (an HTTP proxy refusing CONNECT with 503) still retries.
+    'Error response from daemon: Get "https://registry-1.docker.io/v2/": Service Unavailable',
     'Error response from daemon: Head "https://registry-1.docker.io/v2/otel/manifests/sha256:1f2c": 502 Bad Gateway',
     "error pulling image configuration: download failed after attempts=6: read tcp 10.1.0.4:443: read: connection reset by peer",
     'Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: TLS handshake timeout',
