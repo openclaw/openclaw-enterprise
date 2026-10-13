@@ -2516,71 +2516,225 @@ test("run stops a hung file at the lane deadline, names its test and starts noth
   await assert.rejects(readFile(marker), { code: "ENOENT" });
 });
 
-test("run starts no tests after a preparation that outlasted the lane deadline, and still cleans up", async (t) => {
+// Finding 1210: the lane deadline stopped only the test process. A preparation or cleanup that
+// never returned (it runs in the runner itself) still ran on to the job timeout with no results.
+// These fixtures hang forever, and their intervals keep the runner alive unless it gives up.
+const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
+
+function laneArgs(root, lane, statePath, resultsPath) {
+  return [
+    "run",
+    lane,
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ];
+}
+
+test("run gives up on a preparation still running at the lane deadline and names it", async (t) => {
   const root = await fixture(t);
-  const statePath = join(root, "state/slow-prepare.json");
-  const resultsPath = join(root, "results/slow-prepare.json");
-  const started = join(root, "state/test-started");
-  const cleaned = join(root, "state/cleaned-up");
+  const statePath = join(root, "state/hung-prepare.json");
+  const resultsPath = join(root, "results/hung-prepare.json");
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('hung.test.mjs')) {",
+      `    await ${hangForever};`,
+      "  }",
+      "  return {};",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["hung", "later"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      prepare: {
+        files: [
+          { path: "tests/integration/hung.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["prepare"] },
+  });
+
+  const deadline = Date.now() + 5_000;
+  const result = run(
+    root,
+    laneArgs(root, "prepare", statePath, resultsPath),
+    { CI_RUNNER_DEADLINE_MS: String(deadline) },
+    // Without a limit the preparation would hold the runner forever.
+    { timeout: 30_000 },
+  );
+
+  assert.equal(result.error, undefined, "the runner gave up on the preparation");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [hung, later] = summary.files;
+  assert.deepEqual(
+    hung.issues.map(({ code, file, step }) => ({ code, file, step })),
+    [{ code: "prepare-timeout", file: "tests/integration/hung.test.mjs", step: "prepare" }],
+  );
+  const { timeoutMs } = hung.issues[0];
+  assert(timeoutMs > 0 && timeoutMs <= 5_000, String(timeoutMs));
+  // Its tests never started. What the preparation made is left to the job's Cleanup lane step.
+  assert.equal(hung.nodeExitCode, null);
+  assert.equal(hung.counts.total, 0);
+  assert.equal(hung.cleanup, null);
+  // The file behind it starts nothing past the deadline.
+  assert.deepEqual(
+    later.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  assert.match(
+    result.stderr,
+    /run-tests: issue prepare-timeout tests\/integration\/hung\.test\.mjs: prepareFile did not finish within \d+ ms, cut to the lane deadline/,
+  );
+});
+
+test("run gives up on a hung cleanup after its allowance and starts no later file", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/hung-cleanup.json");
+  const resultsPath = join(root, "results/hung-cleanup.json");
+  const cleaned = join(root, "state/later-cleaned");
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
     [
       'import { writeFile } from "node:fs/promises";',
-      'import { setTimeout as delay } from "node:timers/promises";',
-      "export async function prepareFile() {",
-      "  await delay(2_500);",
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('hung.test.mjs')) {",
+      `    return { cleanup: () => ${hangForever} };`,
+      "  }",
       '  return { cleanup: () => writeFile(process.env.CI_RUNNER_CLEANUP_MARKER, "") };',
       "}",
       "",
     ].join("\n"),
   );
-  await writeFile(
-    join(root, "tests/integration/prepared.test.mjs"),
-    [
-      'import { writeFileSync } from "node:fs";',
-      'import test from "node:test";',
-      'test("would start past the deadline", () => writeFileSync(process.env.CI_RUNNER_MARKER, ""));',
-      "",
-    ].join("\n"),
-  );
+  for (const name of ["hung", "later"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
   await writeJson(join(root, "manifest.json"), {
     version: 1,
-    lanes: { prepared: { files: [{ path: "tests/integration/prepared.test.mjs" }] } },
-    groups: { ci: ["prepared"] },
+    lanes: {
+      cleanup: {
+        files: [
+          { path: "tests/integration/hung.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["cleanup"] },
   });
 
   const result = run(
     root,
+    laneArgs(root, "cleanup", statePath, resultsPath),
+    { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
+    { timeout: 30_000 },
+  );
+
+  assert.equal(result.error, undefined, "the runner gave up on the cleanup");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [hung, later] = summary.files;
+  // Its tests passed; only the cleanup failed it.
+  assert.equal(hung.counts.passed, 1);
+  assert.equal(hung.status, "failed");
+  assert.deepEqual(hung.cleanup, { status: "timeout", timeoutMs: 2000 });
+  assert.deepEqual(
+    hung.issues.map(({ code, step, message }) => ({ code, step, message })),
     [
-      "run",
-      "prepared",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      statePath,
-      "--results",
-      resultsPath,
+      {
+        code: "cleanup-timeout",
+        step: "cleanup",
+        message: "cleanup did not finish within 2000 ms: tests/integration/hung.test.mjs",
+      },
     ],
+  );
+  // The abandoned cleanup may still hold the CI state lock, so the next file never starts.
+  assert.deepEqual(
+    later.issues.map(({ code, file }) => ({ code, file })),
+    [{ code: "setup-abandoned", file: "tests/integration/later.test.mjs" }],
+  );
+  assert.equal(later.counts.total, 0);
+  await assert.rejects(readFile(cleaned), { code: "ENOENT" });
+});
+
+test("run ends the cleanups of files the deadline stopped together one allowance past it", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/hung-cleanups.json");
+  const resultsPath = join(root, "results/hung-cleanups.json");
+  const files = ["one", "two", "three", "four"].map((name) => `tests/integration/${name}.test.mjs`);
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `export async function prepareFile() {\n  return { cleanup: () => ${hangForever} };\n}\n`,
+  );
+  for (const file of files) {
+    await writeFile(
+      join(root, file),
+      `import test from "node:test";\ntest("hangs", () => ${hangForever});\n`,
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      together: {
+        fileConcurrency: 4,
+        parallelFiles: files,
+        files: files.map((path) => ({ path })),
+      },
+    },
+    groups: { ci: ["together"] },
+  });
+
+  const allowanceMs = 5_000;
+  const started = Date.now();
+  const deadline = started + 5_000;
+  const result = run(
+    root,
+    laneArgs(root, "together", statePath, resultsPath),
     {
-      CI_RUNNER_DEADLINE_MS: String(Date.now() + 1_000),
-      CI_RUNNER_MARKER: started,
-      CI_RUNNER_CLEANUP_MARKER: cleaned,
+      CI_RUNNER_DEADLINE_MS: String(deadline),
+      CI_RUNNER_CLEANUP_TIMEOUT_MS: String(allowanceMs),
+      CI_RUNNER_FILE_CONCURRENCY: "4",
     },
     { timeout: 60_000 },
   );
+  const ended = Date.now();
 
+  assert.equal(result.error, undefined, "the runner gave up on the cleanups");
   assert.equal(result.status, 1, result.stderr);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.deepEqual(
-    summary.issues.map((entry) => entry.code),
-    ["lane-deadline"],
+    summary.files.map((file) => [file.path, file.cleanup?.status]),
+    files.map((file) => [file, "timeout"]),
   );
-  assert.equal(summary.files[0].nodeExitCode, null);
-  assert.deepEqual(summary.files[0].cleanup, { status: "passed" });
-  await readFile(cleaned);
-  await assert.rejects(readFile(started), { code: "ENOENT" });
+  // Cleanups run one at a time. One allowance each would end 20 s past the deadline; the window
+  // they share closes one allowance past it, so the queued ones never start.
+  const timeouts = summary.issues.filter((entry) => entry.code === "cleanup-timeout");
+  assert.equal(timeouts.length, files.length);
+  assert(
+    timeouts.some((entry) => /window after the lane deadline closed/.test(entry.message)),
+    JSON.stringify(timeouts),
+  );
+  // The test processes get 5 s to report after the deadline's SIGTERM; then the window closes.
+  assert(ended - deadline < allowanceMs + 8_000, `ended ${ended - deadline} ms past the deadline`);
 });
 
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {

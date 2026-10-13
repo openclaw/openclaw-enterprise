@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -41,24 +41,22 @@ export function fixturePreparationMetrics(stderr) {
   });
 }
 
-// The CLI watchdogs catch a preparation that never ends: one whose own timeouts failed
-// to stop a hung command. The asynchronous one is generous because it only fires on a
-// hang, and concurrent cases on a loaded host stretch a passing preparation (up to about
-// 40 s at four copies of the k3d file on four CPUs). The synchronous one runs a single
-// preparation at a time and keeps 30 s, so a file of sequential hung cases still fails
-// within its CI file timeout. A hung fake command exits on its own only after both have
+// The CLI watchdog catches a preparation that never ends: one whose own timeouts failed
+// to stop a hung command. It is generous because it only fires on a hang, and concurrent
+// cases on a loaded host stretch a passing preparation (up to about 40 s at four copies
+// of the k3d file on four CPUs). A hung fake command exits on its own only after it has
 // fired, so a preparation that waits for it still fails on the watchdog.
-const asyncWatchdogMs = 90_000;
-const syncWatchdogMs = 30_000;
-const hungCommandExitMs = asyncWatchdogMs + 30_000;
+const watchdogMs = 90_000;
+const hungCommandExitMs = watchdogMs + 30_000;
 
-// spawnSync's result shape and watchdog, asynchronously: it resolves once the child has
-// exited and closed its output. A child still running after the watchdog gets SIGTERM and
-// an ETIMEDOUT error, and its output pipes are closed, as spawnSync does. Unlike
-// spawnSync, output is not capped at 1 MiB (these scripts write a few kilobytes).
-function runAsync(env, script, args) {
+// spawnSync's result shape and timeout, asynchronously, so concurrent tests overlap: it
+// resolves once the child has exited and closed its output. A child still running after
+// the timeout gets SIGTERM and an ETIMEDOUT error, and its output pipes are closed, as
+// spawnSync does. Unlike spawnSync, output is not capped at 1 MiB (these children write
+// a few kilobytes).
+export function spawnResult(command, args, { env, timeout = watchdogMs } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
+    const child = spawn(command, args, {
       cwd: repositoryRoot,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -70,11 +68,11 @@ function runAsync(env, script, args) {
       child[stream].on("data", (chunk) => (output[stream] += chunk));
     }
     const timer = setTimeout(() => {
-      error = Object.assign(new Error(`${script} ETIMEDOUT`), { code: "ETIMEDOUT" });
+      error = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
       child.kill("SIGTERM");
       child.stdout.destroy();
       child.stderr.destroy();
-    }, asyncWatchdogMs);
+    }, timeout);
     child.on("error", (spawnError) => (error ??= spawnError));
     child.on("close", (status, signal) => {
       clearTimeout(timer);
@@ -163,7 +161,7 @@ function finish(stdout = "") {
   process.exit(0);
 }
 // An external command that does not answer; preparation must time it out. It exits
-// on its own after the CLI watchdogs, so a regression or a killed preparation cannot
+// on its own after the CLI watchdog, so a regression or a killed preparation cannot
 // leave it running.
 async function hang() {
   setTimeout(() => process.exit(124), ${hungCommandExitMs});
@@ -770,20 +768,12 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
     ...extraEnv,
   };
   const run = (script, args) =>
-    spawnSync(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      timeout: syncWatchdogMs,
-      env,
-    });
+    spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], { env });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
   return {
     statePath,
     githubEnv,
     prepare: () => run("prepare.mjs", prepareArgs),
-    // The same results without blocking the event loop, so concurrent tests overlap.
-    prepareAsync: () => runAsync(env, "prepare.mjs", prepareArgs),
-    cleanupAsync: () => runAsync(env, "cleanup.mjs", ["--state", statePath]),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>

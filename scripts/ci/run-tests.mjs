@@ -454,6 +454,79 @@ function laneDeadlineIssue(relativePath) {
   );
 }
 
+// prepareFile and a file's cleanup run in this process, where nothing can stop them, so a hung
+// one ran on to the job timeout with no results (finding 1210). Each now has a limit:
+// preparation the time left before the lane deadline, cleanup a fixed allowance that still
+// applies past the deadline. A step past its limit is abandoned: its file records a
+// prepare-timeout or cleanup-timeout, the setup queue moves on, and the runner exits once its
+// results are written instead of waiting for the step. The job's unconditional Cleanup lane step
+// removes what the step left in the lane state.
+function cleanupAllowanceMs() {
+  const value = Number.parseInt(process.env.CI_RUNNER_CLEANUP_TIMEOUT_MS ?? "", 10);
+  // A cleanup's limit includes its wait for the CI state lock, which test processes also take
+  // to create their databases.
+  return Number.isFinite(value) && value > 0 ? value : 120_000;
+}
+
+function prepareLimitMs() {
+  const deadline = laneDeadlineMs();
+  return deadline === undefined ? undefined : deadline - Date.now();
+}
+
+// Cleanups run one at a time. All of them end by one window past the lane deadline (60 s, or
+// the allowance if shorter), so the cleanups of files the deadline stopped together cannot queue
+// one allowance each past the job timeout.
+function cleanupLimitMs() {
+  const allowance = cleanupAllowanceMs();
+  const deadline = laneDeadlineMs();
+  return deadline === undefined
+    ? allowance
+    : Math.min(allowance, deadline + Math.min(allowance, 60_000) - Date.now());
+}
+
+// Timers can fire a few milliseconds before Date.now() reaches their end, so a remaining
+// limit this short counts as none.
+const minStepMs = 1_000;
+
+let abandonedSteps = 0;
+
+class StepTimeoutError extends Error {
+  constructor(limitMs, started) {
+    super(started ? `step exceeded ${limitMs} ms` : "no time was left to start the step");
+    this.name = "StepTimeoutError";
+    this.limitMs = limitMs;
+    this.started = started;
+  }
+}
+
+// Runs step() for at most limitMs (no limit when undefined); it never starts without time left.
+function withinLimit(step, limitMs) {
+  if (limitMs === undefined) {
+    return step();
+  }
+  if (limitMs < minStepMs) {
+    return Promise.reject(new StepTimeoutError(0, false));
+  }
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      abandonedSteps += 1;
+      reject(new StepTimeoutError(limitMs, true));
+    }, limitMs);
+    Promise.resolve()
+      .then(step)
+      .then(
+        (value) => {
+          clearTimeout(timer);
+          resolvePromise(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
 // The file's timeout: the per-file limit, cut to what is left before the lane deadline.
 function fileTimeout() {
   const limitMs = testTimeoutMs();
@@ -928,15 +1001,32 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     return emptyFileResult(relativePath, issues);
   }
 
+  // An abandoned preparation or cleanup most likely still holds the CI state lock. This file's
+  // preparation would wait for it until the deadline and then report a prepare-timeout of its own.
+  if (abandonedSteps > 0) {
+    issues.push(
+      issue(
+        "setup-abandoned",
+        `not started: an earlier file's preparation or cleanup did not finish: ${relativePath}`,
+        { file: relativePath },
+      ),
+    );
+    return emptyFileResult(relativePath, issues);
+  }
+
   if (prepareFile) {
     try {
       const result =
         (await setup(() =>
-          prepareFile({
-            lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
-            file,
-            statePath,
-          }),
+          withinLimit(
+            () =>
+              prepareFile({
+                lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
+                file,
+                statePath,
+              }),
+            prepareLimitMs(),
+          ),
         )) ?? {};
       prepared.env = validatePreparedEnv(result.env);
       prepared.cleanup = result.cleanup ?? null;
@@ -944,6 +1034,19 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         throw new Error("prepareFile cleanup must be a function");
       }
     } catch (error) {
+      if (error instanceof StepTimeoutError) {
+        // Its turn in the setup queue came after the deadline, or it ran into the deadline.
+        issues.push(
+          error.started
+            ? issue(
+                "prepare-timeout",
+                `prepareFile did not finish within ${error.limitMs} ms, cut to the lane deadline: ${relativePath}`,
+                { file: relativePath, step: "prepare", timeoutMs: error.limitMs },
+              )
+            : laneDeadlineIssue(relativePath),
+        );
+        return emptyFileResult(relativePath, issues);
+      }
       const sanitized = sanitizePreparationError(error);
       issues.push(
         issue("prepare-failed", `prepareFile failed for ${relativePath}`, {
@@ -959,7 +1062,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     }
   }
 
-  // Preparation can outlast the deadline too; the cleanup below still runs.
+  // A preparation that ended just as its limit ran out; the cleanup below still runs.
   if (laneDeadlinePassed()) {
     issues.push(laneDeadlineIssue(relativePath));
   }
@@ -1064,10 +1167,21 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     await setup(async () => agentActivity?.finish({ env }));
     if (prepared.cleanup) {
       try {
-        await setup(prepared.cleanup);
+        await setup(() => withinLimit(prepared.cleanup, cleanupLimitMs()));
         cleanupResult = { status: "passed" };
       } catch (error) {
-        if (jobCancelling()) {
+        if (error instanceof StepTimeoutError) {
+          cleanupResult = { status: "timeout", timeoutMs: error.limitMs };
+          issues.push(
+            issue(
+              "cleanup-timeout",
+              error.started
+                ? `cleanup did not finish within ${error.limitMs} ms: ${relativePath}`
+                : `the cleanup window after the lane deadline closed before cleanup started: ${relativePath}`,
+              { file: relativePath, step: "cleanup", timeoutMs: error.limitMs },
+            ),
+          );
+        } else if (jobCancelling()) {
           // Keep the sanitized error: a parent that died for another reason (OOM-killed step
           // shell, closed terminal) also reads as a cancellation.
           cleanupResult = { status: "cancelled", error: sanitizeError(error) };
@@ -1595,4 +1709,9 @@ try {
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;
+}
+// An abandoned preparation or cleanup can keep this process alive (a child it waits for, a
+// timer); the results are written, so stop here.
+if (abandonedSteps > 0) {
+  process.exit();
 }
