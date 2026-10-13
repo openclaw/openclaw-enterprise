@@ -2223,6 +2223,19 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       { skills: { entries: { none: { env: { INDEX: `HTTPS:u:${sentinel}@pypi` } } } } },
       "/skills/entries/none/env/INDEX",
     ],
+    // A reference in the scheme renders it: `https${X:-}:` reads as `https:`.
+    [
+      { skills: { entries: { ref: { env: { INDEX: `https\${X:-}:u:${sentinel}@pypi` } } } } },
+      "/skills/entries/ref/env/INDEX",
+    ],
+    [
+      {
+        skills: {
+          entries: { list: { env: { GOPROXY: `ok.example,\${P:-https}:u:${sentinel}@h` } } },
+        },
+      },
+      "/skills/entries/list/env/GOPROXY",
+    ],
   ];
   for (const [values, field] of refused) {
     await t.test(`refuses ${field}`, async () => {
@@ -2311,6 +2324,9 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     ARTIFACT: "s3://bucket/key@v1",
     JDBC: "jdbc:postgresql://db.example.test/app?user=ops@example.test",
     PLAIN: "use https: everywhere, ask ops@example.test",
+    NEWS: "news:ops@example.test",
+    WINDOWS_ADMIN: "Windows:admin@example.test",
+    ARGS: "--proxy=http://proxy.example.test:3128 --user=ops@example.test",
     NO_PROXY: "localhost,.svc,10.0.0.0/8",
     LOG_LEVEL: "debug",
   };

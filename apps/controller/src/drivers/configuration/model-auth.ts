@@ -26,6 +26,90 @@ const urlCredentialMessage = (path: string): string =>
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
+// Each URL `text` may hold, from its scheme to the end of its authority, where `\0` marks an
+// unfilled Preset variable. URL parsers (WHATWG's, Python's) drop tabs and newlines, and read
+// userinfo after a special scheme with one slash or none (`https:u:pw@host`). A candidate is a
+// colon with two slashes after it, or one after a scheme that ends in `http(s)`, `ws(s)` or
+// `ftp` or holds a variable or `${VAR}` reference (each also between the colon and the
+// slashes), and with no space after it. An authority also ends at a space, which no parser
+// reads there (`--proxy=http://p:3128 --user=me@host`). A candidate inside the authority of one
+// already returned is part of it, so each character is read a bounded number of times.
+function environmentUrls(value: string): string[] {
+  const text = value.replaceAll(/[\t\n\r]/g, "");
+  // Each `${VAR}` or `${VAR:-fallback}` reference, by its start and by its end.
+  const after = new Map<number, number>();
+  const before = new Map<number, number>();
+  const inside = new Int32Array(text.length + 1).fill(-1);
+  for (const { index, 0: reference } of text.matchAll(/\$\{[^{}$]*\}/g)) {
+    after.set(index, index + reference.length);
+    before.set(index + reference.length, index);
+    inside.fill(index, index + 1, index + reference.length);
+  }
+  const skip = (from: number, slash: boolean): [number, number] => {
+    let index = from;
+    let slashes = 0;
+    for (;;) {
+      const end = after.get(index);
+      if (end !== undefined) {
+        index = end;
+      } else if (text[index] === "\0") {
+        index += 1;
+      } else if (slash && (text[index] === "/" || text[index] === "\\")) {
+        index += 1;
+        slashes += 1;
+      } else {
+        return [index, slashes];
+      }
+    }
+  };
+  const urls: string[] = [];
+  let covered = { from: 0, to: 0 };
+  for (const { index: colon } of text.matchAll(/:/g)) {
+    let start = colon;
+    for (;;) {
+      const reference = before.get(start);
+      if (reference !== undefined) {
+        start = reference;
+      } else if (start > 0 && /[\w+.\-\0]/.test(text[start - 1] ?? "")) {
+        start -= 1;
+      } else {
+        break;
+      }
+    }
+    const scheme = text.slice(start, colon);
+    const variable = /\0|\$\{/.test(scheme);
+    const special = /(?:^|[^A-Za-z0-9+.])(?:https?|wss?|ftp)$/i.test(scheme);
+    const [authority, slashes] = skip(colon + 1, true);
+    if (slashes < 2 && (!(variable || special) || text[colon + 1] === " ")) {
+      continue;
+    }
+    // Inside the authority of a URL already returned, and not inside a reference whose fallback
+    // could end that authority, this candidate's authority is a suffix of that one.
+    const reference = inside[colon] ?? -1;
+    if (
+      colon >= covered.from &&
+      authority < covered.to &&
+      (reference === -1 || !/[ /?#\\]/.test(text.slice(reference, after.get(reference))))
+    ) {
+      continue;
+    }
+    let end = authority;
+    while (end < text.length) {
+      const skipped = after.get(end);
+      if (skipped !== undefined) {
+        end = skipped;
+      } else if (/[ /?#]/.test(text[end] ?? "") || (text[end] === "\\" && (variable || special))) {
+        break;
+      } else {
+        end += 1;
+      }
+    }
+    covered = { from: authority, to: end };
+    urls.push(text.slice(start, end + 1));
+  }
+  return urls;
+}
+
 // The provider headers refused as literals before the 2026-10-12 notice.
 const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
 
@@ -94,13 +178,10 @@ export function validateModelCredentialReferences(
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
     }
   };
-  // Any environment value that holds `scheme://` is checked from the start of each such scheme,
-  // whatever its name (finding 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`,
-  // `npm_config_registry`, `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as
-  // `GOPROXY` or `PIP_EXTRA_INDEX_URL` holds several. A proxy variable is also read from its
-  // start, without a scheme as http. On a Preset save, a variable may sit anywhere in the scheme
-  // or between `:` and `//`, and so may a `${VAR}` reference. URL parsers (WHATWG, Python's)
-  // drop tabs and newlines, and read an http(s), ws(s) or ftp URL with fewer slashes, or none.
+  // Every URL an environment value holds is checked, whatever the variable's name (finding
+  // 1262): pip, npm, git and Go send the userinfo in `PIP_INDEX_URL`, `npm_config_registry`,
+  // `GIT_CONFIG_VALUE_0` or `GOPROXY` as Basic auth, and a list such as `GOPROXY` holds several.
+  // A proxy variable is also read from its start, without a scheme as http.
   const refuseEnvironmentUserinfo = (path: SettingPath, value: unknown, proxy: boolean): void => {
     if (typeof value !== "string") {
       return;
@@ -109,16 +190,8 @@ export function validateModelCredentialReferences(
       refuseUrlUserinfo(path, value, true);
     }
     // `\0` stands for each unfilled variable: a process environment cannot hold one.
-    const text = (options.unresolved?.(path) ?? [value]).join("\0").replaceAll(/[\t\n\r]/g, "");
-    const gap = String.raw`(?:\0|\$\{[^{}$]*\})*`;
-    const schemes = new RegExp(String.raw`:${gap}[/\\]${gap}[/\\]|(?:https?|wss?|ftp):(?! )`, "gi");
-    for (const { index, 0: match } of text.matchAll(schemes)) {
-      let start = match.startsWith(":") ? index : index + match.length - 1;
-      // Back over the scheme, and any variable or `${VAR}` reference in it.
-      while (start > 0 && /[\w+.\-${}\0]/.test(text[start - 1] ?? "")) {
-        start -= 1;
-      }
-      if (urlHoldsUserinfo(value, text.slice(start).split("\0"))) {
+    for (const url of environmentUrls((options.unresolved?.(path) ?? [value]).join("\0"))) {
+      if (urlHoldsUserinfo(value, url.split("\0"))) {
         throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
       }
     }
