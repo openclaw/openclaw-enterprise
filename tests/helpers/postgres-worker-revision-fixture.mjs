@@ -54,8 +54,8 @@ function trackLockOrder(unit, violations) {
 // Node's test timeout does not cover after hooks, so a teardown step that never returned hung
 // its file until the CI job timeout, naming nothing (finding 1209). Each step now has a limit.
 // A step past it is left running and fails the hook naming the step, and the steps after it
-// still run: the database drop (WITH (FORCE)) ends the connections a stuck worker or pool still
-// holds, so the file can exit.
+// still run: the database drop (WITH (FORCE)) ends the sessions a stuck worker or pool still
+// holds.
 const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
