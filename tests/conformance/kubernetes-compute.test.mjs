@@ -6020,6 +6020,12 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     withCodexConfig(null),
     { ...withCodexConfig({}), cron: { enabled: true, triggers: { enabled: true } } },
     { ...withCodexConfig({}), cron: null },
+    {
+      ...withCodexConfig({}),
+      agents: {
+        defaults: { ...base.agents.defaults, compaction: { memoryFlush: { enabled: true } } },
+      },
+    },
     // Without the plugin entry the entrypoint leaves cron alone.
     { ...base, cron: "off" },
     {
@@ -6044,6 +6050,20 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     [withCodexConfig("on"), "plugins.entries.codex.config must be an object"],
     [{ ...withCodexConfig({}), cron: "off" }, "cron must be an object"],
     [{ ...withCodexConfig({}), cron: { triggers: true } }, "cron.triggers must be an object"],
+    [
+      {
+        ...withCodexConfig({}),
+        agents: { defaults: { ...base.agents.defaults, compaction: "off" } },
+      },
+      "agents.defaults.compaction must be an object",
+    ],
+    [
+      {
+        ...withCodexConfig({}),
+        agents: { defaults: { ...base.agents.defaults, compaction: { memoryFlush: true } } },
+      },
+      "agents.defaults.compaction.memoryFlush must be an object",
+    ],
     [{ ...base, models: "none" }, "models must be an object"],
     [{ ...base, models: { providers: [] } }, "models.providers must be an object"],
     [
