@@ -104,6 +104,33 @@ test(
         pod(original, "api").containers[0].env.some(({ name }) => name === "OCC_GATEWAY_CA_PATH"),
         false,
       );
+      // Init errors name the operator's Secret and key instead of the fixed mount paths.
+      assert.deepEqual(init.env, [
+        {
+          name: "OCC_CA_SOURCES",
+          value: JSON.stringify({
+            ...(hasGatewayCa && {
+              "/etc/openclaw/gateway-ca/ca.crt":
+                gateway === externalGatewayCa
+                  ? 'gatewayRouting.caSecretName Secret "gateway-ca" key "gateway.pem"'
+                  : `chart-managed Gateway root Secret "${
+                      api.volumes.find(({ name }) => name === "gateway-ca").secret.secretName
+                    }" key "tls.crt"`,
+            }),
+            "/etc/openclaw/oidc-ca/ca.crt":
+              'auth.oidc.caSecretName Secret "idp-ca" key "roots.pem"',
+          }),
+        },
+      ]);
+      assert.deepEqual(
+        container.env.filter(({ name }) => name === "OCC_DATABASE_CA_SOURCE"),
+        [
+          {
+            name: "OCC_DATABASE_CA_SOURCE",
+            value: 'database.caSecretName Secret "database-ca" key "ca.pem"',
+          },
+        ],
+      );
       assert.deepEqual(init.args.slice(3), [
         "/etc/openclaw/api-extra-ca/ca.crt",
         "/etc/openclaw/oidc-ca/ca.crt",
@@ -238,7 +265,7 @@ async function certificates(directory, name, hostname) {
     "rsa:2048",
     "-nodes",
     "-subj",
-    `/CN=${hostname}`,
+    `/O=Example Corp/CN=${hostname}`,
     "-keyout",
     file("leaf.key"),
     "-out",
@@ -297,10 +324,20 @@ async function mountedPod(directory, api, secrets) {
   };
   const init = api.initContainers.find(({ name }) => name === "assemble-api-ca");
   const args = init.args.map((arg) => (arg.startsWith("/") ? resolve(init, arg) : arg));
+  // The rendered source names are keyed by mount path; map them to the local files.
+  const sources = Object.fromEntries(
+    Object.entries(JSON.parse(init.env.find(({ name }) => name === "OCC_CA_SOURCES").value)).map(
+      ([path, source]) => [resolve(init, path), source],
+    ),
+  );
   const extraCa = api.containers[0].env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS").value;
   return {
     resolve: (path) => resolve(api.containers[0], path),
-    assemble: () => execute(process.execPath, args, { env: {}, timeout: 10000 }),
+    assemble: () =>
+      execute(process.execPath, args, {
+        env: { OCC_CA_SOURCES: JSON.stringify(sources) },
+        timeout: 10000,
+      }),
     output: resolve(api.containers[0], extraCa),
     oidcInput: resolve(init, "/etc/openclaw/oidc-ca/ca.crt"),
     gatewayInput: resolve(init, "/etc/openclaw/gateway-ca/ca.crt"),
@@ -480,31 +517,63 @@ test(
     await consume(true, replacementPort);
     await consume(false);
 
-    for (const [name, content] of [
-      ["empty", ""],
-      ["whitespace", " \n"],
-      ["malformed", "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----"],
-      ["private key", idp["ca.key"]],
-      ["mixed key", idp["ca.pem"] + idp["ca.key"]],
-      ["trailing junk", idp["ca.pem"] + "junk"],
-      ["leaf certificate", idp["leaf.pem"]],
-      ["oversized", " ".repeat(1024 * 1024 + 1)],
+    const idpSource = 'auth.oidc.caSecretName Secret "idp-ca" key "roots.pem"';
+    // One line that names the operator's Secret and key, with no stack or mount path.
+    const refusedWith = async (pattern) => {
+      await assert.rejects(wiring.assemble(), (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /^assemble-api-ca: [^\n]+\n$/);
+        assert.match(error.stderr, pattern);
+        assert.equal(error.stderr.includes("/etc/openclaw"), false);
+        assert.equal(error.stderr.includes(directory), false);
+        assert.doesNotMatch(error.stderr, /\n\s+at |Error:|node:/);
+        return true;
+      });
+      await assert.rejects(readFile(wiring.output), { code: "ENOENT" });
+    };
+    const leafSubject = new X509Certificate(idp["leaf.pem"]).subject.replace(/\n/g, ", ");
+    // A subject value with a space stays whole: one comma between fields, none inside a value.
+    assert.match(leafSubject, /^O=Example Corp, CN=/);
+    for (const [name, content, problem] of [
+      ["empty", "", "the value is empty"],
+      ["whitespace", " \n", "the value is empty"],
+      [
+        "malformed",
+        "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+        "certificate 1 of 1 has invalid base64",
+      ],
+      [
+        "unparsable",
+        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----",
+        "certificate 1 of 1 is not a valid X.509 certificate",
+      ],
+      ["DER", new X509Certificate(idp["ca.pem"]).raw, "the value is not PEM"],
+      ["private key", idp["ca.key"], "the value contains a private key"],
+      ["mixed key", idp["ca.pem"] + idp["ca.key"], "the value contains a private key"],
+      ["trailing junk", idp["ca.pem"] + "junk", "the value has text outside its PEM"],
+      [
+        "leaf certificate",
+        idp["ca.pem"] + idp["leaf.pem"],
+        `certificate 2 of 2 (${leafSubject}) is not a CA certificate`,
+      ],
+      ["oversized", " ".repeat(1024 * 1024 + 1), "the value is larger than 1 MiB"],
     ]) {
       await t.test(`init refuses ${name} instead of leaving a stale bundle`, async () => {
         await writeFile(wiring.oidcInput, content);
-        await assert.rejects(wiring.assemble(), (error) => error.code === 1);
-        await assert.rejects(readFile(wiring.output), { code: "ENOENT" });
+        await refusedWith(
+          new RegExp(`^assemble-api-ca: ${RegExp.escape(`${idpSource}: ${problem}`)}`),
+        );
       });
     }
     await rm(wiring.oidcInput);
-    await assert.rejects(
-      wiring.assemble(),
-      (error) => error.code === 1 && /ENOENT/.test(error.stderr),
+    await refusedWith(
+      new RegExp(`^assemble-api-ca: ${RegExp.escape(idpSource)}: not found in the Pod`),
     );
     await writeFile(wiring.oidcInput, idp["ca.pem"]);
     await writeFile(wiring.gatewayInput, "broken gateway root");
-    await assert.rejects(wiring.assemble(), (error) => error.code === 1);
-    await assert.rejects(readFile(wiring.output), { code: "ENOENT" });
+    await refusedWith(
+      /^assemble-api-ca: gatewayRouting\.caSecretName Secret "gateway-ca" key "gateway\.pem": the value is not PEM/,
+    );
   },
 );
 
@@ -534,7 +603,11 @@ test(
     const reference = container.env.find(({ name }) => name === "OCC_DATABASE_URL").valueFrom
       .secretKeyRef;
     assert.deepEqual(reference, { name: "occ-database", key: "application-url" });
-    assert.equal(api.initContainers[0].env, undefined);
+    // The init container carries only public names, never a credential reference.
+    assert.deepEqual(
+      api.initContainers[0].env.map(({ name, valueFrom }) => [name, valueFrom]),
+      [["OCC_CA_SOURCES", undefined]],
+    );
     const caPath = wiring.resolve("/etc/openclaw/database-ca/ca.pem");
     let accepted = 0;
     const sockets = new Set();
@@ -575,6 +648,9 @@ test(
         env: {
           NODE_EXTRA_CA_CERTS: wiring.output,
           [container.env.find(({ name }) => name === "OCC_DATABASE_URL").name]: url,
+          OCC_DATABASE_CA_SOURCE: container.env.find(
+            ({ name }) => name === "OCC_DATABASE_CA_SOURCE",
+          ).value,
           OCC_DATABASE_AUTH: authMode,
           // Construction only; the server never requests authentication or a token.
           AZURE_CLIENT_ID: "synthetic-client",
@@ -673,17 +749,37 @@ test(
     );
     assert.match(unguarded.stdout, /^entrypoint\n\{"code":"ERR_TLS_CERT_ALTNAME_INVALID"\}\n$/);
     assert.equal(ipHandshakes, 0, "the unguarded client must not trust an IP host as localhost");
-    for (const material of [
-      "",
-      "not a certificate",
-      database["leaf.pem"],
-      database["ca.pem"] + database["ca.key"],
+    // CA material problems name the operator's database CA Secret and key on one line.
+    const databaseSource = 'database.caSecretName Secret "database-ca" key "ca.pem"';
+    for (const [material, problem] of [
+      ["", "the value is empty"],
+      ["not a certificate", "the value must hold only PEM CA certificates"],
+      [
+        database["leaf.pem"],
+        `certificate 1 of 1 (${new X509Certificate(database["leaf.pem"]).subject.replace(/\n/g, ", ")}) is not a CA certificate`,
+      ],
+      [database["ca.pem"] + database["ca.key"], "the value must hold only PEM CA certificates"],
+      [null, "not found in the Pod"],
     ]) {
-      await writeFile(caPath, material);
-      await refused(connection(selected));
+      if (material === null) {
+        await rm(caPath);
+      } else {
+        await writeFile(caPath, material);
+      }
+      await assert.rejects(consume(connection(selected)), (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, "", "the API entrypoint must not execute");
+        assert.ok(
+          error.stderr.startsWith(`check-api-database-ca: ${databaseSource}: ${problem}`),
+          error.stderr,
+        );
+        assert.match(error.stderr, /^[^\n]+\n$/);
+        for (const secret of ["synthetic-secret", "synthetic-user", "/etc/openclaw", directory]) {
+          assert.equal(error.stderr.includes(secret), false);
+        }
+        return true;
+      });
     }
-    await rm(caPath);
-    await refused(connection(selected));
     const output = await readFile(wiring.output, "utf8");
     assert.equal(output.includes("PRIVATE KEY"), false);
     assert.equal(output.includes("synthetic-secret"), false);
