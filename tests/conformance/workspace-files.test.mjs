@@ -157,9 +157,14 @@ async function createAgent(fixture, namespace, name) {
   return { agent: created.payload.data, revision: deployed.payload.data };
 }
 
-// A workspace file PUT from the public origin.
-function put(app, path, body, headers = {}) {
-  return request(app, path, { method: "PUT", headers: { origin: publicOrigin, ...headers }, body });
+// A workspace file PUT from the public origin, with any other request options.
+function put(app, path, body, { headers = {}, ...options } = {}) {
+  return request(app, path, {
+    ...options,
+    method: "PUT",
+    headers: { origin: publicOrigin, ...headers },
+    body,
+  });
 }
 
 function fileAudits(fixture) {
@@ -265,19 +270,21 @@ test("Agent workspace file routes enforce read and operate permissions separatel
       grant.namespaceId = namespace.id;
     }
   }
-  const reader = fixture.createApp(fixture.tenantAReader);
+  const session = fixture.session(fixture.tenantAReader);
 
   const readable = await request(
-    reader,
+    fixture.app,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`,
+    { session },
   );
   assert.equal(readable.response.status, 200);
   assert.deepEqual(readable.payload.data, { name: "AGENTS.md", content: "readable\n" });
 
   const denied = await put(
-    reader,
+    fixture.app,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`,
     { content: "cannot write\n" },
+    { session },
   );
   assert.equal(denied.response.status, 403);
   assert.equal(denied.payload.error.code, "FORBIDDEN");
@@ -316,7 +323,7 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
     fixture.app,
     `${path}/USER.md`,
     { content: "blocked\n" },
-    { "sec-fetch-site": "cross-site" },
+    { headers: { "sec-fetch-site": "cross-site" } },
   );
   assert.equal(crossSite.response.status, 403);
   assert.equal(crossSite.payload.error.code, "FORBIDDEN");
@@ -536,7 +543,7 @@ test("Agent workspace file requests are bounded before and during provider acces
         throw new Error("not used");
       },
     },
-    workspaceFileRequestTimeoutMs: 5,
+    workspaceFileRequestTimeoutMs: 20,
   });
   const preNamespace = await createNamespace(preAccess, "Pre-access deadline tenant");
   const preAgent = await createAgent(preAccess, preNamespace, "Pre-access deadline Agent");
@@ -571,7 +578,7 @@ test("Agent workspace file requests are bounded before and during provider acces
         await new Promise(() => {});
       },
     },
-    workspaceFileRequestTimeoutMs: 5,
+    workspaceFileRequestTimeoutMs: 20,
   });
   const providerNamespace = await createNamespace(providerAccess, "Provider deadline tenant");
   const providerAgent = await createAgent(
