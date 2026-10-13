@@ -519,7 +519,7 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
         Object.keys(value).length === 5 &&
         isNonEmptyString(value.credentialGatewayId) &&
         isNonEmptyString(value.sourceType) &&
-        value.loginMode === "api_key"
+        (value.loginMode === "api_key" || value.loginMode === "codex_pat")
       );
     }
     const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });

@@ -50,7 +50,13 @@ SECRET_REF="$(./bin/occ secret create --file model-secret.json -o json | jq -c .
 rm model-secret.json
 ```
 
-Register the Secret as an `openai` credential source:
+For a Codex personal access token, including a service-account token, save that
+token as the Secret above and register `type: "codex-pat"` with
+`secrets: {access_token: $ref}` in the command below. Select dedicated Codex;
+OpenShell keeps the real token outside the Harness. The [Driver reference](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+defines its permitted endpoints and authentication limits.
+
+Register an API-key Secret as an `openai` credential source:
 
 ```bash
 jq -n --argjson ref "$SECRET_REF" \

@@ -409,6 +409,14 @@
       "tag": "0051_credential_withdrawal_requester",
       "breakpoints": true,
       "sha256": "1fa4bfbbedbfd7347baeb274e9c233d9d40c4db349f35f789ee57f95480c247c"
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1787000000054,
+      "tag": "0054_credential_source_pat",
+      "breakpoints": true,
+      "sha256": "02ef4ffbdd21bb1c5e66c84c1c3dfe04c48f1936e18bab9c2de81c8ffe3c8d9d"
     }
   ],
   "initialSchemaStates": {
@@ -446,7 +454,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "eb024f6c9697e8796d9633de0400495f41a2ad2378a2d8d6512feb7b99db9e73",
+    "completed": "e7e776c2ad2cf401375f231d36fe3709557d4bc6f454f733fb80e81b797d058c",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",

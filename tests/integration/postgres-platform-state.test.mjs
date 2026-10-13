@@ -784,6 +784,26 @@ test(
       import("../../packages/iam/src/index.ts"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
+    // The database is authoritative for admitted credential-source login modes. PAT
+    // revisions must persist; unknown modes and secret bytes must still fail validation.
+    const sourceSnapshot = {
+      method: "credential_source",
+      sourceId: `cs_${randomUUID()}`,
+      credentialGatewayId: "credential-gateway",
+      sourceType: "codex-pat",
+      loginMode: "codex_pat",
+    };
+    for (const [snapshot, expected] of [
+      [sourceSnapshot, true],
+      [{ ...sourceSnapshot, loginMode: "unsupported" }, false],
+      [{ ...sourceSnapshot, accessToken: "synthetic-forbidden-value" }, false],
+    ]) {
+      const result = await pool.query(
+        "SELECT occ.harness_auth_is_valid($1::jsonb, $2, true) AS valid",
+        [JSON.stringify(snapshot), `ns_${randomUUID()}`],
+      );
+      assert.equal(result.rows[0].valid, expected);
+    }
     context.after(() => pool.end());
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();

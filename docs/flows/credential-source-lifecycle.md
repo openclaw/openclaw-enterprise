@@ -8,10 +8,8 @@ last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 
 ## Overview
 
-An authorized caller registers a Namespace Secret with the selected Credential
-Gateway, binds the resulting credential source to an Agent, deploys it, can
-update its value or withdraw it from one running Agent, and later deletes the
-source. The API copies the Secret value into the gateway at registration and
+An authorized caller registers a Namespace Secret with the Credential Gateway,
+binds its source to an Agent, deploys, updates or withdraws it, and deletes it. The API copies the Secret value into the gateway at registration and
 again on each update; OCC stores only metadata and Secret references. Admission
 freezes the source identity in the AgentRevision, and the worker hands the live
 source record to Kubernetes Compute. This flow stops when Compute receives the
@@ -153,7 +151,7 @@ declare `harnessAuth`. The frozen snapshot is `{ method, sourceId,
 credentialGatewayId, sourceType, loginMode }`. `admittedCredentialSourceType`
 requires a selected Sandbox, and Compute `validateHarnessAuth` requires
 a dedicated Codex or native OpenClaw Harness, the paired Sandbox and gateway,
-and an `openai`/`api_key` type. Compute renders no model Secret for either
+and an `openai`/`api_key` type, or `codex-pat`/`codex_pat` for dedicated Codex. Compute renders no model Secret for either
 Harness and passes the resolved source to Sandbox provisioning.
 `admitCredentialSources` refuses a list without a selected Sandbox Driver
 (`409` with its message), rechecks the caller's binding grants, then authorizes
@@ -289,7 +287,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   source (its placeholder stops reaching an echo service), then the model
   source (the next model turn fails).
 - `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
-  registers an `openai` source through the production API against a real
+  registers a `codex-pat` source for Codex (an `openai` source for native OpenClaw) through the production API against a real
   gateway and reads its live `ready` status. See [OpenShell tests](../testing/openshell.md).
 - A source stuck in `deleting` returns `503` on delete until the gateway is
   reachable; `GET` shows its live `status`.
@@ -314,6 +312,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 20:30: Document provider-managed Codex PAT authentication; session `01a136ee-8824-7043-b9e2-49eccacac3bd`; source `24c3185555eeb148492455e5ca295f0b8f1ad710` plus this change.
 
 - 2026-10-09 08:30: Replays take over withdrawal work. (fix-892-894)
 - 2026-10-09 06:00: Exhausted withdrawals retry later without Compute maintenance. (fix-887)

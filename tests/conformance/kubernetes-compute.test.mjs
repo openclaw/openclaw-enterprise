@@ -6144,7 +6144,39 @@ test("credential-source authentication renders no model Secret and requires the 
     );
   }
 
-  const incompatible = /paired Sandbox and an OpenAI API key source/;
+  // A PAT source selects native Codex auth storage without projecting its credential.
+  const patSnapshot = { ...snapshot, sourceType: "codex-pat", loginMode: "codex_pat" };
+  const patType = {
+    ...sourceType,
+    type: "codex-pat",
+    harnessAuth: { modelProvider: "openai", loginMode: "codex_pat" },
+  };
+  driver.validateHarnessAuth(revision.harness, patSnapshot, revision.configuration, {}, patType);
+  const patPrepared = driver.harnessAuthForRevision(
+    { ...revision, harnessAuth: patSnapshot },
+    { harnessAuth: { ...patSnapshot, source: { ...source, type: "codex-pat" } } },
+    namespace,
+  );
+  assert.equal(patPrepared.loginMode, "codex_pat");
+  assert.deepEqual(patPrepared.environment, [
+    { name: "CODEX_LOGIN_MODE", value: "codex_pat" },
+    { name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" },
+    { name: "OPENCLAW_HARNESS_MODEL", value: "codex/gpt-5" },
+  ]);
+  // Native OpenClaw cannot load Codex PAT storage; reject before replacing a revision.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        nativeRevision.harness,
+        patSnapshot,
+        nativeRevision.configuration,
+        {},
+        patType,
+      ),
+    /compatible OpenAI source/,
+  );
+
+  const incompatible = /paired Sandbox and a compatible OpenAI source/;
   assert.throws(
     () =>
       new KubernetesComputeDriver(options(), { sandboxDriver }).validateHarnessAuth(

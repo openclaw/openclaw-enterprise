@@ -4,7 +4,7 @@
     "OCC_TEST_KUBERNETES_CONTEXT",
     "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
     "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-    "OPENAI_API_KEY",
+    "CODEX_ACCESS_TOKEN",
     "OCC_TEST_OPENAI_MODEL",
     "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
     "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
@@ -24,7 +24,7 @@
     "postgres": true,
     "k3d": true,
     "requiresPreparedStateForFile": true,
-    "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+    "requireEnv": ["CODEX_ACCESS_TOKEN", "OCC_TEST_OPENAI_MODEL"],
     "immutableOptionalEnvImages": [
       "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
       "OCC_TEST_KUBERNETES_AGENT_IMAGE",

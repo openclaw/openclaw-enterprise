@@ -104,9 +104,24 @@ reach the gateway.
 | Type                        | Secret fields                               | Config fields                                                                   | Rotation  | Harness authentication |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ---------------------- |
 | `openai`                    | `api_key` (required)                        | None                                                                            | `none`    | `openai` / `api_key`   |
+| `codex-pat`                 | `access_token` (required)                   | None                                                                            | `none`    | `openai` / `codex_pat` |
 | `bearer-token`              | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential) |
 | `oauth2-client-credentials` | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 | `oauth2-refresh-token`      | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
+
+`codex-pat` supports personal access tokens, including service-account tokens, for
+dedicated Codex. It binds `CODEX_ACCESS_TOKEN` to the configured model binaries
+and permits only `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`
+and `chatgpt.com/backend-api/codex/**` over HTTPS. The first endpoint validates
+account metadata; the second serves Codex models and Responses. Native OpenClaw
+does not support this source as Harness authentication.
+
+The Harness stores only the provider's opaque placeholder in native Codex's
+`personal_access_token` auth-file field. Native Codex loads that field and
+validates the account remotely; it cannot classify an opaque placeholder through
+`login --with-access-token`. Startup remains unready if authentication or the
+model probe fails. OpenShell resolves the placeholder only for the admitted
+binary and endpoints; source withdrawal revokes it in the running process.
 
 Config for `bearer-token` and the OAuth2 types is checked before any gateway
 call:
@@ -171,12 +186,10 @@ Each OCC Namespace maps to one operator-mode OpenShell Workspace with the same
 name as its Kubernetes namespace. The Driver manages two objects in that
 Workspace:
 
-- **Provider profile `oce-openai`.** Registration imports this profile when
-  missing. It exposes the credential as `OPENAI_API_KEY`, inserts it as a bearer
-  `authorization` header, and binds it to `api.openai.com:443` with `rest`
-  protocol and path `/v1/**`, for the configured binaries only. A digest
-  annotation records the profile content; a configuration change updates the
-  profile on the next registration, update, or deployment.
+- **Model profiles `oce-openai` and `oce-codex-pat`.** They expose the source's
+  placeholder and bind bearer authorization to the catalog endpoints and
+  configured binaries. A digest annotation records the profile; registration,
+  update and deployment reconcile configuration changes.
 - **Provider profile per `bearer-token` source.** Its ID equals the source's
   provider name. It exposes the token as the source's `env_var` and binds it to
   the source's `host`, `port`, and `path` with `rest` protocol, for
@@ -224,9 +237,9 @@ the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
 and only a listed provider is detached again.
 
 In the running Sandbox, the Harness environment holds only an
-`openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
---with-api-key` stores that placeholder, and the supervisor proxy substitutes the
-real key on matching requests.
+`openshell:resolve:env:` placeholder for `OPENAI_API_KEY` or `CODEX_ACCESS_TOKEN`.
+Native Codex stores it using the source type's authentication path; the supervisor
+substitutes the real credential on matching requests.
 
 ## Trust requirements
 

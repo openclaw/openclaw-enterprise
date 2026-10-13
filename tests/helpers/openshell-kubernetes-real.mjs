@@ -415,8 +415,10 @@ export function createOpenShellKubernetesFixture({
       "OCC_TEST_OPENSHELL_K3D_REAL=1 is required for the real OpenShell integration.",
     );
     assert.ok(
-      process.env.OPENAI_API_KEY,
-      "OPENAI_API_KEY is required for the API binding workflow; a model turn additionally requires genuine upstream Secret projection support.",
+      process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw"
+        ? process.env.OPENAI_API_KEY
+        : process.env.CODEX_ACCESS_TOKEN,
+      "The selected Harness requires OPENAI_API_KEY (native) or CODEX_ACCESS_TOKEN (Codex).",
     );
     assert.ok(
       openShellHelmPath,

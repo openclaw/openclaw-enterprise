@@ -47,7 +47,7 @@ current Driver contract and security limits.
 ## Start from a clean environment
 
 Run from the repository root. Use an existing `OPENAI_API_KEY` or point
-`OPENAI_API_KEY_FILE` at a private file. Do not put the key in the command or
+`CODEX_ACCESS_TOKEN_FILE` at a private service-account token file. Do not put the key in the command or
 print it while diagnosing the flow.
 
 ```bash

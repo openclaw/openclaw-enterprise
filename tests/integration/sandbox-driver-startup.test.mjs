@@ -454,7 +454,7 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
   const staticOnly = await loadInstallationFile(t, withoutRefresh);
   assert.deepEqual(
     (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
-    ["openai", "bearer-token"],
+    ["openai", "codex-pat", "bearer-token"],
   );
 
   // Refresh state lives on the gateway's provider records, so the roles cannot be split.
@@ -2153,7 +2153,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   const modelOnly = credentialGatewayOverProviders();
   assert.deepEqual(
     (await modelOnly.driver.listSourceTypes({})).map(({ type }) => type),
-    ["openai"],
+    ["openai", "codex-pat"],
   );
   const tokenInput = (config) => ({ type: "bearer-token", config, secrets: { token: "t0ken" } });
   const endpoint = { host: "api.example.com", env_var: "EXAMPLE_TOKEN" };
@@ -2182,7 +2182,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
     credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
   assert.deepEqual(
     (await driver.listSourceTypes({})).map(({ type }) => type),
-    ["openai", "bearer-token"],
+    ["openai", "codex-pat", "bearer-token"],
   );
   // Every invalid endpoint or placeholder variable is refused before any gateway effect.
   for (const config of [

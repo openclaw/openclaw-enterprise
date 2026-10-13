@@ -277,6 +277,50 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   },
   {
     catalog: Object.freeze({
+      type: "codex-pat",
+      config: Object.freeze([]),
+      secrets: Object.freeze([
+        Object.freeze({
+          name: "access_token",
+          required: true,
+          description: "Codex personal access token.",
+        }),
+      ]),
+      rotation: "none",
+      harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "codex_pat" }),
+    }),
+    validate: () => {},
+    credentials: () => Object.freeze({ access_token: "CODEX_ACCESS_TOKEN" }),
+    profileScope: "type",
+    profileId: () => "oce-codex-pat",
+    profile: (_sourceId, _config, options) => ({
+      id: "oce-codex-pat",
+      displayName: "Codex personal access token (OpenClaw Enterprise)",
+      category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
+      credentials: [
+        {
+          name: "access_token",
+          envVars: ["CODEX_ACCESS_TOKEN"],
+          required: true,
+          authStyle: "bearer",
+          headerName: "authorization",
+        },
+      ],
+      endpoints: [
+        {
+          host: "auth.openai.com",
+          port: 443,
+          protocol: "rest",
+          path: "/api/accounts/v1/user-auth-credential/whoami",
+        },
+        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/codex/**" },
+      ],
+      binaries: options.binaries,
+      inferenceCapable: true,
+    }),
+  },
+  {
+    catalog: Object.freeze({
       type: "bearer-token",
       config: ENDPOINT_CONFIG,
       secrets: Object.freeze([

@@ -22,10 +22,6 @@ Gateway receives, while network policy limits its use to the node executable
 and Agent Gateway endpoint. This exposes the token to the Sandbox and is not a
 production credential-delivery contract.
 
-Both development control planes install the pinned Gateway and render the
-workspace chart into Installation configuration, without verification-only
-compatibility projections.
-
 ## Entry Points
 
 - Trigger: a worker reconciles an Agent revision that selects the OpenShell
@@ -97,22 +93,15 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-The written Installation declares the `openshell` Backend with the Gateway
-endpoint, the Sandbox, and a Credential Gateway whose `binaries` list holds the
-native Codex executable for each supported runtime architecture, x64 and ARM64.
-The launcher host does not determine the container architecture. Model egress
-comes from the credential source's
-provider profile, not the Sandbox policy.
+The Installation declares the OpenShell Backend, Sandbox and Credential Gateway.
+The model profile admits both pinned Codex architectures, independently of the
+launcher host.
 
-`scripts/dev-up` validates Kubernetes Compute with OpenShell and delegates to
-`occ dev up`. Compose is the default control plane;
-`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only. Before
-creating state, Kubernetes-only startup rejects API-port collisions and records
-the engine, cluster, control-plane Kubernetes namespace, API port, and key destination. Both
-profiles verify the pinned source archive, package its charts, and import
-digest-pinned Gateway, Sandbox, and supervisor images. Kubernetes-only startup
-also builds or selects the OCE controller and Agent runtime, then imports them
-with PostgreSQL and resolves every in-cluster digest.
+`scripts/dev-up` delegates to `occ dev up`: Compose is the default;
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only. Startup
+rejects API-port collisions before recording cluster state. Both profiles verify
+the source archive and import immutable OpenShell images. Kubernetes-only also
+imports controller, runtime and PostgreSQL images and resolves their digests.
 
 After Helm installs OpenShell, the development launcher reads the exact Gateway
 Service ClusterIP. It writes `network.providerHarness` with that address, the
@@ -175,8 +164,8 @@ Driver.
 The local OpenShell profile disables projected workload identity. If it is
 enabled, OpenShell rejects the revision before Gateway mutation because the
 pinned API cannot preserve the exact Agent ServiceAccount and token.
-For a `credential_source` revision it renders only `CODEX_LOGIN_MODE=api_key`,
-no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
+For a `credential_source` revision it renders the catalog login mode (`api_key` or
+`codex_pat` for Codex), no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
 attachments, one provider name per source, go into
 `requirements.credentialAttachments`. Compute passes those requirements and the
 immutable revision to OpenShell instead of creating the Deployment itself.
@@ -184,6 +173,16 @@ For Codex, it reads the exact Agent transport Secret in the control plane and
 adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
 plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
 requirements and removes their ConfigMap paths from the remaining environment.
+
+For a PAT source, `prepareHarnessAuth` also selects provider-managed credential
+storage. `AGENT_RUNTIME_ENTRYPOINT` in
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts` writes the
+opaque `CODEX_ACCESS_TOKEN` into the private native `auth.json` field
+`personal_access_token`. It removes the environment override from Codex children
+and invokes `codex login status` with file storage. Native Codex validates
+account metadata through the source's exact authentication endpoint before the
+ordinary startup model probe. It retains only the placeholder on disk; a login
+or model failure keeps the revision inactive.
 
 ### 3. Validate and serialize the Sandbox
 
@@ -362,6 +361,8 @@ networking. Native OpenClaw remains a separate verification-only path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 20:30: Document provider-managed Codex PAT authentication; session `01a136ee-8824-7043-b9e2-49eccacac3bd`; source `24c3185555eeb148492455e5ca295f0b8f1ad710` plus this change.
 
 - 2026-10-10 09:39: Observe Harness failures before dependent readiness. (authoring-run/d40976ed-123a-43e8-9a7b-a10b618aa496 - 8bc95d7698a167d8912db2e9c5739269d04e6ea2)
 
