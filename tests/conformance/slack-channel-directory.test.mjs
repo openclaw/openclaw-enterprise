@@ -66,6 +66,13 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
   ]) {
     assert.throws(() => new SlackChannelDriver(globalThis.fetch, proxyUrl), /managed Kubernetes/);
   }
+  // The unspecified address names no proxy.
+  for (const proxyUrl of ["http://0.0.0.0:3128", "https://0.0.0.0:8443"]) {
+    assert.throws(
+      () => new SlackChannelDriver(globalThis.fetch, proxyUrl),
+      /^Error: Slack directory proxy must not use host 0\.0\.0\.0, which names no proxy address\.$/,
+    );
+  }
 });
 
 test("bundled Slack proxy process restricts methods and CONNECT targets", async (t) => {

@@ -2119,12 +2119,16 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
     baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
     message,
   );
-  // Compute refuses an unspecified runtime proxy host, which names no proxy.
-  assertPreflightFailure(
-    "openclaw",
-    baseInput({ channels: { runtimeProxyUrl: "http://0.0.0.0:3128" } }),
-    /channels\.runtimeProxyUrl must not use host 0\.0\.0\.0, which names no proxy address\./,
-  );
+  // Compute and the API's Slack directory refuse an unspecified proxy host, which names no proxy.
+  for (const field of ["runtimeProxyUrl", "directoryProxyUrl"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ channels: { [field]: "http://0.0.0.0:3128" } }),
+      new RegExp(
+        `channels\\.${field} must not use host 0\\.0\\.0\\.0, which names no proxy address\\.`,
+      ),
+    );
+  }
   const accepted = render(
     "openclaw",
     baseInput({

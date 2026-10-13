@@ -63,8 +63,9 @@ function isLiteralIpv4ProxyUrl(value) {
   const port = Number(match[2]);
   return Number.isInteger(port) && port <= 65535;
 }
-// Compute's channel proxy rule also refuses the unspecified address, which names no proxy.
-function runtimeProxyUrl(value) {
+// Compute and the API's Slack directory also refuse the unspecified address, which names
+// no proxy.
+function channelProxyUrl(value) {
   if (!isLiteralIpv4ProxyUrl(value)) {
     return false;
   }
@@ -422,21 +423,11 @@ function parsedObservabilityUrl(value) {
   return url;
 }
 
-// ipv4HostKept is the chart and OCC_AUTH_BASE_URL written-host rule. Also refuse
-// an octet above 255, which that pattern's width would otherwise allow.
-function observabilityIpv4HostKept(value, url) {
-  if (!ipv4HostKept(value, url)) {
-    return false;
-  }
-  if (isIP(url.hostname) !== 4) {
-    return true;
-  }
-  return url.hostname.split(".").every((octet) => Number(octet) <= 255);
-}
-
+// ipv4HostKept is the chart and OCC_AUTH_BASE_URL written-host rule. Node's URL parser
+// already refuses an octet above 255, so a parsed IPv4 hostname never has one.
 function observabilityDestination(value) {
   const url = parsedObservabilityUrl(value);
-  return url !== undefined && observabilityIpv4HostKept(value, url);
+  return url !== undefined && ipv4HostKept(value, url);
 }
 
 function validateDatabaseCaMount(values, diagnostics) {
@@ -1522,8 +1513,7 @@ function buildRendered(profile, parsed, diagnostics) {
       ? parsedObservabilityUrl(rawObservabilityUrl)
       : undefined;
   const rewrittenObservabilityIpv4 =
-    parsedObservability !== undefined &&
-    !observabilityIpv4HostKept(rawObservabilityUrl, parsedObservability);
+    parsedObservability !== undefined && !ipv4HostKept(rawObservabilityUrl, parsedObservability);
   const observabilityUrl = rewrittenObservabilityIpv4
     ? undefined
     : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
@@ -1616,7 +1606,7 @@ function buildRendered(profile, parsed, diagnostics) {
               ["channels", "directoryProxyUrl"],
               diagnostics,
               {
-                validate: isLiteralIpv4ProxyUrl,
+                validate: channelProxyUrl,
                 description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
               },
             ),
@@ -1855,7 +1845,7 @@ function buildRendered(profile, parsed, diagnostics) {
                 : {
                     channels: {
                       proxyUrl: asString(channels, ["channels", "runtimeProxyUrl"], diagnostics, {
-                        validate: runtimeProxyUrl,
+                        validate: channelProxyUrl,
                         description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
                       }),
                     },
