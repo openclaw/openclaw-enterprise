@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-10-06"
-last_updated_session: authoring-run/6fa93358-8fd9-4675-9684-511f79da8969
+updated: "2026-10-12"
+last_updated_session: authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e
 ---
 
 # Repository credential service flow
@@ -107,7 +107,9 @@ journal reserves the exact attempt before bearer delivery; recovery durably fenc
 a missing admission. The broker opens the session before reserving, so a capacity
 or shutdown refusal leaves no receipt and the same admission can retry or be
 fenced. When the broker refuses a reserved admission as invalid, or cannot record
-its session, it fences its own reservation. Known nondelivery closes the session.
+its session, it fences its own reservation. A fence that does not commit stays
+with that admission, and the next open or recovery fences it. Known nondelivery
+closes the session.
 Reconciliation cannot recover a bearer, change its binding or replay provider work.
 
 Factory failure or an invalid binding closes construction admission before
@@ -348,6 +350,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 07:39: A refused admission keeps a reservation whose fence did not commit, and the next open or recovery fences it. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-06 19:36: Preserve native child signal exit statuses in the shared client executor. (authoring-run/6fa93358-8fd9-4675-9684-511f79da8969 - 86bf3dd99470b86d4c46568f48455f695daabde5)
 
