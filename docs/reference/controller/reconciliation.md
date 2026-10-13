@@ -200,7 +200,8 @@ pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from the original operation creation time. Exceeding it fails the operation with
+measured from the original operation creation time on PostgreSQL's clock, so
+controller clock skew cannot move it. Exceeding it fails the operation with
 `CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
 credential rejection fails the deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of

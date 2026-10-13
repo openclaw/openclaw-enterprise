@@ -84,12 +84,17 @@ interface WorkRow {
   readonly claim_token: string | null;
   readonly lease_expires_at: Date | string | null;
   readonly lease_active?: boolean;
+  readonly age_ms?: number;
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
   readonly result_data: Record<string, unknown> | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
+
+/** The work's age on PostgreSQL's clock, for a claim or renewal to return. */
+const CLAIM_AGE_SQL = (alias: string) =>
+  `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - ${alias}.created_at) * 1000)::double precision AS age_ms`;
 
 const MAX_BACKOFF_MS = 300_000;
 export const PENDING_WORK_PREDICATE = "state IN ('queued', 'claimed')";
@@ -538,10 +543,13 @@ export function asWork(value: unknown): ControllerWork {
 
 function asClaimedWork(value: unknown): ClaimedWork {
   const work = asWork(value);
+  const ageMs = asRow(value).age_ms;
   if (
     work.state !== "claimed" ||
     work.claimToken === undefined ||
-    work.leaseExpiresAt === undefined
+    work.leaseExpiresAt === undefined ||
+    typeof ageMs !== "number" ||
+    !Number.isFinite(ageMs)
   ) {
     throw new ScopeViolationError("PostgreSQL returned an invalid claimed controller work row.");
   }
@@ -550,6 +558,7 @@ function asClaimedWork(value: unknown): ClaimedWork {
     state: "claimed" as const,
     claimToken: work.claimToken,
     leaseExpiresAt: work.leaseExpiresAt,
+    ageMs,
   });
 }
 
@@ -971,7 +980,7 @@ export class PostgresWorkQueue {
                updated_at = clock_timestamp()
            FROM candidate
            WHERE work.idempotency_key = candidate.idempotency_key
-           RETURNING work.*`,
+           RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
           [claimToken, this.maxAttempts, this.leaseDurationMs],
         );
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
@@ -991,14 +1000,14 @@ export class PostgresWorkQueue {
   async heartbeat(claim: WorkClaim): Promise<ClaimedWork | undefined> {
     validateClaim(claim);
     const renewed = await this.client.query(
-      `UPDATE occ.controller_work
+      `UPDATE occ.controller_work AS work
        SET lease_expires_at = clock_timestamp() + $3::double precision * interval '1 millisecond',
            updated_at = clock_timestamp()
        WHERE idempotency_key = $1
          AND state = 'claimed'
          AND claim_token = $2::uuid
          AND lease_expires_at > clock_timestamp()
-       RETURNING *`,
+       RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
       [claim.idempotencyKey, claim.claimToken, this.leaseDurationMs],
     );
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);

@@ -232,6 +232,12 @@ export interface ClaimedWork extends ControllerWork {
   readonly state: "claimed";
   readonly claimToken: string;
   readonly leaseExpiresAt: Date;
+  /**
+   * Milliseconds since `createdAt` when the claim was granted or renewed, by the State store's
+   * clock. `createdAt` is on that clock too, so subtracting it from the controller's clock would
+   * shift the age by their skew.
+   */
+  readonly ageMs: number;
 }
 
 export interface EnqueueWork {

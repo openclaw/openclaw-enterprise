@@ -3969,7 +3969,7 @@ revisionTest(
 
 revisionTest(
   "deployment progress names Compute's pending reason and old pending work rechecks less often",
-  async (fixture, context) => {
+  async (fixture) => {
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
@@ -4031,16 +4031,24 @@ revisionTest(
 
     // Five minutes later, still inside the 900-second deadline, a runtime that
     // stays unready is rechecked every 5 s, so one stuck Agent cannot take most
-    // of the serial worker (D223). Only the worker's wall clock moves.
-    const realNow = Date.now;
-    Date.now = () => realNow() + 300_000;
-    context.after(() => {
-      Date.now = realNow;
-    });
+    // of the serial worker (D223). The work ages on PostgreSQL's clock, which
+    // judges it (finding 1187). A pass claimed before this update keeps its
+    // younger age, so the recheck after it may still be 500 ms.
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work SET created_at = created_at - interval '300 seconds'
+       WHERE idempotency_key = $1`,
+      [unpairedRevision.idempotencyKey],
+    );
     const seen = delays.length;
-    await waitFor("a recheck after five minutes", async () => delays.length > seen || undefined);
-    const old = await delays[seen];
-    Date.now = realNow;
+    let old = 0;
+    for (let index = seen; index <= seen + 1 && old <= 4_500; index += 1) {
+      await waitFor(
+        "a recheck after five minutes",
+        async () => delays.length > index || undefined,
+        20_000,
+      );
+      old = await delays[index];
+    }
     assert.ok(old > 4_500 && old <= 5_000, `an old deployment rechecks in 5 s (${old} ms)`);
   },
 );
@@ -4399,6 +4407,84 @@ revisionTest(
     });
     assert.ok(stopped.includes(candidate.id));
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+  },
+);
+
+revisionTest(
+  "the convergence deadline judges work age by the database clock, not the controller clock",
+  async (fixture, context) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("deadline-clock");
+    // The worker's wall clock disagrees with PostgreSQL's by five minutes, first ahead and then
+    // behind. The work's creation time is on the database clock, so its deadline must be too:
+    // otherwise skew alone retires a pending OAuth bootstrap early or holds it past the deadline.
+    const realNow = Date.now;
+    let skewMs = 300_000;
+    Date.now = () => realNow() + skewMs;
+    context.after(() => {
+      Date.now = realNow;
+    });
+    const timeoutMs = 10_000;
+    const outcomes = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+          };
+        },
+      },
+      {
+        convergenceTimeoutMs: timeoutMs,
+        emit: (event) => {
+          if (event.event === "worker.completed" && event.workId === candidate.idempotencyKey) {
+            outcomes.push(event.outcome);
+          }
+        },
+      },
+    );
+    const workRow = async () =>
+      (
+        await fixture.observerPool.query(
+          `SELECT state, EXTRACT(EPOCH FROM COALESCE(completed_at, clock_timestamp()) - created_at)
+                    * 1000 AS age_ms
+           FROM occ.controller_work WHERE idempotency_key = $1`,
+          [candidate.idempotencyKey],
+        )
+      ).rows[0];
+    const cleanupRows = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+
+    // Ahead: the controller clock already counts the work as five minutes old, yet by the
+    // database clock it is younger than the deadline, so the bootstrap keeps waiting.
+    await waitFor("a pass ahead of the database clock", async () => outcomes[0]);
+    assert.equal(outcomes[0], "pending");
+    const young = await workRow();
+    assert.ok(Number(young.age_ms) < timeoutMs, `work is still young (${young.age_ms} ms)`);
+    assert.notEqual(young.state, "failed_permanent");
+    assert.deepEqual(await cleanupRows(), []);
+
+    // Behind: the controller clock would not reach the deadline for another five minutes, yet
+    // the work fails once PostgreSQL counts it as old, and only then.
+    skewMs = -300_000;
+    await fixture.work(candidate, "failed_permanent", 30_000);
+    Date.now = realNow;
+    const failed = await workRow();
+    assert.ok(Number(failed.age_ms) >= timeoutMs, `failed at the deadline (${failed.age_ms} ms)`);
+    assert.ok(outcomes.length > 1);
+    assert.ok(outcomes.slice(0, -1).every((outcome) => outcome === "pending"));
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.error?.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+    assert.deepEqual(status.error?.data, { timeoutMs });
+    // The deadline retires the bootstrap with the failure.
+    assert.equal((await cleanupRows()).length, 1);
   },
 );
 
