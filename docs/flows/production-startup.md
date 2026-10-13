@@ -43,13 +43,7 @@ graph TD
         F --> O{"Canonical migration history?"}
         O -->|No| P["Refuse initialization before migration DDL"]
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
-        G --> CA{"OIDC CA configured?"}
-        CA -->|No| H["Run private API entrypoint"]
-        CA -->|Yes| CB["Validate IdP CA and combine selected Gateway roots"]
-        CB -->|Valid| DB{"Explicit database CA and verified TLS?"}
-        DB -->|Yes| H
-        DB -->|No| CF
-        CB -->|Invalid or missing| CF["Block API startup"]
+        G --> H["Start private API Deployment"]
         G --> I["Start independent worker Deployment"]
         I --> R{"Repository credentials enabled?"}
         R -->|Yes| S["Sidecar copies protected inputs and starts private control"]
@@ -304,8 +298,6 @@ until tenant deployment/TUI procedures run.
   from the retrieved key file.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
-- `tests/integration/oidc-ca-trust.test.mjs` executes rendered assembly and real
-  loopback TLS through OIDC and PostgreSQL; see [local proof limits](../testing/local.md#authentication-and-authorization-coverage).
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
   chart; it does not prove deployment or model execution.
 

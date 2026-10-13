@@ -145,7 +145,9 @@ unrelated CAs and hostnames, invalid bundles and CA replacement. The rendered AP
 preload also gates the real production PostgreSQL pool: loopback TLS accepts the
 selected database CA and rejects an IdP-only CA for password and workload-identity
 configuration, without requesting a token. Invalid configuration stops before the
-entrypoint and emits no credential-bearing URL. This proves TLS, not PostgreSQL
+entrypoint and emits no credential-bearing URL. IP and socket database hosts are
+refused; without the preload, the client accepts a `DNS:localhost` certificate for
+an IP host. This proves TLS, not PostgreSQL
 authentication, SQL or Azure token acquisition. The State fixture
 stops at identity lookup: this proves no PostgreSQL session commit, live IdP,
 browser trust, Kubernetes mount enforcement or installed deployment. Run those
