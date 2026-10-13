@@ -1711,6 +1711,59 @@ async function main() {
   return summary.status === "passed" ? 0 : 1;
 }
 
+// Parent pid of every process, from /proc on Linux (CI runners) or ps elsewhere.
+async function processParents() {
+  const parents = new Map();
+  let entries;
+  try {
+    entries = await readdir("/proc");
+  } catch {
+    const listed = spawnSync("ps", ["-A", "-o", "pid=", "-o", "ppid="], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    for (const line of listed.stdout?.split("\n") ?? []) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+      if (pid > 0) {
+        parents.set(pid, ppid);
+      }
+    }
+    return parents;
+  }
+  for (const entry of entries.filter((name) => /^\d+$/.test(name))) {
+    try {
+      // "pid (comm) state ppid ...": comm can hold spaces and parentheses.
+      const stat = await readFile(`/proc/${entry}/stat`, "utf8");
+      parents.set(Number(entry), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
+    } catch {
+      // The process has exited.
+    }
+  }
+  return parents;
+}
+
+// Every process this runner started that is still running, with their descendants. The whole
+// tree is listed before any is killed: a killed parent's children move to another parent.
+async function killDescendants() {
+  const children = new Map();
+  for (const [pid, ppid] of await processParents()) {
+    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  }
+  const descendants = [];
+  for (let queue = [process.pid]; queue.length > 0;) {
+    const next = children.get(queue.shift()) ?? [];
+    descendants.push(...next);
+    queue.push(...next);
+  }
+  for (const pid of descendants) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // It has exited.
+    }
+  }
+}
+
 try {
   process.exitCode = await main();
 } catch (error) {
@@ -1718,7 +1771,10 @@ try {
   process.exitCode = 1;
 }
 // An abandoned preparation or cleanup can keep this process alive (a child it waits for, a
-// timer); the results are written, so stop here.
+// timer); the results are written, so stop here. Its commands run in this process's group and
+// would outlive it as orphans on a self-hosted runner (finding 1225), so end them first. Every
+// test file's process group has exited by now.
 if (abandonedSteps > 0) {
+  await killDescendants();
   process.exit();
 }

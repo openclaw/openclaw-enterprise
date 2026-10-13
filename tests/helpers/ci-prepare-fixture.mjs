@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
 
 // Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.mjs, which split the
 // preparation cases so Checks and Conformance 2 can run them at the same time.
@@ -553,32 +553,25 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
   // Only lanes whose tests need no Gateway API or other K3s add-on skip them.
-  // Keep this list in step with lanesWithoutK3sAddons in scripts/ci/prepare.mjs.
-  const addonArgs = [
-    "k3d-fixture-configuration",
-    "k3d-fixture-state",
-    "k3d-fixture-plugins",
-    "k3d-fixture-oauth",
-    "images-runtime-startup",
-    "repository-credentials-platform",
-    "k3d-observability",
-  ].includes(process.env.CI_FIXTURE_LANE)
+  const addonArgs = ${JSON.stringify([...lanesWithoutK3sAddons])}.includes(process.env.CI_FIXTURE_LANE)
     ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
     : [];
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [14, 16, 18, 19].includes(args.length)) {
+  if (equals(args.slice(0, 2), ["cluster", "create"])) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
     // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
     // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
     assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
-    if (args.length >= 18) {
+    // Two-node clusters (the fixture lanes' cross-node plugin status) share a storage volume.
+    if (args[8] === "1") {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
     const storage = args[10].split(":");
     assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
     assert.ok(existsSync(storage[0]), "both nodes must mount an existing shared host directory");
     assert.equal(args[11], "--api-port");
     assert.match(args[12], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(13, 18), [
+    const optionsEnd = 16 + addonArgs.length;
+    assert.deepEqual(args.slice(13, optionsEnd), [
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
       "--no-lb",
@@ -587,9 +580,11 @@ if (command === "k3d") {
     // The creation-failure case models k3d's default rollback so it can prove
     // that the preparation owner retains containers for diagnosis and cleanup.
     if (scenario !== "cluster-create-failed") {
-      assert.deepEqual(args.slice(18), ["--no-rollback"]);
+      assert.deepEqual(args.slice(optionsEnd), ["--no-rollback"]);
     } else {
-      assert.ok(equals(args.slice(18), []) || equals(args.slice(18), ["--no-rollback"]));
+      assert.ok(
+        equals(args.slice(optionsEnd), []) || equals(args.slice(optionsEnd), ["--no-rollback"]),
+      );
     }
     } else {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
