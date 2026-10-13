@@ -795,6 +795,73 @@ test(
   },
 );
 
+// Profiles take no Collector image: preflight refuses the field and writes none, so the chart
+// renders its default. An operator values file can still set logging.collector.image, and the
+// chart applies the images.* repository path rule to it. Its shape rule stays looser than
+// images.* (the Collector may use an IPv6 registry host).
+test(
+  "logging.collector.image follows the images.* repository path rule; profiles leave the chart default",
+  { skip: helmSkip },
+  async () => {
+    const collector = { enabled: true, exporter: { cidr: "192.0.2.40/32" } };
+    await withProfile(
+      input({
+        loggingCollector: { ...collector, image: `otel/collector@sha256:${"d".repeat(64)}` },
+      }),
+      ({ renderer }) => {
+        assert.equal(renderer.ok, false, renderer.output);
+        assert.match(
+          renderer.output,
+          /controlPlane\.loggingCollector\.image is not supported by installation profiles/,
+        );
+      },
+    );
+    return withProfile(input({ loggingCollector: collector }), async ({ directory, renderer }) => {
+      assert.equal(renderer.ok, true, renderer.output);
+      const values = join(directory, "values.yaml");
+      assert.equal(loadYaml(readFileSync(values, "utf8")).logging.collector.image, undefined);
+      const chart = await helmTemplate([values]);
+      assert.equal(chart.ok, true, chart.output);
+      const chartDefault = loadYaml(
+        readFileSync(join(repository, "deploy/helm/openclaw-enterprise/values.yaml"), "utf8"),
+      ).logging.collector.image;
+      assert.ok(chart.output.includes(`image: ${JSON.stringify(chartDefault)}`), chartDefault);
+      await each(
+        [
+          ["registry.example.invalid/otel/collector", true],
+          ["Registry.Example.invalid/otel/collector:Release_1", true],
+          ["[fd00::1]:5000/otel/collector", true],
+          ["registry.example.invalid/Otel/collector", false],
+          ["registry.example.invalid:5000/otel/Collector:release_1", false],
+          ["Registry.Example.invalid/otel/Collector", false],
+          ["[fd00::1]:5000/otel/Collector", false],
+          // Without a registry host, the image is docker.io/library/Collector.
+          ["Collector", false],
+        ],
+        async ([name, accepted]) => {
+          const image = `${name}@sha256:${"d".repeat(64)}`;
+          const chart = await helmTemplate([
+            values,
+            writeOverride(mkdtempSync(join(directory, "case-")), {
+              logging: { collector: { image } },
+            }),
+          ]);
+          assert.equal(chart.ok, accepted, `${name}: helm template\n${chart.output}`);
+          if (accepted) {
+            assert.ok(chart.output.includes(`image: ${JSON.stringify(image)}`), name);
+          } else {
+            assert.match(
+              chart.output,
+              /logging\.collector\.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one/,
+              name,
+            );
+          }
+        },
+      );
+    });
+  },
+);
+
 // runtime.image never reaches the chart: it becomes Compute's images.gateway and
 // images.agent. Every reference preflight accepts, including an IPv6 registry host the
 // chart's control-plane rule would refuse, must reach Compute as written and start it.

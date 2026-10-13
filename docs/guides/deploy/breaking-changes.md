@@ -18,7 +18,8 @@ real Installation.
 **What breaks.** Profile preflight refuses an uppercase letter in the repository
 path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
 which Kubernetes refused to pull; an uppercase registry host or tag still
-passes. The chart (`images.*`, `repositoryCredentials.image`),
+passes. The chart (`images.*`, `repositoryCredentials.image`,
+`logging.collector.image`),
 `prepare-bootstrap-volume`, `upgrade-production-images`, and API and worker
 startup for the Compute gateway and Agent images refuse it too. Preflight, the chart, API
 startup and the bootstrap Job also refuse any `@` before the `auth.baseUrl`
