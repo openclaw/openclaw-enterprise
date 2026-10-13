@@ -1380,6 +1380,28 @@ const k3dCreateTimeoutsMs =
     : [2 * 60_000, 5 * 60_000];
 const k3dCreateAttempts = k3dCreateTimeoutsMs.length;
 
+// Print k3d's own progress lines as they arrive. The job log timestamps each
+// line, so a slow create shows which k3d step it spent its time in.
+function forwardK3dOutput(lane, child) {
+  for (const stream of [child.stdout, child.stderr]) {
+    let pending = "";
+    stream?.on("data", (chunk) => {
+      const lines = (pending + chunk.toString()).split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) {
+        if (line.trim()) {
+          progress(lane, `k3d: ${line.trimEnd().slice(0, 400)}`);
+        }
+      }
+    });
+    stream?.on("end", () => {
+      if (pending.trim()) {
+        progress(lane, `k3d: ${pending.trimEnd().slice(0, 400)}`);
+      }
+    });
+  }
+}
+
 // Bound each create. After a timeout, keep diagnostics, delete what the
 // attempt created, and try once more with the same owned name and directory.
 // The final failure leaves the planned resource for registered cleanup.
@@ -1389,7 +1411,11 @@ async function createK3dCluster(statePath, state, resource, args) {
     const timeoutMs = k3dCreateTimeoutsMs[attempt - 1];
     try {
       await k3dStage(state, "k3d-create", () =>
-        execFile(k3d, args, { timeoutMs, processGroup: true }),
+        execFile(k3d, args, {
+          timeoutMs,
+          processGroup: true,
+          onSpawn: (child) => forwardK3dOutput(state.lane, child),
+        }),
       );
       return;
     } catch (error) {
@@ -2532,29 +2558,39 @@ async function prepareLane({ lane, statePath }) {
       const fixture = await timedPreparation(name, "fixture-image-import", () =>
         importFixtureImage(resolvedStatePath, state, cluster, built),
       );
-      // Fixture suites use the same local-only image. Keep it active on
-      // every node so kubelet image garbage collection cannot remove it.
-      await timedPreparation(name, "fixture-image-pin", () =>
-        pinFixtureImageInK3d(cluster, fixture.image),
+      // The pin and the storage check are independent; both wait on rollouts.
+      await timedPreparation(name, "fixture-pin-storage-verify", () =>
+        prepareTogether([
+          // Fixture suites use the same local-only image. Keep it active on
+          // every node so kubelet image garbage collection cannot remove it.
+          () =>
+            timedPreparation(name, "fixture-image-pin", () =>
+              pinFixtureImageInK3d(cluster, fixture.image),
+            ),
+          // The suites restart this controller when enabling shared storage. Verify
+          // replacement scheduling after image imports consume the runner's disk.
+          async () => {
+            await execFile(
+              process.env.OCC_KUBECTL_BIN ?? "kubectl",
+              [
+                "--kubeconfig",
+                cluster.kubeconfig,
+                "--context",
+                cluster.context,
+                "--namespace",
+                "kube-system",
+                "rollout",
+                "restart",
+                "deployment/local-path-provisioner",
+              ],
+              { timeoutMs: 10_000 },
+            );
+            await timedPreparation(name, "fixture-storage-verify", () =>
+              verifyFixtureStorage(cluster),
+            );
+          },
+        ]),
       );
-      // The suites restart this controller when enabling shared storage. Verify
-      // replacement scheduling after image imports consume the runner's disk.
-      await execFile(
-        process.env.OCC_KUBECTL_BIN ?? "kubectl",
-        [
-          "--kubeconfig",
-          cluster.kubeconfig,
-          "--context",
-          cluster.context,
-          "--namespace",
-          "kube-system",
-          "rollout",
-          "restart",
-          "deployment/local-path-provisioner",
-        ],
-        { timeoutMs: 10_000 },
-      );
-      await timedPreparation(name, "fixture-storage-verify", () => verifyFixtureStorage(cluster));
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
