@@ -2725,9 +2725,15 @@ test("run gives up on a hung cleanup after its allowance, ends its commands and 
   const running = (pid) => {
     try {
       process.kill(pid, 0);
-      return true;
     } catch {
       return false;
+    }
+    // A zombie (state Z) still answers kill(pid, 0), but it has exited.
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat[stat.lastIndexOf(")") + 2] !== "Z";
+    } catch {
+      return true;
     }
   };
   const pids = [];
@@ -2740,12 +2746,17 @@ test("run gives up on a hung cleanup after its allowance, ends its commands and 
     join(root, "scripts/ci/prepare.mjs"),
     [
       'import { spawn } from "node:child_process";',
-      'import { writeFile } from "node:fs/promises";',
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'import { setTimeout as delay } from "node:timers/promises";',
       "export async function prepareFile({ file }) {",
       "  if (file.path.endsWith('hung.test.mjs')) {",
       "    return {",
-      "      cleanup: () => {",
+      "      cleanup: async () => {",
       `        spawn(process.execPath, [${JSON.stringify(commandPath)}], { stdio: "ignore" });`,
+      // Hang only once both pids are on record (one write).
+      `        while (!(await readFile(${JSON.stringify(pidsPath)}, "utf8").catch(() => ""))) {`,
+      "          await delay(20);",
+      "        }",
       `        return ${hangForever};`,
       "      },",
       "    };",

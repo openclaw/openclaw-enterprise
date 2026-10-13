@@ -68,7 +68,9 @@ const disposeLimitsMs = {
 // sit idle after its last test until the runner's file timeout killed it (finding 1223). Once the
 // file's own teardown is done, a process that had abandoned a step exits after this grace,
 // which leaves the test runner time to report. The timer is unref'd: a process with nothing
-// left to wait for exits on its own first.
+// left to wait for exits on its own first. So `cleanup` must be the file's last root after hook,
+// and the file must run under `node --test`, whose parent process counts the file's results
+// (node:test sets a failing exit code only once the event loop drains).
 const abandonedExitGraceMs = 2_000;
 let abandonedSteps = 0;
 
