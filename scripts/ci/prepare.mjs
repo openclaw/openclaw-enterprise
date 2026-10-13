@@ -21,7 +21,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
-import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
+import {
+  ANSI_COLOR,
+  captureK3dDiagnostics,
+  k3dHostMetrics,
+  redactCredentialLine,
+} from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
@@ -54,6 +59,18 @@ const fixtureLanes = new Set([
   "k3d-fixture-state",
   "k3d-fixture-plugins",
   "k3d-fixture-oauth",
+]);
+// These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
+// Gateway API, so their clusters skip K3s's Traefik, ServiceLB and
+// metrics-server add-ons, which would otherwise pull and start on every node
+// while the lane imports its images. Lanes that set up gateway routing need
+// Traefik: K3s installs the Gateway API CRDs with it (routing.mjs). Every lane
+// here runs in PR CI; full-integration lanes keep K3s's defaults.
+const lanesWithoutK3sAddons = new Set([
+  ...fixtureLanes,
+  "images-runtime-startup",
+  "repository-credentials-platform",
+  "k3d-observability",
 ]);
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
@@ -1235,8 +1252,15 @@ async function ensureK3dCluster(statePath, state) {
       `127.0.0.1:${apiPort}`,
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
-      "--lb-config-override",
-      `settings.workerConnections=${k3dLoadBalancerWorkerConnections}`,
+      // One server needs no load balancer: agents join k3d-<cluster>-server-0
+      // directly, so k3d's serverlb (nginx) only proxied the host's API port.
+      // Its entrypoint sleeps 6 s before nginx starts, and k3d waited for it on
+      // every create. Without it, server-0 publishes the API port itself, and
+      // the nginx connection limit behind finding 682 is gone too.
+      "--no-lb",
+      ...(lanesWithoutK3sAddons.has(state.lane)
+        ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
+        : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
       ...(crossNodePluginStatus ? ["--no-rollback"] : []),
@@ -1323,14 +1347,6 @@ async function ensureK3dCluster(statePath, state) {
   return resource;
 }
 
-// k3d's serverlb (nginx) in front of the API server allows 1024 connections per
-// worker, and each proxied API connection counts twice. The connections appear to
-// land on one worker: drops started once the serverlb held about 1,024. The k3d
-// Fixture and Configuration lane peaked at 1,050-1,080 on the 32vcpu runner
-// (530-760 on ubuntu-22.04), and kubectl reported "Unable to connect to the
-// server: EOF" (finding 682). With this limit it peaks at about 2,000.
-const k3dLoadBalancerWorkerConnections = 8192;
-
 const k3dNodeRegistrationTimeoutMs = 120_000;
 
 // Wait until every node this cluster owns is registered, so the Ready wait
@@ -1380,6 +1396,26 @@ const k3dCreateTimeoutsMs =
     : [2 * 60_000, 5 * 60_000];
 const k3dCreateAttempts = k3dCreateTimeoutsMs.length;
 
+// Print k3d's own progress lines as they arrive. The job log timestamps each
+// line, so a slow create shows which k3d step it spent its time in.
+function forwardK3dOutput(lane, child) {
+  for (const stream of [child.stdout, child.stderr]) {
+    let pending = "";
+    stream?.on("data", (chunk) => {
+      const lines = (pending + chunk.toString()).split(/\r?\n/);
+      pending = lines.pop();
+      lines.forEach(print);
+    });
+    stream?.on("end", () => print(pending));
+  }
+  function print(line) {
+    const text = line.replace(ANSI_COLOR, "").trimEnd();
+    if (text.trim()) {
+      progress(lane, `k3d: ${redactCredentialLine(text).slice(0, 400)}`);
+    }
+  }
+}
+
 // Bound each create. After a timeout, keep diagnostics, delete what the
 // attempt created, and try once more with the same owned name and directory.
 // The final failure leaves the planned resource for registered cleanup.
@@ -1389,7 +1425,11 @@ async function createK3dCluster(statePath, state, resource, args) {
     const timeoutMs = k3dCreateTimeoutsMs[attempt - 1];
     try {
       await k3dStage(state, "k3d-create", () =>
-        execFile(k3d, args, { timeoutMs, processGroup: true }),
+        execFile(k3d, args, {
+          timeoutMs,
+          processGroup: true,
+          onSpawn: (child) => forwardK3dOutput(state.lane, child),
+        }),
       );
       return;
     } catch (error) {
@@ -2532,29 +2572,39 @@ async function prepareLane({ lane, statePath }) {
       const fixture = await timedPreparation(name, "fixture-image-import", () =>
         importFixtureImage(resolvedStatePath, state, cluster, built),
       );
-      // Fixture suites use the same local-only image. Keep it active on
-      // every node so kubelet image garbage collection cannot remove it.
-      await timedPreparation(name, "fixture-image-pin", () =>
-        pinFixtureImageInK3d(cluster, fixture.image),
+      // The pin and the storage check are independent; both wait on rollouts.
+      await timedPreparation(name, "fixture-pin-storage-verify", () =>
+        prepareTogether([
+          // Fixture suites use the same local-only image. Keep it active on
+          // every node so kubelet image garbage collection cannot remove it.
+          () =>
+            timedPreparation(name, "fixture-image-pin", () =>
+              pinFixtureImageInK3d(cluster, fixture.image),
+            ),
+          // The suites restart this controller when enabling shared storage. Verify
+          // replacement scheduling after image imports consume the runner's disk.
+          async () => {
+            await execFile(
+              process.env.OCC_KUBECTL_BIN ?? "kubectl",
+              [
+                "--kubeconfig",
+                cluster.kubeconfig,
+                "--context",
+                cluster.context,
+                "--namespace",
+                "kube-system",
+                "rollout",
+                "restart",
+                "deployment/local-path-provisioner",
+              ],
+              { timeoutMs: 10_000 },
+            );
+            await timedPreparation(name, "fixture-storage-verify", () =>
+              verifyFixtureStorage(cluster),
+            );
+          },
+        ]),
       );
-      // The suites restart this controller when enabling shared storage. Verify
-      // replacement scheduling after image imports consume the runner's disk.
-      await execFile(
-        process.env.OCC_KUBECTL_BIN ?? "kubectl",
-        [
-          "--kubeconfig",
-          cluster.kubeconfig,
-          "--context",
-          cluster.context,
-          "--namespace",
-          "kube-system",
-          "rollout",
-          "restart",
-          "deployment/local-path-provisioner",
-        ],
-        { timeoutMs: 10_000 },
-      );
-      await timedPreparation(name, "fixture-storage-verify", () => verifyFixtureStorage(cluster));
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;

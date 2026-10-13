@@ -105,7 +105,7 @@ if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
 if [ "$1" = ps ]; then
   case "$*" in
     *openclaw_ci_pg_test*) printf '%s\\n' 'openclaw_ci_pg_test_postgres_1 (Up 1 minute (healthy))' ;;
-    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' 'k3d-openclaw-k8s-test-serverlb (Up 1 minute)' ;;
+    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' ;;
   esac
   exit 0
 fi
@@ -124,7 +124,7 @@ if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
 if [ "$1" = ps ]; then
   case "$*" in
     *openclaw_ci_pg_test*) printf '%s\\n' 'openclaw_ci_pg_test-postgres-1 (Up 1 minute (healthy))' ;;
-    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' 'k3d-openclaw-k8s-test-serverlb (Up 1 minute)' ;;
+    *k3d-openclaw-k8s-test*) printf '%s\\n' 'k3d-openclaw-k8s-test-server-0 (Up 1 minute)' ;;
   esac
   exit 0
 fi

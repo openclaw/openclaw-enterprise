@@ -119,7 +119,7 @@ import {
   normalizePluginDesiredState,
   normalizePluginApprovers,
   normalizePresetTemplate,
-  presetTemplateDefaults,
+  presetTemplateDefaultsWithPlaceholders,
   PresetValidationError,
   normalizeSecretBindings,
   normalizeHarnessAuthBinding,
@@ -394,7 +394,7 @@ export {
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export {
-  INVALID_HEADER_NAME,
+  invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
   isHttpFieldName,
@@ -863,15 +863,6 @@ const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_
  * sent again. A late original then meets an existing ConfigMap and fails AlreadyExists.
  */
 const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
-
-// What a Preset variable without a default renders to in a template's default values.
-const PRESET_VARIABLE_PLACEHOLDER = /\{\{ vars\.[A-Za-z_][A-Za-z0-9_]* \}\}/;
-
-// Preset saves pass these to every Configuration rule they run (the shared model provider rules
-// and Compute's), so a value that waits on an unfilled variable is checked once filled.
-const PRESET_DEFAULTS_VALIDATION: ConfigurationValidationOptions = {
-  unresolved: (text) => PRESET_VARIABLE_PLACEHOLDER.test(text),
-};
 
 /**
  * The most references a Secret read or delete examines. Each one costs authorization work,
@@ -4262,7 +4253,8 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<PresetTemplate> {
     const template = normalizePresetTemplate(input, namespaceId);
-    const values = presetTemplateDefaults(template).configuration?.values;
+    const { settings, placeholders } = presetTemplateDefaultsWithPlaceholders(template);
+    const values = settings.configuration?.values;
     if (values !== undefined) {
       const driver = this.configurationDriver();
       if (!driver.validateValues) {
@@ -4273,8 +4265,13 @@ export class OpenClawController {
       // The model provider and Compute rules first, as on Configuration create and update, so
       // a value they refuse gets the same message wherever it is written. A variable without a
       // default is still a placeholder here; the Configuration it fills is checked on create.
-      validateModelProviderSettings(values, PRESET_DEFAULTS_VALIDATION);
-      this.validateComputeConfiguration(values, PRESET_DEFAULTS_VALIDATION);
+      // Only text the render put a placeholder into waits on a variable: an escaped token is
+      // literal text that stays in the launch render, so it is checked as written (finding 1214).
+      const options: ConfigurationValidationOptions = {
+        unresolved: (text) => placeholders.has(text),
+      };
+      validateModelProviderSettings(values, options);
+      this.validateComputeConfiguration(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values);
     }

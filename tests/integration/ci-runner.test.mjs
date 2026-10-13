@@ -2516,6 +2516,101 @@ test("run stops a hung file at the lane deadline, names its test and starts noth
   await assert.rejects(readFile(marker), { code: "ENOENT" });
 });
 
+test("run starts no file with under a second left before the lane deadline", async (t) => {
+  // Finding 1215: a file whose turn came within a second of the deadline was started and
+  // stopped at once, then reported as selected-zero and a test-timeout naming no test.
+  const root = await fixture(t);
+  const statePath = join(root, "state/near-deadline.json");
+  const resultsPath = join(root, "results/near-deadline.json");
+  const marker = join(root, "state/started");
+  // The preparation returns half a second before the deadline.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile() {",
+      "  const left = Number(process.env.CI_RUNNER_DEADLINE_MS) - Date.now();",
+      "  await new Promise((resolve) => setTimeout(resolve, left - 500));",
+      "  return {};",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/late.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      'writeFileSync(process.env.CI_RUNNER_MARKER, "");',
+      'test("starts too late", () => new Promise((resolve) => setTimeout(resolve, 5_000)));',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { near: { files: [{ path: "tests/integration/late.test.mjs" }] } },
+    groups: { ci: ["near"] },
+  });
+
+  const result = run(
+    root,
+    laneArgs(root, "near", statePath, resultsPath),
+    { CI_RUNNER_DEADLINE_MS: String(Date.now() + 5_000), CI_RUNNER_MARKER: marker },
+    { timeout: 30_000 },
+  );
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1, result.stderr);
+  const [late] = JSON.parse(await readFile(resultsPath, "utf8")).files;
+  // A loaded host can run the preparation into the deadline instead; either way, nothing starts.
+  const codes = late.issues.map((entry) => entry.code);
+  assert.deepEqual(
+    codes,
+    codes.includes("prepare-timeout") ? ["prepare-timeout"] : ["lane-deadline"],
+  );
+  assert.equal(late.nodeExitCode, null);
+  assert.equal(late.counts.total, 0);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("a runner timeout while no test was running says so", async (t) => {
+  // Finding 1215: a file stopped in a hook or teardown named no test, which read like a
+  // reporting gap rather than where it hung.
+  const root = await fixture(t);
+  const statePath = join(root, "state/hook.json");
+  const resultsPath = join(root, "results/hook.json");
+  await writeFile(
+    join(root, "tests/integration/hook.test.mjs"),
+    [
+      'import test, { after } from "node:test";',
+      'test("passes", () => {});',
+      "// Ends by itself in case the runner leaves it behind.",
+      "after(() => new Promise((resolve) => setTimeout(resolve, 30_000)));",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { hook: { files: [{ path: "tests/integration/hook.test.mjs" }] } },
+    groups: { ci: ["hook"] },
+  });
+
+  const result = run(
+    root,
+    laneArgs(root, "hook", statePath, resultsPath),
+    // Long enough for a loaded host to finish "passes" before the timeout; the hook outlasts it.
+    { CI_RUNNER_TEST_TIMEOUT_MS: "8000" },
+    { timeout: 60_000 },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
+  assert.equal(
+    timeout.message,
+    "selected file exceeded the runner timeout (8000 ms): tests/integration/hook.test.mjs; no test was running (stopped in a hook, teardown or top-level code)",
+  );
+});
+
 // Finding 1210: the lane deadline stopped only the test process. A preparation or cleanup that
 // never returned (it runs in the runner itself) still ran on to the job timeout with no results.
 // These fixtures hang forever, and their intervals keep the runner alive unless it gives up.

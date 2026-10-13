@@ -9,6 +9,7 @@ import {
   configurationSettingMessage,
   keyedSettingPath,
   ModelProviderSettingError,
+  quotedSettingKey,
 } from "./errors.ts";
 
 /**
@@ -124,8 +125,16 @@ export function validateModelProviderSettings(
   }
 }
 
-/** The requirement for a model provider header name that is not an HTTP field name. */
-export const INVALID_HEADER_NAME = "must use valid HTTP header names";
+/**
+ * The requirement for a model provider header name that is not an HTTP field name. It names the
+ * header, as the credential header refusal does, so a name a Preset variable filled is found
+ * (finding 1218), but only up to its first invalid character: a value pasted into the name
+ * ("Authorization: Bearer …") is never echoed, and the cut shows where the name went wrong.
+ */
+export function invalidHeaderNameRequirement(name: string): string {
+  const valid = HTTP_FIELD_NAME_START.exec(name)?.[0] ?? "";
+  return `must use valid HTTP header names, not ${quotedSettingKey(valid.length < name.length ? `${valid}…` : valid, 40)}`;
+}
 
 // Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
 // literal under it is never stored where the credential rules would not recognize it. The
@@ -139,13 +148,12 @@ function validateHeaderNames(
     [`${setting}.headers`, settings.headers],
     [`${setting}.request.headers`, asRecord(settings.request)?.headers],
   ] as const) {
-    if (
-      !Object.keys(asRecord(headers) ?? {}).every((name) =>
-        isAdmittedHeaderName(name, { unresolved }),
-      )
-    ) {
+    const invalid = Object.keys(asRecord(headers) ?? {}).find(
+      (name) => !isAdmittedHeaderName(name, { unresolved }),
+    );
+    if (invalid !== undefined) {
       throw new ConfigurationHarnessError(
-        configurationSettingMessage(headersSetting, INVALID_HEADER_NAME),
+        configurationSettingMessage(headersSetting, invalidHeaderNameRequirement(invalid)),
       );
     }
   }
@@ -154,6 +162,7 @@ function validateHeaderNames(
 // RFC 9110 field-name token. A name outside it (whitespace, zero-width or non-ASCII
 // lookalikes) is not a header any HTTP client sends, so it is refused rather than matched.
 const HTTP_FIELD_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HTTP_FIELD_NAME_START = /^[!#$%&'*+.^_`|~0-9A-Za-z-]*/;
 
 /** Whether `name` is a valid HTTP field name (an RFC 9110 token). */
 export function isHttpFieldName(name: string): boolean {
