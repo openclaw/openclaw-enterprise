@@ -22,6 +22,8 @@
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
+    "tests/integration/configuration-body-limits.test.mjs",
+    "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
@@ -40,6 +42,7 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/conformance/test-files.test.mjs",
+    "tests/conformance/socket-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
@@ -209,6 +212,9 @@
       "path": "tests/conformance/test-files.test.mjs"
     },
     {
+      "path": "tests/conformance/socket-directory.test.mjs"
+    },
+    {
       "path": "tests/conformance/utils.test.mjs"
     },
     {
@@ -239,6 +245,12 @@
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
+    },
+    {
+      "path": "tests/integration/configuration-body-limits.test.mjs"
+    },
+    {
+      "path": "tests/integration/json-body-depth.test.mjs"
     },
     {
       "path": "tests/integration/configuration-startup.test.mjs"

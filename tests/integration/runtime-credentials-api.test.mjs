@@ -385,6 +385,7 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
     namespaceReady: true,
   });
   const fixture = await createFixture(t, { computeDriver });
+  const { namespace, agent } = await fixture.bootstrapAgent();
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
   const { openai } = values.models.providers;
   values.agents.defaults = {
@@ -394,20 +395,112 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   values.models.providers = {
     zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
   };
-  const { namespace, agent } = await fixture.bootstrapAgent(values);
-
-  // The Kubernetes Driver projects api_key credentials only for providers it knows; the
-  // caller must learn that, not that the resource already exists.
-  const refused = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  // The Configuration alone is valid: only the Agent's api_key binding, which the Kubernetes
+  // Driver projects only for providers it knows, makes the pair undeliverable.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stored = await fixture.request("GET", agentPath);
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${stored.data.configurationId}`,
+    { body: { values } },
   );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const message =
+    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.";
+
+  // The caller must learn that, not that the resource already exists: deployment refuses the
+  // pair, and so does the Agent's next save (finding 1117).
+  const refused = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    refused.body.error.message,
-    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
+  assert.equal(refused.body.error.message, message);
+  const updated = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: stored.data.configurationId },
+  });
+  assert.equal(updated.status, 409, JSON.stringify(updated.body));
+  assert.equal(updated.body.error.message, message);
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Unsupported provider Agent",
+      configurationId: stored.data.configurationId,
+      executionMode: "embedded",
+      harnessAuth: stored.data.harnessAuth,
+    },
+  });
+  assert.equal(created.status, 409, JSON.stringify(created.body));
+  assert.equal(created.body.error.message, message);
+  // The stored Agent still reads.
+  assert.equal((await fixture.request("GET", agentPath)).status, 200);
+});
+
+test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async (t) => {
+  const computeDriver = createTestKubernetesComputeDriver("auth-method-kubernetes");
+  computeDriver.ensureNamespace = async (namespace) => ({
+    namespaceId: namespace.id,
+    namespaceReady: true,
+  });
+  const fixture = await createFixture(t, { computeDriver });
+  const { namespace, agent, configuration, secret } = await fixture.bootstrapAgent();
+  const message =
+    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const agentPath = `${agentsPath}/${agent.id}`;
+  const refused = (response) => {
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "INVALID_REQUEST");
+    assert.equal(response.body.error.message, message);
+  };
+  // The method alone decides it, so Agent create and update refuse it as deployment does.
+  for (const harnessAuth of [{ method: "runtime" }, { method: "codex_pat", source: secret.ref }]) {
+    refused(
+      await fixture.request("PATCH", agentPath, {
+        body: { configurationId: configuration.id, harnessAuth },
+      }),
+    );
+    refused(
+      await fixture.request("POST", agentsPath, {
+        body: {
+          name: `Embedded ${harnessAuth.method} Agent`,
+          configurationId: configuration.id,
+          executionMode: "embedded",
+          harnessAuth,
+        },
+      }),
+    );
+  }
+  // A Configuration that selects no model is a draft, so save admits the pair. Once it selects
+  // one, deployment and the Agent's next update refuse the stored row with the same message.
+  const draft = await fixture.request("POST", `/namespaces/${namespace.id}/configurations`, {
+    body: { kind: "agent", values: {} },
+  });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  const stored = await fixture.request("POST", agentsPath, {
+    body: {
+      name: "Draft runtime Agent",
+      configurationId: draft.data.id,
+      executionMode: "embedded",
+      harnessAuth: { method: "runtime" },
+    },
+  });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${draft.data.id}`,
+    { body: { values: createHarnessConfiguration("openclaw", "gpt-4.1") } },
   );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const storedPath = `${agentsPath}/${stored.data.id}`;
+  refused(await fixture.request("POST", `${storedPath}/deploy`));
+  refused(await fixture.request("PATCH", storedPath, { body: { configurationId: draft.data.id } }));
+  assert.equal((await fixture.request("GET", storedPath)).status, 200);
+  // The fix the message names is accepted.
+  const fixed = await fixture.request("PATCH", storedPath, {
+    body: {
+      configurationId: draft.data.id,
+      harnessAuth: { method: "api_key", source: secret.ref },
+    },
+  });
+  assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
 });
 
 test("first deployment requires Agent read and operate only when generating credentials", async (t) => {

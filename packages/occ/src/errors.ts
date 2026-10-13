@@ -23,7 +23,9 @@ export class AuthorizationDeniedError extends Error {
     super(message);
     this.name = "AuthorizationDeniedError";
     if (evidence !== undefined) {
-      this.evidence = evidence;
+      if (evidence !== undefined) {
+        this.evidence = evidence;
+      }
     }
     if (authorization !== undefined) {
       this.authorization = Object.freeze({
@@ -340,11 +342,29 @@ function keyedSettingMessage(
   key: string,
   message: (path: string) => string,
 ): string {
+  return configurationFieldMessage(keyedSettingPath(parent, key), message);
+}
+
+/**
+ * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
+ * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
+ */
+export function keyedSettingPath(parent: string, key: string): string {
   const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
-  const path = /^[A-Za-z0-9_-]+$/.test(shown)
+  return /^[A-Za-z0-9_-]+$/.test(shown)
     ? `${parent}.${shown}`
     : `${parent}[${JSON.stringify(shown)}]`;
-  return configurationFieldMessage(path, message);
+}
+
+/**
+ * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
+ * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
+ */
+export function configurationSettingMessage(setting: string, requirement: string): string {
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
 }
 
 /** Builds a message that names the Configuration setting `agents.entries.<key>`. */
@@ -357,8 +377,16 @@ export function modelProviderMessage(key: string, message: (path: string) => str
   return keyedSettingMessage("models.providers", key, message);
 }
 
-const modelCredentialMessage = (path: string): string =>
-  `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
+const inlineCredentialMessage =
+  (instead: string) =>
+  (path: string): string =>
+    `Configuration field ${path} holds a credential value inline, where a reference is required. ${instead}`;
+const modelCredentialMessage = inlineCredentialMessage(
+  "Store the key as a Secret and select it as the Agent's model credential instead.",
+);
+const gatewayPasswordMessage = inlineCredentialMessage(
+  "Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+);
 
 /**
  * A literal credential in a known model credential field of Configuration values. The
@@ -367,10 +395,18 @@ const modelCredentialMessage = (path: string): string =>
 export class ModelCredentialValueError extends Error {
   readonly path: string;
 
-  constructor(path: string) {
-    super(configurationFieldMessage(path, modelCredentialMessage));
+  constructor(path: string, message: (path: string) => string = modelCredentialMessage) {
+    super(configurationFieldMessage(path, message));
     this.name = "ModelCredentialValueError";
     this.path = path;
+  }
+}
+
+/** A literal gateway.auth.password in Configuration values, reported like a model credential. */
+export class GatewayPasswordValueError extends ModelCredentialValueError {
+  constructor(path: string) {
+    super(path, gatewayPasswordMessage);
+    this.name = "GatewayPasswordValueError";
   }
 }
 
@@ -668,6 +704,28 @@ export class ActivationPendingError extends Error {
 
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+
+/**
+ * Compute preparation cannot complete for this revision. The worker records a
+ * terminal deployment failure and durable workload retirement in one transaction.
+ * Drivers own initialization and cleanup; status never exposes the error message.
+ */
+export class ComputePreparationFailedError extends Error {
+  readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+  readonly evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence;
+
+  constructor(
+    code: ComputePreparationFailedError["code"],
+    evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence,
+  ) {
+    super("Harness credential initialization could not complete.");
+    this.name = "ComputePreparationFailedError";
+    this.code = code;
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
+  }
+}
 
 /**
  * Activation found its workloads running but one of them can never complete

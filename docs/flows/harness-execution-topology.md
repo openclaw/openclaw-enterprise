@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-10 00:29
-last_updated_session: authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733
+updated: 2026-10-10 02:49
+last_updated_session: authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628
 ---
 
 # Harness Execution Topology Flow
@@ -26,7 +26,7 @@ retires predecessors before exactly-once activation audit.
 
 ```mermaid
 graph TD
-  A["Authorize Agent and Configuration"] --> B["Resolve explicit native runtime and placement"]
+  A["Authorize Agent and Configuration"] --> B["Resolve runtime, placement and native HTTP transport"]
   B --> C["Freeze configuration, harness identity, and harness authentication binding"]
   C --> D["Claim and reauthorize revision work"]
   D --> E{"Approved topology"}
@@ -57,12 +57,14 @@ graph TD
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC authorizes and locks the exact Agent and Configuration. Selected-model/provider
-`agentRuntime.id` explicitly selects `codex` or `openclaw`; only an unambiguous built-in
-configuration defaults to embedded OpenClaw. Missing ambiguous/plugin runtime policy, conflicting
-routes, unsupported IDs, and harness/mode mismatches fail closed. OCC validates each primary
-and fallback model through the same resolver and preserves their native order;
-fallbacks must keep the primary provider and Harness.
+OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`,
+and validates primary/fallback routes and Harness modes. Fallbacks preserve native order,
+primary provider and Harness. Only unambiguous built-in configuration defaults
+to embedded OpenClaw. Missing/ambiguous policies, unsupported IDs and incompatible
+modes fail closed.
+Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
+rejects `gateway.tls.enabled: true` before revision creation and preparation:
+Docker, SSH and Kubernetes require native HTTP.
 The admitted revision immutably
 captures its native configuration, approved harness identity/version, explicit mode, Compute
 selection, and Agent ServicePrincipal. Production admits approved
@@ -323,6 +325,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 02:49: Refuse native listener TLS before deployment work. (authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628 - 5d303757fb488fe34c8cbb9e7b6b975921fc1061)
 
 - 2026-10-10 00:29: Reserve private status TCP/18791 before native listeners start. (authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 

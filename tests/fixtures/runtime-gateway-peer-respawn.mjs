@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { setTimeout } from "node:timers/promises";
 
@@ -21,6 +21,7 @@ const linear = "codex-plugin:linear@openai-curated-remote";
 const workspaceNodeId = process.env.OCC_TEST_WORKSPACE_NODE_ID;
 const outageExit = process.env.OCC_TEST_GATEWAY_SCENARIO === "peer-outage-exit";
 const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replacement";
+const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "true";
 let initialGateway;
 let replacementPeerReads = 0;
 let trackSamePeerOutage = false;
@@ -276,6 +277,12 @@ try {
   assert.equal(afterOutage[0].startTicks, before.startTicks);
   assert.equal(afterOutage[0].token, before.token);
 
+  if (writableInitialConfig) {
+    const edited = JSON.parse(await readFile(configPath, "utf8"));
+    edited.messages = { ...edited.messages, responsePrefix: "Native admin edit" };
+    await writeFile(configPath, JSON.stringify(edited));
+  }
+
   await waitFor("the first workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const assetsBefore = (await stat("/home/node/openclaw-runtime-assets/bundled-skills")).mtimeMs;
 
@@ -311,6 +318,12 @@ try {
   }
   assert.equal(after.token, appServerToken("harness-startup-2"));
   assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), true);
+  if (writableInitialConfig) {
+    assert.equal(
+      JSON.parse(await readFile(configPath, "utf8")).messages.responsePrefix,
+      "Native admin edit",
+    );
+  }
   // The new process loaded the node binding again and acknowledged it itself.
   await waitFor("the respawned workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const ackAt = Date.now() - changedAt;

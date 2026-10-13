@@ -46,10 +46,12 @@ import {
   PostgresWorkQueue,
   OpenClawController,
   ActivationFailedError,
+  ComputePreparationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   SandboxRevisionUnsupportedError,
+  ScopeViolationError,
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -81,10 +83,21 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import {
+  ComputeStopYieldedError,
   withComputeAbortSignal,
   withComputeWorkWaiting,
+  withYieldingComputeStop,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
+import {
+  isStopYieldedCode,
+  PredecessorStopYieldedError,
+  type StopYieldedCode,
+  StopYields,
+  stopWithDrainYield,
+  stopYieldedCode,
+  stopYieldRecheckMs,
+} from "./worker/stop-yields.ts";
 import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
@@ -148,12 +161,40 @@ const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+  HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   "REVISION_INCOMPLETE",
   "WORKSPACE_NODE_BINDING_PENDING",
   ...Object.values(REVISION_PENDING_CODES),
 ]);
+
+// A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
+// An active revision's source is already consumed.
+function isCandidateDeployment(claim: ClaimedWork): boolean {
+  return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
+}
+
+// A refused candidate whose stop keeps failing waits on that stop, which can block the serial
+// worker for minutes (Kubernetes waits for gateway and Agent Pods to terminate). Each failed stop
+// doubles its recheck from the readiness cadence up to 5 minutes, and waits at least four times
+// as long as that stop took, so a blocked stop holds at most a fifth of the worker and other
+// Agents' work runs between attempts (finding 1002).
+const REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS = 300_000;
+// Refusals that authorizeRevision and resolveRevisionBackend decide again on every pass, before
+// a stored refusal's stop is retried; one that no longer stands lifts the stored refusal.
+const REDECIDED_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "ACTOR_REVOKED",
+  "AUTHORIZATION_DENIED",
+  "INVALID_AGENT_PRINCIPAL",
+  "HARNESS_AUTH_REQUIRED",
+  "INVALID_HARNESS_AUTH",
+  "INVALID_SECRET_BINDINGS",
+  "BACKEND_UNAVAILABLE",
+  "HARNESS_AUTH_SOURCE_CHANGED",
+  "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+]);
+const REFUSED_CANDIDATE_STOP_DURATION_FACTOR = 4;
 
 // A repository cleanup that another pass cannot settle (an invalidated attempt or a cleanup
 // error, with no session still closing) still rechecks so its obligation stays visible, but
@@ -244,6 +285,47 @@ function revisionFailureLogFields(error: unknown): {
 }
 
 /**
+ * Stopping a refused candidate failed or yielded to other Work. The pass waits as
+ * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
+ * for, and its log names the stop's own failure.
+ */
+class RefusedCandidateStopError extends Error {
+  readonly refusal: string;
+  /** How long the unfinished stop held the worker. */
+  readonly durationMs: number;
+  /** The stop yielded to other Work rather than failing, so it does not double the backoff. */
+  readonly yielded: boolean;
+
+  constructor(refusal: string, durationMs: number, cause: unknown) {
+    super("The refused AgentRevision candidate could not be stopped.", { cause });
+    this.name = "RefusedCandidateStopError";
+    this.refusal = refusal;
+    this.durationMs = durationMs;
+    this.yielded = cause instanceof ComputeStopYieldedError;
+  }
+
+  /**
+   * The refusal stands, but it is not published while its candidate may still serve: the work
+   * waits on the stop's own dependency and the next pass repeats the refusal and the stop.
+   */
+  pending(): {
+    readonly result: RevisionDispatchResult;
+    readonly logFields: Readonly<Record<string, string | number>>;
+  } {
+    return {
+      result: {
+        outcome: "pending",
+        code: "REFUSED_CANDIDATE_STOP_PENDING",
+        refusedCandidate: this.refusal,
+        refusedStopMs: this.durationMs,
+        ...(this.yielded ? { refusedStopYielded: true } : {}),
+      },
+      logFields: { ...revisionFailureLogFields(this.cause), refusal: this.refusal },
+    };
+  }
+}
+
+/**
  * The pending result of an activation pass that did not finish: a dependency
  * that is converging and a known activation wait keep their own codes (D330);
  * anything else stays REVISION_FINALIZATION_INCOMPLETE.
@@ -288,8 +370,22 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
+  /** Terminal preparation requires durable retirement of this exact revision. */
+  readonly cleanupFailedPreparation?: true;
   /** A transient dependency failure, retried until the convergence deadline. */
   readonly dependencyFailure?: TransientDependencyError;
+  /**
+   * A refusal whose exclusive candidate could not be stopped yet. Its pending passes outlast
+   * the attempt budget and the convergence deadline: ending the work would leave the refused
+   * candidate serving with nothing left to stop it.
+   */
+  readonly refusedCandidate?: string;
+  /** How long the refused candidate's unfinished stop took; it lengthens the recheck. */
+  readonly refusedStopMs?: number;
+  /** That stop yielded to other Work; later rechecks do not count it as a failure. */
+  readonly refusedStopYielded?: boolean;
+  /** This pass already ran the refused candidate's stop, so publishing does not run it again. */
+  readonly refusedCandidateStopped?: boolean;
   readonly data?: Readonly<Record<string, unknown>>;
   readonly resultData?: Readonly<Record<string, unknown>>;
   readonly revision?: Readonly<AgentRevision>;
@@ -535,6 +631,11 @@ function validComputeFailureDiagnostic(
     (value.status === undefined ||
       (Number.isSafeInteger(value.status) && value.status >= 0 && value.status <= 999))
   );
+}
+
+/** A yielded stop's log lines name how often this worker saw its stop yield (finding 1094). */
+function stopYieldsField(stopYields: number | undefined): { stopYields?: number } {
+  return stopYields === undefined ? {} : { stopYields };
 }
 
 function workLogFields(claim: ClaimedWork): {
@@ -789,6 +890,13 @@ const MAX_AUDITED_PENDING_LIFECYCLE_RECORDS = 4_096;
 export class ControllerWorker {
   private readonly metrics: OccMetrics | undefined;
   private passOutcome: WorkOutcome = "error";
+  /** The revision this pass asked Compute to prepare, if any. */
+  private preparedThisPass: string | undefined;
+  /**
+   * The refusal this deployment pass's work still waits to publish: its latest evidence is a
+   * REFUSED_CANDIDATE_STOP_PENDING deferral, or a lost claim that kept its refusal.
+   */
+  private refusalWait: { readonly idempotencyKey: string; readonly refusal: string } | undefined;
   private readonly state: PostgresPlatformState;
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
@@ -850,6 +958,12 @@ export class ControllerWorker {
    * terminal pass and a changed pending state are always audited.
    */
   private readonly auditedPendingLifecycle = new Map<string, string>();
+  /** Work whose latest pass yielded its stop during a Gateway drain (findings 1093, 1094). */
+  private readonly stopYields = new StopYields();
+  /** Whether this pass deferred its work as AGENT_STOP_YIELDED. */
+  private stopYieldedThisPass = false;
+  /** Each claim's work creation instant on this process's monotonic clock; see `workAgeMs`. */
+  private readonly workOrigins = new WeakMap<ClaimedWork, number>();
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -1061,19 +1175,28 @@ export class ControllerWorker {
     while (!this.stopping) {
       // Every pass starts here, including back-to-back claims that skip the idle delay.
       this.progress();
+      let claimed: ClaimedWork | undefined;
       try {
         const recovery = await this.queue.recoverStale();
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         const claim = await this.queue.claim();
         if (claim !== undefined) {
+          this.workOrigins.set(claim, performance.now() - claim.ageMs);
+          claimed = claim;
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
+          this.preparedThisPass = undefined;
+          this.refusalWait = undefined;
+          this.stopYieldedThisPass = false;
           try {
             await this.process(claim);
           } catch (error) {
             this.passOutcome = error instanceof WorkClaimLostError ? "claim_lost" : "error";
             throw error;
           } finally {
+            if (!this.stopYieldedThisPass) {
+              this.stopYields.settled(claim.idempotencyKey);
+            }
             let kind: WorkKind = "namespace_ensure";
             if (claim.kind === "provisioning") {
               kind = "agent_provisioning";
@@ -1099,10 +1222,20 @@ export class ControllerWorker {
         }
         await this.health(false);
       } catch (error) {
-        this.emit({
-          event: "worker.error",
-          code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
-        });
+        if (error instanceof WorkClaimLostError && this.stopping) {
+          // A graceful shutdown aborted the pass in flight. That is no failure: the work keeps
+          // its claim until the lease expires, then another worker resumes it (finding 1040).
+          this.emit({
+            event: "worker.pass-interrupted",
+            ...(claimed === undefined ? {} : workLogFields(claimed)),
+            cause: "WorkerStopping",
+          });
+        } else {
+          this.emit({
+            event: "worker.error",
+            code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
+          });
+        }
       }
       try {
         await delay(this.pollIntervalMs, undefined, { signal: this.abort.signal });
@@ -1112,6 +1245,22 @@ export class ControllerWorker {
         }
       }
     }
+  }
+
+  /**
+   * Milliseconds since the claimed work was created, by PostgreSQL's clock. The convergence
+   * deadline and age-scaled rechecks use it. `createdAt` is on the database clock, so
+   * `Date.now() - createdAt` would move the deadline by the controller's skew from it
+   * (finding 1187). The claim carries PostgreSQL's age when granted, and each renewal around
+   * an external effect refreshes it; this process's monotonic clock advances it in between.
+   * It trails the database's age by one round trip, so it never ends work early.
+   */
+  private workAgeMs(claim: ClaimedWork): number {
+    const origin = this.workOrigins.get(claim);
+    if (origin === undefined) {
+      throw new Error(`The worker has no claim time for work ${claim.idempotencyKey}.`);
+    }
+    return Math.max(0, performance.now() - origin);
   }
 
   /** Report loop progress without ever delaying the loop; see `onProgress`. */
@@ -1394,6 +1543,13 @@ export class ControllerWorker {
       }
       return prepared;
     } catch (error) {
+      // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
+      // own claim-loss or interruption record explains it, so there is no Compute failure to
+      // describe (finding 1040).
+      // A predecessor's stop that yielded is no preparation failure: the candidate is untouched.
+      if (error instanceof WorkClaimLostError || error instanceof ComputeStopYieldedError) {
+        throw error;
+      }
       let diagnostic: ComputePrepareRevisionFailureDiagnostic | undefined;
       try {
         diagnostic = this.compute.describePrepareRevisionFailure?.(error);
@@ -1450,9 +1606,19 @@ export class ControllerWorker {
     }
   }
 
+  /**
+   * Stops every predecessor before exclusive replacement prepares its candidate, so the
+   * Harness's single-writer volumes are never mounted twice. A predecessor's Gateway drain yields
+   * like a stopped Agent's (`drain` "yield", finding 1090): the pass ends pending as
+   * `PREDECESSOR_STOP_YIELDED` before the candidate is touched, and the next pass repeats the
+   * idempotent stop, which resumes the drain. The Harness is deleted only after the Gateway's Pods
+   * are gone, and the candidate is prepared only after every predecessor's stop returned in this
+   * pass. A newer revision admitted meanwhile supersedes this work and stops both itself.
+   */
   private async stopPredecessors(
     claim: ClaimedWork,
     earlier: readonly Readonly<AgentRevision>[],
+    drain: "yield" | "wait" = "yield",
   ): Promise<void> {
     for (const previous of earlier) {
       const record = this.stoppedPredecessors.get(previous.id);
@@ -1460,7 +1626,17 @@ export class ControllerWorker {
         continue;
       }
       await this.closeRevisionCredentials(claim, previous);
-      await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+      if (drain === "wait") {
+        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+      } else {
+        try {
+          await this.stopYieldingDrain(claim, previous);
+        } catch (error) {
+          throw error instanceof ComputeStopYieldedError
+            ? new PredecessorStopYieldedError(error)
+            : error;
+        }
+      }
       this.stoppedPredecessors.delete(previous.id);
       this.stoppedPredecessors.set(previous.id, {
         stoppedAt: Date.now(),
@@ -1489,6 +1665,7 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
+    this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
     );
@@ -1639,10 +1816,7 @@ export class ControllerWorker {
             delayMs:
               cause === undefined || attempts.some(({ phase }) => phase === "closing")
                 ? this.repositoryCleanupRetryMs
-                : repositoryCleanupRecheckMs(
-                    this.repositoryCleanupRetryMs,
-                    Date.now() - claim.createdAt.getTime(),
-                  ),
+                : repositoryCleanupRecheckMs(this.repositoryCleanupRetryMs, this.workAgeMs(claim)),
           },
         );
       }
@@ -1745,7 +1919,7 @@ export class ControllerWorker {
         await this.finalize(claim, namespace, denied);
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) {
+      if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
       result = await this.observe(claim, namespace);
@@ -1773,7 +1947,7 @@ export class ControllerWorker {
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       outcome: this.passOutcome,
-      code: result.outcome === "succeeded" ? "PROVISIONING_HANDED_OFF" : result.code,
+      code: result.outcome === "succeeded" ? "PROVISIONING_COMPLETED" : result.code,
       ...(result.outcome === "succeeded" ? { revisionId: result.revisionId } : {}),
       // A Compute refusal's reason; status and the Collector export keep only the code.
       ...(result.outcome !== "succeeded" && result.reason !== undefined
@@ -1784,6 +1958,7 @@ export class ControllerWorker {
 
   private async processAgentStop(claim: ClaimedWork): Promise<void> {
     let result: AgentStopDispatchResult;
+    let stopping: Readonly<AgentRevision> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -1924,7 +2099,8 @@ export class ControllerWorker {
           });
           return;
         }
-        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+        stopping = revision;
+        await this.stopYieldingDrain(claim, revision);
       }
       result = {
         outcome: "success",
@@ -1936,9 +2112,49 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      result =
+        error instanceof ComputeStopYieldedError
+          ? {
+              outcome: "pending",
+              code: "AGENT_STOP_YIELDED",
+              ...(stopping === undefined ? {} : { revision: stopping }),
+            }
+          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
+  }
+
+  /**
+   * Stops a revision whose Gateway drain may yield: a stopped Agent's revision, or a predecessor
+   * that exclusive replacement stops before its successor starts. While the work is younger than
+   * the convergence deadline, the Gateway drain wait ends once other Work is due
+   * (ComputeStopYieldedError) and the work is deferred to repeat the stop. Older work keeps the
+   * full bounded wait, so a drain that never ends cannot defer it forever (finding 1088). Age
+   * counts from the work's creation: maintenance work is created one interval before it is due,
+   * so a convergence deadline shorter than the maintenance interval leaves its stops without
+   * yielding. Stops that yielded during their own drain do not count as due Work (see
+   * withClaimHeartbeat; finding 1093).
+   */
+  private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
+    return this.withClaimHeartbeat(claim, () =>
+      stopWithDrainYield(this.workAgeMs(claim), this.convergenceTimeoutMs, () =>
+        this.compute.stopRevision(revision),
+      ),
+    );
+  }
+
+  /** When work whose stop yielded to other Work runs again: 1 s, growing with its age to 5 s. */
+  private stopYieldRecheckMs(claim: ClaimedWork): number {
+    return stopYieldRecheckMs(this.workAgeMs(claim));
+  }
+
+  /**
+   * Records a committed stop-yield deferral (`code`). Returns the work's yield count when its
+   * `worker.completed` line is due: the first yield, then at most one a minute (finding 1094).
+   */
+  private recordStopYield(claim: ClaimedWork, code: StopYieldedCode): number | undefined {
+    this.stopYieldedThisPass = true;
+    return this.stopYields.yielded(claim.idempotencyKey, code);
   }
 
   private async processAgentDeletion(claim: ClaimedWork): Promise<void> {
@@ -2310,6 +2526,14 @@ export class ControllerWorker {
         await queue.complete(claim);
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
+      } else if (result.outcome === "pending") {
+        // A stop that yielded to due Work refunds its attempt and runs again after that Work.
+        // Repeated yields are not failures, so they record no evidence; the outcome does.
+        await queue.defer(
+          claim,
+          { code: result.code },
+          { delayMs: this.stopYieldRecheckMs(claim), recordEvidence: false },
+        );
       } else {
         await queue.retry(claim, { code: result.code });
       }
@@ -2319,10 +2543,16 @@ export class ControllerWorker {
         ? "permanent"
         : result.outcome;
     if (result.outcome === "success" && result.code !== "STOP_SUPERSEDED") {
-      this.metrics?.observeAgentOperation(
-        "stop",
-        Math.max(0, Date.now() - claim.createdAt.getTime()) / 1000,
-      );
+      this.metrics?.observeAgentOperation("stop", this.workAgeMs(claim) / 1000);
+    }
+    let stopYields: number | undefined;
+    if (result.outcome === "pending" && result.code === "AGENT_STOP_YIELDED") {
+      stopYields = this.recordStopYield(claim, result.code);
+      if (stopYields === undefined) {
+        return;
+      }
+    } else {
+      stopYields = this.stopYields.count(claim.idempotencyKey);
     }
     this.emit({
       event: "worker.completed",
@@ -2333,6 +2563,7 @@ export class ControllerWorker {
       result: result.outcome,
       outcome: result.outcome,
       code: result.code,
+      ...stopYieldsField(stopYields),
     });
   }
 
@@ -3083,7 +3314,8 @@ export class ControllerWorker {
    * worker wall clock: `durationMs` is this pass, `prepareMs` sums Compute
    * preparation across passes, `readinessWaitMs` runs from the first unready
    * observation to the first ready one (or now), `activationMs` runs from this
-   * pass's ready observation to completion, and `elapsedMs` is since admission.
+   * pass's ready observation to completion, and `elapsedMs` is since admission,
+   * by the database clock (`workAgeMs`).
    */
   private deployTimingFields(claim: ClaimedWork): Readonly<Record<string, number>> {
     const timing = this.deployTimings.get(claim.idempotencyKey);
@@ -3104,7 +3336,7 @@ export class ControllerWorker {
       prepareMs: timing.prepareMs,
       readinessWaitMs,
       ...(timing.readyAt === undefined ? {} : { activationMs: now - timing.readyAt }),
-      elapsedMs: Math.max(0, now - claim.createdAt.getTime()),
+      elapsedMs: this.workAgeMs(claim),
     };
   }
 
@@ -3112,6 +3344,8 @@ export class ControllerWorker {
     this.beginDeployPass(claim);
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    let refusalWaitRead = false;
+    let claimAgent: Readonly<Agent> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -3141,6 +3375,7 @@ export class ControllerWorker {
         return { namespace, agent, revision, previous };
       });
       const { namespace, agent, revision, previous } = resources;
+      claimAgent = agent;
       if (namespace === undefined || agent === undefined || revision === undefined) {
         await this.finalizeRevision(claim, {
           outcome: "permanent",
@@ -3148,6 +3383,8 @@ export class ControllerWorker {
         });
         return;
       }
+      await this.readRefusalWait(claim, agent, revision.id);
+      refusalWaitRead = true;
       if (namespace.status !== "ready") {
         await this.finalizeRevision(claim, { outcome: "permanent", code: "NAMESPACE_NOT_READY" });
         return;
@@ -3213,6 +3450,18 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, backend);
         return;
       }
+      // Authorization and the backend are decided again above on every pass. Once a stored
+      // refusal of theirs no longer stands (for example `deploy` granted again), the deployment
+      // continues, as it did before the wait was stored. Past the convergence deadline it cannot
+      // converge any more: preparing the candidate again only restarted it, and the deadline then
+      // ended the work with it running beside a stopped predecessor (finding 1042). The wait
+      // instead stops it and publishes the deadline.
+      if (this.refusalWait !== undefined && REDECIDED_REFUSAL_CODES.has(this.refusalWait.refusal)) {
+        this.refusalWait =
+          this.workAgeMs(claim) >= this.convergenceTimeoutMs
+            ? { ...this.refusalWait, refusal: "CONVERGENCE_DEADLINE_EXCEEDED" }
+            : undefined;
+      }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
           if (revision.repositoryCredentials !== undefined) {
@@ -3222,7 +3471,7 @@ export class ControllerWorker {
                 await this.compute.bindAgent!({ namespace, agent });
               });
             }
-            await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+            await this.stopYieldingDrain(claim, revision);
           }
           await this.completeStoppedRevisionWork(
             claim,
@@ -3237,13 +3486,30 @@ export class ControllerWorker {
           });
         }
         await this.closeRevisionCredentials(claim, revision);
-        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+        await this.stopYieldingDrain(claim, revision);
         // Once this reconciliation has published its candidate, it owns retiring
         // every predecessor even if stop admission clears the active pointer before
         // a recovery attempt. A different active revision means this candidate was
         // never published, so its authorized stop work remains solely responsible.
         if (agent.activeRevisionId === revision.id || agent.activeRevisionId === undefined) {
           await this.retireEarlierRevisions(claim, revision);
+        } else {
+          // A predecessor stop this work started and yielded already removed that revision's
+          // Gateway. Finish it before ending stopped, rather than leave its Harness and workspace
+          // to the Agent-stop work alone (finding 1109). It is this work's own effect, authorized
+          // when it started; a failure retries like this revision's own stop above, and a yield
+          // waits on the stopped Agent's drain like that stop's (AGENT_STOP_YIELDED).
+          try {
+            await this.finishYieldedPredecessorStops(
+              claim,
+              this.refusalWait === undefined ? "yield" : "wait",
+              "throw",
+            );
+          } catch (error) {
+            throw error instanceof PredecessorStopYieldedError
+              ? new ComputeStopYieldedError(error.message)
+              : error;
+          }
         }
         await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
         return;
@@ -3263,10 +3529,60 @@ export class ControllerWorker {
               ),
             );
       if (successor !== undefined) {
+        // A refusal decided after this check (lost repository authority, a Secret or
+        // credential-source problem, a refused observation) may still wait on its candidate's
+        // stop. The newer revision's sweep gives up at its own deadline, so finish that stop
+        // before superseding; a failed stop keeps waiting (finding 1004).
+        // The wait need not be the latest evidence: a lost claim or a retry may have followed it.
+        // A stop this process made within a lease (the newer revision's sweep) is not repeated.
+        const stopped = this.stoppedPredecessors.get(revision.id);
+        const waited =
+          claim.idempotencyKey === `agent_revision:${revision.id}:reconcile` &&
+          (stopped === undefined || Date.now() - stopped.stoppedAt >= stopped.restopAfterMs)
+            ? await this.queue.findWorkAttempt(
+                claim.idempotencyKey,
+                "REFUSED_CANDIDATE_STOP_PENDING",
+              )
+            : undefined;
+        if (waited !== undefined) {
+          await this.stopRefusedCandidate(claim, waited.refusal ?? "UNKNOWN_FAILURE");
+        }
+        // A predecessor stop this work yielded is finished before handing off too: the newer
+        // revision stops every predecessor only if its own pass gets that far, and a refusal
+        // before then would leave the predecessor's Harness running without its Gateway
+        // (finding 1090). It still yields, unless a stored refusal's wait owns the deferral.
+        const predecessorStop = await this.finishYieldedPredecessorStops(
+          claim,
+          this.refusalWait === undefined ? "yield" : "wait",
+        );
+        await this.finalizeRevision(
+          claim,
+          { outcome: "success", code: "REVISION_SUPERSEDED", supersededBy: successor },
+          predecessorStop,
+        );
+        return;
+      }
+      if (this.refusalWait !== undefined) {
+        // The refusal is already decided and recorded: retry its stop before anything that could
+        // restart the candidate or fail first. Re-running the pass re-stopped predecessors and
+        // re-prepared the candidate when Compute had refused it, so on Kubernetes its fresh Pods
+        // kept a yielding stop from ever finishing (finding 1034), and an error before the refusal
+        // ended the work with the candidate running (finding 1033).
+        if (previous !== undefined && previous.revision >= revision.revision) {
+          // A newer revision activated beside this shared candidate; it retires the candidate. (An
+          // error before this point retries the stop and publishes the refusal instead.)
+          await this.finalizeRevision(claim, {
+            outcome: "success",
+            code: "REVISION_SUPERSEDED",
+            supersededBy: previous,
+          });
+          return;
+        }
+        const refusal = this.refusalWait.refusal;
+        await this.stopRefusedCandidate(claim, refusal);
         await this.finalizeRevision(claim, {
-          outcome: "success",
-          code: "REVISION_SUPERSEDED",
-          supersededBy: successor,
+          ...this.storedRefusalResult(refusal),
+          refusedCandidateStopped: true,
         });
         return;
       }
@@ -3360,9 +3676,12 @@ export class ControllerWorker {
           }
           await this.retireEarlierRevisions(claim, revision);
         } catch (error) {
+          // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
-            error instanceof RepositoryCredentialAuthorityError
+            error instanceof RepositoryCredentialAuthorityError ||
+            error instanceof ComputeStopYieldedError ||
+            error instanceof ComputePreparationFailedError
           ) {
             throw error;
           }
@@ -3404,7 +3723,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) {
+      if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
       result = await this.observeRevision(
@@ -3418,24 +3737,51 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      if (
-        error instanceof RepositoryCredentialAuthorityError ||
-        error instanceof SandboxRevisionUnsupportedError ||
-        error instanceof CredentialSourceRevisionError ||
-        error instanceof ActivationFailedError
-      ) {
-        result = { outcome: "permanent", code: error.code };
-      } else if (error instanceof TransientDependencyError) {
-        // A dependency that recovers by itself must not spend the attempt budget:
-        // five quick retries end long before a Gateway route or an API server
-        // that is converging under load comes back (D28).
-        result = { outcome: "pending", code: error.code, dependencyFailure: error };
-      } else {
-        result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      if (!refusalWaitRead && !(error instanceof RefusedCandidateStopError)) {
+        await this.rereadRefusalWait(claim, claimAgent, error);
       }
-      failureLogFields = revisionFailureLogFields(error);
+      if (error instanceof RefusedCandidateStopError) {
+        ({ result, logFields: failureLogFields } = error.pending());
+      } else {
+        if (error instanceof ComputePreparationFailedError) {
+          result = {
+            outcome: "permanent",
+            code: error.code,
+            cleanupFailedPreparation: true,
+            ...(error.evidence === undefined ? {} : { data: { preparation: error.evidence } }),
+          };
+        } else if (
+          error instanceof RepositoryCredentialAuthorityError ||
+          error instanceof SandboxRevisionUnsupportedError ||
+          error instanceof CredentialSourceRevisionError ||
+          error instanceof ActivationFailedError
+        ) {
+          result = { outcome: "permanent", code: error.code };
+        } else if (error instanceof ComputeStopYieldedError) {
+          // A predecessor's or a stopped Agent's revision stop yielded to other Work; the next
+          // pass repeats it.
+          result = { outcome: "pending", code: stopYieldedCode(error)! };
+        } else if (error instanceof TransientDependencyError) {
+          // A dependency that recovers by itself must not spend the attempt budget:
+          // five quick retries end long before a Gateway route or an API server
+          // that is converging under load comes back (D28).
+          result = { outcome: "pending", code: error.code, dependencyFailure: error };
+        } else {
+          result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+        }
+        failureLogFields = revisionFailureLogFields(error);
+      }
     }
-    await this.finalizeRevision(claim, result, failureLogFields);
+    try {
+      await this.finalizeRevision(claim, result, failureLogFields);
+    } catch (error) {
+      // A refusal caught above (for example lost repository authority) stops its candidate here.
+      if (!(error instanceof RefusedCandidateStopError)) {
+        throw error;
+      }
+      const pending = error.pending();
+      await this.finalizeRevision(claim, pending.result, pending.logFields);
+    }
   }
 
   private async authorizeRevision(
@@ -3684,8 +4030,10 @@ export class ControllerWorker {
         view.agents.findAgent(revision.namespaceId, revision.agentId),
       );
       if (agent?.desiredRuntimeState !== "running") {
+        // The Agent stopped during preparation. A yield ends the pass pending; the next pass
+        // repeats the stop as a stopped Agent's revision.
         await this.closeRevisionCredentials(claim, revision);
-        await this.compute.stopRevision(revision);
+        await this.stopYieldingDrain(claim, revision);
         return { outcome: "success", code: "REVISION_STOPPED" };
       }
       if (this.compute.activationOrder === "beforeCommit") {
@@ -3872,6 +4220,16 @@ export class ControllerWorker {
     };
   }
 
+  /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
+  private async renewClaim(claim: ClaimedWork): Promise<boolean> {
+    const renewed = await this.queue.heartbeat(claim);
+    if (renewed === undefined) {
+      return false;
+    }
+    this.workOrigins.set(claim, performance.now() - renewed.ageMs);
+    return true;
+  }
+
   private async withClaimHeartbeat<T>(
     claim: ClaimedWork,
     effect: (signal: AbortSignal) => Promise<T>,
@@ -3882,7 +4240,7 @@ export class ControllerWorker {
     // Consecutive short effects can each finish before their timer fires while
     // the whole sequence outlives the lease. Renew before every external effect.
     const firstRenewal = performance.now();
-    if ((await this.queue.heartbeat(claim)) === undefined) {
+    if (!(await this.renewClaim(claim))) {
       throw new WorkClaimLostError();
     }
     this.progress();
@@ -3912,7 +4270,7 @@ export class ControllerWorker {
       () => {
         pending = pending.then(async () => {
           const renewedAt = performance.now();
-          if ((await this.queue.heartbeat(claim)) === undefined) {
+          if (!(await this.renewClaim(claim))) {
             abandon();
           } else if (!lost) {
             confirmLease(renewedAt);
@@ -3933,9 +4291,14 @@ export class ControllerWorker {
     try {
       // The worker is serial: Compute may end an optional in-pass wait early
       // when other Work could be claimed, instead of holding it back (D221).
+      // Stops whose latest pass yielded during a Gateway drain are not due Work for a draining
+      // stop, so draining stops do not take turns. Other waits skip only a stopped Agent's yielded
+      // stop, whose next pass just rechecks its drain; a deployment whose predecessor's drain
+      // ended deploys next. Every wait that asks is optional and bounded, so this only lets it
+      // run to its own end (findings 1093, 1090, 1108).
       return await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
-          () => this.queue.claimableWorkWaiting(),
+          (wait) => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting(wait) }),
           () => effect(operation.signal),
         ),
       );
@@ -3999,18 +4362,56 @@ export class ControllerWorker {
     });
   }
 
+  /**
+   * Whether a candidate's deployment work last saw its OAuth bootstrap still running: of its
+   * readiness evidence, the newest is HARNESS_CREDENTIAL_BOOTSTRAP_PENDING. Transient dependency
+   * failures, retries and lost claims say nothing about the bootstrap and are skipped. A later
+   * readiness code wins, as it would for a pass that saw the deployment at the deadline: a
+   * runtime that failed by itself stays for diagnosis. A ready pass records no readiness code, so
+   * a revision published since (its activation can still fail transiently) is never retired.
+   */
+  private async bootstrapLastPending(claim: ClaimedWork): Promise<boolean> {
+    if (!isCandidateDeployment(claim)) {
+      return false;
+    }
+    const latest = await this.queue.findWorkAttempt(claim.idempotencyKey, [
+      ...REVISION_READINESS_CODES,
+    ]);
+    if (latest?.code !== "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING") {
+      return false;
+    }
+    // Only this claim publishes its candidate, so a pointer that is elsewhere now stays so.
+    const agent = await this.state.read((view) =>
+      view.agents.findAgent(claim.namespaceId, claim.agentId!),
+    );
+    return agent?.activeRevisionId !== claim.revisionId;
+  }
+
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
     failureLogFields?: Readonly<Record<string, string | number>>,
   ): Promise<void> {
+    if (
+      this.refusalWait?.idempotencyKey === claim.idempotencyKey &&
+      result.refusedCandidate === undefined &&
+      (result.outcome === "retry" || result.outcome === "pending")
+    ) {
+      // A pass that failed before retrying its stored refusal's stop retries that stop instead,
+      // keeping the refusal: neither the attempt budget nor the deadline may end the wait with
+      // the refused candidate running (finding 1033).
+      result = this.storedRefusalResult(this.refusalWait.refusal);
+    }
     const runtimeFailure =
       result.outcome === "pending"
         ? safeRuntimeFailureEvidence(result.data?.runtimeFailure)
         : undefined;
+    // A yielded stop is not convergence: it yields only before the deadline and then waits.
     const expired =
       result.outcome === "pending" &&
-      Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
+      result.refusedCandidate === undefined &&
+      !isStopYieldedCode(result.code) &&
+      this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
     // end, and then hold the container unready until an explicit restart that
     // nothing performs: no liveness probe or controller restarts it. Waiting for
@@ -4028,13 +4429,29 @@ export class ControllerWorker {
       };
     } else if (expired && result.dependencyFailure !== undefined) {
       // The dependency was still failing at the deadline: name it, not the deadline.
-      resolved = { outcome: "permanent", code: result.code };
+      resolved = {
+        outcome: "permanent",
+        code: result.code,
+        // This pass could not see the bootstrap, so the work's latest readiness evidence
+        // stands in: a bootstrap last seen running is retired with the failure, as below
+        // (finding 1165).
+        ...((await this.bootstrapLastPending(claim))
+          ? { cleanupFailedPreparation: true as const }
+          : {}),
+      };
     } else if (expired) {
       resolved = {
         ...result,
         outcome: "permanent",
         code: "CONVERGENCE_DEADLINE_EXCEEDED",
         data: convergenceDeadlineResultData(this.convergenceTimeoutMs, runtimeFailure),
+        // No runtime exists yet to keep for diagnosis, and nothing else retires this revision:
+        // its bootstrap Job and seed Secret (the OAuth token bundle) go with the failure. Only
+        // a candidate's own deployment work can observe a bootstrap; an active revision's
+        // source is already consumed.
+        ...(result.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" && isCandidateDeployment(claim)
+          ? { cleanupFailedPreparation: true as const }
+          : {}),
       };
     } else {
       resolved = result;
@@ -4060,12 +4477,36 @@ export class ControllerWorker {
     ) {
       return;
     }
+    // OCC refused this candidate (its authority, credentials or configuration), so its runtime
+    // must not keep serving. A runtime that failed by itself (a held startup failure, the
+    // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
+    // ActivationFailedError also lands here, but no bundled Driver activates before commit, so
+    // it only reaches a published (active) revision, which the stop skips.
+    if (
+      resolved.outcome === "permanent" &&
+      heldFailureCode === undefined &&
+      !expired &&
+      resolved.cleanupFailedPreparation !== true &&
+      resolved.refusedCandidateStopped !== true
+    ) {
+      await this.stopRefusedCandidate(claim, resolved.code);
+    }
+    const refusedStopRecheckMs =
+      resolved.refusedCandidate === undefined
+        ? undefined
+        : await this.refusedStopRecheckMs(claim, resolved.refusedStopMs ?? 0);
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     let committedOutcome: WorkOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
         : resolved.outcome;
+    if (committedOutcome === "permanent") {
+      failureLogFields = {
+        ...failureLogFields,
+        ...(await this.finishYieldedPredecessorStops(claim, "wait")),
+      };
+    }
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
@@ -4125,18 +4566,46 @@ export class ControllerWorker {
           code: resolved.code,
           ...(resolved.resultData === undefined ? {} : { resultData: resolved.resultData }),
         });
+      } else if (resolved.refusedCandidate !== undefined) {
+        // Every deferral is recorded, so `lastAttempt.at` shows the stop is still retried; the
+        // backoff bounds them to one per few minutes.
+        await queue.defer(
+          claim,
+          {
+            code: resolved.code,
+            refusal: resolved.refusedCandidate,
+            ...(resolved.refusedStopYielded === true ? { stopYielded: true } : {}),
+          },
+          { delayMs: refusedStopRecheckMs!, repeatEvidence: true },
+        );
       } else if (resolved.outcome === "pending") {
-        const ageMs = Date.now() - claim.createdAt.getTime();
+        const ageMs = this.workAgeMs(claim);
         await queue.defer(
           claim,
           { code: resolved.code },
           // A transient dependency failure is rechecked on the readiness cadence:
           // like an unready runtime, it waits for convergence, not for a fix.
-          resolved.dependencyFailure !== undefined || REVISION_READINESS_CODES.has(resolved.code)
-            ? { delayMs: revisionReadinessRecheckMs(ageMs) }
-            : {},
+          isStopYieldedCode(resolved.code)
+            ? { delayMs: this.stopYieldRecheckMs(claim) }
+            : resolved.dependencyFailure !== undefined ||
+                REVISION_READINESS_CODES.has(resolved.code)
+              ? { delayMs: revisionReadinessRecheckMs(ageMs) }
+              : {},
         );
       } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
+        if (resolved.cleanupFailedPreparation === true) {
+          // Register retirement while the source claim is still held. Both rows
+          // commit together, so cleanup survives a crash after deployment failure.
+          await queue.enqueueRepositoryCleanup(
+            claim,
+            {
+              namespaceId: claim.namespaceId,
+              agentId: claim.agentId!,
+              revisionId: claim.revisionId!,
+            },
+            "failed-preparation",
+          );
+        }
         await queue.fail(claim, {
           code: resolved.code,
           ...(resolved.data === undefined ? {} : { data: resolved.data }),
@@ -4149,7 +4618,17 @@ export class ControllerWorker {
     }, this.queueOptions);
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
-      await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(stoppedCandidate!));
+      try {
+        await this.stopYieldingDrain(claim, stoppedCandidate);
+      } catch (error) {
+        // Nothing was committed for this claim: the next pass repeats the stop as a stopped
+        // Agent's revision.
+        if (!(error instanceof ComputeStopYieldedError)) {
+          throw error;
+        }
+        await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+        return;
+      }
       await this.completeStoppedRevisionWork(claim, stoppedCandidate, "REVISION_STOPPED");
       return;
     }
@@ -4162,7 +4641,7 @@ export class ControllerWorker {
         );
         if (current?.desiredRuntimeState !== "running") {
           await this.closeRevisionCredentials(claim, activated);
-          await this.withClaimHeartbeat(claim, () => compute.stopRevision(activated!));
+          await this.stopYieldingDrain(claim, activated);
           await this.retireEarlierRevisions(claim, activated);
           await this.completeStoppedRevisionWork(claim, activated, "REVISION_STOPPED");
           return;
@@ -4185,6 +4664,12 @@ export class ControllerWorker {
           await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
           return;
         }
+        if (error instanceof ComputeStopYieldedError) {
+          // The Agent stopped after activation and its stop yielded: the next pass repeats it as
+          // the stopped Agent's active revision, then retires the earlier ones.
+          await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+          return;
+        }
         await this.finalizeRevision(
           claim,
           error instanceof ActivationFailedError
@@ -4197,6 +4682,15 @@ export class ControllerWorker {
       await this.completeActivatedRevision(claim, resolved);
       return;
     }
+    let stopYields: number | undefined;
+    if (resolved.outcome === "pending" && isStopYieldedCode(resolved.code)) {
+      stopYields = this.recordStopYield(claim, resolved.code);
+      if (stopYields === undefined) {
+        return;
+      }
+    } else {
+      stopYields = this.stopYields.count(claim.idempotencyKey);
+    }
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -4208,7 +4702,284 @@ export class ControllerWorker {
       code: resolved.code,
       ...failureLogFields,
       ...this.deployTimingFields(claim),
+      ...stopYieldsField(stopYields),
     });
+  }
+
+  /**
+   * A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
+   * serving revision's Gateway; only its drain and the Harness deletion were left to a later pass.
+   * Before such work ends in failure (a refusal, exhausted attempts, the deadline), superseded or
+   * stopped, it finishes that stop, so the predecessor ends stopped, as when the stop never
+   * yielded, rather than keeping its Harness and workspace with nothing left to stop it (findings
+   * 1090, 1109). A failure finishes it with the full bounded wait (`drain` "wait"); a superseded
+   * or stopped pass may still yield.
+   * Work that never yielded its predecessor stop leaves the serving revision alone. A stop that
+   * still fails is logged as `predecessorStop` and the result is published anyway, unless
+   * `failures` is "throw": a stopped Agent's revision pass retries it instead (finding 1109).
+   */
+  private async finishYieldedPredecessorStops(
+    claim: ClaimedWork,
+    drain: "yield" | "wait" = "wait",
+    failures: "log" | "throw" = "log",
+  ): Promise<Readonly<Record<string, string | number>>> {
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      (await this.queue.findWorkAttempt(claim.idempotencyKey, "PREDECESSOR_STOP_YIELDED")) ===
+        undefined
+    ) {
+      return {};
+    }
+    const revisions = await this.state.read((view) =>
+      view.revisions.listRevisions(claim.namespaceId, claim.agentId!),
+    );
+    const revision = revisions.find((candidate) => candidate.id === claim.revisionId);
+    if (revision === undefined || this.compute.requiresStoppedPredecessors?.(revision) !== true) {
+      return {};
+    }
+    try {
+      await this.stopPredecessors(
+        claim,
+        revisions.filter((candidate) => candidate.revision < revision.revision),
+        drain,
+      );
+      return {};
+    } catch (error) {
+      if (
+        failures === "throw" ||
+        error instanceof WorkClaimLostError ||
+        error instanceof ComputeStopYieldedError
+      ) {
+        throw error;
+      }
+      return { predecessorStop: revisionFailureLogFields(error).cause ?? "Error" };
+    }
+  }
+
+  /**
+   * Exclusive replacement stops every predecessor before a candidate's first pass, so a
+   * candidate that a later pass refuses (for example after its actor lost `deploy`) would be
+   * the only runtime left, serving a deployment OCC rejected while the recorded active revision
+   * has no workload (finding 990). Without an active revision, any Compute's candidate is the
+   * Agent's only runtime too: a refused first embedded deployment on Kubernetes kept its Gateway
+   * Pod with its model key, secret environment and private state until a later deployment, stop
+   * or delete (finding 1016). Stop it under the live claim before the failure is published, so
+   * the Agent is unavailable until a new revision activates. A refused active revision is left
+   * alone: its workload is the one recorded, and active maintenance owns it.
+   */
+  private async stopRefusedCandidate(claim: ClaimedWork, refusal: string): Promise<void> {
+    const compute = this.compute;
+    // Only the deployment's own work can leave a candidate serving: maintenance exists only for
+    // revisions that activated, and their retirement already stopped them.
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile`
+    ) {
+      return;
+    }
+    const { namespace, agent, revision } = await this.state.read(async (view) => ({
+      namespace: await view.namespaces.findNamespace(claim.namespaceId),
+      agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
+      revision: await view.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      ),
+    }));
+    if (
+      namespace === undefined ||
+      agent === undefined ||
+      revision === undefined ||
+      namespace.status !== "ready" ||
+      revision.namespaceId !== namespace.id ||
+      revision.agentId !== agent.id ||
+      revision.servicePrincipalId !== agent.servicePrincipalId ||
+      revision.compute.id !== compute.id ||
+      revision.compute.implementation !== compute.implementation ||
+      agent.activeRevisionId === revision.id
+    ) {
+      return;
+    }
+    if (compute.requiresStoppedPredecessors?.(revision) !== true) {
+      // Beside a non-exclusive active revision the candidate is left alone: that revision still
+      // serves, and an embedded Kubernetes candidate may own the Agent's shared Gateway route,
+      // which stopping the candidate would delete. Its next deployment, stop or delete retires it.
+      if (agent.activeRevisionId !== undefined) {
+        return;
+      }
+      // Only a candidate Compute prepared can have a runtime: this pass prepared it, or an
+      // earlier pass that recorded evidence may have (stopping an unprepared one is idempotent).
+      // A refusal decided before the work's first preparation leaves Compute untouched.
+      if (
+        this.preparedThisPass !== revision.id &&
+        this.refusalWait?.idempotencyKey !== claim.idempotencyKey &&
+        (await this.queue.findWorkAttempt(claim.idempotencyKey)) === undefined
+      ) {
+        return;
+      }
+    }
+    const started = Date.now();
+    try {
+      if (compute.bindAgent !== undefined) {
+        await this.withClaimHeartbeat(claim, async () => {
+          await compute.bindAgent!({ namespace, agent });
+        });
+      }
+      await this.closeRevisionCredentials(claim, revision);
+      // Its Pod-termination waits end when other Work is waiting; the stop then waits like a
+      // failed one, for as long as it ran, and the next pass repeats it (finding 1022).
+      await this.withClaimHeartbeat(claim, () =>
+        withYieldingComputeStop(() => compute.stopRevision(revision)),
+      );
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        // A graceful shutdown aborts a slow stop (a Pod-termination wait) like a lost claim.
+        // While the lease holds, the pass waits on the stop instead, so a restart during the
+        // first stop, before any wait evidence, neither spends an attempt nor leaves the refusal
+        // unrecorded (finding 1021). The interrupted stop's duration lengthens the recheck like a
+        // failed stop's, so the next controller does not repeat a blocking stop within seconds
+        // (finding 1022). A lease that already ran out still loses the claim when the deferral
+        // commits.
+        if (!this.stopping) {
+          throw error;
+        }
+        // Its log names the shutdown, not a lost claim.
+        const stopping = new Error("The controller stopped during the refused candidate's stop.", {
+          cause: error,
+        });
+        stopping.name = "WorkerStopping";
+        // Capped so a rollout during a long Gateway drain rechecks within the backoff's maximum.
+        throw new RefusedCandidateStopError(
+          refusal,
+          Math.min(
+            Date.now() - started,
+            REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS / REFUSED_CANDIDATE_STOP_DURATION_FACTOR,
+          ),
+          stopping,
+        );
+      }
+      throw new RefusedCandidateStopError(refusal, Date.now() - started, error);
+    }
+    // Like a swept predecessor, the next deployment need not stop it again within a lease.
+    this.stoppedPredecessors.delete(revision.id);
+    this.stoppedPredecessors.set(revision.id, {
+      stoppedAt: Date.now(),
+      restopAfterMs: this.leaseDurationMs,
+    });
+    if (this.stoppedPredecessors.size > MAX_STOPPED_PREDECESSOR_RECORDS) {
+      const oldest = this.stoppedPredecessors.keys().next().value;
+      if (oldest !== undefined) {
+        this.stoppedPredecessors.delete(oldest);
+      }
+    }
+  }
+
+  /**
+   * Records the refusal this deployment pass waits to publish, if its work's latest evidence is a
+   * stop wait. An active revision has none: its refused stop never runs.
+   */
+  private async readRefusalWait(
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revisionId: string,
+  ): Promise<void> {
+    if (
+      claim.idempotencyKey !== `agent_revision:${revisionId}:reconcile` ||
+      agent.activeRevisionId === revisionId
+    ) {
+      return;
+    }
+    const latest = await this.queue.findWorkAttempt(claim.idempotencyKey);
+    if (
+      latest?.refusal !== undefined &&
+      (latest.code === "REFUSED_CANDIDATE_STOP_PENDING" || latest.code === "LEASE_EXPIRED")
+    ) {
+      this.refusalWait = { idempotencyKey: claim.idempotencyKey, refusal: latest.refusal };
+    }
+  }
+
+  /**
+   * After an error in the pass's first reads (its resources or `readRefusalWait`), reads the
+   * stored refusal again, so the pass retries the wait's stop like any later failure. Recorded as
+   * an ordinary retry instead, the error spent an attempt and its evidence ended the wait: the
+   * next pass prepared the candidate again, and at the attempt limit the work failed with the
+   * candidate running and the refusal lost (finding 1041). If this read fails too, the error
+   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. A
+   * ScopeViolationError (an invalid row) cannot recover by itself, so it stays a retry that the
+   * attempt limit ends instead of a wait repeated forever.
+   */
+  private async rereadRefusalWait(
+    claim: ClaimedWork,
+    agent: Readonly<Agent> | undefined,
+    error: unknown,
+  ): Promise<void> {
+    const { agentId, revisionId } = claim;
+    if (
+      agentId === undefined ||
+      revisionId === undefined ||
+      claim.idempotencyKey !== `agent_revision:${revisionId}:reconcile`
+    ) {
+      return;
+    }
+    try {
+      const current =
+        agent ??
+        (await this.state.read((view) => view.agents.findAgent(claim.namespaceId, agentId)));
+      if (current !== undefined) {
+        await this.readRefusalWait(claim, current, revisionId);
+      }
+    } catch (reread) {
+      if (reread instanceof WorkClaimLostError) {
+        throw reread;
+      }
+      if (reread instanceof ScopeViolationError || error instanceof ScopeViolationError) {
+        return;
+      }
+      // The run loop's own log names no work.
+      this.emit({
+        event: "worker.error",
+        code: "WORKER_UNAVAILABLE",
+        ...workLogFields(claim),
+        ...revisionFailureLogFields(error),
+      });
+      throw error;
+    }
+  }
+
+  /** The permanent result that publishes a stored refusal once its candidate is stopped. */
+  private storedRefusalResult(refusal: string): RevisionDispatchResult {
+    return refusal === "CONVERGENCE_DEADLINE_EXCEEDED"
+      ? {
+          outcome: "permanent",
+          code: refusal,
+          data: convergenceDeadlineResultData(this.convergenceTimeoutMs, undefined),
+        }
+      : { outcome: "permanent", code: refusal };
+  }
+
+  /**
+   * The recheck after this work's next unfinished refused-candidate stop: the readiness cadence,
+   * doubled for each earlier consecutive failure up to REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS, and
+   * at least REFUSED_CANDIDATE_STOP_DURATION_FACTOR times as long as the stop took. The
+   * earlier failures are counted from the work's evidence, so a restart keeps the backoff
+   * (finding 1022); if that read fails, the backoff starts again. A stop that yielded to other
+   * Work is not a failure, so a busy queue does not double it (finding 1025).
+   */
+  private async refusedStopRecheckMs(claim: ClaimedWork, stopMs: number): Promise<number> {
+    const earlier = await this.queue.countRefusedStopWaits(claim.idempotencyKey).catch(() => 0);
+    return Math.max(
+      Math.min(
+        REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS,
+        revisionReadinessRecheckMs(this.workAgeMs(claim)) * 2 ** Math.min(earlier, 20),
+      ),
+      Math.ceil(Math.max(0, stopMs) * REFUSED_CANDIDATE_STOP_DURATION_FACTOR),
+    );
   }
 
   private async completeStoppedRevisionWork(
@@ -4234,6 +5005,7 @@ export class ControllerWorker {
       outcome: "success",
       code,
       ...this.deployTimingFields(claim),
+      ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
 
@@ -4297,10 +5069,7 @@ export class ControllerWorker {
     // Original admission time survives queue waits and retries. Maintenance and
     // superseded work must not count as additional successful deployments.
     if (claim.idempotencyKey === `agent_revision:${revision.id}:reconcile`) {
-      this.metrics?.observeAgentOperation(
-        "deploy",
-        Math.max(0, Date.now() - claim.createdAt.getTime()) / 1000,
-      );
+      this.metrics?.observeAgentOperation("deploy", this.workAgeMs(claim) / 1000);
     }
     this.emit({
       event: "worker.completed",
@@ -4312,6 +5081,8 @@ export class ControllerWorker {
       outcome: result.outcome,
       code: result.code,
       ...this.deployTimingFields(claim),
+      // A deployment whose predecessor stop yielded counts those yields here (finding 1090).
+      ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
 
@@ -4395,6 +5166,7 @@ export class ControllerWorker {
       outcome: "pending",
       code,
       ...failure.failureLogFields,
+      ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
 
@@ -4623,8 +5395,7 @@ export class ControllerWorker {
     result: DispatchResult,
   ): Promise<void> {
     const expired =
-      result.outcome === "pending" &&
-      Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
+      result.outcome === "pending" && this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     const resolved: DispatchResult = expired
       ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
       : result;

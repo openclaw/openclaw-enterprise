@@ -54,6 +54,8 @@ drivers:
 `binaries` is required and closed: a nonempty list of absolute executable paths
 inside the Harness image. OpenShell releases a credential only to requests made
 by those binaries. Use the exact native Codex executable, not a wrapper script.
+The development profile lists the pinned runtime's x64 and ARM64 executables;
+it does not infer the container architecture from the launcher host.
 A stale path fails the Codex startup model probe: the deployment fails with
 `RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
 rejects the missing credential, and the active revision keeps serving.

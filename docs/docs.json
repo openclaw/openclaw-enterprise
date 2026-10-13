@@ -455,6 +455,14 @@
                     "label": "Breaking Changes"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes-archive",
+                    "label": "Earlier Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-10",
+                    "label": "Breaking Changes Before 2026-10-10"
+                  },
+                  {
                     "page": "guides/deploy/split-layout-upgrade",
                     "label": "Split-Layout Upgrade"
                   },
@@ -463,12 +471,20 @@
                     "label": "Upgrade Checklist"
                   },
                   {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-baseline",
                     "label": "Upgrade Baseline"
                   },
                   {
                     "page": "guides/deploy/production-upgrade",
                     "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
@@ -743,6 +759,10 @@
                         "label": "Compute"
                       },
                       {
+                        "page": "reference/drivers/compute-admission",
+                        "label": "Compute Admission"
+                      },
+                      {
                         "page": "reference/drivers/configuration",
                         "label": "Configuration"
                       },
@@ -963,8 +983,10 @@
               "testing/production-tui",
               "testing/slack",
               "testing/qa-matrix",
+              "testing/qa-matrix-results",
               "testing/service-accounts",
               "testing/plugins",
+              "testing/plugins-proof-notes",
               "testing/openshell",
               "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",

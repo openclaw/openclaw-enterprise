@@ -11,9 +11,12 @@ on:
 permissions:
   contents: read
 
+# A new PR push cancels the PR's older run. Main pushes queue instead: one
+# run in progress and one pending (a newer push replaces the pending run), so
+# every started main run finishes and the newest commit is always tested.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CI: "1"
@@ -113,7 +116,9 @@ jobs:
       # ubuntu-22.04 (4 CPUs). Both Image Runtime Startup lanes use 32vcpu
       # too: their preparation is faster there, and Startup 2 runs its three
       # files at once. Image Model Probes stays on 16vcpu: its one case waits
-      # out the 110 s model probe cap at 500m on any runner. The other lanes
+      # out the 110 s model probe cap at 500m on any runner. PostgreSQL
+      # Application uses 32vcpu too: it runs up to eight of its nine files at
+      # once, one per CPU (16vcpu caps it at four). The other lanes
       # use blacksmith 16vcpu, which exposes 4 CPUs to the job (8vcpu exposes
       # 2) and rarely waits for a runner (on 10-08/09, 15 % of 8vcpu jobs
       # waited over a minute, none on 16vcpu). A label no runner serves
@@ -130,7 +135,7 @@ jobs:
               {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-16vcpu-ubuntu-2404"},
@@ -140,6 +145,7 @@ jobs:
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-oauth", "title": "k3d OAuth Bootstrap", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
@@ -359,12 +365,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      # The fixture builds FROM a Docker Hub base image on the Engine's own
+      # builder; pull it through mirror.gcr.io without the runner's Docker Hub
+      # sign-in (finding 977).
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: runtime-image-fixture
           profile: postgres
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   # Real Keycloak OIDC proof in full-mode PR CI and on pushes to main.
   # Deliberately not a CI Required dependency until it has soaked on main.
@@ -410,42 +424,11 @@ jobs:
           cache: true
       - name: Set up CI tools
         run: bash scripts/ci/setup-tools.sh k3d
-      # Pulls carrying the hosted runner's built-in Docker Hub sign-in have been
-      # refused with the anonymous rate limit of addresses other users share,
-      # and that account's token endpoint has timed out (finding 973). Pull
-      # Docker Hub images through Google's public mirror instead. The mirror
-      # refuses any credentials, and the Engine forwards the runner's Docker Hub
-      # sign-in to it, so later steps use a Docker client configuration without
-      # credentials. Pinned digests are still verified, and an image the mirror
-      # lacks falls back to Docker Hub anonymously. Debug logging records which
-      # endpoint served each pull for the last step. This runs before Buildx
-      # starts its builder container, which the restart would stop.
+      # Pull Docker Hub images through mirror.gcr.io without the runner's
+      # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
+      # before Buildx starts its builder container.
       - name: Pull Docker Hub images through a mirror
-        shell: bash
-        run: |
-          config=/etc/docker/daemon.json
-          current="$(sudo cat "$config" 2>/dev/null || true)"
-          [[ -n "$current" ]] || current='{}'
-          jq '. + {"registry-mirrors": ["https://mirror.gcr.io"], "debug": true}' <<<"$current" |
-            sudo tee "$config" >/dev/null
-          sudo systemctl restart docker
-          timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
-          source="${DOCKER_CONFIG:-$HOME/.docker}"
-          target="$RUNNER_TEMP/docker-config"
-          mkdir -p "$target"
-          client='{}'
-          removed=0
-          if [[ -s "$source/config.json" ]]; then
-            client="$(jq 'del(.auths, .credsStore, .credHelpers)' "$source/config.json")"
-            removed="$(jq '[.auths // {} | keys[]] | length' "$source/config.json")"
-          fi
-          printf '%s\n' "$client" >"$target/config.json"
-          if [[ -d "$source/cli-plugins" ]]; then
-            ln -s "$source/cli-plugins" "$target/cli-plugins"
-          fi
-          echo "DOCKER_CONFIG=$target" >>"$GITHUB_ENV"
-          docker info --format 'registry mirrors {{json .RegistryConfig.Mirrors}}'
-          echo "registry sign-ins removed from the Docker client configuration: $removed"
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           # GitHub-hosted runners are per-job VMs; removing the builder took 8-33 s,
@@ -485,12 +468,7 @@ jobs:
         run: node scripts/ci/first-agent-smoke.mjs run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          # An empty list below proves nothing if the storage driver changed.
-          docker info --format 'driver {{.Driver}}, registry mirrors {{json .RegistryConfig.Mirrors}}'
-          sudo journalctl -u docker --no-pager -o cat |
-            grep -E 'Trying to pull|Attempting next endpoint|toomanyrequests' || true
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   ci-required:
     name: CI Required

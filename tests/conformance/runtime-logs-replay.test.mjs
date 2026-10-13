@@ -123,6 +123,22 @@ function serialize(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+test("runtime descriptions reject invalid Driver timestamps instead of normalizing them", () => {
+  assert.throws(
+    () =>
+      validRuntimeDescription(
+        {
+          revisionId: "rev_fixture",
+          observedAt: "2026-02-30",
+          pods: [],
+          sources: [],
+        },
+        "rev_fixture",
+      ),
+    { name: "InvalidRuntimeDescriptionError" },
+  );
+});
+
 test("the replay manifest lists every fixture on disk and nothing else", async () => {
   const { count, fixtures } = await manifest();
   const files = (await readdir(directory)).filter((name) => name !== "manifest.json").sort();

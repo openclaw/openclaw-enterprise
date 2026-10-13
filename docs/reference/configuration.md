@@ -19,7 +19,11 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. The Configuration Driver stores the native document. The
-bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry. Reviewed
+bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
+must serialize to less than 1 MiB. Configuration POST/PATCH bodies allow six
+times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the envelope in
+six-byte JSON escapes; a caller without the create or update grant is refused
+before the body is read. Reviewed
 bundled and installed Configuration Drivers are available in development and
 production.
 
@@ -127,13 +131,17 @@ Additional consumer kinds are reserved for future approved resources and are
 not accepted. `values` must be a JSON object. It can contain the nested objects,
 arrays, strings, finite numbers, booleans, and nulls used by native OpenClaw
 configuration. OCC preserves the native document without interpreting its
-fields or resolving SecretRefs, except that Configuration create and update and
-Agent provisioning check each model provider's `baseUrl` and `api`, and those of
-its `models` entries: `baseUrl` must be an absolute `http` or `https` URL, and
-`api` must be a model API the pinned OpenClaw runtime supports, such as
+fields or resolving SecretRefs, except that Configuration create and update,
+Agent provisioning and Preset saves check each model provider's `baseUrl` and
+`api`, and those of its `models` entries: `baseUrl` must be an absolute `http`
+or `https` URL, and `api` must be a model API the pinned OpenClaw runtime supports, such as
 `openai-responses`, `openai-completions`, `anthropic-messages`, or `ollama`.
 A blank provider `baseUrl` and values with `${VAR}` references are left to the
-runtime. The `400` names the field as a JSON pointer within `values`.
+runtime, and a Preset `baseUrl` or `api` that waits on a variable without a
+default is checked once filled. The `400` names the field as a JSON pointer
+within `values`. They also refuse a `models` that is not a list and a `headers`
+or `request.headers` name that is not a valid HTTP field name, naming the
+setting.
 
 Create and update also refuse, with the `400` Kubernetes Compute deployment
 gives, an `agents` roster the pinned OpenClaw Gateway rejects on every topology:

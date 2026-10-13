@@ -323,18 +323,21 @@ function validateRepositorySettings(agent, partial) {
   if (entries === undefined) {
     return;
   }
+  const listPath =
+    access !== undefined ? "agent.repositoryAccess.repositories" : "agent.repositoryBindings";
+  const limitPath = access !== undefined ? "agent.repositoryAccess" : "agent.repositoryBindings";
   if (!Array.isArray(entries) || entries.length > 16) {
-    fail("agent.repositoryAccess", "requires at most 16 repository selections.");
+    fail(limitPath, "requires at most 16 repository selections.");
   }
   const seen = new Set();
   for (const entry of entries) {
-    closedObject(entry, ["repositoryRef", "profile"], "agent.repositoryAccess.repositories");
-    selector(entry.repositoryRef, "agent.repositoryAccess.repositories.repositoryRef");
+    closedObject(entry, ["repositoryRef", "profile"], listPath);
+    selector(entry.repositoryRef, `${listPath}.repositoryRef`);
     if (Object.hasOwn(entry, "profile")) {
-      selector(entry.profile, "agent.repositoryAccess.repositories.profile");
+      selector(entry.profile, `${listPath}.profile`);
     }
-    if (!partial && seen.has(entry.repositoryRef)) {
-      fail("agent.repositoryAccess.repositories", "repository references must be unique.");
+    if (seen.has(entry.repositoryRef)) {
+      fail(listPath, "repository references must be unique.");
     }
     seen.add(entry.repositoryRef);
   }

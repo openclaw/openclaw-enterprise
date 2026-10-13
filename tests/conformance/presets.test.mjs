@@ -10,11 +10,35 @@ import {
   presetTemplateDefaults,
   PresetValidationError,
   renderPresetTemplate,
+  validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const otherNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
 const secretId = "sec_00000000-0000-4000-8000-000000000001";
+
+test("preset admission reports repositoryBindings paths and rejects duplicate refs", () => {
+  assert.throws(
+    () =>
+      validatePresetTemplate({
+        agent: {
+          repositoryBindings: Array.from({ length: 17 }, (_, i) => ({ repositoryRef: `r${i}` })),
+        },
+      }),
+    (error) =>
+      error instanceof PresetValidationError &&
+      error.message.startsWith("Preset agent.repositoryBindings:"),
+  );
+  assert.throws(
+    () =>
+      validatePresetTemplate({
+        agent: { repositoryBindings: [{ repositoryRef: "app" }, { repositoryRef: "app" }] },
+      }),
+    (error) =>
+      error instanceof PresetValidationError &&
+      /repository references must be unique/.test(error.message),
+  );
+});
 
 test("preset variables produce typed launch values and native model keys without interpreting inserted data", () => {
   const template = {

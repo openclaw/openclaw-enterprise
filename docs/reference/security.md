@@ -129,7 +129,7 @@ runtime verification. Profile generation and CI use the same reviewed rules;
 host installation remains operator-owned.
 
 The optional profile is for cases where `RuntimeDefault` blocks the
-user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.163.0-alpha.1`
+user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.163.0-alpha.2`
 and bubblewrap. The profile is a syscall compatibility allowlist, not the
 filesystem or network boundary. Codex and bubblewrap continue to own runtime
 filesystem enforcement, and Kubernetes NetworkPolicies plus the configured
@@ -263,7 +263,8 @@ to the Collector, and responses carry `Cache-Control: no-store`.
 - **Sandbox source.** OpenShell policy decisions and supervisor tracing use the
   same tiers and audit. OCC reads them through a client narrowed to the
   read-only `GetSandboxLogs` RPC (`sandbox:read`), so this path cannot create,
-  delete or exec into a Sandbox. Records are classed `activity`; command lines
+  delete or exec into a Sandbox. A response over 4 MiB fails the read instead of
+  being cut; that limit bounds the unsanitized read. Records are classed `activity`; command lines
   and URLs are redacted and cut to 1 KiB.
 - **Errors.** Driver and cluster error text never reaches a client; failures map
   to fixed codes.

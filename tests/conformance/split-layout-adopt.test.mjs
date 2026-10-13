@@ -1192,6 +1192,33 @@ test("apply refuses to adopt more tenants once the controller runs other images"
   );
 });
 
+test("each writer is compared with its own recorded images, and a rollback lets apply continue", async (t) => {
+  const archive = await withArchive(t);
+  const cluster = releasedInstallation();
+  const { kubectl, put, get } = cluster;
+  const worker = () => get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker");
+  worker().spec.template.spec.containers[0].image = "worker@sha256:released";
+  await applyAdoption(kubectl, { archive, namespaceIds: [id], ...fast });
+  // Only the worker was upgraded.
+  worker().spec.template.spec.containers[0].image = "worker@sha256:current";
+  worker().spec.replicas = 1;
+  worker().status = { replicas: 1, availableReplicas: 1 };
+  addSecondTenant(put);
+  await assert.rejects(
+    applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast }),
+    /openclaw-enterprise-worker runs other images than apply recorded/,
+  );
+  assert.equal(worker().spec.replicas, 1);
+  // After a rollback to the recorded images (API and worker still differ), apply continues.
+  worker().spec.template.spec.containers[0].image = "worker@sha256:released";
+  await applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast });
+  const journal = JSON.parse(
+    get("namespaces", undefined, otherStorage).metadata.annotations[JOURNAL_ANNOTATION],
+  );
+  assert.deepEqual(journal.writers.worker.images, ["worker@sha256:released"]);
+  assert.equal(worker().spec.replicas, 0);
+});
+
 test("a crash between copying a Secret and recording it still lets revert remove the copy", async (t) => {
   const archive = await withArchive(t);
   const cluster = releasedInstallation();

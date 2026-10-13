@@ -450,6 +450,61 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   assert.deepEqual(updated.body.data.values, local);
 });
 
+test("Configuration HTTP refuses a model provider models setting that is not a list", async () => {
+  // Finding 1186: the credential rules walk only a list of model rows, so a record of rows
+  // carried a literal credential header past them into storage, and OpenClaw refused the
+  // document only when the Gateway started. Every provider is checked, selected or not.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const sentinel = "synthetic-model-credential-not-for-configuration";
+  const message = (key) => `Configuration setting ${key}.models must be an array of model entries.`;
+  for (const [values, setting] of [
+    [
+      {
+        models: {
+          providers: {
+            gateway: { models: { m: { id: "m", headers: { "x-api-key": sentinel } } } },
+          },
+        },
+      },
+      "models.providers.gateway",
+    ],
+    [
+      { models: { providers: { "my gateway": { models: null } } } },
+      'models.providers["my gateway"]',
+    ],
+    [{ models: { providers: { openai: { models: "gpt-5" } } } }, "models.providers.openai"],
+  ]) {
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assert.equal(rejected.body.error.message, message(setting));
+  }
+  assert.deepEqual(configurationDriver.storedConfigurations(), []);
+
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: createOpenClawConfiguration() },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  const failedUpdate = await request(context.app, "PATCH", item, {
+    body: { values: { models: { providers: { gateway: { models: {} } } } } },
+  });
+  assert.equal(failedUpdate.status, 400, JSON.stringify(failedUpdate.body));
+  assert.equal(failedUpdate.body.error.message, message("models.providers.gateway"));
+  const unchanged = await request(context.app, "GET", item);
+  assert.deepEqual(unchanged.body.data, created.body.data);
+  // A list, an empty one, or no models setting still saves.
+  const listed = { models: { providers: { gateway: { models: [] }, openai: {} } } };
+  const updated = await request(context.app, "PATCH", item, { body: { values: listed } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(updated.body.data.values, listed);
+});
+
 test("Configuration save refuses an agents roster every deployment refuses, with deployment's text", async () => {
   // Deployment runs the real Kubernetes Compute roster rules, as production admission does.
   const kubernetes = createTestKubernetesComputeDriver("compute-roster-integration");
@@ -590,6 +645,365 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.deepEqual(saved.body.data.values, values);
+  }
+});
+
+test("Configuration save and Kubernetes deployment admission refuse settings preparation would refuse", async () => {
+  // Deployment runs the real Kubernetes Compute admission rules, as production admission does.
+  // On a dedicated Agent, a refusal in preparation came after the running revision stopped,
+  // with no rollback (findings 1113-1115); admission now names the setting first.
+  const kubernetes = createTestKubernetesComputeDriver("compute-settings-integration");
+  const computeDriver = createReadyComputeDriver("compute-settings-integration", {
+    implementation: "integration-compute-substrate",
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Settings consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "settings-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  // A row an older release saved, written past OCC as that release's create would have.
+  const storeAsOlderRelease = async (values) => {
+    const stored = configurationDriver
+      .storedConfigurations()
+      .find(({ id }) => id === configurationId);
+    await configurationDriver.update({ ...stored, values });
+  };
+  const policy = (approvalPolicy) => ({
+    ...valid,
+    plugins: { entries: { codex: { config: { appServer: { approvalPolicy } } } } },
+  });
+  const password = (value) => ({ ...valid, gateway: { auth: { password: value } } });
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+  const policyEnum = setting(
+    "plugins.entries.codex.config.appServer.approvalPolicy",
+    'must be "never", "on-request" or "on-failure"',
+  );
+  const kubernetesPassword = setting(
+    "gateway.auth.password",
+    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates',
+  );
+
+  // Topology-independent rules: the save refuses with a 400 naming the setting; an existing row
+  // still reads, and deployment refuses it before any revision is admitted.
+  for (const [values, saveMessage, deployStatus, deployMessage] of [
+    [policy("always"), policyEnum, 409, policyEnum],
+    [
+      policy("untrusted"),
+      setting(
+        "plugins.entries.codex.config.appServer.approvalPolicy",
+        'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
+      ),
+      409,
+      setting(
+        "plugins.entries.codex.config.appServer.approvalPolicy",
+        'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
+      ),
+    ],
+    [
+      password("literal-gateway-password"),
+      "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+      409,
+      kubernetesPassword,
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, label);
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST", label);
+    assert.equal(rejected.body.error.message, saveMessage, label);
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, label);
+    assert.equal(replaced.body.error.message, saveMessage, label);
+    const unchanged = await request(context.app, "GET", item);
+    assert.deepEqual(unchanged.body.data, created.body.data, label);
+
+    await storeAsOlderRelease(values);
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, label);
+    assert.deepEqual(read.body.data.values, values, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, deployStatus, label);
+    assert.equal(deployed.body.error.message, deployMessage, label);
+    await storeAsOlderRelease(valid);
+  }
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+
+  // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
+  for (const [values, deployStatus, deployMessage] of [
+    [
+      password({ source: "env", provider: "default", id: "MY_GATEWAY_PASSWORD" }),
+      409,
+      kubernetesPassword,
+    ],
+    // An explicit null is unset to the save rule, as for model credentials; Kubernetes refuses it.
+    [password(null), 409, kubernetesPassword],
+    [
+      { ...valid, channels: { slack: { enabled: true } } },
+      400,
+      setting("channels.slack", "is enabled, but channels require a dedicated Agent workload"),
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const saved = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, deployStatus, label);
+    assert.equal(deployed.body.error.message, deployMessage, label);
+  }
+  // No refused deployment admitted a revision, so none stopped a running one.
+  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.deepEqual(revisions.body.data, []);
+
+  // Values every Gateway accepts still save.
+  for (const values of [
+    policy("never"),
+    policy("on-request"),
+    policy("on-failure"),
+    password({ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+    password("${OPENCLAW_GATEWAY_PASSWORD}"),
+  ]) {
+    const saved = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+  }
+});
+
+test("Configuration save and Kubernetes deployment refuse caller-owned credentials and channels with one named message", async () => {
+  // Finding 1116: deployment refused these with an unnamed 409; Configuration save accepted them.
+  // Both now run the Kubernetes Compute rule module and name the setting.
+  const kubernetes = createTestKubernetesComputeDriver("compute-caller-settings");
+  const computeDriver = createReadyComputeDriver("compute-caller-settings", {
+    implementation: "integration-compute-substrate",
+    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Caller settings consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "caller-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  const storeAsOlderRelease = async (values) => {
+    const stored = configurationDriver
+      .storedConfigurations()
+      .find(({ id }) => id === configurationId);
+    await configurationDriver.update({ ...stored, values });
+  };
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader =
+    "must not set a credential header (authorization, any key, token, secret, password or cookie)";
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+
+  for (const [values, message] of [
+    [
+      { ...valid, channels: { discord: { enabled: true } } },
+      setting(
+        "channels.discord",
+        "is not a supported channel: use slack or msteams, or set its enabled to false",
+      ),
+    ],
+    [
+      {
+        ...valid,
+        auth: { profiles: { "openai:default": { provider: "openai", mode: "api_key" } } },
+      },
+      setting("auth", `must be empty: ${binding}`),
+    ],
+    [
+      { ...valid, env: { vars: { OPENAI_BASE_URL: "https://example.invalid/v1" } } },
+      setting(
+        "env.vars.OPENAI_BASE_URL",
+        `must not be set: the Agent's Harness authentication binding owns model provider environment`,
+      ),
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
+        },
+      },
+      setting("models.providers.openai.headers", `${credentialHeader}: ${binding}`),
+    ],
+    // OpenClaw's request transport overrides carry credentials too (finding 1142).
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { headers: { Authorization: "Bearer ${MODEL_TOKEN}" } } },
+          },
+        },
+      },
+      setting("models.providers.openai.request.headers", `${credentialHeader}: ${binding}`),
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: {
+              request: { auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" } },
+            },
+          },
+        },
+      },
+      setting(
+        "models.providers.openai.request.auth",
+        `must be unset or {mode: "provider-default"}: ${binding}`,
+      ),
+    ],
+    // A provider the primary model does not select is still reachable (imageModel, /model).
+    [
+      {
+        ...valid,
+        models: {
+          providers: { google: { headers: { "x-goog-api-key": "${GOOGLE_API_KEY}" } } },
+        },
+      },
+      setting("models.providers.google.headers", `${credentialHeader}: ${binding}`),
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
+    assert.equal(rejected.body.error.message, message, label);
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, label);
+    assert.equal(replaced.body.error.message, message, label);
+    const unchanged = await request(context.app, "GET", item);
+    assert.deepEqual(unchanged.body.data, created.body.data, label);
+
+    // A row an older release stored still reads; deployment refuses it with the same text.
+    await storeAsOlderRelease(values);
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, label);
+    assert.deepEqual(read.body.data.values, values, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(deployed.body.error.message, message, label);
+    // Agent save checks the same rule on the stored row.
+    const agentSaved = await request(context.app, "PATCH", agentPath, {
+      body: { configurationId },
+    });
+    assert.equal(agentSaved.status, 400, `${label}: ${JSON.stringify(agentSaved.body)}`);
+    assert.equal(agentSaved.body.error.message, message, label);
+    await storeAsOlderRelease(valid);
+  }
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+
+  // A provider apiKey depends on the Agent's binding, so it saves and deployment names it.
+  const apiKey = {
+    ...valid,
+    models: {
+      providers: {
+        openai: { apiKey: { source: "env", provider: "default", id: "OTHER_MODEL_KEY" } },
+      },
+    },
+  };
+  const saved = await request(context.app, "PATCH", item, { body: { values: apiKey } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+  assert.equal(
+    deployed.body.error.message,
+    setting(
+      "models.providers.openai.apiKey",
+      "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
+    ),
+  );
+  // Agent save checks what depends on the Agent: an embedded Agent cannot serve a channel. The
+  // Installation's channel runtime and the channel's Secret bindings wait for deployment.
+  const slack = {
+    ...valid,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      },
+    },
+  };
+  assert.equal(
+    (await request(context.app, "PATCH", item, { body: { values: slack } })).status,
+    200,
+  );
+  const embeddedSlack = setting(
+    "channels.slack",
+    "is enabled, but channels require a dedicated Agent workload",
+  );
+  const agentUpdate = await request(context.app, "PATCH", agentPath, {
+    body: { configurationId },
+  });
+  assert.equal(agentUpdate.status, 400, JSON.stringify(agentUpdate.body));
+  assert.equal(agentUpdate.body.error.message, embeddedSlack);
+  const slackDeploy = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(slackDeploy.status, 400);
+  assert.equal(slackDeploy.body.error.message, embeddedSlack);
+  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.deepEqual(revisions.body.data, []);
+
+  // A disabled unsupported channel and a non-credential env name still save.
+  for (const values of [
+    { ...valid, channels: { discord: { enabled: false } } },
+    { ...valid, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } },
+  ]) {
+    const accepted = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(
+      accepted.status,
+      200,
+      `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`,
+    );
   }
 });
 
@@ -1006,5 +1420,279 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   const unreadable = await request(context.app, "GET", `${collection}/${id}`);
   assert.equal(unreadable.status, 503);
   assert.equal(JSON.stringify(unreadable.body).includes(sentinel), false);
+  assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
+});
+
+test("Without Kubernetes Compute, Configuration and Preset saves refuse what every Compute refuses", async (t) => {
+  // Findings 1189-1191: a Compute without validateConfiguration (Docker) relies on the shared
+  // model provider rules and the Configuration Driver alone. Preset saves skipped the shared
+  // rules, header names no HTTP client sends were stored, and plausible credential header
+  // names (version, dot and new words) took literals.
+  const root = await mkdtemp(join(tmpdir(), "occ-model-rules-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  // Like Docker Compute: ready Namespaces, no validateConfiguration.
+  const computeDriver = createReadyComputeDriver("compute-without-configuration-rules");
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
+  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  const invalidName = (setting) =>
+    `Configuration setting ${setting} must use valid HTTP header names.`;
+  const listMessage =
+    "Configuration setting models.providers.gateway.models must be an array of model entries.";
+  const refused = [
+    [
+      gateway({ headers: { "x-api-key ": sentinel } }),
+      invalidName("models.providers.gateway.headers"),
+    ],
+    [
+      gateway({ models: [{ id: "m", request: { headers: { Authorizatioн: sentinel } } }] }),
+      invalidName("models.providers.gateway.models.0.request.headers"),
+    ],
+    [gateway({ models: {} }), listMessage],
+    // The list first, as on Kubernetes Compute, when a header name is refused too.
+    [gateway({ models: {}, headers: { "x-api-key ": sentinel } }), listMessage],
+    [gateway({ models: { m: { id: "m", headers: { "x-api-key": sentinel } } } }), listMessage],
+    [
+      gateway({ baseUrl: "ftp://models.example.test" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+  ];
+  for (const [values, message] of refused) {
+    for (const [collection, body] of [
+      [configurations, { kind: "agent", values }],
+      [presets, { name: "Refused", template: { configuration: { values } } }],
+    ]) {
+      const response = await request(context.app, "POST", collection, { body });
+      assert.equal(response.status, 400, `${collection}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.error.message, message, collection);
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    }
+  }
+  // Credential header names the widened rule matches take only references.
+  for (const name of [
+    "Authentication",
+    "X-Authentication",
+    "X-JWT",
+    "X-JWT-Assertion",
+    "X-Client-Assertion",
+    "X-Hmac",
+    "X-Otp",
+    "X-Pin",
+    "X-Pwd",
+    "X-Pass",
+    "X-License",
+    "X-Api-Key-V2",
+    "x-signature-v1",
+    "x.authorization",
+    "x.token",
+  ]) {
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: gateway({ headers: { [name]: sentinel } }) },
+    });
+    assert.equal(response.status, 400, `${name}: ${JSON.stringify(response.body)}`);
+    assert.match(
+      response.body.error.message,
+      /^Configuration field \/models\/providers\/gateway\/headers\/\S+ holds a credential value inline/,
+      name,
+    );
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  }
+  assert.deepEqual(await readdir(root), []);
+  const listed = await request(context.app, "GET", presets);
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual(listed.body.data, []);
+
+  // Benign names and a bearer reference under an Authentication header still save.
+  const accepted = gateway({
+    headers: {
+      Authentication: "Bearer ${GATEWAY_TOKEN}",
+      "X-Partition-Key": "p",
+      "X-Shard-Key": "s",
+      "X-Sort-Key": "s",
+      "X-Dedup-Key": "d",
+      "X-Passthrough": "on",
+      "X-Pinned-Version": "1",
+      "x-api-key-version": "2",
+    },
+    models: [{ id: "m", request: { headers: { "x.trace.id": "t" } } }],
+  });
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const preset = await request(context.app, "POST", presets, {
+    body: { name: "Accepted", template: { configuration: { values: accepted } } },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  // A variable without a default is checked when its Configuration is created, not before.
+  const variables = {
+    url: { type: "string" },
+    api: { type: "string" },
+    header: { type: "string" },
+  };
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: gateway({
+            baseUrl: "{{ vars.url }}",
+            api: "{{ vars.api }}",
+            models: [{ id: "m", baseUrl: "https://{{ vars.url }}/v1" }],
+            headers: { "{{ vars.header }}": "v" },
+          }),
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+  // A default is checked like any value.
+  const defaulted = await request(context.app, "POST", presets, {
+    body: {
+      name: "Defaulted",
+      template: {
+        variables: { url: { type: "string", default: "ftp://models.example.test" } },
+        configuration: { values: gateway({ baseUrl: "{{ vars.url }}" }) },
+      },
+    },
+  });
+  assert.equal(defaulted.status, 400, JSON.stringify(defaulted.body));
+  assert.equal(
+    defaulted.body.error.message,
+    "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+  );
+});
+
+test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {
+  // The 2026-10-12 notice: an older release saved model credentials in a provider's request
+  // transport settings. After the upgrade the bundled Driver must still read and replace that
+  // document so its operator can remove them, while save and deployment refuse it with the
+  // Kubernetes Compute rule's message, before any revision or runtime resource exists.
+  const root = await mkdtemp(join(tmpdir(), "occ-upgrade-configuration-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const kubernetes = createTestKubernetesComputeDriver("compute-upgrade-repair");
+  const computeDriver = createReadyComputeDriver("compute-upgrade-repair", {
+    implementation: "integration-compute-substrate",
+    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Upgraded Configuration consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "upgrade-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  const path = join(root, namespace.id, `${configurationId}.json`);
+  const sentinel = `synthetic-request-credential-${randomUUID()}`;
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
+  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, any key, token, secret, password or cookie): ${binding}.`;
+
+  for (const [label, stale, message] of [
+    [
+      "request.auth authorization-bearer",
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
+          },
+        },
+      },
+      requestAuth,
+    ],
+    [
+      "request.auth header",
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { auth: { mode: "header", headerName: "x-key", value: sentinel } } },
+          },
+        },
+      },
+      requestAuth,
+    ],
+    [
+      "request.headers",
+      {
+        ...valid,
+        models: {
+          providers: { openai: { request: { headers: { "x-goog-api-key": sentinel } } } },
+        },
+      },
+      credentialHeader,
+    ],
+  ]) {
+    // Seed the document the older release stored, directly in the Driver's storage.
+    const current = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify({ ...current, values: stale }));
+
+    // It still reads, so its operator can see what to remove.
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, `${label}: ${JSON.stringify(read.body)}`);
+    assert.deepEqual(read.body.data.values, stale, label);
+    const agents = await request(context.app, "GET", `/namespaces/${namespace.id}/agents`);
+    assert.equal(agents.status, 200, label);
+    assert.deepEqual(
+      agents.body.data.map((listed) => listed.configurationId),
+      [configurationId],
+      label,
+    );
+
+    // Saving it unchanged and deploying it are refused with the same named message, and no
+    // revision is admitted.
+    const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
+    assert.equal(resaved.status, 400, `${label}: ${JSON.stringify(resaved.body)}`);
+    assert.equal(resaved.body.error.message, message, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(deployed.body.error.message, message, label);
+    for (const body of [resaved.body, deployed.body]) {
+      assert.equal(JSON.stringify(body).includes(sentinel), false, label);
+    }
+    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+    assert.deepEqual(revisions.body.data, [], label);
+
+    // An edit that removes the credential repairs it.
+    const repaired = await request(context.app, "PATCH", item, { body: { values: valid } });
+    assert.equal(repaired.status, 200, `${label}: ${JSON.stringify(repaired.body)}`);
+    assert.deepEqual(repaired.body.data.values, valid, label);
+    assert.equal((await readFile(path, "utf8")).includes(sentinel), false, label);
+  }
+  // The repaired Configuration deploys through the Agent's Harness authentication binding.
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
 });

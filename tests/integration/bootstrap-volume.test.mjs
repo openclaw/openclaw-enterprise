@@ -27,10 +27,11 @@ async function writeFakeKubectl(directory, options = {}) {
   const logs =
     options.logs ??
     `${JSON.stringify({ event: "bootstrap-volume.prepared", uid: 1000, gid: 1000, mode: "0700" })}\n`;
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   await writeFile(
     kubectl,
     `#!/usr/bin/env node
-const fs = require("node:fs");
+const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(statePath)}, JSON.stringify({ args }) + "\\n");
 if (args.includes("create")) {

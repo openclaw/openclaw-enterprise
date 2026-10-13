@@ -1,5 +1,6 @@
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
+import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
@@ -32,40 +33,12 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "node",
   "-e",
 ]);
+export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+// Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
+export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 export const RUNTIME_READINESS_PATH = "/readyz";
-
-const STARTUP_PHASE_EVENT = "runtime.startup_phase";
-
-// One stderr JSON line per startup phase, for deploy-time measurement. Callers
-// pass fixed phase names only: never provider, model, credential or path values.
-// A failed phase may add a fixed upper-case cause code, which the Collector exports.
-// Date.now() keeps this usable in every wrapper, including stubbed test contexts.
-export function startupPhaseHelper(container: "gateway" | "agent"): string {
-  return String.raw`
-const startupPhaseOrigin = Date.now();
-function logStartupPhase(phase, startedAt, outcome = "ok", code) {
-  const now = Date.now();
-  const failed = outcome !== "ok";
-  console.error(JSON.stringify({
-    event: ${JSON.stringify(STARTUP_PHASE_EVENT)},
-    container: ${JSON.stringify(container)},
-    phase,
-    outcome: failed ? "failed" : "ok",
-    ms: now - startedAt,
-    sinceStartMs: now - startupPhaseOrigin,
-    ...(failed && typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {}),
-  }));
-}
-async function timeStartupPhase(phase, run) {
-  const startedAt = Date.now();
-  const result = await run();
-  logStartupPhase(phase, startedAt);
-  return result;
-}
-`;
-}
 
 const PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER = String.raw`
 function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
@@ -821,10 +794,19 @@ function writableOpenClawConfigPath() {
   return safeRuntimePath(requireNonEmptyString(process.env.HOME, "OpenClaw runtime home"), ".openclaw/openclaw.json");
 }
 
+let atomicOpenClawConfigWrites = false;
 function writeOpenClawConfig(config) {
   const target = writableOpenClawConfigPath();
   pluginMkdirSync(pluginDirname(target), { recursive: true });
-  pluginWriteFileSync(target, JSON.stringify(config), { mode: 0o600 });
+  if (atomicOpenClawConfigWrites) {
+    const temporary = target + ".oce-write.pending";
+    try {
+      pluginWriteFileSync(temporary, JSON.stringify(config), { mode: 0o600 });
+      require("node:fs").renameSync(temporary, target);
+    } finally { pluginRmSync(temporary, { force: true }); }
+  } else {
+    pluginWriteFileSync(target, JSON.stringify(config), { mode: 0o600 });
+  }
   process.env.OPENCLAW_CONFIG_PATH = target;
 }
 
@@ -2192,110 +2174,6 @@ function publishAgentPluginSkillPath() {
 
 `;
 
-/**
- * OpenClaw's agent database schema (`OPENCLAW_AGENT_SCHEMA_VERSION` in
- * src/state/openclaw-agent-db-contract.ts) at the runtime image's pinned
- * OPENCLAW_COMMIT. The runtime image test that migrates a released Gateway
- * fails when a pin moves it; update it with the pin.
- */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 24;
-
-// A Gateway keeps its agent databases across runtime image upgrades. OpenClaw
-// refuses one with an older schema (exit 78) until "openclaw doctor --fix"
-// migrates it, and its own image entrypoint runs that Doctor pass before every
-// Gateway start. This wrapper replaces that entrypoint, so it runs the same
-// pass, but only when a database needs it: fresh and current state start
-// without Doctor's ~15 s. Doctor must not rewrite the controller-owned
-// configuration (OPENCLAW_CONFIG_READONLY). The schema versions after Doctor,
-// not its exit status, decide: Doctor also exits non-zero for problems it can
-// only report here. A failure holds the Gateway unready with the step named,
-// rather than restarting into the same refusal and another Doctor backup.
-const GATEWAY_STATE_MIGRATION_HELPER = String.raw`
-function outdatedAgentDatabases() {
-  const agentsDirectory = join(process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw", "agents");
-  let agentIds;
-  try {
-    agentIds = require("node:fs").readdirSync(agentsDirectory);
-  } catch {
-    // Fresh state has no agents directory.
-    return [];
-  }
-  // Outside the per-database try: without the module, startup fails instead of skipping.
-  const { DatabaseSync } = require("node:sqlite");
-  const outdated = [];
-  for (const agentId of agentIds) {
-    const path = join(agentsDirectory, agentId, "agent", "openclaw-agent.sqlite");
-    let version;
-    try {
-      // A read-only open of a missing database fails here.
-      const database = new DatabaseSync(path, { readOnly: true });
-      try {
-        version = database.prepare("PRAGMA user_version").get().user_version;
-      } finally {
-        database.close();
-      }
-    } catch {
-      // OpenClaw's own startup check reports a database it cannot read.
-      continue;
-    }
-    // 0 is a database OpenClaw has not initialized; a newer one needs its backup.
-    if (version > 0 && version < ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION}) outdated.push({ path, version });
-  }
-  return outdated;
-}
-
-function runStateMigrationDoctor() {
-  return new Promise((resolve) => {
-    const doctor = spawn(
-      process.execPath,
-      ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
-      { stdio: "inherit", env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" } },
-    );
-    // Doctor's maintenance lease owns termination: let it stop its transaction.
-    const stop = (signal) => {
-      gatewayTerminating = true;
-      doctor.kill(signal);
-    };
-    const onTerm = () => stop("SIGTERM");
-    const onInt = () => stop("SIGINT");
-    process.on("SIGTERM", onTerm);
-    process.on("SIGINT", onInt);
-    const settle = (outcome) => {
-      process.off("SIGTERM", onTerm);
-      process.off("SIGINT", onInt);
-      resolve(outcome);
-    };
-    doctor.on("error", (error) => settle("error-" + (error?.code ?? "spawn")));
-    doctor.on("exit", (code, signal) => settle(signal ?? "exit-" + code));
-  });
-}
-
-// Resolves true once Doctor brought every outdated database current; otherwise holds.
-async function migrateGatewayState(outdated) {
-  const startedAt = Date.now();
-  console.error(
-    "Migrating " + outdated.length + " OpenClaw agent database(s) from schema " +
-      outdated.map(({ version }) => version).join(", ") + " to ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION} with openclaw doctor --fix.",
-  );
-  const doctorOutcome = await runStateMigrationDoctor();
-  if (gatewayTerminating) process.exit(0);
-  const remaining = outdatedAgentDatabases();
-  if (remaining.length === 0) {
-    logStartupPhase("state-migration", startedAt);
-    return true;
-  }
-  logStartupPhase("state-migration", startedAt, "failed");
-  publishRuntimeFailure("state-migration", "UNAVAILABLE");
-  console.error(
-    "Gateway state migration failed: openclaw doctor --fix (" + doctorOutcome + ") left " +
-      remaining.map(({ path, version }) => path + " at schema " + version).join(", ") +
-      ". OpenClaw was not started. Read the Doctor output above, fix the cause, then restart the Pod.",
-  );
-  setInterval(() => {}, 3600000);
-  return false;
-}
-`;
-
 export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
@@ -2308,7 +2186,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
-${GATEWAY_STATE_MIGRATION_HELPER}
+${gatewayStateMigrationHelper("restart the Pod")}
 
 function gatewayRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
@@ -2397,6 +2275,7 @@ function configureNativeWorkerProfile() {
   });
 }
 
+// Admission applies the same rule (configuration-rules.ts); a parity test pins the two.
 function requireWorkspaceNodePlugins(config) {
   const plugins = isPlainObject(config.plugins) ? config.plugins : {};
   if (
@@ -2473,12 +2352,16 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
 // its dynamic tools in the Gateway process, so these would list, read, write or
 // run commands in the Gateway Pod instead. Codex's native tools cover them in
 // the Harness, and the file-transfer tools reach its workspace through the node.
-// "terminal" types into shells running in the Gateway Pod, and "openclaw"
-// delegates Gateway configuration changes, which could drop this list.
+// "terminal" types into shells running in the Gateway Pod, and "portal" proxies
+// ports in it. The control-plane tools act on the Gateway itself and run with
+// the operator's admin scope on every operator chat: "openclaw" delegates
+// configuration changes, which could drop this list, "plugins" installs,
+// enables or disables plugins in the Gateway process, and "gateway" runs its
+// self-update. OCC owns the Gateway's plugins, configuration and version.
 const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
   "ls", "read", "write", "edit", "apply_patch",
   "exec", "process", "gateway_exec", "gateway_process",
-  "terminal", "openclaw",
+  "terminal", "portal", "openclaw", "plugins", "gateway",
 ];
 
 function excludeGatewayLocalCodexTools(config) {
@@ -2509,6 +2392,20 @@ function excludeGatewayLocalCodexTools(config) {
   }
   const overridden = triggers.enabled === undefined || triggers.enabled === false ? [] : ["cron.triggers.enabled"];
   triggers.enabled = false;
+  // The pre-compaction memory flush is a model run that gets OpenClaw's read and
+  // write tools despite the exclusions above, so it would read Gateway Pod files
+  // and write its memory to the Gateway's empty workspace, never the Harness.
+  let flush = config;
+  const flushPath = [];
+  for (const key of ["agents", "defaults", "compaction", "memoryFlush"]) {
+    flushPath.push(key);
+    flush = flush[key] ??= {};
+    if (!isPlainObject(flush)) {
+      throw new Error("The " + flushPath.join(".") + " setting must be an object.");
+    }
+  }
+  if (flush.enabled !== undefined && flush.enabled !== false) overridden.push("agents.defaults.compaction.memoryFlush.enabled");
+  flush.enabled = false;
   logOverriddenSettings([...overridden, ...pinCodexProviderTransport(config)]);
 }
 
@@ -2697,6 +2594,83 @@ const followsPeerStatus =
   pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime);
 // A respawn configures from the file a container restart would start from.
 const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+const writableInitialConfig = followsPeerStatus && initialConfigPath === writableOpenClawConfigPath();
+atomicOpenClawConfigWrites = writableInitialConfig;
+const codexBridgePath = ["plugins", "entries", "codex", "config", "codexPlugins"];
+const admittedConfigText = writableInitialConfig
+  ? pluginReadFileSync(${JSON.stringify(`${MANAGED_CONFIGURATION_DIRECTORY}/openclaw.json`)}, "utf8") : undefined;
+const originalCodexBridge = admittedConfigText === undefined
+  ? undefined : objectAtPath(JSON.parse(admittedConfigText), codexBridgePath);
+const codexBridgeStatePath = initialConfigPath + ".oce-peer-bridge.json";
+const codexBridgeOwner = writableInitialConfig ? {
+  version: 1,
+  revisionId: process.env.OPENCLAW_AGENT_REVISION_ID,
+  sourceHash: require("node:crypto").createHash("sha256").update(admittedConfigText).digest("hex"),
+} : undefined;
+let generatedCodexBridges = [];
+// Why the Pod-local record cannot be used, if it cannot. Every container
+// restart in this Pod reads the same file, so startup holds instead of exiting.
+let codexBridgeRecordProblem;
+if (writableInitialConfig && pluginExistsSync(codexBridgeStatePath)) {
+  let saved;
+  try {
+    saved = JSON.parse(pluginReadFileSync(codexBridgeStatePath, "utf8"));
+  } catch {
+    codexBridgeRecordProblem = "is unreadable";
+  }
+  if (codexBridgeRecordProblem === undefined && (!isPlainObject(saved) ||
+      Object.entries(codexBridgeOwner).some(([key, value]) => saved[key] !== value) ||
+      !Array.isArray(saved.bridges) || saved.bridges.length > 2 ||
+      !saved.bridges.every(isPlainObject))) {
+    codexBridgeRecordProblem = "does not match the admitted revision";
+  }
+  if (codexBridgeRecordProblem === undefined) generatedCodexBridges = saved.bridges;
+}
+
+// Rebuilding generated bridges without the record could overwrite native
+// edits, so the record is kept and only Pod replacement clears it.
+function holdCodexBridgeRecordFailure() {
+  console.error(
+    "Gateway peer configuration record " + codexBridgeStatePath + " " + codexBridgeRecordProblem +
+      ". OpenClaw was not started. Delete the Pod to restore the managed configuration snapshot;" +
+      " native configuration edits in this Pod are lost.",
+  );
+  logStartupPhase("peer-bridge-record", startupPhaseOrigin, "failed", "PEER_BRIDGE_RECORD_UNUSABLE");
+  publishRuntimeFailure("peer-bridge-record", "UNAVAILABLE");
+  forwardTermination(() => undefined);
+  setInterval(() => {}, 3600000);
+}
+
+function recordWritableCodexBridges(bridges) {
+  // Pending writes record both sides for crash replay; success keeps only the
+  // current bridge so a later edit back to an older result remains an edit.
+  const temporary = codexBridgeStatePath + ".pending";
+  try {
+    pluginWriteFileSync(temporary, JSON.stringify({ ...codexBridgeOwner, bridges }), { mode: 0o600 });
+    require("node:fs").renameSync(temporary, codexBridgeStatePath);
+  } finally { pluginRmSync(temporary, { force: true }); }
+  generatedCodexBridges = bridges;
+}
+
+function prepareWritableCodexBridge(failures) {
+  if (!writableInitialConfig) return;
+  const config = readOpenClawConfig();
+  const codexConfig = objectAtPath(config, codexBridgePath.slice(0, -1));
+  const previousBridge = codexConfig?.codexPlugins;
+  const generated = generatedCodexBridges.some((bridge) => pluginDeepEqual(bridge, previousBridge));
+  if (generated) {
+    if (originalCodexBridge === undefined) delete codexConfig.codexPlugins;
+    else codexConfig.codexPlugins = JSON.parse(JSON.stringify(originalCodexBridge));
+  }
+  const overlay = openClawPluginConfiguration(pluginRuntime, failures, config);
+  const nextBridge = overlay === undefined ? undefined
+    : objectAtPath(JSON.parse(JSON.stringify(overlay)), codexBridgePath);
+  const bridges = [generated ? previousBridge : undefined, nextBridge]
+    .filter((bridge, index, values) => isPlainObject(bridge) &&
+      values.findIndex((candidate) => pluginDeepEqual(candidate, bridge)) === index);
+  recordWritableCodexBridges(bridges);
+  if (generated) writeOpenClawConfig(config);
+}
 
 // Write the configuration the native Gateway starts with. It depends only on the
 // admitted configuration, the Harness peer status and the workspace node binding,
@@ -2706,6 +2680,7 @@ function configureGateway(peerStatus) {
   process.env.OPENCLAW_CONFIG_PATH = initialConfigPath;
   configureNativeWorkerProfile();
   const peerFailures = peerStatus?.failures ?? readPluginFailuresFromEnvironment();
+  prepareWritableCodexBridge(peerFailures);
   if (peerStatus !== undefined) {
     process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peerStatus.startupId);
   }
@@ -2719,6 +2694,10 @@ function configureGateway(peerStatus) {
   }
   if (peerStatus !== undefined) {
     pluginResult.successfulPluginIds = peerStatus.successfulPluginIds;
+  }
+  if (writableInitialConfig) {
+    // Once application succeeds, an edit back to an older bridge is also an edit.
+    recordWritableCodexBridges([objectAtPath(readOpenClawConfig(), codexBridgePath)].filter(isPlainObject));
   }
   // A native worker profile, or a Gateway whose controller cannot read its runtime
   // status, receives its node in the environment; the others read the binding file.
@@ -2815,14 +2794,23 @@ let pluginResult;
 let peerStatus;
 let resetWorkspaceNodeTracking = () => {};
 (async () => {
+if (codexBridgeRecordProblem !== undefined) {
+  holdCodexBridgeRecordFailure();
+  return;
+}
 peerStatus = followsPeerStatus
   ? await timeStartupPhase("peer-plugin-status", waitForPeerPluginRuntimeStatus)
   : undefined;
 const started = configureGateway(peerStatus);
 // Doctor reads the configuration the Gateway starts with. Current state adds
 // no await before the spawn.
+// A failure holds the Gateway unready with the step named, rather than
+// restarting into the same refusal and another Doctor backup.
 const outdatedDatabases = outdatedAgentDatabases();
-if (outdatedDatabases.length > 0 && !(await migrateGatewayState(outdatedDatabases))) return;
+if (outdatedDatabases.length > 0 && !(await migrateGatewayState(outdatedDatabases))) {
+  setInterval(() => {}, 3600000);
+  return;
+}
 pluginResult = started.pluginResult;
 publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
 const startWorkspaceNodeId = started.workspaceNodeId;
@@ -3087,7 +3075,7 @@ if (followsPeerStatus) {
 }
 `;
 
-export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
+const CODEX_OAUTH_BOOTSTRAP_WRITER = String.raw`
 try {
 const fs = require("node:fs");
 const path = require("node:path");
@@ -3130,6 +3118,8 @@ if (receipt?.sourceUid === expected.sourceUid) {
   // A new source starts from an empty Codex home: no previous login, sessions, or links.
   // rmSync removes symbolic links themselves and never follows them.
   for (const entry of fs.readdirSync(directory)) {
+    // Keep the locked inode: deleting it would let another writer lock a new file.
+    if (entry === ".oce-oauth-bootstrap.lock") continue;
     fs.rmSync(path.join(directory, entry), { recursive: true, force: true });
   }
   const writeJson = (target, value) => {
@@ -3152,7 +3142,7 @@ if (receipt?.sourceUid === expected.sourceUid) {
   } finally {
     fs.closeSync(descriptor);
   }
-  // Readiness reports only a verified final state.
+  // Successful exit reports only a verified final state.
   const written = readRegularJson(receiptPath);
   if (
     !validAuth(readRegularJson(authPath)) ||
@@ -3161,6 +3151,40 @@ if (receipt?.sourceUid === expected.sourceUid) {
   ) {
     throw new Error("OAuth bootstrap could not verify private credentials.");
   }
+}
+} catch {
+  throw new Error("OAuth bootstrap could not initialize private credentials.");
+}
+`;
+
+export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
+try {
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const directory = process.env.CODEX_HOME;
+if (!directory) throw new Error();
+if (fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() === false) {
+  throw new Error();
+}
+fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+const descriptor = fs.openSync(
+  path.join(directory, ".oce-oauth-bootstrap.lock"),
+  fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW,
+  0o600,
+);
+try {
+  if (!fs.fstatSync(descriptor).isFile()) throw new Error();
+  // The pinned runtime base supplies flock. Kernel locks release on process
+  // death, so an interrupted Pod cannot leave a stale ownership marker. Pass
+  // the already-opened inode to avoid following a link planted in the home.
+  const result = spawnSync("/usr/bin/flock", [
+    "--exclusive", "--timeout", "60", "/proc/self/fd/3",
+    process.execPath, "-e", ${JSON.stringify(CODEX_OAUTH_BOOTSTRAP_WRITER)},
+  ], { stdio: ["ignore", "inherit", "inherit", descriptor] });
+  if (result.error || result.status !== 0) throw new Error();
+} finally {
+  fs.closeSync(descriptor);
 }
 } catch {
   throw new Error("OAuth bootstrap could not initialize private credentials.");
@@ -3776,16 +3800,38 @@ if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
 const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
-const hookDirectory = join(process.env.HOME, ".oce-native-hooks");
-mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
-chmodSync(hookDirectory, 0o700);
-if (process.env.OPENCLAW_NODE_CA_PEM) {
+const hookDirectory = join(process.env.HOME, ${JSON.stringify(NATIVE_HOOK_CREDENTIAL_DIRECTORY)});
+// Hook commands call the Gateway route; they trust the CA the node uses. A SandboxDriver
+// delivers that CA as a file (OPENCLAW_NODE_CA_PATH) instead of the PEM variable.
+let gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || "";
+if (!gatewayCa && process.env.OPENCLAW_NODE_CA_PATH) {
+  try {
+    gatewayCa = readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8").trim();
+  } catch (error) {
+    console.error("Codex hook commands start without the Gateway CA: " + (error.code || "unreadable"));
+  }
+}
+let hookCa = "";
+if (gatewayCa) {
   const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
-  const caPath = join(hookDirectory, "gateway-ca.pem");
-  writeFileSync(caPath, [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"), { mode: 0o600 });
-  codexEnv.NODE_EXTRA_CA_CERTS = caPath;
+  hookCa = [inheritedCa, gatewayCa].filter(Boolean).join("\n");
+  codexEnv.NODE_EXTRA_CA_CERTS = join(hookDirectory, "gateway-ca.pem");
+}
+// Harness code runs as this user and can replace the directory, for example with a
+// symlink into the workspace, and on OpenShell HOME survives restarts. Each Codex start
+// removes whatever is there (a link itself, never its target) and creates a fresh 0700
+// directory; the CA copy is created exclusively, so it never follows a link. Credentials
+// left there belong to the previous Codex process's relays; the Gateway writes a new one
+// for each new or resumed run.
+function prepareHookDirectory() {
+  rmSync(hookDirectory, { recursive: true, force: true });
+  mkdirSync(hookDirectory, { mode: 0o700 });
+  chmodSync(hookDirectory, 0o700);
+  if (hookCa) {
+    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+  }
 }
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
@@ -3881,7 +3927,12 @@ function nodeArguments() {
 }
 const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
-  { name: "Codex", args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])}, env: codexEnv },
+  {
+    name: "Codex",
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])},
+    env: codexEnv,
+    prepare: prepareHookDirectory,
+  },
 ];
 let stopping = false;
 // An OpenShell Sandbox reports EPERM for a group left with only zombies, as Darwin
@@ -3904,6 +3955,15 @@ function start(slot) {
   if (typeof slot.args === "function" && nodeSetupWait !== undefined) {
     logStartupPhase("node-setup", nodeSetupWait);
     nodeSetupWait = undefined;
+  }
+  try {
+    slot.prepare?.();
+    slot.prepareDelay = undefined;
+  } catch (error) {
+    slot.prepareDelay = Math.min((slot.prepareDelay ?? 500) * 2, 30_000);
+    console.error(slot.name + " start preparation failed: " + (error.code || "error"));
+    slot.timer = setTimeout(() => start(slot), slot.prepareDelay);
+    return;
   }
   const child = spawn(process.execPath, args, {
     env: slot.env, stdio: "inherit", detached: true,

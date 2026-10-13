@@ -61,7 +61,7 @@ OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
 Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.163.0-alpha.1`. If the node's `RuntimeDefault`
+imported runtime image and Codex `0.163.0-alpha.2`. If the node's `RuntimeDefault`
 blocks it, the launcher derives the
 [reviewed compatibility profile](codex-sandbox.md) from that node's actual
 policy, installs it only on the owned k3d node, and verifies workspace and
@@ -98,8 +98,8 @@ requires [hybrid private routing](local-compose-kubernetes.md), configured
 before creating Agent Namespaces; that page also covers Compose repository and
 Slack service connections.
 
-If the K3s channel lookup times out, follow
-[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-times-out).
+If the K3s channel lookup fails or times out, follow
+[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-fails).
 
 ### Start the OpenShell fail-closed profile
 

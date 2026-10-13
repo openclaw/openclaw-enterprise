@@ -96,9 +96,10 @@ omits the backend locator and returns `{ kind: "secret", namespaceId, id }`.
 
 Known OCC transaction failure can compensate the exact created object. An
 unknown commit outcome must not trigger destructive compensation. A failed create
-deletes the exactly owned object it may have stored under its own name. There is no
-value journal or automatic replay; a create still in flight can require operator
-recovery.
+deletes the owned object it may have stored under its name. A create refused because
+its stored object was rewritten deletes it, pinned to the answered UID and
+resourceVersion. There is no value journal or automatic replay; a create still in
+flight can require operator recovery.
 
 ### 3. Bind a source, then admit references
 

@@ -10,6 +10,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   const actions = element("div", { className: "form-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
   const refresh = button("Refresh stop status", () => void refreshStatus());
+  const repeat = button("Request Stop again", openConfirmation, { className: "danger" });
   const state = {
     agent,
     pending: false,
@@ -75,10 +76,11 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
         : []),
     );
     stop.disabled = requested || state.pending || state.needsRefresh;
+    repeat.disabled = state.pending || state.needsRefresh;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     if (requested || state.needsRefresh) {
-      actions.replaceChildren(stop, refresh);
+      actions.replaceChildren(stop, ...(requested ? [repeat] : []), refresh);
     } else {
       actions.replaceChildren(stop);
     }
@@ -145,7 +147,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   }
 
   async function stopAgent(dialog, cancel, confirm) {
-    if (state.pending || state.needsRefresh || state.agent.desiredRuntimeState === "stopped") {
+    if (state.pending || state.needsRefresh) {
       return;
     }
     state.pending = true;
@@ -211,19 +213,26 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     }
   }
 
-  function openConfirmation() {
-    if (state.pending || state.needsRefresh || state.agent.desiredRuntimeState === "stopped") {
+  function openConfirmation(event) {
+    if (state.pending || state.needsRefresh) {
       return;
     }
+    const invoker = event.currentTarget;
+    let submitted = false;
     const dialog = element("dialog", {
       className: "agent-stop-dialog",
       "aria-labelledby": "agent-stop-confirm-title",
       "aria-describedby": "agent-stop-confirm-description",
     });
     const cancel = button("Cancel", () => dialog.close());
-    const confirm = button("Stop Agent", () => void stopAgent(dialog, cancel, confirm), {
-      className: "danger",
-    });
+    const confirm = button(
+      "Stop Agent",
+      () => {
+        submitted = true;
+        void stopAgent(dialog, cancel, confirm);
+      },
+      { className: "danger" },
+    );
     dialog.append(
       element("h2", { id: "agent-stop-confirm-title" }, `Stop ${state.agent.name}?`),
       element(
@@ -242,11 +251,15 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
       "close",
       () => {
         dialog.remove();
-        if (context.isCurrent() && !state.pending) {
-          (state.needsRefresh || state.agent.desiredRuntimeState === "stopped"
-            ? refresh
-            : stop
-          ).focus();
+        if (context.isCurrent() && !state.pending && !submitted) {
+          if (invoker.isConnected && !invoker.disabled) {
+            invoker.focus();
+          } else {
+            (state.needsRefresh || state.agent.desiredRuntimeState === "stopped"
+              ? refresh
+              : stop
+            ).focus();
+          }
         }
       },
       { once: true },

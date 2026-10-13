@@ -39,7 +39,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     "Slack Directory Agent",
     nativeValues("slack-directory", { channels: { slack } }),
     {
-      executionMode: "embedded",
+      // Channels need a dedicated Agent workload, which Agent save checks.
+      executionMode: "dedicated",
       secretBindings: {
         SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
         SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },

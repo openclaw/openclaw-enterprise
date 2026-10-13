@@ -278,6 +278,7 @@ export function createBackendController(fixture, options = {}) {
     state: fixture.state,
     backends,
     nativeWorkerSupport: options.nativeWorkerSupport,
+    now: options.now,
   });
   registerCoreDrivers(controller, fixture.state, {
     serviceAccountDriverId: backends[0]?.drivers.service_account,

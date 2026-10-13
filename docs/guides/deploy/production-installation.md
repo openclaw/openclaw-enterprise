@@ -303,7 +303,7 @@ history, and the repository.
 
 ## Prepare workspace access
 
-Create the controller namespace:
+Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 characters):
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
@@ -311,7 +311,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace op
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing
-settings. Rerun validation and rendering above if inputs change. Configure each
+settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
 
 ## Provision system Secrets and install
