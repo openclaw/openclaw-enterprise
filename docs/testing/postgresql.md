@@ -136,6 +136,31 @@ Configuration Driver in the subprocess startup environment; the flag alone
 does not configure it. A pre-bootstrap case also skips if its database
 already has an Installation.
 
+## Preset preservation across controller upgrades
+
+Run `tests/integration/postgres-preset-upgrade.test.mjs` with an empty, migrated
+application-role `OCC_TEST_DATABASE_URL`, or through `postgres-platform` CI.
+The test saves edited/custom Presets and non-default Configuration through authenticated
+HTTP, then checks IDs, values and generations after stock startup and a restart
+with default seeding disabled. A new Namespace must receive no stock Presets.
+
+CI proves current-version restarts. For cross-revision proof, prepare a before
+checkout with matching dependencies and migrate a fresh disposable database
+using that revision. Set `OCC_TEST_PRESET_BEFORE_ROOT` to its absolute path and
+`OCC_TEST_PRESET_MIGRATION_DATABASE_URL` to that database's separate migrator-role
+URL. Run from the candidate:
+
+```sh
+node --test tests/integration/postgres-preset-upgrade.test.mjs
+```
+
+The test stops the before controller, applies candidate migrations, and starts
+the candidate twice. Scope credentials
+to this invocation; clean up its owned database/server. Missing application
+configuration skips; missing cross-revision migrator configuration fails.
+Compute/Secret Drivers are fixtures: this proves saved-state preservation,
+not images, Kubernetes or model execution.
+
 ## GitHub human sign-in
 
 `tests/integration/postgres-github-sign-in.test.mjs` exercises ordinary PostgreSQL
