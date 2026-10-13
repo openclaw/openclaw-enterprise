@@ -93,10 +93,15 @@ checks an escaped token (`\{{ vars.name }}`), or a default that reads like a
 token, as written: it stays literal once filled, so such a header name,
 `baseUrl` or `api` is refused at save instead of failing every launch. The
 invalid header name refusal now quotes the header up to its first invalid
-character: `must use valid HTTP header names, not "Bad…"`.
+character: `must use valid HTTP header names, not "Bad…"`. A later change
+refuses, on every Compute, a provider or model `baseUrl` with a user name or
+password, like `request.proxy.url`. Preset saves match a header name as the
+text around its variables (`Authorization{{ vars.suffix }}`), and refuse a
+literal `baseUrl` scheme other than `http` or `https` however many variables
+follow, and a `$${VAR}` escape, which is not a reference.
 
-**Who is affected.** Configurations with such a header, or with a `models`
-record, `null` or string on any provider.
+**Who is affected.** Configurations with such a header, a `baseUrl` with a
+user name or password, or a `models` record, `null` or string on any provider.
 
 **How to tell.** The 2026-10-12 messages, or
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`
@@ -330,28 +335,3 @@ sentence for `occ.metricsPort`.
 saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
 The [demo install](../observability/demo.md#install-private-backends) states the
 same contract.
-
-## 2026-10-12: Sandbox workspace files and provisioning repository refusals
-
-**What breaks.**
-
-- With a Sandbox Driver selected (OpenShell), Agent create and provisioning with
-  `initialWorkspaceFiles`, and Agent update and deployment while those files
-  are pending, answer `409` naming the Sandbox. Before, dedicated Codex saved
-  and its first deployment failed, and dedicated OpenClaw got a `400` naming
-  `agents.defaults.workspace` or `agents.entries.main.workspace`, which the
-  Sandbox had set.
-- The Agent provisioning request, and its retry, answer `409` for
-  `repositoryBindings` that the Compute topology cannot deliver, with Agent
-  create's message. Before, the request answered `202` and the work failed.
-- Newly accepted on Kubernetes and Docker Compute: an `agents.entries` roster
-  key of `Main` (any letter case) with initial workspace files.
-
-**Who is affected.** OpenShell Installations that create Agents with initial
-workspace files, and provisioning clients that send repository bindings on a
-topology without repository credential delivery.
-
-**How to tell.** The `409` message names the Sandbox or repository credentials.
-
-**Steps.** Create the Agent without `initialWorkspaceFiles`, or without
-`repositoryBindings`.

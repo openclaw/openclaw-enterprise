@@ -177,7 +177,8 @@ export function selectedModelProviders(
  * credential header (in `headers` or `request.headers`) and no `request.auth` credential.
  * Header names must be valid HTTP field names, so a lookalike cannot slip past the match; on a
  * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked with a
- * stand-in for it and again once filled, as on every Compute. (The provider apiKey rule depends
+ * stand-in for it, matched as a credential header as the text around it, and checked again once
+ * filled, as on every Compute. (The provider apiKey rule depends
  * on the Harness, so it stays in Harness authentication admission, on selected providers only.)
  */
 export function requireHarnessCredentialBinding(
