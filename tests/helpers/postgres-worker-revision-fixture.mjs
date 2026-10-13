@@ -59,17 +59,36 @@ function trackLockOrder(unit, violations) {
 const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
-  // Waits for the CI state lock, which other files' test databases also take.
+  // Waits for the CI state lock, which other files' test databases also take. The drop's lock
+  // wait shares this limit; its psql command has its own (scripts/ci/cleanup.mjs).
   "drop database": 120_000,
 };
 
-async function disposeStep(step, limitMs, work) {
+// A step left running can hold the process open (a socket, a child, a timer), so the file would
+// sit idle after its last test until the runner's file timeout killed it (finding 1223). Once the
+// file's own teardown is done, a process that had abandoned a step exits after this grace,
+// which leaves the test runner time to report. The timer is unref'd: a process with nothing
+// left to wait for exits on its own first. So `cleanup` must be the file's last root after hook,
+// and the file must run under `node --test`, whose parent process counts the file's results
+// (node:test sets a failing exit code only once the event loop drains).
+const abandonedExitGraceMs = 2_000;
+let abandonedSteps = 0;
+
+function exitIfAbandoned() {
+  if (abandonedSteps > 0) {
+    // process.exit() keeps the exit code; the test runner reads results from its reports.
+    setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+  }
+}
+
+export async function disposeStep(step, limitMs, work) {
   let timer;
   try {
     return await Promise.race([
       Promise.resolve().then(work),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
+          abandonedSteps += 1;
           const error = new Error(
             `revision fixture teardown: ${step} did not finish within ${limitMs} ms`,
           );
@@ -90,12 +109,18 @@ export function createWorkerRevisionFixtures(testFile) {
   // per file rather than migrated again. Nothing connects to the template itself. A failed
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
   let template;
+  // The owning file registers this as its last after hook.
   async function cleanup() {
-    const prepared = await template?.catch(() => undefined);
-    if (prepared !== undefined) {
-      await disposeStep("drop template database", disposeLimitsMs["drop database"], () =>
-        prepared.cleanup(),
-      );
+    try {
+      const prepared = await template?.catch(() => undefined);
+      if (prepared !== undefined) {
+        const limitMs = disposeLimitsMs["drop database"];
+        await disposeStep("drop template database", limitMs, () =>
+          prepared.cleanup({ lockTimeoutMs: limitMs }),
+        );
+      }
+    } finally {
+      exitIfAbandoned();
     }
   }
 
@@ -142,7 +167,9 @@ export function createWorkerRevisionFixtures(testFile) {
             await run("pool end", () => pool.end());
           }
         }
-        await run("drop database", () => prepared.cleanup());
+        await run("drop database", () =>
+          prepared.cleanup({ lockTimeoutMs: limits["drop database"] }),
+        );
         if (failures.length === 1) {
           throw failures[0];
         }

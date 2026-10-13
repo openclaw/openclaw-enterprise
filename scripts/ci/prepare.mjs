@@ -64,14 +64,16 @@ const fixtureLanes = new Set([
 // Gateway API, so their clusters skip K3s's Traefik, ServiceLB and
 // metrics-server add-ons, which would otherwise pull and start on every node
 // while the lane imports its images. Lanes that set up gateway routing need
-// Traefik: K3s installs the Gateway API CRDs with it (routing.mjs). Every lane
-// here runs in PR CI; full-integration lanes keep K3s's defaults.
+// Traefik: K3s installs the Gateway API CRDs with it, and prepareGatewayRouting
+// refuses a cluster without it (routing.mjs). Every lane here runs in PR CI;
+// full-integration lanes keep K3s's defaults.
 const lanesWithoutK3sAddons = new Set([
   ...fixtureLanes,
   "images-runtime-startup",
   "repository-credentials-platform",
   "k3d-observability",
 ]);
+const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
 // it deliberately to a newer v1.35 patch; OPENCLAW_CI_K3S_IMAGE still
@@ -1279,6 +1281,8 @@ async function ensureK3dCluster(statePath, state) {
     // A digest-pinned image bypasses k3d's online release-channel lookup. The
     // running API server must still satisfy the ordinary Kubernetes 1.35 gate.
     ...(!openShell ? { nodeImage: process.env.OPENCLAW_CI_K3S_IMAGE || defaultK3sImage } : {}),
+    // Recorded so gateway routing can refuse a cluster created without Traefik.
+    ...(lanesWithoutK3sAddons.has(state.lane) ? { disabledK3sAddons } : {}),
   });
   await writeState(statePath, state);
   if (openShell) {
@@ -1324,8 +1328,8 @@ async function ensureK3dCluster(statePath, state) {
       // every create. Without it, server-0 publishes the API port itself, and
       // the nginx connection limit behind finding 682 is gone too.
       "--no-lb",
-      ...(lanesWithoutK3sAddons.has(state.lane)
-        ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
+      ...(resource.disabledK3sAddons
+        ? ["--k3s-arg", `--disable=${resource.disabledK3sAddons.join(",")}@server:*`]
         : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
@@ -3179,7 +3183,8 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   }
   return {
     env,
-    cleanup: async () => {
+    // `lockTimeoutMs` limits the wait for the CI state lock (cleanupResourceIds).
+    cleanup: async ({ lockTimeoutMs } = {}) => {
       try {
         if (fixtureLanes.has(name)) {
           const cluster = effectiveState.resources.find(
@@ -3196,7 +3201,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
           }
         }
       } finally {
-        await cleanupResourceIds(resolvedStatePath, resourceIds);
+        await cleanupResourceIds(resolvedStatePath, resourceIds, { lockTimeoutMs });
       }
     },
   };
@@ -3293,7 +3298,7 @@ async function main() {
   );
 }
 
-export { defaultK3sImage, imageCacheLanes, prepareFile, prepareLane };
+export { defaultK3sImage, imageCacheLanes, lanesWithoutK3sAddons, prepareFile, prepareLane };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {
