@@ -143,9 +143,10 @@ export function createWorkerRevisionFixtures(
   // Each test owns a database (Work claims span one), copied from one migrated template
   // per file rather than migrated again. Nothing connects to the template itself. A failed
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
-  // A file's first test prepares the template within its own timeout: a migration, plus waits
-  // for the CI state lock behind the other files' migrations. A 4 s test took 10-30 s on CI as
-  // a file's first test (finding 1209), so give a file's first test 60 s or more.
+  // The first test that runs prepares the template within its own timeout: a migration, plus
+  // waits for the CI state lock behind the other files' migrations, which grow with the number
+  // of files that start together. A 4 s test took 10-30 s on CI as a file's first test (finding
+  // 1209), so give a file's first test 60 s or more.
   let template;
   // The owning file registers this as a root after hook: `after(cleanup)`.
   async function cleanup(context) {
