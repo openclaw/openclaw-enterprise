@@ -38,15 +38,15 @@ export async function k3dHostMetrics(directory) {
 const CREDENTIAL_LINE =
   /token|password|secret|credential|authorization|bearer|private.?key|https?:\/\/[^\s/]+@/i;
 
+export function redactCredentialLine(line) {
+  return CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line;
+}
+
 function safeText(value) {
   if (typeof value !== "string") {
     return value;
   }
-  return value
-    .split("\n")
-    .map((line) => (CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line))
-    .join("\n")
-    .slice(-8_000);
+  return value.split("\n").map(redactCredentialLine).join("\n").slice(-8_000);
 }
 
 // k3d's node entrypoint starts K3s in the background and retries `kubectl
@@ -237,7 +237,7 @@ function conditions(values = []) {
 
 // k3d colors its log even into a pipe.
 // eslint-disable-next-line no-control-regex
-const ANSI_COLOR = /\u001b\[[0-9;]*m/gu;
+export const ANSI_COLOR = /\u001b\[[0-9;]*m/gu;
 
 // k3d's own progress lines name the step a create stopped in ("Starting node",
 // "Starting helpers"), without color codes and with credential lines redacted.
@@ -292,8 +292,7 @@ export async function captureK3dDiagnostics({
         error: safeText(state.Error),
       };
     });
-  const loadBalancer = `k3d-${cluster.name}-serverlb`;
-  const [host, nodes, pods, events, containers, loadBalancerState] = await Promise.all([
+  const [host, nodes, pods, events, containers] = await Promise.all([
     k3dHostMetrics(cluster.directory),
     observe(kubectl, [...scope, "get", "nodes", "-o", "json"], ({ stdout }) =>
       JSON.parse(stdout)
@@ -363,8 +362,6 @@ export async function captureK3dDiagnostics({
         ),
       })),
     ),
-    // k3d starts its load balancer only after the server reports K3s running.
-    containerState(loadBalancer),
   ]);
   const k3dCreateOutput = k3dOutputExcerpt(k3dOutput);
   const report = {
@@ -379,7 +376,6 @@ export async function captureK3dDiagnostics({
     pods,
     events,
     containers,
-    loadBalancer: { name: loadBalancer, state: loadBalancerState },
   };
   // The report lives beside cleanup state, outside the cluster directory that
   // cleanup removes. The workflow uploads only this projected report.

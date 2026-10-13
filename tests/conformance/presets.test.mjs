@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   normalizePresetTemplate,
   presetTemplateDefaults,
+  presetTemplateDefaultsWithPlaceholders,
   PresetValidationError,
   renderPresetTemplate,
   validatePresetTemplate,
@@ -193,6 +194,68 @@ test("runtime placeholders, SecretRefs, escaped tokens, and unrelated template s
     },
     secretBindings: { BOT_TOKEN: { source: { kind: "secret", namespaceId, id: secretId } } },
   });
+});
+
+test("Preset defaults name only the text a placeholder was inserted into", () => {
+  // Finding 1214: an escaped token, or a default that reads like one, renders to the same text
+  // as a placeholder but stays literal once filled, so admission must check it as written.
+  const template = {
+    variables: {
+      h: { type: "string" },
+      url: { type: "string" },
+      literal: { type: "string", default: "{{ vars.h }}" },
+    },
+    // Agent text is not configuration: its placeholder names nothing admission checks.
+    agent: { name: "{{ vars.url }}" },
+    configuration: {
+      values: {
+        headers: {
+          "{{ vars.h }}": "variable",
+          "Authorization-{{ vars.h }}": "variable around text",
+          "\\{{ vars.url }}": "escaped",
+          "Authorization\\{{ vars.h }}": "escaped around text",
+          "\\{{ vars.undeclared }}": "escaped undeclared",
+          "\\{{ vars.url }}-{{ vars.h }}": "escaped beside a variable",
+          "{{ vars.literal }}-x": "default that reads like a token",
+        },
+        baseUrl: "https://{{ vars.url }}/v1",
+        escapedUrl: "\\{{ vars.url }}",
+      },
+    },
+  };
+  const { settings, placeholders } = presetTemplateDefaultsWithPlaceholders(template);
+  assert.deepEqual(settings, presetTemplateDefaults(template));
+  assert.deepEqual(Object.keys(settings.configuration.values.headers), [
+    "{{ vars.h }}",
+    "Authorization-{{ vars.h }}",
+    "{{ vars.url }}",
+    "Authorization{{ vars.h }}",
+    "{{ vars.undeclared }}",
+    "{{ vars.url }}-{{ vars.h }}",
+    "{{ vars.h }}-x",
+  ]);
+  assert.deepEqual(
+    [...placeholders].sort(),
+    [
+      "Authorization-{{ vars.h }}",
+      // Beside a variable an escaped token waits on it too, as before (a URL path may hold one).
+      "{{ vars.url }}-{{ vars.h }}",
+      "https://{{ vars.url }}/v1",
+      "{{ vars.h }}",
+    ].sort(),
+  );
+  // Filled, only the named text changes; the rest renders exactly as admission saw it.
+  const filled = renderPresetTemplate(template, { h: "X-Real", url: "models.example.test" });
+  assert.deepEqual(Object.keys(filled.configuration.values.headers), [
+    "X-Real",
+    "Authorization-X-Real",
+    "{{ vars.url }}",
+    "Authorization{{ vars.h }}",
+    "{{ vars.undeclared }}",
+    "{{ vars.url }}-X-Real",
+    "{{ vars.h }}-x",
+  ]);
+  assert.equal(filled.configuration.values.escapedUrl, "{{ vars.url }}");
 });
 
 test("invalid variable programs and inputs fail before producing launch settings", () => {

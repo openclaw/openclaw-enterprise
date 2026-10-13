@@ -8913,7 +8913,6 @@ test("a Preset header name that waits on a variable is checked once filled", () 
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
-  const invalidName = "must use valid HTTP header names";
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
   // Finding 1207: on a Preset save, a header name that waits on an unfilled variable is checked
   // once filled, as on every Compute; a name the rule matches around it is still refused.
@@ -8927,7 +8926,7 @@ test("a Preset header name that waits on a variable is checked once filled", () 
     driver.validateConfiguration(values, { unresolved });
     assert.throws(() => driver.validateConfiguration(values), {
       name: "ConfigurationHarnessError",
-      message: new RegExp(`${invalidName}\\.$`),
+      message: /^Configuration setting \S+ must use valid HTTP header names, not "…"\.$/,
     });
   }
   assert.throws(
@@ -8958,7 +8957,8 @@ test("model provider credential headers and request auth are refused on every pr
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
   const requestAuth = `must be unset or {mode: "provider-default"}: ${binding}`;
-  const invalidName = "must use valid HTTP header names";
+  // Finding 1218: the refusal names the header up to its first invalid character, never past it.
+  const invalidName = (name) => `must use valid HTTP header names, not ${JSON.stringify(name)}`;
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
   const cases = [
     [
@@ -9116,12 +9116,23 @@ test("model provider credential headers and request auth are refused on every pr
     ].map((name) => [
       provider("p", { headers: { [name]: "v" } }),
       "models.providers.p.headers",
-      invalidName,
+      invalidName(name === "" ? "" : `${/^[\w-]*/.exec(name)[0]}…`),
     ]),
     [
       provider("p", { request: { headers: { "authorization\t": "v" } } }),
       "models.providers.p.request.headers",
-      invalidName,
+      invalidName("authorization…"),
+    ],
+    [
+      provider("p", { headers: { "X-Trace": "t", "Bad Header": "v" } }),
+      "models.providers.p.headers",
+      invalidName("Bad…"),
+    ],
+    // A value pasted into the name is never echoed.
+    [
+      provider("p", { headers: { "Authorization: Bearer sk-fixture-0123456789": "v" } }),
+      "models.providers.p.headers",
+      invalidName("Authorization…"),
     ],
   ];
   for (const [harness, model] of harnesses) {

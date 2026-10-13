@@ -175,6 +175,11 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       "k3d-create-discard:passed",
       "k3d-create:passed",
     ]);
+    // k3d's own progress reaches the job log as it happens, without colour codes.
+    assertStderrMatch(
+      result.stderr,
+      /^\[prepare:\S+\] k3d: INFO\[0002\] Starting node 'k3d-openclaw-k8s-\S+-server-0'$/m,
+    );
     for (const pid of await hungK3dProcesses(commands)) {
       assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
     }
@@ -195,7 +200,6 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       /^INFO\[0002\] Starting node 'k3d-openclaw-k8s-\S+-server-0'$/,
     );
     assert.match(evidence.containers[0].processes.value, /kubectl uncordon/);
-    assert.equal(evidence.loadBalancer.state.value.status, "created");
 
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");

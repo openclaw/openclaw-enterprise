@@ -210,16 +210,11 @@ if (command === "docker" || command === "podman") {
       finish("2026-09-23T00:00:00Z network plugin is not ready\nTOKEN=do-not-publish-node-token\n");
     }
   }
-  // A hung create leaves the server running k3d's retry loop and the load
-  // balancer created but never started (finding 1174).
+  // A hung create leaves the server running k3d's retry loop (finding 1174).
   if (scenario.startsWith("cluster-create-hangs") &&
       equals(args, ["top", "k3d-" + state.cluster + "-server-0"])) {
     finish("UID PID PPID CMD\nroot 1 0 /bin/sh /bin/k3d-entrypoint.sh server\n" +
       "root 1600 1 kubectl uncordon k3d-" + state.cluster + "-server-0\n");
-  }
-  if (scenario.startsWith("cluster-create-hangs") &&
-      equals(args, ["inspect", "--format", "{{json .State}}", "k3d-" + state.cluster + "-serverlb"])) {
-    finish(JSON.stringify({ Status: "created", Running: false, OOMKilled: false, ExitCode: 0 }));
   }
   const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
@@ -545,31 +540,44 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 }
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [15, 17, 18].includes(args.length)) {
+  // Only lanes whose tests need no Gateway API or other K3s add-on skip them.
+  // Keep this list in step with lanesWithoutK3sAddons in scripts/ci/prepare.mjs.
+  const addonArgs = [
+    "k3d-fixture-configuration",
+    "k3d-fixture-state",
+    "k3d-fixture-plugins",
+    "k3d-fixture-oauth",
+    "images-runtime-startup",
+    "repository-credentials-platform",
+    "k3d-observability",
+  ].includes(process.env.CI_FIXTURE_LANE)
+    ? ["--k3s-arg", "--disable=traefik,servicelb,metrics-server@server:*"]
+    : [];
+  if (equals(args.slice(0, 2), ["cluster", "create"]) && [14, 16, 18, 19].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
     // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
     // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
     assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
-    if (args.length >= 17) {
+    if (args.length >= 18) {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
     const storage = args[10].split(":");
     assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
     assert.ok(existsSync(storage[0]), "both nodes must mount an existing shared host directory");
     assert.equal(args[11], "--api-port");
     assert.match(args[12], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(13, 17), [
+    assert.deepEqual(args.slice(13, 18), [
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
-      "--lb-config-override",
-      "settings.workerConnections=8192",
+      "--no-lb",
+      ...addonArgs,
     ]);
     // The creation-failure case models k3d's default rollback so it can prove
     // that the preparation owner retains containers for diagnosis and cleanup.
     if (scenario !== "cluster-create-failed") {
-      assert.deepEqual(args.slice(17), ["--no-rollback"]);
+      assert.deepEqual(args.slice(18), ["--no-rollback"]);
     } else {
-      assert.ok(equals(args.slice(17), []) || equals(args.slice(17), ["--no-rollback"]));
+      assert.ok(equals(args.slice(18), []) || equals(args.slice(18), ["--no-rollback"]));
     }
     } else {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
@@ -577,8 +585,8 @@ if (command === "k3d") {
     assert.deepEqual(args.slice(11), [
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
-      "--lb-config-override",
-      "settings.workerConnections=8192",
+      "--no-lb",
+      ...addonArgs,
     ]);
     }
     state.cluster = args[2];
@@ -759,6 +767,7 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
     RUNNER_TEMP: root,
     CI_FIXTURE_ROOT: root,
     CI_FIXTURE_SCENARIO: scenario,
+    CI_FIXTURE_LANE: lane,
     OCC_DOCKER_BIN: join(
       bin,
       ["podman-success", "podman-image-absent"].includes(scenario) ? "podman" : "docker.mjs",
