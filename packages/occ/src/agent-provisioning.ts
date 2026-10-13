@@ -19,7 +19,8 @@ import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/
 
 import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
-import { controllerWorkLeaseActive, type ControllerWork } from "./state/controller-work.ts";
+import type { ControllerWork } from "./state/controller-work.ts";
+import { controllerWorkLeaseActive } from "./state/controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
 
