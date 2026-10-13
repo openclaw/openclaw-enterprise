@@ -7,8 +7,6 @@ author: freeqaz
 # Proposal: GitHub token authority for local development
 
 - **ID:** RFC-0019
-- **Owner:** freeqaz (proposal and credential-boundary review); repository-credentials
-  maintainers for the common-owner change.
 - **Created:** 2026-10-04
 - **Last updated:** 2026-10-13
 - **RFC PR:** [#1196](https://github.com/openclaw/openclaw-enterprise/pull/1196)
@@ -34,9 +32,10 @@ and transport machinery as the GitHub App path. A developer can clone, push and 
 API from the client container against a real repository without a GitHub App installation,
 and the token never enters that container. A static token cannot be narrowed per session, so
 the gateway enforces scope: GraphQL is refused unless the token is fine-grained and the
-operator opts in, and then only plain read-only query documents pass; every push is checked
-against a required ref allowlist before any byte reaches GitHub. Production deployments
-cannot select the kind.
+operator opts in, and then only plain read-only query documents pass; every push's ref names
+are checked against a required allowlist before the push body reaches GitHub, though push
+contents are not inspected. Kubernetes deployments cannot select the kind; a standalone
+service selects it only with two explicit operator opt-ins.
 
 ## Motivation
 
@@ -69,7 +68,8 @@ access. A token does, and the host has one.
 - **Scope enforced, not described.** GraphQL off for `git-read`, off by default, read-only
   when enabled; a required `pushRefAllowlist` checked at the gateway; sessions capped at eight
   hours; grant identity disjoint from App grants.
-- **Production cannot select it.**
+- **Kept out of production.** Kubernetes composition cannot select it; a standalone service
+  needs two explicit opt-ins.
 - **Proven live** (see Delivery).
 
 ## Non-goals
@@ -90,13 +90,15 @@ access. A token does, and the host has one.
 reads either the App key into `createGitHubKeyOwner` or the token file into
 `createGitHubStaticTokenOwner`
 ([`static-token.ts`](../../apps/controller/src/drivers/repo/github/credentials/static-token.ts)),
-both through `readProtectedFile` (owner, mode, no symlink, stable inode), both zero-filled on
-`close()`. The owner lends zero-on-return copies through `withToken`. `createTokenSource`
-returns the App source (`token-source/app.ts`, wrapping the existing acquisition, retirement
-and provider transport) or the static source (`token-source/static.ts`). The driver binds a
-session with `source.bind(session)`, getting `acquire` and `retire`; `cleanup` is `revocable`
-for the App and `expiry-only` for the token. Custody, lifecycle, sessions and transport are
-the common owners from [RFC-0008](0008-repository-credentials/index.md).
+both through `readProtectedFile` (owner, mode, no symlink, stable inode). The loader zero-fills
+both read buffers. The token owner zero-fills its copy on `close()`; the App owner only drops
+its `KeyObject`, which cannot be zeroed. The token owner lends zero-on-return copies through
+`withToken`. `createTokenSource` returns the App source (`token-source/app.ts`, wrapping the
+existing acquisition, retirement and provider transport) or the static source
+(`token-source/static.ts`). The driver binds a session with `source.bind(session)`, getting
+`acquire` and `retire`; `cleanup` is `revocable` for the App and `expiry-only` for the token.
+Custody, lifecycle, sessions and transport are the common owners from
+[RFC-0008](0008-repository-credentials/index.md).
 
 ### Configuration
 
@@ -105,8 +107,9 @@ true`, a required `pushRefAllowlist` (registry guardrail syntax; `[]` denies eve
 optional `allowGraphql` (default false) and optional `leaseSeconds` (900..86400, default 3600).
 The loader refuses the kind unless the process was started with `--development-authority`,
 and refuses `sessionPolicy.maximumDurationSeconds` above 28800 and `limits.gitPushInputBytes`
-above 64 MiB. It strips one trailing LF or CRLF from the token file; the owner requires 1 to
-16384 non-space printable ASCII bytes. The owner records a non-secret token class from the
+above 64 MiB. It strips one trailing LF or CRLF from the token file and requires 1 to
+`limits.accessTokenBytes` bytes (that limit's ceiling is 16384); the owner requires non-space
+printable ASCII. The owner records a non-secret token class from the
 prefix (`fine-grained`, `classic`, `oauth`, `app-user`, `app-installation`, `unknown`); the
 static source refuses `allowGraphql: true` unless the class is `fine-grained`.
 [`check-config`](../../apps/controller/src/composition/repository-credentials/check-config.ts)
@@ -147,7 +150,8 @@ upstream expiry.
   [`allowsReceivePackInput`](../../apps/controller/src/drivers/repo/github/credentials/routes/receive-pack.ts),
   which reads pkt-lines up to the first flush as `<old> <new> <ref>` commands plus `shallow`
   lines and never parses the packfile. `push-cert` and other line forms are refused. Each ref
-  must be strict UTF-8, a well-formed branch name with no invisible or bidi characters
+  must be strict UTF-8 with no control characters (C0, DEL or C1), a well-formed branch name
+  under `refs/heads/` (tag pushes are refused), with no invisible or bidi characters
   (U+061C, U+200B to U+200F, U+2028 to U+202E, U+2060, U+2066 to U+2069, U+FEFF), and pass
   the client hook's `allowsPushRef` matcher, byte for byte with no normalization. A refused ref
   is answered 400 `unsupported-request` before any byte goes upstream, so `git push
@@ -190,7 +194,7 @@ flowchart TB
   Client["<b>Client container</b><br/>bearer only"]
   GitHub["<b>github.com / api.github.com</b>"]
   Host -->|protected file| Loader
-  Loader -->|owner| Source
+  Loader -->|creates| Owner
   Owner -->|withToken| Source
   Source -->|bind| Driver
   Client -->|Basic gateway-session:bearer| Gateway
@@ -215,18 +219,24 @@ sequenceDiagram
   participant GW as Gateway
   participant LC as Lifecycle
   participant TS as Static source
+  participant DR as Driver transport
   participant GH as github.com
-  Git->>GW: POST git-receive-pack, Basic gateway-session:bearer
+  Git->>GW: GET info/refs?service=git-receive-pack, Basic gateway-session:bearer
+  GW->>LC: acquire(deadline)
+  LC->>TS: acquire(attempt, previous, minimumValidity)
+  TS->>TS: checks, borrow copy, custody.capture (lease)
+  TS-->>LC: acquired
+  GW->>DR: discovery plan
+  DR->>GH: GET with Basic x-access-token:token
+  GH-->>Git: ref advertisement (URLs rewritten to the gateway)
+  Git->>GW: POST git-receive-pack
   GW->>GW: route git-push; buffer body; inspect commands
   alt ref refused by allowlist or ref rules
-    GW-->>Git: 400 unsupported-request (nothing sent upstream)
+    GW-->>Git: 400 unsupported-request (push body not sent upstream)
   else refs allowed
-    GW->>LC: acquire(deadline)
-    LC->>TS: acquire(attempt, previous, minimumValidity)
-    TS->>TS: checks, borrow copy, custody.capture (lease)
-    TS-->>LC: acquired
-    LC->>GH: body with Basic x-access-token:token
-    GH-->>Git: receive-pack report (URLs rewritten to the gateway)
+    GW->>DR: plan + body, custody credential
+    DR->>GH: body with Basic x-access-token:token
+    GH-->>Git: receive-pack report
   end
   Git->>GW: POST /graphql (git-read, or allowGraphql unset)
   GW-->>Git: 400 unsupported-request
@@ -234,32 +244,43 @@ sequenceDiagram
 
 ### Trust boundary and failure
 
-The token exists in the service process only: in the owner, in custody slots behind opaque
-refs, and transiently in the `Authorization` header builder. The
-[development compose overlay](../../deploy/examples/repository-credentials/compose.development-token.yaml)
-adds only the process flag; the token file sits in the service's read-only input mount, and
-the client mounts only `/session` and `/workspace`. Errors are fixed codes
-(`invalid-token`, `invalid-backend`, `invalid-configuration`, `authority-unavailable`). The
-new modules import no `node:` builtins, so the
-[boundary script](../../scripts/verify-repository-credentials-boundary.mjs) needed no new
-reviewed import.
+On the service side the token exists in three places. The host file holds it until the guide's
+`shred` step. The service's read-only input mount holds it for the container's lifetime. The
+service process holds the owner's copy and custody copies behind opaque refs, zero-filled when
+released, and every upstream request builds an `Authorization` header string from it. Those
+strings are immutable, cannot be zeroed, and stay on the heap until garbage collection, so a
+heap or core dump can hold copies of the long-lived token (on the App path these are
+short-lived installation tokens). The [development compose
+overlay](../../deploy/examples/repository-credentials/compose.development-token.yaml) adds only
+the process flag; the client mounts only `/session` and `/workspace`.
 
-The weakening is scope, not custody: a leaked session bearer reaches what the host token
-reaches, through the route allowlist, as the token owner, for up to the session duration. The
-token is read once per process; rotation is a restart; a revoked token presents as upstream
-401 on the next exchange. Operators are told to prefer a fine-grained token limited to a
-scratch repository, ideally on a scratch account, and to revoke it when done.
+Every startup failure, including a malformed token or backend, surfaces as
+`invalid-configuration`. A closed owner surfaces as an `authority-unavailable` acquisition
+outcome. Requests refused at the gateway get 400 `unsupported-request`, 413 `limit-exceeded` or
+413 `push-ref-limit-exceeded`. The new modules import no `node:` builtins, so the [boundary
+script](../../scripts/verify-repository-credentials-boundary.mjs) needed no new reviewed
+import.
+
+The weakening is scope, not custody: a leaked session bearer acts as the token owner, for up to
+the session duration, on one repository's git and allowlisted REST routes, plus GraphQL reads
+across every repository the token can read when `allowGraphql` is set. The token is read once
+per process; rotation is a restart; a revoked token presents as upstream 401 on the next
+exchange. Operators are told to prefer a fine-grained token limited to a scratch repository,
+ideally on a scratch account, and to revoke it when done.
 
 ### Production gating
 
-Four independent layers. (1) Kubernetes composition is structurally closed: projected inputs
-refuse the kind (`invalid-projected-inputs`), Helm has no token value or mount, the k3d
+Two layers prevent selection. (1) Kubernetes composition is structurally closed: projected
+inputs refuse the kind (`invalid-projected-inputs`), Helm has no token value or mount, the k3d
 launcher writes the registry kind, and `createGitHubRegistryDriverFactory` accepts only an App
 authority. (2) The standalone loader needs the config literal and the process flag; either
-missing is `invalid-configuration`. (3) `check-config` and the `started` line name the
-authority, and a configuration test asserts that `github-token`, `developmentOnly` and
-`development-authority` are absent from `deploy/helm/**`, `deploy/examples/production/**` and
-the non-development standalone examples. (4) Grant identity is disjoint across kinds.
+missing is `invalid-configuration`.
+
+Two further measures gate nothing. `check-config` and the `started` line name the authority. A
+configuration test asserts that `github-token`, `developmentOnly` and `development-authority`
+are absent from `deploy/helm/**`, `deploy/examples/production/**` and the non-development
+standalone examples; it cannot see an operator's configuration. Disjoint grant identity keeps
+App and token bindings from matching each other.
 
 ### Later phases (not implemented, unplanned)
 
@@ -322,7 +343,13 @@ Open follow-up: streaming pushes instead of buffering them.
 
 - A leaked bearer acts as the token owner within the route allowlist until the session ends.
 - Pushes are buffered in memory, about twice their size per concurrent push.
-- REST scope is the route allowlist, not provider-checked permissions.
+- REST scope is one repository's route allowlist, not provider-checked permissions.
+- Push inspection reads ref names only and never parses the packfile. App sessions carry
+  `contents: write` without the `workflows` permission, so GitHub refuses App pushes that
+  change `.github/workflows/`. A classic token or `gh` OAuth token with `workflow` scope gets
+  no such refusal: a leaked `git-write` bearer can push a workflow file to an allowed branch,
+  where it runs in Actions with the repository's secrets.
+- With `allowGraphql`, GraphQL reads reach every repository the fine-grained token can read.
 - The keyword-based GraphQL filter over-denies; it cannot under-deny a mutation, because
   operation keywords cannot be escaped.
 
