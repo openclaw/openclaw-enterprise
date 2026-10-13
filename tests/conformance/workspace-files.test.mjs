@@ -31,39 +31,79 @@ const administratorPermissions = [
   { action: "read", resourceKind: "agent_revision" },
 ];
 
-function createFixture(options = {}) {
-  return createTenantReaderFixture({
-    installationId,
-    label: "workspace-files",
-    administratorName: "Workspace file administrator",
-    readerName: "Workspace file reader",
-    administratorPermissions,
-    computeDriver: {
-      ...createDevelopmentComputeDriver(),
-      id: "compute-workspace-files",
-      implementation: "deterministic-test",
-    },
-    secretDriver: createTestSecretDriver(),
-    appOptions: (overrides) => ({
-      workspaceFilesAccess:
-        overrides.workspaceFilesAccess === undefined
-          ? options.workspaceFilesAccess
-          : overrides.workspaceFilesAccess,
-      ...(overrides.workspaceFileRequestTimeoutMs === undefined
-        ? {}
-        : { workspaceFileRequestTimeoutMs: overrides.workspaceFileRequestTimeoutMs }),
-      ...(overrides.maxBodyBytes === undefined ? {} : { maxBodyBytes: overrides.maxBodyBytes }),
-      publicOrigin: overrides.publicOrigin === undefined ? publicOrigin : overrides.publicOrigin,
-    }),
-    options,
-  });
+// Building a controller app and creating and signing in two accounts cost far more than a
+// case, so the cases share one bootstrapped app, its administrator and its tenant reader.
+// Cases run one at a time. Each gets a new Namespace and Agent, its own workspace file
+// provider (the app's provider forwards to the running case's) and the audit events recorded
+// after it started. Apps with a shorter workspace file deadline are built once per deadline
+// over the same controller.
+const running = {};
+let shared;
+
+function sharedFixture() {
+  shared ??= (async () => {
+    const fixture = await createTenantReaderFixture({
+      installationId,
+      label: "workspace-files",
+      administratorName: "Workspace file administrator",
+      readerName: "Workspace file reader",
+      administratorPermissions,
+      computeDriver: {
+        ...createDevelopmentComputeDriver(),
+        id: "compute-workspace-files",
+        implementation: "deterministic-test",
+      },
+      secretDriver: createTestSecretDriver(),
+      appOptions: (overrides) => ({
+        workspaceFilesAccess: {
+          read: (read) => running.workspaceFilesAccess.read(read),
+          write: (write) => running.workspaceFilesAccess.write(write),
+        },
+        ...(overrides.workspaceFileRequestTimeoutMs === undefined
+          ? {}
+          : { workspaceFileRequestTimeoutMs: overrides.workspaceFileRequestTimeoutMs }),
+        publicOrigin,
+      }),
+    });
+    const result = await request(fixture.app, "/installation/bootstrap", {
+      body: { name: "Workspace file test installation" },
+    });
+    assert.equal(result.response.status, 201);
+    return { fixture, deadlineApps: new Map() };
+  })();
+  return shared;
 }
 
-async function bootstrap(fixture) {
-  const result = await request(fixture.app, "/installation/bootstrap", {
-    body: { name: "Workspace file test installation" },
+async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeoutMs }) {
+  const { fixture, deadlineApps } = await sharedFixture();
+  running.workspaceFilesAccess = workspaceFilesAccess;
+  if (
+    workspaceFileRequestTimeoutMs !== undefined &&
+    !deadlineApps.has(workspaceFileRequestTimeoutMs)
+  ) {
+    deadlineApps.set(
+      workspaceFileRequestTimeoutMs,
+      fixture.createApp(fixture.administrator, { workspaceFileRequestTimeoutMs }),
+    );
+  }
+  return {
+    app: deadlineApps.get(workspaceFileRequestTimeoutMs) ?? fixture.app,
+    administrator: fixture.administrator,
+    tenantAReader: fixture.tenantAReader,
+    auditSink: fixture.auditSink,
+    createApp: fixture.createApp,
+    state: fixture.state,
+    controller: fixture.controller,
+    firstAuditEvent: fixture.auditSink.events.length,
+  };
+}
+
+// Replaces `object[key]` for this case only; the shared object gets its own method back.
+function replaceForCase(context, object, key, value) {
+  object[key] = value;
+  context.after(() => {
+    delete object[key];
   });
-  assert.equal(result.response.status, 201);
 }
 
 async function createNamespace(fixture, name) {
@@ -132,10 +172,30 @@ async function createAgent(fixture, namespace, name) {
   return { agent: created.payload.data, revision: deployed.payload.data };
 }
 
+// The tenant reader's read grant, on this case's Namespace (the shared app's first Namespace
+// belongs to whichever case ran first).
+function grantTenantReader(fixture, namespace) {
+  const roleId = `tenant-reader-${namespace.id}`;
+  fixture.state.roles.push({
+    id: roleId,
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "read", resourceKind: "namespace" },
+      { action: "read", resourceKind: "agent" },
+      { action: "read", resourceKind: "agent_revision" },
+    ],
+  });
+  bindRole(fixture.state, fixture.tenantAReader.id, {
+    id: roleId,
+    roleId,
+    namespaceId: namespace.id,
+  });
+}
+
 function fileAudits(fixture) {
-  return fixture.auditSink.events.filter((event) =>
-    event.action.startsWith("openclaw.agents.workspace.files."),
-  );
+  return fixture.auditSink.events
+    .slice(fixture.firstAuditEvent)
+    .filter((event) => event.action.startsWith("openclaw.agents.workspace.files."));
 }
 
 test("Agent workspace file routes read and replace fixed files through the selected active Agent", async () => {
@@ -159,7 +219,6 @@ test("Agent workspace file routes read and replace fixed files through the selec
     },
   };
   const fixture = await createFixture({ workspaceFilesAccess });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Workspace file tenant");
   const first = await createAgent(fixture, namespace, "First workspace Agent");
   const second = await createAgent(fixture, namespace, "Second workspace Agent");
@@ -232,9 +291,9 @@ test("Agent workspace file routes enforce read and operate permissions separatel
     },
   };
   const fixture = await createFixture({ workspaceFilesAccess });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Reader tenant");
   const { agent } = await createAgent(fixture, namespace, "Reader visible Agent");
+  grantTenantReader(fixture, namespace);
   const reader = fixture.createApp(fixture.tenantAReader);
 
   const readable = await request(
@@ -278,7 +337,6 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
       },
     },
   });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Validation tenant");
   const { agent } = await createAgent(fixture, namespace, "Validated Agent");
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files`;
@@ -372,7 +430,6 @@ test("Agent workspace file PUT admits 16 KiB of content in any JSON encoding", a
       },
     },
   });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Encoded content tenant");
   const { agent } = await createAgent(fixture, namespace, "Encoded content Agent");
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
@@ -415,7 +472,6 @@ test("Agent workspace file routes map provider file states without leaking conte
       },
     },
   });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Provider state tenant");
   const { agent } = await createAgent(fixture, namespace, "Provider state Agent");
 
@@ -460,7 +516,7 @@ test("Agent workspace file routes map provider file states without leaking conte
 
 // Exercise an uncertain write together with a stalled audit sink. The provider is
 // simulated here; this test does not perform or verify a real gateway file write.
-test("Agent workspace file unknown outcomes stay bounded when audit persistence stalls", async () => {
+test("Agent workspace file unknown outcomes stay bounded when audit persistence stalls", async (context) => {
   const writes = [];
   const fixture = await createFixture({
     workspaceFilesAccess: {
@@ -475,17 +531,16 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
     },
     workspaceFileRequestTimeoutMs: 20,
   });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Unknown write tenant");
   const { agent } = await createAgent(fixture, namespace, "Unknown write Agent");
   const append = fixture.auditSink.append.bind(fixture.auditSink);
-  fixture.auditSink.append = async (event) => {
+  replaceForCase(context, fixture.auditSink, "append", async (event) => {
     // Stall before storing the event, so the API must bound its audit attempt too.
     if (event.action === "openclaw.agents.workspace.files.write") {
       await new Promise(() => {});
     }
     await append(event);
-  };
+  });
 
   const startedAt = Date.now();
   const result = await request(
@@ -514,7 +569,7 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
   assert.equal(JSON.stringify(result.payload).includes("sent once"), false);
 });
 
-test("Agent workspace file requests are bounded before and during provider access", async () => {
+test("Agent workspace file requests are bounded before and during provider access", async (context) => {
   const preAccess = await createFixture({
     workspaceFilesAccess: {
       async read() {
@@ -526,16 +581,21 @@ test("Agent workspace file requests are bounded before and during provider acces
     },
     workspaceFileRequestTimeoutMs: 5,
   });
-  await bootstrap(preAccess);
   const preNamespace = await createNamespace(preAccess, "Pre-access deadline tenant");
   const preAgent = await createAgent(preAccess, preNamespace, "Pre-access deadline Agent");
   preAccess.controller.getReadableActiveAgentRevision = async () => new Promise(() => {});
 
   const startedBeforeRead = Date.now();
-  const read = await request(
-    preAccess.app,
-    `/namespaces/${preNamespace.id}/agents/${preAgent.agent.id}/workspace/files/AGENTS.md`,
-  );
+  let read;
+  try {
+    read = await request(
+      preAccess.app,
+      `/namespaces/${preNamespace.id}/agents/${preAgent.agent.id}/workspace/files/AGENTS.md`,
+    );
+  } finally {
+    // The shared controller looks up active revisions again for the provider half below.
+    delete preAccess.controller.getReadableActiveAgentRevision;
+  }
   const readElapsedMs = Date.now() - startedBeforeRead;
   assert.equal(read.response.status, 503);
   assert.equal(read.payload.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -555,7 +615,6 @@ test("Agent workspace file requests are bounded before and during provider acces
     },
     workspaceFileRequestTimeoutMs: 5,
   });
-  await bootstrap(providerAccess);
   const providerNamespace = await createNamespace(providerAccess, "Provider deadline tenant");
   const providerAgent = await createAgent(
     providerAccess,
@@ -564,12 +623,12 @@ test("Agent workspace file requests are bounded before and during provider acces
   );
 
   const appendAfterTimeout = providerAccess.auditSink.append.bind(providerAccess.auditSink);
-  providerAccess.auditSink.append = async (event) => {
+  replaceForCase(context, providerAccess.auditSink, "append", async (event) => {
     await appendAfterTimeout(event);
     if (event.action === "openclaw.agents.workspace.files.write") {
       throw new Error("Audit acknowledgement failed after the request deadline.");
     }
-  };
+  });
 
   const startedBeforeWrite = Date.now();
   const write = await request(
@@ -624,7 +683,6 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
     },
   };
   const fixture = await createFixture({ workspaceFilesAccess });
-  await bootstrap(fixture);
   const namespace = await createNamespace(fixture, "Disconnect tenant");
   const { agent } = await createAgent(fixture, namespace, "Disconnect Agent");
   const app = fixture.createApp(fixture.administrator, { workspaceFilesAccess }, createFastifyApp);
