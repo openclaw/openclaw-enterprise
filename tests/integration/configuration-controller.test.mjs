@@ -1564,12 +1564,13 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   // Finding 1214: an escaped token, or a default that reads like one, stays literal text in the
   // launch render, so it is checked as written: these saved and then failed every launch.
   const headers = invalidName("models.providers.gateway.headers");
-  for (const [values, message] of [
+  for (const [values, message, agent] of [
     [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers],
     [gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }), headers],
     [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers],
-    [gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }), headers],
     [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers],
+    // A placeholder outside configuration renders the same text but does not admit it.
+    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers, { name: "{{ vars.header }}" }],
     [
       gateway({ baseUrl: "\\{{ vars.url }}" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
@@ -1580,6 +1581,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
         name: "Escaped",
         template: {
           variables: { ...variables, literal: { type: "string", default: "{{ vars.header }}" } },
+          ...(agent ? { agent } : {}),
           configuration: { values },
         },
       },

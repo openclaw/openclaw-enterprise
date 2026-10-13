@@ -205,6 +205,8 @@ test("Preset defaults name only the text a placeholder was inserted into", () =>
       url: { type: "string" },
       literal: { type: "string", default: "{{ vars.h }}" },
     },
+    // Agent text is not configuration: its placeholder names nothing admission checks.
+    agent: { name: "{{ vars.url }}" },
     configuration: {
       values: {
         headers: {
@@ -234,7 +236,13 @@ test("Preset defaults name only the text a placeholder was inserted into", () =>
   ]);
   assert.deepEqual(
     [...placeholders].sort(),
-    ["Authorization-{{ vars.h }}", "https://{{ vars.url }}/v1", "{{ vars.h }}"].sort(),
+    [
+      "Authorization-{{ vars.h }}",
+      // Beside a variable an escaped token waits on it too, as before (a URL path may hold one).
+      "{{ vars.url }}-{{ vars.h }}",
+      "https://{{ vars.url }}/v1",
+      "{{ vars.h }}",
+    ].sort(),
   );
   // Filled, only the named text changes; the rest renders exactly as admission saw it.
   const filled = renderPresetTemplate(template, { h: "X-Real", url: "models.example.test" });

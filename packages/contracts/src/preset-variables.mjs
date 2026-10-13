@@ -2,7 +2,6 @@
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOKEN = /^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
 const RESERVED = /\{\{\s*vars\./;
-const ESCAPED = /\\\{\{\s*vars\./;
 export const PRESET_JSON_MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
 const MAX_WORKSPACE_FILE_BYTES = 16 * 1024;
@@ -156,9 +155,9 @@ function substitute(text, definitions, inputs, path, key, partial, placeholders)
   const result = whole
     ? resolve(refs[0])
     : parts.map((part) => (typeof part === "string" ? part : resolve(part))).join("");
-  // An escaped token renders to the same text as a placeholder but stays literal once filled,
-  // so a string that keeps one is never named as waiting on a variable.
-  if (inserted && placeholders && !ESCAPED.test(text)) {
+  // Only text a placeholder went into waits on a variable. An escaped token renders to the same
+  // text but stays literal once filled, so a string with no placeholder is never named.
+  if (inserted && placeholders) {
     placeholders.add(result);
   }
   return result;
@@ -286,9 +285,10 @@ export function presetTemplateDefaults(template) {
   return render(template, {}, true);
 }
 
-/** Like presetTemplateDefaults, and also name the rendered strings (values and keys) that hold a
- * placeholder for a variable without a value, which admission checks once filled. A string that
- * keeps an escaped token is literal text, so it is not named and is checked as written.
+/** Like presetTemplateDefaults, and also name the rendered configuration strings (values and keys)
+ * a placeholder for a variable without a value went into, which admission checks once filled.
+ * Escaped tokens and defaults that read like tokens are literal text, checked as written unless
+ * a placeholder went into the same string.
  * @param {import('./presets.ts').PresetTemplate} template
  * @returns {{ settings: import('./presets.ts').PresetLaunchSettings, placeholders: ReadonlySet<string> }}
  */
@@ -318,7 +318,16 @@ function render(template, inputs, partial, placeholders) {
       .filter((section) => Object.hasOwn(template, section))
       .map((section) => [
         section,
-        walk(template[section], definitions, inputs, section, false, partial, placeholders),
+        walk(
+          template[section],
+          definitions,
+          inputs,
+          section,
+          false,
+          partial,
+          // Admission checks configuration values only, so agent text never names one.
+          section === "configuration" ? placeholders : undefined,
+        ),
       ]),
   );
   checkInitialWorkspaceFiles(result.agent?.initialWorkspaceFiles, "agent.initialWorkspaceFiles");
