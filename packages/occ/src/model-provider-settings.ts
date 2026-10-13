@@ -164,9 +164,9 @@ export function isHttpFieldName(name: string): boolean {
 // credential header, so a fixed list would miss the next one; matching the whole last word
 // keeps names such as x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry
 // no credential, out.
-// A trailing algorithm word, a trailing version word or both, as in x-hub-signature-256,
+// Up to two trailing algorithm words and a trailing version word, as in x-hub-signature-256,
 // X-Signature-Ed25519, X-HMAC-SHA256, X-Signature-RS256 or x-api-key-v2, are skipped.
-const CREDENTIAL_HEADER_SUFFIX = String.raw`(?:[-_.](?:sha[-_.]?\d+|[ehpr]s\d{3}|ed25519|ed448|rsa|ecdsa|md5|blake2[bs]?))?(?:[-_.]v?\d+)?$`;
+const CREDENTIAL_HEADER_SUFFIX = String.raw`(?:[-_.](?:sha[-_.]?\d+|[ehpr]s\d{3}|ed25519|ed448|rsa|ecdsa|md5|blake2[bs]?)){0,2}(?:[-_.]v?\d+)?$`;
 const CREDENTIAL_HEADER_WORD = new RegExp(
   String.raw`(?:^|[-_.])(?:assertions?|auths?|authentications?|authorizations?|bearers?|cookies?|credentials?|hmacs?|jwts?|licen[cs]es?|otps?|pass|passcode|passphrase|passwords?|pin|protection[-_.]bypass|pwd|secrets?|signatures?|tokens?)` +
     CREDENTIAL_HEADER_SUFFIX,

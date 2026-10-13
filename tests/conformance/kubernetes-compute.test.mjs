@@ -9059,6 +9059,7 @@ test("model provider credential headers and request auth are refused on every pr
       "x-hub-signature-sha256-v2",
       "X-Signature-RS256",
       "x-signature-blake2b",
+      "x-signature-rsa-sha256",
       "x-api-key2",
       "x-api-keyv2",
       "X-Api-Key2-V3",

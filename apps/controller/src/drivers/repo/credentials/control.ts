@@ -94,7 +94,7 @@ export function createControlAdmission(
         ) {
           const running = fenced(id, record).then((committed) => {
             const current =
-              committed || record.sessionId === undefined
+              disposed || committed || record.sessionId === undefined
                 ? undefined
                 : localStatus(record.sessionId);
             if (current?.state === "DISPOSED") {
