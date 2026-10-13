@@ -7,7 +7,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { createServer as createTlsServer, rootCertificates } from "node:tls";
 import { promisify } from "node:util";
+import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 
 const requireOcc = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { Client } = requireOcc("pg");
@@ -253,6 +255,21 @@ test("verify-full checks the server certificate against an IP database host", as
   // pg sends no servername for an IP host, so Node used to check "localhost":
   // a database-CA-signed DNS:localhost leaf passed verify-full for any IP.
   assert.deepEqual(await handshake(v4, url("127.0.0.1", v4.port)), refused);
+  // API and worker startup name the refusal, without the address or the certificate.
+  const statePool = await createPostgresPool(url("127.0.0.1", v4.port), { max: 1 });
+  const startupError = await new PostgresPlatformState(statePool)
+    .loadInstallation()
+    .then(
+      () => assert.fail("loadInstallation must fail"),
+      (error) => error,
+    )
+    .finally(() => statePool.end());
+  const startupFields = startupDependencyFailure(startupError);
+  assert.deepEqual(startupFields, {
+    code: "DATABASE_TLS_CERTIFICATE_INVALID",
+    reason: "ERR_TLS_CERT_ALTNAME_INVALID",
+  });
+  assert.doesNotMatch(JSON.stringify(startupFields), /127\.0\.0\.1|BEGIN CERTIFICATE/);
   // A host= override selects the IP even when the URL authority is a DNS name.
   assert.deepEqual(
     await handshake(v4, url("localhost", v4.port, `${verified}&host=127.0.0.1`)),

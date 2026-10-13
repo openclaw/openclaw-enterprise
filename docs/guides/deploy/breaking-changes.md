@@ -12,6 +12,29 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: IP database hosts are verified against the certificate
+
+**What breaks.** A PostgreSQL URL whose host is an IP literal and whose TLS
+mode verifies the server (`sslmode=verify-full`; without `uselibpqcompat=true`
+also `prefer`, `require` and `verify-ca`; or `PGSSLMODE` set to one of those)
+now requires the server certificate to list that IP as an IP subjectAltName, as
+libpq does. Before, the check ran against the name `localhost`, so any
+certificate for `localhost` signed by the database CA was accepted.
+
+**Who is affected.** Installations that reach PostgreSQL by IP with a
+certificate issued only for DNS names. DNS hosts, Unix sockets,
+`sslmode=disable`, `no-verify`, and libpq-compatible `prefer`, `require` and
+`verify-ca` are unchanged.
+
+**How to tell.** The API logs `startup-error` and the worker logs
+`worker.startup-error`, both with code `DATABASE_TLS_CERTIFICATE_INVALID` and
+reason `ERR_TLS_CERT_ALTNAME_INVALID`. Bootstrap logs `PERSISTENCE_UNAVAILABLE`
+and the migrator `MIGRATION_FAILED`.
+
+**Steps.** Reissue the server certificate with `IP:<address>` in its
+subjectAltName, or connect by a DNS name the certificate carries, then restart
+the API and worker.
+
 ## 2026-10-13: more model credential header names and provider models lists
 
 **What breaks.** The 2026-10-12 model credential rules (below)

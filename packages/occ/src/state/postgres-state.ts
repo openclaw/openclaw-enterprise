@@ -169,6 +169,47 @@ export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableErro
   }
 }
 
+/**
+ * Node and OpenSSL codes for a server certificate that failed identity or chain validation.
+ */
+const CERTIFICATE_ERROR_CODES = new Set([
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_REVOKED",
+  "CERT_SIGNATURE_FAILURE",
+  "CERT_UNTRUSTED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+
+/**
+ * The database server's TLS certificate was refused. `reason` is only the TLS error code,
+ * never the certificate or the connection URL, so startup can log it.
+ */
+export class PostgresCertificateRejectedError extends DependencyUnavailableError {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super("The platform persistence repository is unavailable.");
+    this.name = "PostgresCertificateRejectedError";
+    this.reason = reason;
+  }
+}
+
+function checkoutFailure(error: unknown): Error {
+  if (error instanceof ScopeViolationError || error instanceof DependencyUnavailableError) {
+    return error;
+  }
+  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && CERTIFICATE_ERROR_CODES.has(code)
+    ? new PostgresCertificateRejectedError(code)
+    : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+}
+
 interface TransactionContext {
   readonly lifetime: RepositoryTransactionLifetime;
   readonly client: PostgresClient;
@@ -1381,9 +1422,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     try {
       client = await this.pool.connect();
     } catch (error) {
-      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
-        ? error
-        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+      throw checkoutFailure(error);
     }
     let transportError: Error | undefined;
     const onTransportError = (error: Error) => {
@@ -1574,9 +1613,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     } catch (error) {
       // No statement has run yet, so any checkout failure (DNS, routing, TLS,
       // credentials or a password callback) is unavailability, not a server verdict.
-      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
-        ? error
-        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+      throw checkoutFailure(error);
     }
 
     // Checked-out pg clients emit transport errors independently of query rejection.

@@ -227,7 +227,10 @@ import {
   deploymentWarningsForWork,
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
-import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
+import {
+  PostgresCertificateRejectedError,
+  PostgresCommitOutcomeUnknownError,
+} from "./state/postgres-state.ts";
 import { WorkClaimLostError, type ClaimedWork } from "./state/postgres-work-queue.ts";
 import {
   validAdmittedRepositoryBindings,
@@ -399,7 +402,7 @@ export {
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
-export { PostgresCommitOutcomeUnknownError };
+export { PostgresCertificateRejectedError, PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
   UserAlreadyExistsError,
