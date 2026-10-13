@@ -2,11 +2,148 @@
 
 These [breaking-change notices](breaking-changes.md) are older than the ones
 on that page and newer than the
-[notices before 2026-10-10](breaking-changes-before-2026-10-10.md). They still
+[notices before 2026-10-11](breaking-changes-before-2026-10-11.md). They still
 apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
+
+## 2026-10-12: model credentials in provider headers and request auth
+
+**What breaks.** On Kubernetes Compute, Configuration create and update,
+provisioning, Preset saves, Agent create and update, and deployment answer
+`400` naming the setting for any `models.providers.<provider>`, even one no
+model setting selects, that has:
+
+- a credential header in `headers` (on the provider or one of its `models`)
+  or `request.headers`: a name whose last hyphen- or underscore-separated
+  word, after any trailing number, is `auth`, `authorization`, `bearer`,
+  `cookie`, `credential`, `passcode`, `passphrase`, `password`, `secret`,
+  `signature` or `token` (or a plural), or that ends in `key` or `keys` except
+  an idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
+  `X-Auth-Key`, `x-auth-token` or `Cookie` (widened on 2026-10-13, below);
+- a header name that is not a valid HTTP field name (spaces, zero-width or
+  non-ASCII characters);
+- a `request.auth` other than exactly `{mode: "provider-default"}`.
+
+Every Configuration Driver, on every Compute, also answers `400` for a literal
+where a reference is required: those headers (on models too),
+`request.auth.token` and `request.auth.value`, and the `cert`, `key` and
+`passphrase` of `request.tls` and `request.proxy.tls`. It refuses a
+`request.proxy.url` with a user name or password. Preset saves run the
+Kubernetes rules before the Configuration Driver's, so a literal gets the
+Kubernetes message.
+
+**Who is affected.** Configurations that carry such headers, `request.auth`,
+TLS client keys or proxy credentials. A stored Configuration still reads and
+an edit can replace it; saving it unchanged and deployment refuse it with the
+same message.
+
+**How to tell.** Kubernetes Compute's `400` names
+`models.providers.<provider>.headers`, `.request.headers` or `.request.auth`.
+The Configuration Driver's names a JSON pointer, such as
+`/models/providers/<provider>/request/auth/token holds a credential value inline`.
+
+**Steps.** Read the Configuration, then save it without the refused setting.
+The Agent's Harness authentication is the only supported path for model
+credentials; select the credential there after that save, since an Agent save
+that names the Configuration is refused with the same message until then.
+
+- On Kubernetes Compute, remove every credential header and any `request.auth`
+  other than `{mode: "provider-default"}`. A `${NAME}` reference is refused
+  there too.
+- On other Compute, the Configuration Driver accepts a `${NAME}` reference in
+  those slots instead of a literal.
+- For TLS client keys and proxy credentials, on any Compute, store the value
+  as a Secret and write a `${NAME}` reference.
+
+## 2026-10-12: repository credential images follow the control-plane image rule
+
+**What breaks.** The chart (since #2221) and now profile preflight refuse a
+`repositoryCredentials.image` or `repository.image` that does not start with a
+letter or digit or that holds a character other than letters, digits, `.`,
+`_`, `:`, `/` or `-` before the `@sha256:` digest, as for the controller image.
+
+**Who is affected.** Hand-written values or profile inputs with such a
+reference. Registry references rarely use such names.
+
+**How to tell.** Rendering fails with `repositoryCredentials.image must be an
+approved immutable SHA-256 image reference`; preflight names `repository.image`.
+
+**Steps.** Use the image's registry reference with its digest.
+
+## 2026-10-12: SSH Compute names its Harness authentication rule
+
+**What breaks.** On SSH Compute, an embedded OpenClaw Agent whose
+`harnessAuth.method` is not `runtime` gets `400` naming `harnessAuth.method`,
+where it got a fixed `409`: at deployment, and at Agent create and update when
+they check the binding. Nothing new is refused.
+
+**Who is affected.** Clients that branch on the `409`.
+
+**How to tell.** The `400` says the method must be `runtime`.
+
+**Steps.** Set `harnessAuth` to `{ "method": "runtime" }`.
+
+## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
+
+**What breaks.** `helm upgrade` of the observability demo fails when
+`cluster.port` or `occ.metricsPort` is not a decimal integer from 1 through
+65535 with no leading zero. A saved string `"010"` used to install, and
+Kubernetes applied port 8. The upgrade now stops before it writes that policy.
+
+**Who is affected.** Demo releases whose saved values use a leading zero or a
+port outside that range. Defaults 443 and 9464, and an ordinary decimal such as
+6443, upgrade unchanged.
+
+**How to tell.** Helm stops in `prometheus.yaml` with
+`cluster.port must be an integer TCP port from 1 to 65535`, or the same
+sentence for `occ.metricsPort`.
+
+**Steps.** Set the field to the decimal Kubernetes already applied (`8` for a
+saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
+The [demo install](../observability/demo.md#install-private-backends) states the
+same contract.
+
+## 2026-10-12: cluster and execution API ports must be canonical decimals
+
+**What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
+values that are not a canonical decimal from 1 to 65535 with at most five
+digits. `010` and integers Sprig cannot convert, such as
+`9223372036854775808`, no longer render.
+
+**Who is affected.** Installations that set either port with a leading zero.
+
+**How to tell.** Helm names `cluster.port` or `executionCluster.apiPort` and
+says it must be an integer TCP port from 1 to 65535.
+
+**Steps.** Replace a leading-zero value with its effective decimal port (`010`
+becomes `8`) before the next Helm upgrade. _untested_ against a live release.
+
+## 2026-10-12: Sandbox workspace files and provisioning repository refusals
+
+**What breaks.**
+
+- With a Sandbox Driver selected (OpenShell), Agent create and provisioning with
+  `initialWorkspaceFiles`, and Agent update and deployment while those files
+  are pending, answer `409` naming the Sandbox. Before, dedicated Codex saved
+  and its first deployment failed, and dedicated OpenClaw got a `400` naming
+  `agents.defaults.workspace` or `agents.entries.main.workspace`, which the
+  Sandbox had set.
+- The Agent provisioning request, and its retry, answer `409` for
+  `repositoryBindings` that the Compute topology cannot deliver, with Agent
+  create's message. Before, the request answered `202` and the work failed.
+- Newly accepted on Kubernetes and Docker Compute: an `agents.entries` roster
+  key of `Main` (any letter case) with initial workspace files.
+
+**Who is affected.** OpenShell Installations that create Agents with initial
+workspace files, and provisioning clients that send repository bindings on a
+topology without repository credential delivery.
+
+**How to tell.** The `409` message names the Sandbox or repository credentials.
+
+**Steps.** Create the Agent without `initialWorkspaceFiles`, or without
+`repositoryBindings`.
 
 ## 2026-10-11: named Harness authentication and Docker workspace refusals
 
@@ -161,122 +298,3 @@ empty, such as `--revision="$REV"`.
 
 **Steps.** Omit the flag when its value is empty. `--ca-bundle=` still clears
 `OCC_CA_BUNDLE`.
-
-## 2026-10-10: Credential Secrets must be dedicated; profile Collectors need an exporter
-
-**What breaks.** Helm refuses a Secret name shared by two Secret settings
-(installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
-repository, sandbox, Gateway or Collector) or a generated Gateway Secret. The
-public CA settings (database, external Gateway and repository) may share one
-with each other.
-Envoy Gateway accepts every entry of the gateway API key Secret as a client
-key, so sharing it made the ChatGPT admin key, a CA certificate or a TLS key a
-valid `x-api-key` on the Agent Gateway listener: such an Installation was never
-safe to run. Profiles with `controlPlane.loggingCollector.enabled` need an
-`exporter`.
-
-**Who is affected.** Installations sharing those names; the defaults differ.
-
-**How to tell.** `helm upgrade` or the profile renderer reports
-`<setting> must name a dedicated Secret` or the missing `exporter`.
-
-**Steps.** Move the credential to a new Secret, point the setting at it, and
-upgrade. For `gatewayRouting.apiKeySecretName` (profile:
-`controlPlane.gatewayApiKeySecretName`), the new Secret holds only the `occ`
-entry; then delete `occ` from the old Secret. Rotate a key that shared the
-gateway API key Secret or a generated Gateway Secret, such as the ChatGPT admin
-key or a TLS key. Copy your
-`exporter` values into the profile input. _untested_
-
-## 2026-10-10: OpenShell Codex Agents need a new deployment
-
-**What breaks.** A controller-only upgrade does not repair OpenShell dedicated
-Codex Agents whose shell commands fail with
-`bwrap: No permissions to create a new namespace`.
-Since #2079, the OpenShell Sandbox Driver adds `"approvalsReviewer": "user"` to
-the Codex app server settings it freezes when it admits a revision, which keeps
-each turn at `danger-full-access`. A revision admitted earlier keeps its frozen
-settings, so the Gateway still turns Codex's own sandbox on, and that sandbox
-cannot start inside OpenShell.
-
-**Who is affected.** Dedicated Codex Agents on the
-[OpenShell Sandbox Driver](../../reference/drivers/openshell-sandbox.md) whose
-active revision was admitted before #2079 (`66ea9bed5`, 2026-10-10). Other
-Harnesses are not affected by the `bwrap` failure.
-
-**How to tell.** Every shell command in the Agent's chats fails with that
-`bwrap` message.
-
-**Steps.** Upgrade the controller to `66ea9bed5` or later, then deploy the Agent
-again (`occ agent deploy <id>`). A
-[runtime upgrade](production-upgrade.md#upgrade-agent-runtimes) does this for
-every running Agent. The new revision uses the Agent's current Configuration
-draft. If commands still fail, check `tools.exec`
-([OpenShell credential sources](openshell-credential-sources.md)). _untested_
-
-**Restart policy.** A controller at `db3c97bae` (#2084) or later also has
-OpenShell restart any Harness whose process exits. A Sandbox created before
-#2084 keeps restart policy `NEVER`, which OpenShell cannot change in place, so
-deploy every OpenShell Agent whose Sandbox predates #2084 again too
-([An OpenShell Agent stops answering](../topics/agent-troubleshoot.md#an-openshell-agent-stops-answering)).
-
-## 2026-10-10: Gateway listener settings are checked before deployment
-
-**What breaks.** Provisioning and deployment answer `409` for a `gateway.bind`
-other than `auto`, `lan` or `custom`, `custom` unless `customBindHost` is
-`0.0.0.0`, or Tailscale exposure. These never served routed traffic.
-
-**Who is affected.** Such Configurations on Kubernetes or Docker Compute.
-Kubernetes renders an omitted or `auto` bind as `lan` from the next deployment.
-
-**How to tell.** The `409` names the setting.
-
-**Steps.** Fix the named setting and deploy again. On containerd with cgroup v2,
-also redeploy Agents whose bind is omitted or `auto`.
-
-## 2026-10-10: controller-only releases can restart Agent Pods once
-
-**What breaks.** After a controller-only release, the first time the new worker
-prepares an existing Kubernetes revision again, it applies the Gateway and
-Harness Pod templates the new controller renders. When they changed (since #1758,
-for example, readiness uses an HTTP probe), both Deployments roll once on the
-same runtime image, and chat is unavailable until the new Pods are ready (about
-17 seconds in one test).
-
-**Who is affected.** Running Agents with repository credentials, within about a
-minute of the controller rollout, while their repository session lasts. Other
-Agents only if their deployment was still finishing when the new worker took
-over.
-
-**How to tell.** The Agent's Gateway and Harness Pods restart after the
-controller rollout under a new ReplicaSet of the same revision.
-
-**Steps.** Before a controller-only release, confirm the new controller supports
-the deployed runtime ([checklist](upgrade-checklist.md)): affected Pods restart
-with its rendering on the existing image. Plan for one short chat interruption
-per affected Agent.
-
-## 2026-10-10: Codex approval policy is checked at save and before deployment
-
-**What breaks.** Provisioning and deployment answer `409` when
-`plugins.entries.codex.config.appServer.approvalPolicy` is `untrusted` (Compute
-Drivers also refuse to prepare it). Creating or updating an Agent, provisioning
-and deployment answer `400` when an enabled plugin selection sets
-`toolDefaults.reviewer` to `auto` and that policy is omitted or `never`.
-Native startup checks the automatic reviewer against the policy Compute renders,
-but with the policy omitted the Gateway picks its own, which can be `never`.
-
-**Who is affected.** Custom Codex Configurations with `untrusted` (the Gateway
-already refused them at load, with a `doctor --fix` hint that cannot work), and
-Agents with an automatic plugin reviewer whose Configuration omits the policy
-or sets `never` (readiness already refused `never`). Before, saves succeeded;
-now any other update of an Agent with such a reviewer, even of credentials only,
-is refused. Every bundled Preset sets the policy.
-
-**How to tell.** The `409` or `400` names the setting.
-
-**Steps.** Set the policy to `on-request` before saving the Agent, or choose the
-human reviewer, then deploy the Agent again. `on-failure` still works; native
-startup now gets `on-request`, which the Gateway runs for it. An Agent already
-deployed with the policy omitted keeps its current session policy until it is
-deployed again.

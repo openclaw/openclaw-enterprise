@@ -1757,6 +1757,13 @@ export interface ConfigurationValidationOptions {
     path: readonly (string | number)[],
     key?: boolean,
   ) => readonly string[] | undefined;
+  /**
+   * The declared type of an unfilled variable that is the whole value at `path`, or undefined:
+   * a number or boolean fills a field that takes text with no string.
+   */
+  readonly unresolvedType?: (
+    path: readonly (string | number)[],
+  ) => "string" | "number" | "boolean" | "password" | undefined;
 }
 
 export interface ComputeDriver extends Driver {
@@ -1918,8 +1925,14 @@ export interface ComputeDriver extends Driver {
 
 export interface ConfigurationDriver extends Driver {
   readonly capability: "configuration";
-  /** Side-effect-free admission of partial native values before Preset storage. */
-  validateValues?(values: OpenClawConfigurationDocument): Promise<void>;
+  /**
+   * Side-effect-free admission of partial native values before Preset storage. `unresolved`
+   * locates the text that waits on a Preset variable without a default.
+   */
+  validateValues?(
+    values: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;
   createExact?(configuration: Configuration): Promise<Configuration>;
   inspectExact?(configuration: Configuration): Promise<Configuration | undefined>;

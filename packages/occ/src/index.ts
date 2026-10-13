@@ -400,6 +400,7 @@ export {
   isCredentialHeaderName,
   isHttpFieldName,
   PROVIDER_MODELS_LIST,
+  urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
@@ -4254,7 +4255,8 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<PresetTemplate> {
     const template = normalizePresetTemplate(input, namespaceId);
-    const { settings, unresolved } = presetTemplateDefaultsWithPlaceholders(template);
+    const { settings, unresolved, unresolvedType } =
+      presetTemplateDefaultsWithPlaceholders(template);
     const values = settings.configuration?.values;
     if (values !== undefined) {
       const driver = this.configurationDriver();
@@ -4269,11 +4271,11 @@ export class OpenClawController {
       // Only text the render put a placeholder into waits on a variable, located by its path: an
       // escaped token is literal text that stays in the launch render, so it is checked as
       // written (finding 1214), even where it reads like a placeholder elsewhere (finding 1220).
-      const options: ConfigurationValidationOptions = { unresolved };
+      const options: ConfigurationValidationOptions = { unresolved, unresolvedType };
       validateModelProviderSettings(values, options);
       this.validateComputeConfiguration(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
-      await driver.validateValues(values);
+      await driver.validateValues(values, options);
     }
     return template;
   }

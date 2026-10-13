@@ -1452,6 +1452,69 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
   }
 });
 
+// Node accepts both and writes a deployable file; the chart then refuses it.
+test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible characters", () => {
+  const refusals = [
+    [
+      "host must not be an IPv4-mapped IPv6 address, which Helm 3.19.2's URL parser rejects; write the IPv4 address instead.",
+      ["https://[::ffff:192.0.2.1]", "https://[::FFFF:c000:201]:8443", "https://[::ffff:0:0]"],
+    ],
+    [
+      "host must not percent-encode a space or invisible character; the chart refuses it in the decoded host.",
+      [
+        "https://ex%C2%ADample.com",
+        "https://ex%E2%80%8Bample.com:8443",
+        "https://ex%ef%bb%bfample.com",
+      ],
+    ],
+  ];
+  for (const [refusal, urls] of refusals) {
+    for (const authBaseUrl of urls) {
+      const error = renderError(() => render("openclaw", externalSignInInput({ authBaseUrl })));
+      assert.equal(existsSync(join(error.profileRendererDirectory, "values.yaml")), false);
+      const preflight = JSON.parse(
+        readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
+      );
+      assert.deepEqual(
+        preflight.errors.filter((message) => message.includes("authBaseUrl")),
+        [`controlPlane.authBaseUrl ${refusal}`],
+        authBaseUrl,
+      );
+    }
+  }
+  for (const authBaseUrl of ["https://[::192.0.2.1]", "https://[::ffff:1:2:3]:8443"]) {
+    const output = render("openclaw", externalSignInInput({ authBaseUrl }));
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+  }
+});
+
+// The chart lowercases the header before its checks and before OCC_AUTH_CLIENT_IP_HEADER.
+test("trusted proxy client address headers render lowercase", () => {
+  const trustedProxy = (preset, clientAddressHeader) =>
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        trustedProxy: { preset, cidrs: ["10.42.0.0/16"], clientAddressHeader },
+      },
+    });
+  for (const [preset, header] of [
+    ["generic", "X-Real-IP"],
+    ["ingress-nginx", "X-Forwarded-For"],
+  ]) {
+    const output = render("openclaw", trustedProxy(preset, header));
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.equal(
+      loadYaml(output.values).api.trustedProxy.clientAddressHeader,
+      header.toLowerCase(),
+    );
+  }
+  assertPreflightFailure(
+    "openclaw",
+    trustedProxy("generic", "Cookie"),
+    /controlPlane\.trustedProxy\.clientAddressHeader cannot be cookie;/,
+  );
+});
+
 // The API lowercases both domains at startup, and the chart accepts only lowercase.
 test("native admin domains render lowercase for the chart", () => {
   const output = render(
@@ -1497,6 +1560,29 @@ test("profiles pass an optional observability URL to Installation startup YAML",
   });
   assert.equal(snapshot.observability.url, url);
 
+  const genericObservabilityUrl =
+    /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/;
+  const rewrittenIpv4ObservabilityUrl =
+    /controlPlane\.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
+  const assertObservabilityPreflight = (observabilityUrl, expected, absent) => {
+    const failure = renderError(() =>
+      render(
+        "openclaw",
+        baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl } }),
+      ),
+    );
+    assert.match(failure.profileRendererOutput, expected);
+    assert.doesNotMatch(failure.profileRendererOutput, absent);
+    const directory = failure.profileRendererDirectory;
+    assert.equal(existsSync(join(directory, "preflight.json")), true);
+    assert.equal(existsSync(join(directory, "values.yaml")), false);
+    assert.equal(existsSync(join(directory, "installation.yaml")), false);
+    const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+    assert.equal(preflight.ok, false);
+    const errors = preflight.errors.join("\n");
+    assert.match(errors, expected);
+    assert.doesNotMatch(errors, absent);
+  };
   for (const invalid of [
     "javascript:alert(1)",
     syntheticCredentialUrl({
@@ -1507,11 +1593,15 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     "https://grafana.example.internal/#fragment",
     "grafana.example.internal",
   ]) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl: invalid } }),
-      /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/,
-    );
+    assertObservabilityPreflight(invalid, genericObservabilityUrl, rewrittenIpv4ObservabilityUrl);
+  }
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://127.1",
+    "http://0177.0.0.1",
+  ]) {
+    assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
   }
 });
 
@@ -2029,6 +2119,16 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
     baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
     message,
   );
+  // Compute and the API's Slack directory refuse an unspecified proxy host, which names no proxy.
+  for (const field of ["runtimeProxyUrl", "directoryProxyUrl"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ channels: { [field]: "http://0.0.0.0:3128" } }),
+      new RegExp(
+        `channels\\.${field} must not use host 0\\.0\\.0\\.0, which names no proxy address\\.`,
+      ),
+    );
+  }
   const accepted = render(
     "openclaw",
     baseInput({

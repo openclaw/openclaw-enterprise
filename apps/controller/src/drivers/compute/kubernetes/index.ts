@@ -1654,6 +1654,17 @@ function providerHarnessUrl(
   return url;
 }
 
+// Checked per family: BlockList matches every IPv4 address against ::ffff:0:0/96.
+const unspecifiedOrIpv4MappedIpv6 = new BlockList();
+unspecifiedOrIpv4MappedIpv6.addAddress("::", "ipv6");
+unspecifiedOrIpv4MappedIpv6.addSubnet("::ffff:0:0", 96, "ipv6");
+function unspecifiedOrIpv4MappedHost(address: string): boolean {
+  if (isIP(address) === 4) {
+    return address === "0.0.0.0";
+  }
+  return unspecifiedOrIpv4MappedIpv6.check(address, "ipv6");
+}
+
 function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
   if (cidr.prefix === 0) {
     return true;
@@ -1872,6 +1883,14 @@ function channelProxy(
         "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
       );
     }
+  }
+  // An unspecified host (0.0.0.0, ::) names no destination, and an IPv4-mapped
+  // host (::ffff:0:0/96) leaves as IPv4 traffic that its IPv6 egress ipBlock
+  // never matches. Neither reaches a proxy.
+  if (unspecifiedOrIpv4MappedHost(address)) {
+    throw new ConfigurationFailure(
+      "Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.",
+    );
   }
   validatePort(port, "Channel proxy port");
   return { kind: "ip", address, port };

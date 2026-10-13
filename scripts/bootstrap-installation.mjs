@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   betterAuthIssuer,
-  refuseRewrittenIpv4AuthHost,
+  refuseRewrittenIpv4Host,
   validHttpBaseURL,
 } from "../apps/controller/src/auth/configuration.ts";
 import {
@@ -79,7 +79,7 @@ function authBaseURL(raw, mode) {
   }
   // Before the loopback exception: Node rewrites 127.1, 0177.0.0.1 and
   // 192.168.010.001, and the rewritten host must not become the published origin.
-  refuseRewrittenIpv4AuthHost(raw, parsed);
+  refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", raw, parsed);
   if (
     mode === "production" &&
     parsed.protocol !== "https:" &&

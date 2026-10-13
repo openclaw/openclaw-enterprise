@@ -101,6 +101,8 @@ hexadecimal characters for `controlPlane.controllerImage`, `runtime.image`, and
 enabled `repository.image`. The controller and repository images also follow
 the chart's control-plane image rule (`controlPlaneDigestImage` here): a letter
 or digit first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
+`runtime.image` reaches only Compute and keeps `digestImage` (no whitespace or
+second `@`), so IPv6 registry hosts stay valid.
 
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.

@@ -2700,18 +2700,66 @@ test("run gives up on a preparation still running at the lane deadline and names
   );
 });
 
-test("run gives up on a hung cleanup after its allowance and starts no later file", async (t) => {
+test("run gives up on a hung cleanup after its allowance, ends its commands and starts no later file", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/hung-cleanup.json");
   const resultsPath = join(root, "results/hung-cleanup.json");
   const cleaned = join(root, "state/later-cleaned");
+  // The hung cleanup waits for a command that started one of its own (as `docker compose`
+  // or `pnpm` would). Both record their pids.
+  const pidsPath = join(root, "state/command-pids");
+  const commandPath = join(root, "command.cjs");
+  await writeFile(
+    commandPath,
+    [
+      'const { spawn } = require("node:child_process");',
+      'const { appendFileSync } = require("node:fs");',
+      'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
+      '  stdio: "ignore",',
+      "});",
+      `appendFileSync(${JSON.stringify(pidsPath)}, process.pid + "\\n" + descendant.pid + "\\n");`,
+      "setInterval(() => {}, 1_000);",
+      "",
+    ].join("\n"),
+  );
+  const running = (pid) => {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
+    }
+    // A zombie (state Z) still answers kill(pid, 0), but it has exited.
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat[stat.lastIndexOf(")") + 2] !== "Z";
+    } catch {
+      return true;
+    }
+  };
+  const pids = [];
+  t.after(() => {
+    for (const pid of pids.filter(running)) {
+      process.kill(pid, "SIGKILL");
+    }
+  });
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
     [
-      'import { writeFile } from "node:fs/promises";',
+      'import { spawn } from "node:child_process";',
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'import { setTimeout as delay } from "node:timers/promises";',
       "export async function prepareFile({ file }) {",
       "  if (file.path.endsWith('hung.test.mjs')) {",
-      `    return { cleanup: () => ${hangForever} };`,
+      "    return {",
+      "      cleanup: async () => {",
+      `        spawn(process.execPath, [${JSON.stringify(commandPath)}], { stdio: "ignore" });`,
+      // Hang only once both pids are on record (one write).
+      `        while (!(await readFile(${JSON.stringify(pidsPath)}, "utf8").catch(() => ""))) {`,
+      "          await delay(20);",
+      "        }",
+      `        return ${hangForever};`,
+      "      },",
+      "    };",
       "  }",
       '  return { cleanup: () => writeFile(process.env.CI_RUNNER_CLEANUP_MARKER, "") };',
       "}",
@@ -2743,6 +2791,7 @@ test("run gives up on a hung cleanup after its allowance and starts no later fil
     { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
     { timeout: 30_000 },
   );
+  pids.push(...(await readFile(pidsPath, "utf8")).split("\n").filter(Boolean).map(Number));
 
   assert.equal(result.error, undefined, "the runner gave up on the cleanup");
   assert.equal(result.status, 1, result.stderr);
@@ -2769,6 +2818,17 @@ test("run gives up on a hung cleanup after its allowance and starts no later fil
   );
   assert.equal(later.counts.total, 0);
   await assert.rejects(readFile(cleaned), { code: "ENOENT" });
+  // The runner ended the abandoned cleanup's command and its descendant before it exited, so
+  // neither is left running as an orphan (finding 1225).
+  assert.equal(pids.length, 2, "the command recorded itself and its descendant");
+  for (let attempt = 0; pids.some(running) && attempt < 50; attempt += 1) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  assert.deepEqual(
+    pids.filter(running),
+    [],
+    "the abandoned cleanup's commands outlived the runner",
+  );
 });
 
 test("run ends the cleanups of files the deadline stopped together one allowance past it", async (t) => {

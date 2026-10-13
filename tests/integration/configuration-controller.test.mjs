@@ -8,7 +8,10 @@ import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  renderPresetTemplate,
+} from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -1463,6 +1466,59 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ baseUrl: "ftp://models.example.test" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
     ],
+    // Finding 1243: OpenClaw renders the `$${HOST}` escape as the literal text `${HOST}`, so it is
+    // no environment reference and the URL is checked as written.
+    [
+      gateway({ baseUrl: "ftp://$${HOST}/v1" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1244: a user name or password in a model endpoint is a credential, as in a proxy URL.
+    [
+      gateway({
+        models: [{ id: "m", baseUrl: `https://user:${sentinel}@models.example.test/v1` }],
+      }),
+      "Configuration field /models/providers/gateway/models/0/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // Finding 1250: an environment reference the runtime fills in the host or port, where the URL
+    // does not parse as written, leaves the user name and password a literal.
+    [
+      gateway({ baseUrl: `https://user:${sentinel}@models.example.test:\${MODEL_PORT}/v1` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    [
+      gateway({
+        request: {
+          proxy: {
+            mode: "explicit-proxy",
+            url: `http://u:${sentinel}@\${PROXY_HOST}:\${PROXY_PORT}`,
+          },
+        },
+      }),
+      "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // The runtime renders a reference's fallback when the variable is unset.
+    [
+      gateway({ baseUrl: `https://\${MODEL_HOST:-user:${sentinel}@models.example.test}/v1` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    [
+      gateway({
+        request: {
+          proxy: { mode: "explicit-proxy", url: `\${PROXY_URL:-http://u:${sentinel}@proxy:3128}` },
+        },
+      }),
+      "Configuration field /models/providers/gateway/request/proxy/url carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // One reference set and another unset: https://setu:<password>@models.example.test.
+    [
+      gateway({ baseUrl: `https://\${A_HOST:-h/}\${B_USER:-u:${sentinel}@models.example.test}` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // The URL parser ends the user name at the last `@`, inside brackets too.
+    [
+      gateway({ baseUrl: `https://[\${MODEL_HOST}user:${sentinel}@models.example.test/]` }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
   ];
   for (const [values, message] of refused) {
     for (const [collection, body] of [
@@ -1522,6 +1578,9 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       "x-api-key-version": "2",
     },
     models: [{ id: "m", request: { headers: { "x.trace.id": "t" } } }],
+    // Finding 1250: an environment reference with a fallback that holds no user name.
+    baseUrl: "https://${MODEL_HOST:-models.example.test}/v1",
+    request: { proxy: { mode: "explicit-proxy", url: "${PROXY_URL:-http://proxy.example:3128}" } },
   });
   const created = await request(context.app, "POST", configurations, {
     body: { kind: "agent", values: accepted },
@@ -1554,8 +1613,30 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
               { id: "o", baseUrl: "http://localhost:{{ vars.port }}/v1" },
               { id: "p", baseUrl: "http://[{{ vars.url }}]:8080/v1" },
               { id: "q", baseUrl: "http{{ vars.port }}://models.example.test" },
+              // Finding 1243: a variable may split the scheme, follow an IPv6 address as its port,
+              // or sit beside many others.
+              { id: "r", baseUrl: "ht{{ vars.port }}://models.example.test" },
+              { id: "t", baseUrl: "http://[::1]{{ vars.port }}/v1" },
+              {
+                id: "s",
+                baseUrl:
+                  "https://{{ vars.url }}.{{ vars.api }}.{{ vars.header }}.{{ vars.port }}.test:{{ vars.port }}/{{ vars.url }}",
+              },
+              // Finding 1250: an `@` in the path, query or fragment is no user name.
+              { id: "u", baseUrl: "https://{{ vars.url }}/models/m@2024?at=a@b#c@d" },
+              {
+                id: "v",
+                request: {
+                  proxy: { mode: "explicit-proxy", url: "http://{{ vars.url }}:{{ vars.port }}" },
+                },
+              },
             ],
-            headers: { "{{ vars.header }}": "v", "X-{{ vars.header }}-Trace": "t" },
+            headers: {
+              "{{ vars.header }}": "v",
+              "X-{{ vars.header }}-Trace": "t",
+              // A bearer reference under a name a variable completes, as under Authorization.
+              "Authorization{{ vars.header }}": "Bearer ${GATEWAY_TOKEN}",
+            },
           }),
         },
       },
@@ -1565,15 +1646,28 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   // Finding 1214: an escaped token, or a default that reads like one, stays literal text in the
   // launch render, so it is checked as written: these saved and then failed every launch.
   const headers = (name) => invalidName("models.providers.gateway.headers", name);
+  // Finding 1251: a name whose first character is invalid is named by that character's code
+  // point, not an empty quote.
+  const startsWith = (setting, point) =>
+    `Configuration setting ${setting} must use valid HTTP header names, not one that starts with ${point}.`;
   for (const [values, message, agent] of [
-    [gateway({ headers: { "\\{{ vars.header }}": "v" } }), headers("…")],
+    [
+      gateway({ headers: { "\\{{ vars.header }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
     [gateway({ headers: { "Authorization\\{{ vars.header }}": "v" } }), headers("Authorization…")],
-    [gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }), headers("…")],
-    [gateway({ headers: { "{{ vars.literal }}": "v" } }), headers("…")],
+    [
+      gateway({ headers: { "\\{{ vars.undeclared }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
+    [
+      gateway({ headers: { "{{ vars.literal }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
     // A placeholder outside configuration renders the same text but does not admit it.
     [
       gateway({ headers: { "\\{{ vars.header }}": "v" } }),
-      headers("…"),
+      startsWith("models.providers.gateway.headers", "U+007B"),
       { name: "{{ vars.header }}" },
     ],
     [
@@ -1590,7 +1684,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
           },
         },
       },
-      invalidName("models.providers.other.headers", "…"),
+      startsWith("models.providers.other.headers", "U+007B"),
     ],
     [
       gateway({
@@ -1603,10 +1697,14 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ headers: { "{{ vars.header }}": "v" }, api: "{{ vars.literal }}" }),
       "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.",
     ],
-    // Finding 1221: the text around a variable is checked with a stand-in for it.
-    [gateway({ headers: { "{{ vars.header }} ": "v" } }), headers("…")],
-    [gateway({ headers: { "X-{{ vars.header }}\u200b": "v" } }), headers("X-…")],
-    [gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }), headers("…")],
+    // Finding 1221: the text around a variable is checked with a stand-in for it. The refusal shows
+    // the variable's placeholder up to the first invalid literal character.
+    [gateway({ headers: { "{{ vars.header }} ": "v" } }), headers("{{ vars.header }}…")],
+    [gateway({ headers: { "X-{{ vars.header }}\u200b": "v" } }), headers("X-{{ vars.header }}…")],
+    [
+      gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }),
+      startsWith("models.providers.gateway.headers", "U+007B"),
+    ],
     [
       gateway({ baseUrl: "ftp://{{ vars.url }}" }),
       "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
@@ -1614,6 +1712,95 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     [
       gateway({ models: [{ id: "m", baseUrl: "https://models {{ vars.url }}.test" }] }),
       "Configuration field /models/providers/gateway/models/0/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1243: a literal scheme other than http(s) is refused however many variables follow.
+    [
+      gateway({
+        baseUrl: "ftp://{{ vars.url }}{{ vars.api }}{{ vars.header }}{{ vars.port }}{{ vars.url }}",
+      }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+    // Finding 1244: the text around a variable names a credential header, which takes no literal,
+    // and a variable in a model endpoint's user name or password fills a credential.
+    [
+      gateway({ headers: { "Authorization{{ vars.header }}": "Bearer synthetic" } }),
+      "Configuration field /models/providers/gateway/headers/Authorization{{ vars.header }} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+    ],
+    [
+      gateway({ baseUrl: "https://user:{{ vars.url }}@models.example.test/v1" }),
+      "Configuration field /models/providers/gateway/baseUrl carries a user name or password in the URL. Remove it, or make the whole URL a ${NAME} reference.",
+    ],
+    // Finding 1250: so is literal userinfo, or a variable that is the whole of it, where a variable
+    // fills the host or port and the URL does not parse until filled.
+    ...[
+      ["baseUrl", { baseUrl: `https://user:${sentinel}@{{ vars.url }}/v1` }],
+      ["baseUrl", { baseUrl: "https://{{ vars.header }}@{{ vars.url }}/v1" }],
+      ["baseUrl", { baseUrl: `{{ vars.url }}://user:${sentinel}@{{ vars.api }}/v1` }],
+      // A baseUrl needs literal slashes after its scheme (finding 1259); a proxy URL does not.
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: {
+              mode: "explicit-proxy",
+              url: `https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1`,
+            },
+          },
+        },
+      ],
+      ["baseUrl", { baseUrl: `https://[{{ vars.url }}user:${sentinel}@models.test/]` }],
+      [
+        "models/0/baseUrl",
+        {
+          models: [{ id: "m", baseUrl: `https://user:${sentinel}@models.test:{{ vars.port }}/v1` }],
+        },
+      ],
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: { mode: "explicit-proxy", url: `http://u:${sentinel}@{{ vars.url }}` },
+          },
+        },
+      ],
+      // A variable scheme may be socks5, where a backslash stays in the user name.
+      [
+        "request/proxy/url",
+        {
+          request: {
+            proxy: {
+              mode: "explicit-proxy",
+              url: `{{ vars.api }}://u\\x:${sentinel}@{{ vars.url }}:{{ vars.port }}`,
+            },
+          },
+        },
+      ],
+      [
+        "models/0/request/proxy/url",
+        {
+          models: [
+            {
+              id: "m",
+              request: {
+                proxy: {
+                  mode: "explicit-proxy",
+                  url: `http://u:${sentinel}@proxy:{{ vars.port }}`,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    ].map(([field, settings]) => [
+      gateway(settings),
+      `Configuration field /models/providers/gateway/${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`,
+    ]),
+    // A model row's credential header is matched as the text around its variables too.
+    [
+      gateway({
+        models: [{ id: "m", headers: { "Authorization{{ vars.header }}": "Bearer synthetic" } }],
+      }),
+      "Configuration field /models/providers/gateway/models/0/headers/Authorization{{ vars.header }} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
     ],
   ]) {
     const escaped = await request(context.app, "POST", presets, {
@@ -1628,6 +1815,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     });
     assert.equal(escaped.status, 400, JSON.stringify(escaped.body));
     assert.equal(escaped.body.error.message, message);
+    assert.equal(JSON.stringify(escaped.body).includes(sentinel), false);
   }
   // A default that fills a header name is a literal name: a credential name takes no literal.
   const filledCredential = await request(context.app, "POST", presets, {
@@ -1657,6 +1845,394 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     defaulted.body.error.message,
     "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
   );
+});
+
+test("Configuration and Preset saves refuse a user name or password in proxy, channel proxy, MCP server and proxy environment URLs", async (t) => {
+  // Finding 1255: #2347 refused URL userinfo only in model baseUrl and request.proxy.url. The
+  // Gateway's egress proxy, channel proxies, MCP server URLs and proxy environment variables
+  // carry the same credential (a proxy sends it as Proxy-Authorization), and saved.
+  const root = await mkdtemp(join(tmpdir(), "occ-url-userinfo-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-url-userinfo");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-url-userinfo-${randomUUID()}`;
+  const message = (field) =>
+    `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const userinfo = `http://u:${sentinel}@proxy.example:3128`;
+  const refused = [
+    [{ proxy: { enabled: true, proxyUrl: userinfo } }, "/proxy/proxyUrl"],
+    [{ channels: { telegram: { proxy: userinfo } } }, "/channels/telegram/proxy"],
+    [
+      { channels: { discord: { proxy: `socks5://u:${sentinel}@proxy:1080` } } },
+      "/channels/discord/proxy",
+    ],
+    [
+      { channels: { telegram: { accounts: { ops: { proxy: userinfo } } } } },
+      "/channels/telegram/accounts/ops/proxy",
+    ],
+    [
+      { mcp: { servers: { docs: { url: `https://u:${sentinel}@mcp.example.test/mcp` } } } },
+      "/mcp/servers/docs/url",
+    ],
+    [
+      { nodeHost: { mcp: { servers: { docs: { url: `https://${sentinel}@mcp.example.test` } } } } },
+      "/nodeHost/mcp/servers/docs/url",
+    ],
+    [{ env: { vars: { HTTPS_PROXY: userinfo } } }, "/env/vars/HTTPS_PROXY"],
+    [{ env: { vars: { http_proxy: userinfo } } }, "/env/vars/http_proxy"],
+    [{ env: { ALL_PROXY: userinfo } }, "/env/ALL_PROXY"],
+    [{ env: { vars: { all_proxy: userinfo } } }, "/env/vars/all_proxy"],
+    // curl and git read a proxy without a scheme as http.
+    [{ env: { vars: { HTTPS_PROXY: `${sentinel}@proxy.example:3128` } } }, "/env/vars/HTTPS_PROXY"],
+    // As in #2347: an environment reference in the port, or a fallback that holds userinfo.
+    [
+      { channels: { telegram: { proxy: `http://u:${sentinel}@proxy.example:\${PROXY_PORT}` } } },
+      "/channels/telegram/proxy",
+    ],
+    [
+      { proxy: { proxyUrl: `\${EGRESS_PROXY:-http://u:${sentinel}@proxy.example:3128}` } },
+      "/proxy/proxyUrl",
+    ],
+    // Finding 1259: an MCP server's environment reaches its stdio process, and plugins read
+    // Codex's network proxy and a speech provider's proxy.
+    [
+      { mcp: { servers: { docs: { command: "docs-mcp", env: { HTTPS_PROXY: userinfo } } } } },
+      "/mcp/servers/docs/env/HTTPS_PROXY",
+    ],
+    [
+      {
+        nodeHost: { mcp: { servers: { docs: { env: { all_proxy: `${sentinel}@proxy:3128` } } } } },
+      },
+      "/nodeHost/mcp/servers/docs/env/all_proxy",
+    ],
+    [
+      {
+        plugins: {
+          entries: { codex: { config: { appServer: { networkProxy: { proxyUrl: userinfo } } } } },
+        },
+      },
+      "/plugins/entries/codex/config/appServer/networkProxy/proxyUrl",
+    ],
+    [{ tts: { providers: { microsoft: { proxy: userinfo } } } }, "/tts/providers/microsoft/proxy"],
+    [
+      {
+        agents: {
+          entries: {
+            main: {
+              tts: { personas: { calm: { providers: { microsoft: { proxy: userinfo } } } } },
+            },
+          },
+        },
+      },
+      "/agents/entries/main/tts/personas/calm/providers/microsoft/proxy",
+    ],
+    [
+      {
+        channels: {
+          discord: {
+            accounts: {
+              ops: { voice: { tts: { providers: { microsoft: { proxy: userinfo } } } } },
+            },
+          },
+        },
+      },
+      "/channels/discord/accounts/ops/voice/tts/providers/microsoft/proxy",
+    ],
+    [
+      { talk: { providers: { microsoft: { proxy: userinfo } } } },
+      "/talk/providers/microsoft/proxy",
+    ],
+    [
+      {
+        plugins: {
+          entries: {
+            acpx: {
+              config: {
+                mcpServers: { docs: { command: "docs-mcp", env: { HTTPS_PROXY: userinfo } } },
+              },
+            },
+          },
+        },
+      },
+      "/plugins/entries/acpx/config/mcpServers/docs/env/HTTPS_PROXY",
+    ],
+    [
+      {
+        plugins: {
+          entries: {
+            "voice-call": {
+              config: {
+                numbers: { "+15550100": { tts: { providers: { edge: { proxy: userinfo } } } } },
+              },
+            },
+          },
+        },
+      },
+      "/plugins/entries/voice-call/config/numbers/+15550100/tts/providers/edge/proxy",
+    ],
+  ];
+  // A Configuration to update: a refused edit leaves it as it was.
+  const original = await request(context.app, "POST", configurations, {
+    body: {
+      kind: "agent",
+      values: { env: { vars: { HTTPS_PROXY: "http://proxy.example:3128" } } },
+    },
+  });
+  assert.equal(original.status, 201, JSON.stringify(original.body));
+  const item = `${configurations}/${original.body.data.id}`;
+  for (const [values, field] of refused) {
+    for (const [method, path, body] of [
+      ["POST", configurations, { kind: "agent", values }],
+      ["PATCH", item, { values }],
+      ["POST", presets, { name: "Refused", template: { configuration: { values } } }],
+    ]) {
+      const response = await request(context.app, method, path, { body });
+      assert.equal(response.status, 400, `${method} ${path}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.error.message, message(field), `${method} ${path}`);
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    }
+  }
+  const read = await request(context.app, "GET", item);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(read.body.data.values, original.body.data.values);
+  assert.deepEqual(await readdir(join(root, namespace.id)), [`${original.body.data.id}.json`]);
+  assert.equal(
+    (await readFile(join(root, namespace.id, `${original.body.data.id}.json`), "utf8")).includes(
+      sentinel,
+    ),
+    false,
+  );
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // A Preset variable as the host, port or the whole URL is checked once filled; literal userinfo
+  // beside it, or a variable as the whole user name, is refused at save.
+  const variables = { host: { type: "string" }, port: { type: "string" }, url: { type: "string" } };
+  for (const [values, field] of [
+    [{ proxy: { proxyUrl: `http://u:${sentinel}@{{ vars.host }}:3128` } }, "/proxy/proxyUrl"],
+    [
+      { channels: { discord: { proxy: `http://u:${sentinel}@proxy.example:{{ vars.port }}` } } },
+      "/channels/discord/proxy",
+    ],
+    [
+      { mcp: { servers: { docs: { url: "https://{{ vars.url }}@{{ vars.host }}/mcp" } } } },
+      "/mcp/servers/docs/url",
+    ],
+    [{ env: { vars: { HTTPS_PROXY: `u:${sentinel}@{{ vars.host }}` } } }, "/env/vars/HTTPS_PROXY"],
+    [
+      { env: { vars: { HTTPS_PROXY: `${sentinel}@{{ vars.host }}:3128` } } },
+      "/env/vars/HTTPS_PROXY",
+    ],
+    // A variable in the name is matched as the text around it.
+    [
+      { env: { vars: { "{{ vars.host }}_PROXY": `http://u:${sentinel}@proxy.example:3128` } } },
+      "/env/vars/{{ vars.host }}_PROXY",
+    ],
+    [
+      {
+        mcp: {
+          servers: { docs: { env: { "{{ vars.host }}_PROXY": `u:${sentinel}@proxy:3128` } } },
+        },
+      },
+      "/mcp/servers/docs/env/{{ vars.host }}_PROXY",
+    ],
+  ]) {
+    const response = await request(context.app, "POST", presets, {
+      body: { name: "Refused", template: { variables, configuration: { values } } },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, message(field));
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  }
+
+  // A proxy without userinfo, a whole reference, a fallback without userinfo, NO_PROXY and an
+  // `@` in a path still save.
+  const accepted = {
+    proxy: { enabled: true, proxyUrl: "${EGRESS_PROXY:-http://proxy.example:3128}" },
+    channels: {
+      telegram: { proxy: "http://10.42.0.15:3128", accounts: { ops: { proxy: "${OPS_PROXY}" } } },
+      discord: { proxy: "socks5://proxy.example:1080" },
+    },
+    mcp: {
+      servers: {
+        docs: { url: "https://mcp.example.test/v1/@scope/mcp" },
+        local: {
+          command: "docs-mcp",
+          env: { HTTPS_PROXY: "http://proxy.example:3128", TOKEN: "a@b" },
+        },
+      },
+    },
+    plugins: {
+      entries: {
+        codex: { config: { appServer: { networkProxy: { proxyUrl: "http://127.0.0.1:3128" } } } },
+      },
+    },
+    tts: { providers: { microsoft: { proxy: "${SPEECH_PROXY}" } } },
+    env: {
+      HTTP_PROXY: "proxy.example:3128",
+      vars: { HTTPS_PROXY: "${CORP_PROXY}", NO_PROXY: "localhost,.svc,10.0.0.0/8" },
+    },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: {
+            ...accepted,
+            proxy: { proxyUrl: "http://{{ vars.host }}:{{ vars.port }}" },
+            channels: { telegram: { proxy: "{{ vars.url }}" } },
+            env: { vars: { HTTPS_PROXY: "{{ vars.host }}:3128", ALL_PROXY: "{{ vars.url }}" } },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+
+  // A document an older release stored with one still reads, so its operator can edit it.
+  const path = join(root, namespace.id, `${original.body.data.id}.json`);
+  const stale = { proxy: { proxyUrl: userinfo }, env: { vars: { HTTPS_PROXY: userinfo } } };
+  const current = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(path, JSON.stringify({ ...current, values: stale }));
+  const staleRead = await request(context.app, "GET", item);
+  assert.equal(staleRead.status, 200, JSON.stringify(staleRead.body));
+  assert.deepEqual(staleRead.body.data.values, stale);
+  const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
+  assert.equal(resaved.status, 400, JSON.stringify(resaved.body));
+  assert.equal(resaved.body.error.message, message("/proxy/proxyUrl"));
+});
+
+test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
+  // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
+  // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is
+  // the whole baseUrl or api saved, and failed every launch.
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-fill-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-preset-fill");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  const baseUrl = (field = "baseUrl") =>
+    `Configuration field /models/providers/gateway/${field} must be an absolute http or https URL.`;
+  const api =
+    "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.";
+
+  // An empty written authority, however it is spelled, is refused on Configuration create, and
+  // so is one or no slash after the scheme (finding 1259), which the URL parser accepts.
+  for (const [settings, message] of [
+    [{ baseUrl: "https:///v1" }, baseUrl()],
+    [{ baseUrl: " HTTP:\\\\\\v1" }, baseUrl()],
+    [{ baseUrl: "https:/\t//v1" }, baseUrl()],
+    [
+      { models: [{ id: "m", baseUrl: "http:////models.example.test/v1" }] },
+      baseUrl("models/0/baseUrl"),
+    ],
+    [{ baseUrl: "https:/models.example.test/v1" }, baseUrl()],
+    [{ baseUrl: "https:v1" }, baseUrl()],
+    [{ baseUrl: " \tHTTPS:/models.example.test" }, baseUrl()],
+    [{ baseUrl: "https:\\models.example.test" }, baseUrl()],
+    [{ baseUrl: "https:${MODEL_HOST}/v1" }, baseUrl()],
+    [{ models: [{ id: "m", baseUrl: "http:/${MODEL_HOST}" }] }, baseUrl("models/0/baseUrl")],
+    // The runtime renders a fallback when its variable is unset.
+    [{ baseUrl: "${MODEL_URL:-https:/models.example.test/v1}" }, baseUrl()],
+    [{ baseUrl: "https://${MODEL_HOST:-}/v1" }, baseUrl()],
+  ]) {
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: gateway(settings) },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, message);
+  }
+
+  const template = (variables, settings) => ({
+    variables,
+    configuration: { values: gateway(settings) },
+  });
+  const hostVariable = { baseUrl: "https://{{ vars.h }}/v1" };
+  for (const [variables, settings, message] of [
+    // An empty default is a literal empty host.
+    [{ h: { type: "string", default: "" } }, hostVariable, baseUrl()],
+    // A variable cannot supply the slashes (finding 1259).
+    [{ h: { type: "string" } }, { baseUrl: "https:{{ vars.h }}" }, baseUrl()],
+    [{ h: { type: "string" } }, { baseUrl: "HTTPS:/{{ vars.h }}/v1" }, baseUrl()],
+    [{ n: { type: "number" } }, { baseUrl: "{{ vars.n }}" }, baseUrl()],
+    [{ b: { type: "boolean" } }, { baseUrl: "{{ vars.b }}" }, baseUrl()],
+    [{ n: { type: "number" } }, { api: "{{ vars.n }}" }, api],
+    [
+      { b: { type: "boolean" } },
+      { models: [{ id: "m", baseUrl: "{{ vars.b }}" }] },
+      baseUrl("models/0/baseUrl"),
+    ],
+  ]) {
+    const response = await request(context.app, "POST", presets, {
+      body: { name: "Refused", template: template(variables, settings) },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, message);
+  }
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // A host variable without a default saves; filled empty at launch, its Configuration is refused.
+  const variables = { h: { type: "string" }, n: { type: "number" }, u: { type: "string" } };
+  const values = {
+    ...hostVariable,
+    models: [{ id: "m", baseUrl: "{{ vars.u }}", contextWindow: "{{ vars.n }}" }],
+  };
+  const saved = await request(context.app, "POST", presets, {
+    body: { name: "Filled at launch", template: template(variables, values) },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const launch = (inputs) =>
+    request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate(saved.body.data.template, inputs).configuration,
+      },
+    });
+  const empty = await launch({ h: "", n: 1000, u: "https://models.example.test/v1" });
+  assert.equal(empty.status, 400, JSON.stringify(empty.body));
+  assert.equal(empty.body.error.message, baseUrl());
+  const oneSlash = await launch({ h: "models.example.test", n: 1000, u: "https:/v1" });
+  assert.equal(oneSlash.status, 400, JSON.stringify(oneSlash.body));
+  assert.equal(oneSlash.body.error.message, baseUrl("models/0/baseUrl"));
+
+  // Two slashes or backslashes after any spelling of the scheme, and references beside them, save.
+  for (const value of [
+    " HTTPS://models.example.test/v1",
+    "https:\\\\models.example.test/v1",
+    "http://localhost:${MODEL_PORT}/v1",
+    "https://${MODEL_HOST}/v1",
+    "${MODEL_BASE_URL}/v1",
+    "${MODEL_URL:-https://models.example.test}/v1",
+  ]) {
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: gateway({ baseUrl: value }) },
+    });
+    assert.equal(response.status, 201, `${value}: ${JSON.stringify(response.body)}`);
+  }
+  const filled = await launch({
+    h: "models.example.test",
+    n: 1000,
+    u: "https://models.example.test/v1",
+  });
+  assert.equal(filled.status, 201, JSON.stringify(filled.body));
 });
 
 test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {

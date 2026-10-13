@@ -3248,18 +3248,17 @@ async function diagnoseAdditionalAgent(topology, agentId, revisionId, deployment
 
 /**
  * Deploys another dedicated Codex Agent in the same Namespace through the regular API, with
- * the first Agent's configuration and model source plus the given tool sources. Its principal
- * receives `operate` on exactly those sources, as the first Agent's does.
+ * the first Agent's configuration, the given model source and the given tool sources. Its
+ * principal receives `operate` on exactly those sources, as the first Agent's does.
  */
-async function deployAdditionalCredentialAgent(topology, toolSources) {
+async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSources) {
   const { request, namespaceId } = topology;
-  const modelSourceId = topology.agent.harnessAuth.sourceId;
   assert.equal(typeof topology.agent.configurationId, "string");
   const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
     name: `openshell-second-${randomUUID()}`,
     configurationId: topology.agent.configurationId,
     executionMode: "dedicated",
-    harnessAuth: topology.agent.harnessAuth,
+    harnessAuth: { method: "credential_source", sourceId: modelSourceId },
     credentialSources: [
       { sourceId: modelSourceId },
       ...toolSources.map(({ id }) => ({ sourceId: id })),
@@ -3385,9 +3384,38 @@ async function assertNonModelCredentialSource(topology) {
   assert.equal(before.a, toolA.digest, "OpenShell must substitute tool A's token");
   assert.equal(before.b, toolB.digest, "OpenShell must substitute tool B's token");
 
-  // A second Agent attaches tool A only. OpenShell gives it tool A's token, and tool B's
-  // endpoint receives no token from it, because only attached sources are substituted.
-  const second = await deployAdditionalCredentialAgent(topology, [toolA]);
+  // A second Agent authenticates with its own model source and attaches tool A only. OpenShell
+  // gives it tool A's token, and tool B's endpoint receives no token from it, because only
+  // attached sources are substituted.
+  const secondModelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
+    name: `openshell-model-second-${randomUUID()}`,
+    value: process.env.OPENAI_API_KEY,
+  });
+  assert.equal(secondModelSecret.status, 201, JSON.stringify(secondModelSecret.error));
+  const secondModel = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+    name: `openshell-openai-second-${randomUUID()}`,
+    type: "openai",
+    secrets: { api_key: secondModelSecret.data.ref },
+  });
+  assert.equal(secondModel.status, 201, JSON.stringify(secondModel.error));
+  const second = await deployAdditionalCredentialAgent(topology, secondModel.data.id, [toolA]);
+  // Each model source's provider names a profile of its own; no profile is shared by name.
+  const gateway = topology.gatewayClient();
+  const signal = () => AbortSignal.timeout(10_000);
+  const firstModelId = topology.agent.harnessAuth.sourceId;
+  const ownProfile = async (sourceId) => {
+    const name = openShellProviderName(sourceId);
+    const provider = await gateway.getProvider(topology.placement, name, signal());
+    const profile = await gateway.getProviderProfile(topology.placement, name, signal());
+    return provider?.type === name && profile?.id === name;
+  };
+  assert.equal(await ownProfile(firstModelId), true, "the first model source owns its profile");
+  assert.equal(await ownProfile(secondModel.data.id), true, "the second owns its profile");
+  assert.equal(
+    await gateway.getProviderProfile(topology.placement, "oce-openai", signal()),
+    undefined,
+    "model sources must not share a profile",
+  );
   const secondBefore = await call(second.agent.id);
   assert.equal(secondBefore.placeholder, "openshell");
   assert.equal(secondBefore.a, toolA.digest, "the second Agent must receive tool A's token");
@@ -3485,7 +3513,7 @@ async function assertNonModelCredentialSource(topology) {
     })}.\n`,
   );
 
-  // Stop the second Agent through OCC so the later phases run with one Harness, as before.
+  // Stop and delete the second Agent through OCC so the later phases run with one Harness.
   const stopped = await request("POST", `${second.path}/stop`);
   assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
   await waitFor(
@@ -3499,6 +3527,46 @@ async function assertNonModelCredentialSource(topology) {
         : true;
     },
     180_000,
+  );
+  const deletedAgent = await request("DELETE", second.path);
+  assert.equal(deletedAgent.status, 202, JSON.stringify(deletedAgent.error));
+  // Deletion waits for the Agent's removal and the source's registration fence, so retry.
+  await waitFor(
+    "the second model source's deletion",
+    async () => {
+      const deleted = await request(
+        "DELETE",
+        `/namespaces/${namespaceId}/credential-sources/${secondModel.data.id}`,
+      );
+      if (deleted.status === 204) {
+        return true;
+      }
+      assert.ok([409, 503].includes(deleted.status), JSON.stringify(deleted.error));
+      return undefined;
+    },
+    180_000,
+  );
+  // The removed source's profile went with it; the first model source keeps its own, and the
+  // first Agent's model turns still complete through it.
+  const removedProfile = await gateway.getProviderProfile(
+    topology.placement,
+    openShellProviderName(secondModel.data.id),
+    signal(),
+  );
+  assert.equal(removedProfile, undefined, "a removed source's profile must be deleted");
+  assert.equal(
+    await ownProfile(firstModelId),
+    true,
+    "the remaining model source keeps its profile",
+  );
+  await call();
+  process.stderr.write(
+    `OpenShell integration: model source profiles ${JSON.stringify({
+      perSource: true,
+      sharedProfile: false,
+      removedWithSource: true,
+      remainingSourceModelTurn: true,
+    })}.\n`,
   );
 
   // Admission accepts a redeploy, then the Agent principal loses its grant on tool B before

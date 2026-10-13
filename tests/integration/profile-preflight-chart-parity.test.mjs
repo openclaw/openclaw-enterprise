@@ -305,6 +305,21 @@ fieldParity("trusted proxy CIDRs get the same verdict from the preflight and the
   values: (cidr) => ({ api: { trustedProxy: { preset: "ingress-nginx", cidrs: [cidr] } } }),
 });
 
+// The API's Slack directory proxy: one literal IPv4 endpoint, and not the unspecified address.
+fieldParity("directory proxy URLs get the same verdict from the preflight and the chart", {
+  cases: [
+    ["http://192.0.2.10:3128", true],
+    ["https://192.0.2.10:443", true],
+    ["http://0.0.0.0:3128", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
+    ["http://192.0.2.999:3128", false, /must contain valid IPv4 octets/],
+    ["http://192.0.2.10:65536", false, /must contain a TCP port from 1 to 65535/],
+    ["http://010.0.0.1:3128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+  ],
+  controlPlane: () => ({}),
+  extraInput: (url) => ({ channels: { managedSlackProxy: false, directoryProxyUrl: url } }),
+  values: (url) => ({ slackProxy: { enabled: false }, api: { channelDirectoryProxyUrl: url } }),
+});
+
 // The chart's clientAddressHeader refusal, in its order. generic still accepts a plain
 // address header; named presets keep reading x-forwarded-for.
 const refusedClientAddressHeaders = [
@@ -325,9 +340,15 @@ test(
       [
         ["x-real-ip", true],
         ["x-forwarded-for", true],
+        // The chart lowercases the header first, so preflight does too.
+        ["X-Real-IP", true],
+        ["X-Forwarded-For", true],
         ...refusedClientAddressHeaders.map((header) => [header, false]),
+        ["Cookie", false],
+        ["X-API-Key", false],
       ],
       async ([header, accepted]) => {
+        const lowered = header.toLowerCase();
         const manifests = await assertParity({
           label: header,
           controlPlane: {
@@ -348,16 +369,16 @@ test(
           },
           accepted,
           chartError: new RegExp(
-            `api\\.trustedProxy\\.clientAddressHeader cannot be ${escape(header)}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip`,
+            `api\\.trustedProxy\\.clientAddressHeader cannot be ${escape(lowered)}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip`,
           ),
           rendererError: new RegExp(
-            `controlPlane\\.trustedProxy\\.clientAddressHeader cannot be ${escape(header)}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip\\.`,
+            `controlPlane\\.trustedProxy\\.clientAddressHeader cannot be ${escape(lowered)}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip\\.`,
           ),
         });
         if (accepted) {
           assert.match(
             manifests,
-            new RegExp(`name: OCC_AUTH_CLIENT_IP_HEADER\\n\\s+value: "${escape(header)}"`),
+            new RegExp(`name: OCC_AUTH_CLIENT_IP_HEADER\\n\\s+value: "${escape(lowered)}"`),
           );
         }
       },
@@ -679,6 +700,95 @@ fieldParity("controller image references get the same verdict from preflight and
   values: (name) => ({ images: { controller: `${name}@sha256:${"a".repeat(64)}` } }),
   chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
 });
+
+// runtime.image never reaches the chart: it becomes Compute's images.gateway and
+// images.agent. Every reference preflight accepts, including an IPv6 registry host the
+// chart's control-plane rule would refuse, must reach Compute as written and start it.
+// Preflight also refuses whitespace and a second @, which no runtime pulls; Compute checks
+// only the trailing digest.
+test("runtime image references get Compute's verdict in preflight", () =>
+  each(
+    [
+      ["registry.example.invalid/openclaw-enterprise/runtime", true],
+      ["registry.example.invalid:5000/team/runtime:release_1", true],
+      ["[fd00::1]:5000/openclaw-enterprise/runtime", true],
+      ["[::1]:5000/runtime", true],
+      ["registry.example.invalid/run time", false],
+      ["registry.example.invalid/runtime\n", false],
+      ["registry.example.invalid/runtime@extra", false],
+    ],
+    ([name, accepted]) => {
+      const image = `${name}@sha256:${"b".repeat(64)}`;
+      return withProfile(
+        { ...input({}), runtime: { ...input({}).runtime, image } },
+        ({ directory, renderer }) => {
+          assert.equal(renderer.ok, accepted, `${name}: renderer\n${renderer.output}`);
+          if (!accepted) {
+            assert.match(
+              renderer.output,
+              /runtime\.image must be an immutable image reference with a SHA-256 digest/,
+            );
+            assert.equal(existsSync(join(directory, "installation.yaml")), false);
+            return;
+          }
+          const installation = loadYaml(readFileSync(join(directory, "installation.yaml"), "utf8"));
+          const images = installation.drivers.compute.configuration.images;
+          assert.deepEqual(images, { gateway: image, agent: image, requireImmutableDigest: true });
+          assertCompute({ images }, true, undefined, name);
+        },
+      );
+    },
+  ));
+
+// The chart checks the percent-decoded host for invisible characters that Node's host
+// parser drops.
+const invisibleHost = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
+fieldParity("auth base URLs get the same verdict from preflight and the chart", {
+  cases: [
+    ["https://[::1]", true],
+    ["https://[::192.0.2.1]", true],
+    ["https://[64:ff9b::192.0.2.1]:8443", true],
+    ["https://[::ffff:1:2:3]", true],
+    ["https://ex%C3%A4.com", true],
+    ...["%C2%AD", "%E2%80%8B", "%E2%81%A0", "%EF%BB%BF", "%E1%A0%8E", "%F0%9D%85%B3"].map(
+      (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
+    ),
+    ["https://ex%e2%80%8bample.com:8443", false, invisibleHost],
+  ],
+  label: (url) => url,
+  controlPlane: (url) => ({ authBaseUrl: url }),
+  values: (url) => ({ auth: { baseUrl: url } }),
+});
+
+// Helm built with Go 1.24.9 (Helm 3.19.2) refuses an IPv4-mapped IPv6 host in any spelling
+// as an invalid IPv6 host; Helm built with newer Go accepts it. Preflight refuses it, so the
+// outcome does not depend on the Helm build.
+test(
+  "IPv4-mapped auth base URL hosts fail preflight under every Helm build",
+  { skip: helmSkip },
+  () =>
+    each(
+      [
+        "https://[::ffff:192.0.2.1]",
+        "https://[::FFFF:c000:201]:8443",
+        "https://[0:0:0:0:0:ffff:0:1]",
+        "https://[::ffff:0:0]",
+      ],
+      (url) =>
+        withProfile(input({ authBaseUrl: url }), async ({ directory, renderer }) => {
+          assert.equal(renderer.ok, false, `${url}: renderer\n${renderer.output}`);
+          assert.match(renderer.output, /authBaseUrl host must not be an IPv4-mapped IPv6 address/);
+          assert.equal(existsSync(join(directory, "values.yaml")), false);
+          const chart = await helmTemplate([
+            await baselineValues(),
+            writeOverride(directory, { auth: { baseUrl: url } }),
+          ]);
+          if (!chart.ok) {
+            assert.match(chart.output, /invalid IPv6 host/, url);
+          }
+        }),
+    ),
+);
 
 fieldParity(
   "repository credential image references get the same verdict from preflight and the chart",

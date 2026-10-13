@@ -167,11 +167,17 @@ starts a new OpenShell authorization epoch, revoking running Sandboxes’ placeh
 ## How sources map to OpenShell
 
 Each OCC Namespace maps to one operator-mode OpenShell Workspace with the same
-name as its Kubernetes namespace. The Driver manages two objects in that
+name as its Kubernetes namespace. The Driver manages these objects in that
 Workspace:
 
-- **Endpoint-specific `openai` profile.** Registration imports `oce-openai` for the default endpoint or a profile ID derived from a custom normalized URL. It inserts the key as a bearer `authorization` header only for the configured binaries and endpoint host, port, and base path followed by `/**`. A digest annotation records profile content; configuration changes update it on registration, update, or deployment.
-- **Profile per `bearer-token` source.** Its ID equals the provider name. It exposes the token through its `env_var` and binds it to the configured host, port, and path for `toolBinaries`. Removal deletes the profile with its provider.
+- **One provider profile per source.** Its ID equals the provider name, and
+  removal deletes it with the provider. No source shares a profile. A digest
+  annotation records its content; registration, update, or deployment applies
+  configuration changes. An `openai` source binds its key as a bearer
+  `authorization` header to the configured host, port, and base path followed
+  by `/**`, for the configured binaries only. A `bearer-token` source exposes
+  its token through `env_var` and binds it to its host, port, and path for
+  `toolBinaries`.
 - **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
   characters of the SHA-256 digest of the source ID. Labels record OCC
   ownership, the source ID, and the Namespace ID. The provider's
@@ -192,11 +198,10 @@ rejects an empty value rather than silently keep the old one. OpenShell gives
 the new value only to processes started after the update, so a running Harness
 keeps the previous value until it restarts.
 
-`removeSource` deletes the owned provider and confirms that it is gone. When no
-provider using that endpoint profile remains, it also deletes the profile, because
-OpenShell cannot delete a Workspace that still holds profiles.
+`removeSource` deletes the owned provider, confirms that it is gone, and deletes
+the source's profile. OpenShell cannot delete a Workspace that still holds profiles.
 
-An invalid persisted OpenAI endpoint cannot identify an owned profile. If the gateway confirms that the source's provider is absent, deletion leaves profiles alone and removes the OCC record. If a provider exists, status is `failed` and deletion refuses to guess ownership. Unknown types and gateway errors also remain failures.
+The source ID identifies its own profile even when the persisted endpoint is invalid. Deletion refuses an unowned provider; unknown source types and gateway errors also remain failures.
 
 For a revision, `attachForRevision` brings each source's profile up to date and
 returns its provider name. It fails when two of the revision's sources would use
@@ -258,8 +263,8 @@ revision:
   the endpoint selected by the source.
 - **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
   any Workspace. A Workspace admin, which includes OCC's gateway principal, can
-  update a profile's endpoints or binaries while Sandboxes use it, so anyone
-  holding the Backend credential can redirect the key. With
+  update a source's profile to add hosts or binaries while Sandboxes use it,
+  so anyone holding the Backend credential can redirect the key. With
   `allow_unauthenticated_users` enabled, every caller that reaches the gateway
   is a Platform Admin; never enable it outside disposable development. The OCC
   worker can read the source's Kubernetes Secret directly.

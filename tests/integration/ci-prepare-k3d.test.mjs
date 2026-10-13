@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
 import {
   assertStderrMatch,
   digest,
@@ -563,6 +564,27 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       const cleanup = await commands.cleanup();
       assert.equal(cleanup.status, 0, cleanup.stderr);
     });
+  });
+
+  // K3s installs the Gateway API CRDs with Traefik, and routing waits up to 180 s for each one.
+  // A lane added to lanesWithoutK3sAddons that also sets up routing must fail at once instead.
+  test("gateway routing refuses a cluster created without K3s's Traefik before any side effect", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "k3d-fixture-configuration");
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
+    assert.deepEqual(cluster.disabledK3sAddons, ["traefik", "servicelb", "metrics-server"]);
+    await assert.rejects(
+      prepareGatewayRouting({
+        cluster,
+        execFile: () => assert.fail("routing ran a command against a cluster without Traefik"),
+      }),
+      { message: /Gateway routing needs K3s's Traefik add-on/ },
+    );
+    await assert.rejects(stat(join(cluster.directory, "gateway-routing")), { code: "ENOENT" });
+    const cleanup = await commands.cleanup();
+    assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
   test("fixture preparation waits for a late worker and its containerd before importing", async (t) => {

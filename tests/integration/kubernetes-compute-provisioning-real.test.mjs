@@ -687,13 +687,20 @@ test(
     assert.match(admitted.data.provisioning.url, /^\/namespaces\//);
     await fixture.startWorker();
     const provisioned = await waitFor(
-      "Kubernetes provisioning to admit its first deployment",
+      "Kubernetes provisioning to queue its first deployment wait",
       async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data.revisionId !== undefined ? observed.data : undefined;
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        // The handoff commits revisionId while the worker still holds the provisioning lease
+        // ("running"); its deployment wait is deferred ("queued") in a later transaction.
+        // Inspect the handoff only after that deferral has committed (finding 1253).
+        return observed.data.revisionId !== undefined && observed.data.status === "queued"
+          ? observed.data
+          : undefined;
       },
     );
+    // A poll can see "queued" just before the pending event stops the worker; this stop covers it.
     await handoffWorkerStop;
     await fixture.stopWorker();
     assert.equal(provisioned.status, "queued");

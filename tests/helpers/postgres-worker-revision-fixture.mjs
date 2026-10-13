@@ -59,17 +59,67 @@ function trackLockOrder(unit, violations) {
 const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
-  // Waits for the CI state lock, which other files' test databases also take.
+  // Waits for the CI state lock, which other files' test databases also take. The drop's lock
+  // wait shares this limit; its psql command has its own (scripts/ci/cleanup.mjs).
   "drop database": 120_000,
 };
 
-async function disposeStep(step, limitMs, work) {
+// A step left running can hold the process open (a socket, a child, a timer), so the file would
+// sit idle after its last test until the runner's file timeout killed it (finding 1223). Once the
+// file's teardown is done, a process that had abandoned a step exits after this grace, which
+// leaves the test runner time to report. The timer is unref'd: a process with nothing left to
+// wait for exits on its own first. The file must run under `node --test`, whose parent process
+// counts the file's results (node:test sets a failing exit code only once the event loop drains).
+const abandonedExitGraceMs = 2_000;
+let abandonedSteps = 0;
+let exitTimer;
+let exitHookAdded = false;
+
+function exitIfAbandoned() {
+  if (abandonedSteps > 0) {
+    // process.exit() keeps the exit code; the test runner reads results from its reports.
+    exitTimer ??= setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+  }
+}
+
+// `cleanup` runs as a root after hook, with the root test's context. A timer it armed itself cut
+// off a root after hook registered after it (finding 1246), so it adds an after hook there:
+// node:test runs a hook added while its after hooks run after the ones already registered, and
+// that hook starts the grace if any step, in a test or a later hook, was abandoned. node:test
+// skips the after hooks after a failing one, so a failed `cleanup`, or one called without a
+// context, starts the grace at once. A later root after hook that fails skips that hook too
+// (finding 1258), so a step abandoned before or after `cleanup` also arms a backstop: an exit
+// 60 s later, unref'd too, well before the runner's file timeout. Normally the grace ends the
+// file first.
+const abandonedExitBackstopMs = 60_000;
+// Set once `cleanup` has run: the tests are done, so a step abandoned from then on is teardown's.
+let exitBackstopMs;
+let exitBackstopTimer;
+
+function exitAfterBackstop() {
+  if (abandonedSteps > 0 && exitBackstopMs !== undefined) {
+    exitBackstopTimer ??= setTimeout(() => process.exit(), exitBackstopMs).unref();
+  }
+}
+
+function exitAfterRootHooks(context) {
+  if (typeof context?.after !== "function") {
+    exitIfAbandoned();
+  } else if (!exitHookAdded) {
+    exitHookAdded = true;
+    context.after(exitIfAbandoned);
+  }
+}
+
+export async function disposeStep(step, limitMs, work) {
   let timer;
   try {
     return await Promise.race([
       Promise.resolve().then(work),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
+          abandonedSteps += 1;
+          exitAfterBackstop();
           const error = new Error(
             `revision fixture teardown: ${step} did not finish within ${limitMs} ms`,
           );
@@ -85,17 +135,31 @@ async function disposeStep(step, limitMs, work) {
 }
 
 // One template per owning test file; importing this helper registers no tests or hooks.
-export function createWorkerRevisionFixtures(testFile) {
+// `exitBackstopMs` replaces the abandoned-step backstop for the fixture's own exit tests.
+export function createWorkerRevisionFixtures(
+  testFile,
+  { exitBackstopMs: backstopMs = abandonedExitBackstopMs } = {},
+) {
   // Each test owns a database (Work claims span one), copied from one migrated template
   // per file rather than migrated again. Nothing connects to the template itself. A failed
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
   let template;
-  async function cleanup() {
-    const prepared = await template?.catch(() => undefined);
-    if (prepared !== undefined) {
-      await disposeStep("drop template database", disposeLimitsMs["drop database"], () =>
-        prepared.cleanup(),
-      );
+  // The owning file registers this as a root after hook: `after(cleanup)`.
+  async function cleanup(context) {
+    let failed = true;
+    try {
+      const prepared = await template?.catch(() => undefined);
+      if (prepared !== undefined) {
+        const limitMs = disposeLimitsMs["drop database"];
+        await disposeStep("drop template database", limitMs, () =>
+          prepared.cleanup({ lockTimeoutMs: limitMs }),
+        );
+      }
+      failed = false;
+    } finally {
+      exitBackstopMs ??= backstopMs;
+      exitAfterBackstop();
+      exitAfterRootHooks(failed ? undefined : context);
     }
   }
 
@@ -142,7 +206,9 @@ export function createWorkerRevisionFixtures(testFile) {
             await run("pool end", () => pool.end());
           }
         }
-        await run("drop database", () => prepared.cleanup());
+        await run("drop database", () =>
+          prepared.cleanup({ lockTimeoutMs: limits["drop database"] }),
+        );
         if (failures.length === 1) {
           throw failures[0];
         }

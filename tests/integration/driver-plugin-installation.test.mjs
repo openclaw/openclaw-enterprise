@@ -836,3 +836,21 @@ test("Driver export resolution selects the file Node's import selects", async (t
     });
   }
 });
+
+test("Driver export resolution accepts an in-root entry whose name starts with two dots", async (t) => {
+  const owner = await onDiskConfigurationPackage(t, "./..entry.js");
+  const installed = join(owner, "node_modules", configurationPackage);
+  await cp(join(installed, "compiled", "index.js"), join(installed, "..entry.js"));
+
+  const native = importConfigurationPackage(owner);
+  assert.equal(native.status, 0, native.stderr);
+
+  const configuration = installation();
+  configuration.drivers.configuration = selectedConfiguration();
+  const drivers = await load(owner, configuration);
+  assert.equal(
+    drivers.installation.drivers.configuration.implementation,
+    `${configurationPackage}@1.0.0`,
+  );
+  assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
+});

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-10
-last_updated_session: agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110
+updated: 2026-10-12
+last_updated_session: 850fdf4a-7ef8-425c-9c44-942ac1aee05f
 ---
 
 # Credential source lifecycle Flow
@@ -99,12 +99,12 @@ labels, UID, and key before decoding it. A Driver without `withValue` returns `5
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-The transaction inserts a `registering` `credential_sources` row with a new
-`cs_` ID and gateway Driver ID, plus `credential_source_secrets` rows. The
-OpenShell provider name derives from that ID. Compute's `resolveSandboxNamespace`
-supplies the paired Sandbox's runtime placement. OCC calls `registerSource` with
-a 30-second timeout; the Driver ensures the Workspace profile and creates an
-OCC-labeled provider with that `profile_workspace`. Retries adopt only matching labels.
+The transaction inserts a `registering` `credential_sources` row and
+`credential_source_secrets` rows. The OpenShell provider name derives from the
+source ID. Compute's `resolveSandboxNamespace` supplies the paired Sandbox's
+placement. OCC calls `registerSource` with a 30-second timeout; the Driver ensures
+the source-owned profile and creates an OCC-labeled provider with that
+`profile_workspace`. Retries adopt only matching labels.
 
 For terminal `failed` or `absent` results, `abandonCredentialRegistration`
 removes the provider and record, retaining a `deleting` record if removal fails.
@@ -186,10 +186,10 @@ OCC authorizes `delete`, requires a selected gateway (`409`), and locks the
 source. It returns `409` for draft, active-revision, or pending-deployment
 references, `CREDENTIAL_WITHDRAWAL_IN_PROGRESS` for withdrawal-only holds, or `503` if another driver registered it. Only then does it commit
 `deleting`; database triggers prevent backward transitions. The Driver removes
-the owned provider, confirms absence, then deletes its profile after the last
-user. Invalid endpoints permit no profile removal and succeed only if the provider
-is absent. Unverifiable ownership, unknown type, or gateway read failure never
-counts as absence; failures return `503`, retaining `deleting`.
+the owned provider, confirms absence, then deletes its source-owned profile.
+Its name derives from the source ID even if the endpoint is invalid. Unverifiable
+ownership, unknown type, or gateway read failure never counts as absence; failures
+return `503`, retaining `deleting`.
 
 Even successful removal retains the record with `503` until
 `CREDENTIAL_REGISTRATION_FENCE_MS` (70 seconds) after `createdAt`: registration
@@ -312,6 +312,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
 
 - 2026-10-10 04:53: Reconcile credential refresh; report invalid offered-source values as field-specific 400 before effects. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 

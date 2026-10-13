@@ -189,7 +189,7 @@ test("credential source HTTP admission rejects invalid endpoints without retaini
   assert.equal(f.profiles.size, 0);
 });
 
-test("credential source HTTP deletion recovers invalid stored endpoints without touching profiles", async (t) => {
+test("credential source HTTP deletion uses source ownership even with an invalid stored endpoint", async (t) => {
   const f = await fixture(t);
   const healthy = await f.create("healthy");
   assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
@@ -206,8 +206,7 @@ test("credential source HTTP deletion recovers invalid stored endpoints without 
   }
   assert.equal((await f.request("GET", f.path + "/" + healthy.data.id)).data.status.state, "ready");
 
-  // An unexpected remote resource is not evidence of absence. Even source labels
-  // cannot prove its profile from an invalid endpoint; preserve both objects.
+  // Labels alone do not prove ownership if the provider points to another source's profile.
   for (const baseUrl of ["https://**/v1", "https://[2001:db8::1]/v1"]) {
     const collision = await f.seedInvalid("openai", baseUrl);
     const existing = [...f.providers.values()][0];
@@ -243,9 +242,11 @@ test("OpenShell custom and default credential profiles keep independent ownershi
       "ready",
     );
   }
-  const customProfile = [...f.profiles.values()].find((profile) => profile.id !== "oce-openai");
-  assert.equal(f.profiles.size, 2);
-  assert.match(customProfile.id, /^oce-openai-[0-9a-f]{12}$/);
+  const customProfile = [...f.profiles.values()].find(
+    (profile) => profile.id === openShellProviderName(custom.data.id),
+  );
+  assert.equal(f.profiles.size, 3);
+  assert.notEqual(customProfile.id, openShellProviderName(shared.data.id));
   assert.deepEqual(customProfile.endpoints, [
     { host: "models.example.test", port: 8443, protocol: "rest", path: "/api/v1/**" },
   ]);
@@ -293,11 +294,16 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   assert.equal((await f.request("PATCH", f.path + "/" + custom.data.id, { body: {} })).status, 200);
   f.passRegistrationFence();
   assert.equal((await f.request("DELETE", f.path + "/" + custom.data.id)).status, 204);
-  assert.equal(f.profiles.size, 2, "another source still needs the custom profile");
+  assert.equal(f.profiles.size, 2);
+  assert.ok(
+    [...f.profiles.values()].some(
+      (profile) => profile.id === openShellProviderName(shared.data.id),
+    ),
+  );
   assert.equal((await f.request("DELETE", f.path + "/" + shared.data.id)).status, 204);
   assert.deepEqual(
     [...f.profiles.values()].map((profile) => profile.id),
-    ["oce-openai"],
+    [openShellProviderName(standard.data.id)],
   );
   assert.equal(
     (await f.request("GET", f.path + "/" + standard.data.id)).data.status.state,
@@ -323,9 +329,7 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     // Assert the profile produced through HTTP/OCC, not a copied normalizer.
     const profile = [...f.profiles.values()][0];
     assert.deepEqual(profile.endpoints, [{ host, port, protocol: "rest", path }]);
-    if (host === "api.openai.com") {
-      assert.equal(profile.id, "oce-openai");
-    }
+    assert.equal(profile.id, openShellProviderName(created.data.id));
     assert.equal(
       (await f.request("GET", f.path + "/" + created.data.id)).data.status.state,
       "ready",

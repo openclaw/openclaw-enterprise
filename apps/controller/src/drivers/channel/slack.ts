@@ -101,6 +101,12 @@ export class SlackChannelDriver implements ChannelDriver {
           "Slack directory proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
         );
       }
+      // Like Compute's channel proxy rule: the unspecified address names no proxy.
+      if (address === "0.0.0.0") {
+        throw new Error(
+          "Slack directory proxy must not use host 0.0.0.0, which names no proxy address.",
+        );
+      }
       this.proxy = new ProxyAgent(proxyUrl);
     }
   }

@@ -63,7 +63,13 @@ observability:
 ```
 
 `url` must be an absolute HTTP or HTTPS URL without embedded credentials or a
-fragment. Unknown fields fail startup. The API exposes the URL only after an
+fragment. An IPv4 host must be four decimal octets from 0 to 255 with no
+leading zeros; shorthand, hex, a single integer, or a leading zero stops API
+and worker startup with log code `OBSERVABILITY_URL_INVALID` until you write
+the four octets and restart. A DNS name is
+unchanged. See the
+[breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
+fail startup. The API exposes the URL only after an
 Installation `administer` check; the console hides the link when unset or
 unauthorized. The destination handles its own authentication. This setting does
 not select an OpenTelemetry exporter or embed a dashboard. Compose development
@@ -137,9 +143,11 @@ Agent provisioning and Preset saves check each model provider's `baseUrl` and
 or `https` URL, and `api` must be a model API the pinned OpenClaw runtime supports, such as
 `openai-responses`, `openai-completions`, `anthropic-messages`, or `ollama`.
 A blank provider `baseUrl` and values with `${VAR}` references are left to the
-runtime, and a Preset `baseUrl` or `api` that waits on a variable without a
-default is checked once filled. The `400` names the field as a JSON pointer
-within `values`. They also refuse a `models` that is not a list and a `headers`
+runtime (a `$${VAR}` escape is no reference), and a Preset `baseUrl` or `api`
+that waits on a variable without a default is checked once filled. At save, such
+a `baseUrl` needs a literal `http` or `https` scheme, or one a variable
+completes, and each variable stands for one host, port, IPv6 address or path
+token. The `400` names the field as a JSON pointer within `values`. They also refuse a `models` that is not a list and a `headers`
 or `request.headers` name that is not a valid HTTP field name, naming the
 setting and the header; a Preset header name that waits on such a variable
 is checked once filled, on every Compute.

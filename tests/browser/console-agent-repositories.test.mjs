@@ -716,7 +716,7 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
       "example/two",
       "example/three",
       "example/four",
-      "example/five",
+      "acme/istanbul",
     ].map((repository, index) => ({
       repositoryRef: index === 0 ? "IBM-platform" : `repository-${index + 1}`,
       repositoryId: String(1800 + index),
@@ -734,8 +734,21 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const search = page.getByLabel("Find a repository");
-  await search.fill("ibm");
-  await repositoryCheckbox(page, "acme/platform").waitFor();
+  // Finding 1252: a query with the Turkish capital İ or the dotless ı finds an ASCII i.
+  const names = page.locator("#repository-results .repository-identity strong");
+  for (const [query, name] of [
+    ["ibm", "acme/platform"],
+    ["İstanbul", "acme/istanbul"],
+    ["İSTANBUL", "acme/istanbul"],
+    // The same İ typed as I and a combining dot above.
+    ["I\u0307stanbul", "acme/istanbul"],
+    ["ıstanbul", "acme/istanbul"],
+    ["Ibm", "acme/platform"],
+  ]) {
+    await search.fill(query);
+    await repositoryCheckbox(page, name).waitFor();
+    assert.deepEqual(await names.allTextContents(), [name], query);
+  }
 });
 
 test("Repository descriptions arrive without interrupting a selection", async (t) => {

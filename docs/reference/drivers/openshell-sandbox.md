@@ -208,7 +208,7 @@ configuration before OCC validates and freezes the revision:
 Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's outer
 boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
 Revisions admitted before #2079 lack the reviewer; deploy those Agents again
-([notice](../../guides/deploy/breaking-changes-archive.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
+([notice](../../guides/deploy/breaking-changes-before-2026-10-11.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
