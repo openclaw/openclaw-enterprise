@@ -25,13 +25,14 @@ status_note: "Retroactive record. The design is already implemented on main (PRs
 
 ## Summary
 
-A first deploy of a dedicated Codex Agent on Kubernetes starts each workload once: one Harness
-and one Gateway, both created in the first preparation pass, with one pending pass before the
-revision is ready. The workspace node's setup code reaches the running Harness through an
+With status-proxy CIDRs set, a first deploy of a dedicated Codex Agent on Kubernetes starts
+each workload once: one Harness and one Gateway, both created in the first preparation pass,
+with one pending pass (a pass that waits on a workload start) before the revision is ready. The workspace node's setup code reaches the running Harness through an
 optional Secret volume, and its node id reaches the running Gateway through an optional
 ConfigMap volume that the Gateway wrapper hot-applies. Nothing in the pod specs changes after
-the first start, so Kubernetes replaces nothing. This needs the install to set
-`network.pluginStatusProxySourceCidrs`; without it the Gateway is replaced once.
+the first start, so Kubernetes replaces nothing. The profile renderer requires
+`network.pluginStatusProxySourceCidrs` and the dev launcher sets it; the production example
+`installation.yaml` does not, and without it the Gateway is replaced once.
 
 The Compute and security owners review this design. It replaced a flow that started five workloads over three
 pending passes (see [Why it is built this way](#why)).
@@ -45,14 +46,14 @@ This record covers a dedicated Codex Agent whose Harness is a Kubernetes Deploym
 
 - **OAuth (ChatGPT sign-in) Codex Agents** first run a one-shot bootstrap Job that seeds the
   Harness credential volume (`prepareOAuthCredentials`; since [#1994] a Job with
-  `backoffLimit: 2` and a 300 s deadline, failing as `HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT` or
-  `_FAILED`). Preparation stays pending until it completes, so these deploys add one Job Pod
+  `backoffLimit: 2` and a 300 s deadline). Preparation stays pending until it completes, so these deploys add one Job Pod
   and at least one pending pass before the flow below.
 - **SandboxDriver Harnesses** (OpenShell, [#1400]) receive the setup code in their provisioning
   request, so Compute provisions them only after the Gateway is Ready and the setup exists.
 - **Native OpenClaw workers** keep the env-based setup code and replace-to-attach
-  (`prepareWorkspaceNode`, `addWorkspaceNode`), and their Gateway still waits for Harness plugin
-  status before it is created (`deferInitialDedicatedGatewayForPluginStatus`).
+  (`prepareWorkspaceNode`, `addNativeWorker`). With enabled plugins and no workspace setup, their
+  Gateway is created only after the Harness reports plugin status
+  (`deferInitialDedicatedGatewayForPluginStatus`).
 - **Embedded Agents** keep their single-Pod path.
 - **Redeploys** keep the agent Service on the serving revision until activation. Their serving
   gap (D67) is open question 1.
@@ -60,6 +61,11 @@ This record covers a dedicated Codex Agent whose Harness is a Kubernetes Deploym
 <a id="design"></a>
 
 ## How a first deploy runs today
+
+A pass is one run of preparation (creating and wiring workloads) or activation (confirming the
+Gateway applied the node) on the serial worker, which handles one Work item at a time; a pending
+pass ends before the revision is ready, and the worker re-polls it. These steps assume
+status-proxy CIDRs are set.
 
 1. **Pass 1 creates everything.** With no Gateway yet, preparation reconciles the agent Service
    (selecting this revision at once), the Agent NetworkPolicies, the Harness route, the Gateway
@@ -78,7 +84,7 @@ This record covers a dedicated Codex Agent whose Harness is a Kubernetes Deploym
    on k3d in #612, 58-84 s without).
 5. **Pairing wait.** The same pass waits for the node to pair on one Gateway connection
    (`workspaceNodeReady` → `GatewayNodeEnrollment.observeSetup` with `{ waitMs }`, reading every
-   250 ms), up to `WORKSPACE_NODE_PAIRING_WAIT_MS` (8 s). Readiness records the `deviceId`, removes
+   250 ms), up to `WORKSPACE_NODE_PAIRING_WAIT_MS` (8 s). Once paired, Compute records the `deviceId`, removes
    `setupCode` from the Secret, and nudges the Harness Pod again.
 6. **Binding.** The same pass writes `{revisionId, deviceId}` to the binding ConfigMap and
    annotates the Gateway Pod. Preparation reports ready.
@@ -86,8 +92,10 @@ This record covers a dedicated Codex Agent whose Harness is a Kubernetes Deploym
    `plugins.*` / `cloudWorkers.*`. It reports `workspaceNodeId` only after OpenClaw, asked over its
    Gateway SDK connection (`plugins.list`), lists `file-transfer` active in a plugin registry
    loaded after the write. Activation reads that ack within `WORKSPACE_NODE_BINDING_ACK_TIMEOUT_MS`
-   (20 s). A reported cause such as `RELOAD_NOT_CONFIRMED` fails the attempt, which is retried;
-   `GATEWAY_UNAUTHORIZED` fails the revision as `AGENT_GATEWAY_UNAUTHORIZED`.
+   (20 s); without it the attempt ends pending as `WORKSPACE_NODE_BINDING_PENDING`. The wrapper
+   reports a cause such as `RELOAD_NOT_CONFIRMED` 30 s after the write, so a later attempt reads
+   it; that attempt also ends pending, retried until the deadline. `GATEWAY_UNAUTHORIZED` fails
+   the revision as `AGENT_GATEWAY_UNAUTHORIZED`.
 
 ```mermaid
 sequenceDiagram
@@ -116,10 +124,11 @@ Gateway 2). The dev launcher (`internal/occdev/status_proxy_k3d.go`) writes the 
 
 ### Waits on the serial worker
 
-The worker runs one item at a time, so both waits are budgets, not per-pass timeouts:
+Both waits are budgets, not per-pass timeouts, each kept in memory in a map of at most 1,024
+entries:
 
 - The 8 s pairing wait is spent per setup ID across passes (`workspaceNodePairingSpentMs`, in
-  memory, at most 1,024 entries); once spent, later passes read once and end pending (D88).
+  memory); once spent, later passes read once and end pending (D88).
 - The 20 s ack wait is spent per revision and node across activation attempts
   (`workspaceNodeBindingAckSpentMs`); once spent, each attempt reads once.
 - Both end after at least one read when another Agent's Work could be claimed
@@ -128,21 +137,20 @@ The worker runs one item at a time, so both waits are budgets, not per-pass time
 
 ### Failure and restart handling
 
-- **Peer changes.** When the Harness's `startupId`, Pod UID or plugin set changes, the Gateway
-  wrapper drops readiness and respawns OpenClaw in place (`configureGateway`, phase
-  `gateway-respawn`). More than `GATEWAY_RESPAWN_LIMIT` (5) respawns within 10 minutes falls back
-  to a container restart. A first deploy needs none.
+- **Peer changes.** The Gateway wrapper polls the Harness every 2 s. When its `startupId`, Pod
+  UID, plugin set or plugin failures change, or it is unreadable and returns changed,
+  `respawnForPeerStatus` drops readiness and respawns OpenClaw in place. The container restarts
+  instead after more than `GATEWAY_RESPAWN_LIMIT` (5) respawns in 10 minutes, a respawn not
+  serving after 3 attempts, or a peer that changes or vanishes during verification; a changed
+  binding `deviceId` also restarts it. A first deploy needs none.
 - **Fail fast.** Runtime status codes the entrypoints hold until restart fail the revision at
-  once instead of at the 900 s deadline (`HELD_RUNTIME_FAILURE_CODES` in `worker.ts`):
-  `AUTHENTICATION_FAILED` (provider 401/403 or invalid key) → `RUNTIME_AUTHENTICATION_FAILED`;
-  CPU starvation, probe timeout, probe failure (with a classified cause) and login failure each
-  map to their own code; a missing probe or invalid approver configuration →
-  `RUNTIME_STARTUP_FAILED`. Unknown codes wait for the deadline.
+  once instead of at the convergence deadline (`HELD_RUNTIME_FAILURE_CODES` in `worker.ts`;
+  deadline 900 s by default, `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`):
+  `AUTHENTICATION_FAILED` (provider 401/403 or invalid key) → `RUNTIME_AUTHENTICATION_FAILED`,
+  and the other held startup failures each map to a code. Unknown codes wait for the deadline.
 - **Upfront key check.** Before the full OpenClaw model probe, `credentialRejectedUpfront` sends
-  one empty `POST` to the default OpenAI or Anthropic base URL at the configured API's path
-  (`/responses`, `/chat/completions` or `/v1/messages`). Only a 401 fails. A non-default base URL
-  or unsupported API, extra provider or request options, model headers, a model with its own API
-  or base URL, other providers and Anthropic setup tokens skip it.
+  one empty `POST` to the default OpenAI or Anthropic base URL at the configured API's path. Only
+  a 401 fails. Non-default endpoints, APIs, providers or request options and setup tokens skip it.
 
 ### Related workload settings
 
@@ -150,9 +158,7 @@ The worker runs one item at a time, so both waits are budgets, not per-pass time
   start no longer walks 10-40 Gi claims recursively.
 - **Predecessors.** The worker's in-memory `stoppedPredecessors` stops each predecessor of an
   exclusive revision once, then again after 1, 2, 4… leases. While another revision's Gateway
-  serves, Agent-scoped NetworkPolicies select every revision (`anyRevision`). An embedded
-  redeploy re-renders a never-served, unready predecessor Gateway and deletes its Secret and
-  ConfigMap copies (`deleteReplacedPredecessorArtifacts`).
+  serves, Agent-scoped NetworkPolicies select every revision (`anyRevision`).
 - **Resources.** The profile renderer and production example set Gateway request `1792Mi`, limit
   `3Gi`; Harness request `768Mi`, limit `6Gi`; CPU request `100m`, limit `"4"`. The dev launcher
   (`internal/occdev/kubernetes.go`) uses the same memory and CPU limit `"2"`.
@@ -177,8 +183,8 @@ install. The causes were structural:
    selected the revision only after Harness readiness. Creating both in pass 1, with the Service
    selecting at once and an unbounded peer wait, removes that pass.
 
-The pairing wait inside the pass replaced 2.2-5.2 s of pass cadence after both workloads were
-Ready (D25); the budgets keep it from starving other Agents' deploys.
+Pairing inside the pass removed 2.2-5.2 s of pass cadence (D25); the budgets keep it from
+starving other Agents' deploys.
 
 ## Measured effect
 
@@ -191,12 +197,12 @@ Ready (D25); the budgets keep it from starving other Agents' deploys.
 | Codex first deploy, round 5 (load 70-77)   | –                   | 30.8 s, 33.3 s (`cc06ec34b`) |
 | Wrong model key reported (#838, D26)       | 29-53 s             | 489 ms (`cc06ec34b`)         |
 
-Only the first row is checked in: the ratchet pins it on every CI run. The timing rows are
+Only the first row is checked in: the ratchet pins it on every CI run. It counts starts as
+Deployment template renders plus inferred Gateway restarts and marks workloads ready once
+waited on; real deploys re-poll more often. The timing rows are
 single dogfood runs on a local k3d install, recorded in notes outside this repository; treat
-them as attributed reports, not verified results. The after-runs came from a fresh launcher install (load 12-42), an in-place controller
-upgrade with three Codex first deploys (load 6-7; 1 s resolution) and a later upgrade (load
-70-77). D25 before-runs ran at `769c8cd88` and load 44-154, so only the cadence rows compare like
-for like; they match #816's projection. #791 and #816 published no live after-measurement, and
+them as attributed reports, not verified results. Loads differed (after-runs 6-77, D25
+before-runs 44-154 at `769c8cd88`), so only the cadence rows compare like for like.
 #580, #652 and #668 were not measured separately. No timing was rerun after #1400 or #1994.
 
 ## Security and trust
@@ -207,7 +213,8 @@ for like; they match #816's projection. #791 and #816 published no live after-me
   `deviceId` is recorded; the code is one-shot and expires.
 - **Pod `patch`.** The tenant worker ClusterRoles (`openclaw-tenant-worker` in
   `openclaw-enterprise`, `execution-tenant-worker` in `openclaw-execution`) include `patch` on
-  `pods` for the two nudges. The charts bind only namespace roles cluster-wide; operators grant
+  `pods` for three Pod patches of two kinds (Harness setup and setup removal, Gateway binding).
+  The charts bind no role with Pod `patch` cluster-wide; operators grant
   the tenant role with a RoleBinding in each tenant namespace
   ([production guide](../../docs/guides/deploy/production-agents.md#grant-tenant-rolebindings)).
   Within a tenant namespace a label patch could retarget Service selectors; the worker could
@@ -231,7 +238,6 @@ for like; they match #816's projection. #791 and #816 published no live after-me
   digest on a PVC that Codex can read.
 - **Release the worker between pairing and activation.** Rejected: it re-adds a pending pass
   after Ready on every first deploy.
-- **Trim auto-enabled plugins for memory.** Saved about 50 MiB (3%); rejected.
 
 ## Known gaps and residual risk
 
@@ -241,24 +247,19 @@ for like; they match #816's projection. #791 and #816 published no live after-me
   ack). Claimable Work ends the waits, but still runs one item at a time. A node that boots in
   more than 8 s under load gets single reads after its budget.
 - **Unbounded peer wait.** A Gateway whose Harness never reports holds its PVC and scheduling
-  slot until the 900 s deadline.
-- **Remaining runtime time.** Node host boot (3.3-12 s) and the `plugins.list` reads around the
-  hot reload.
+  slot until the convergence deadline.
 - **Stale comments.** Two driver comments still describe the old flow: "Enrolling the workspace
   node replaces the Harness and restarts its Gateway" and "Node enrollment updates the initial
   Harness after its Gateway starts".
-- **Launcher CPU limits.** The launcher's `"2"` differs from the renderer's `"4"`.
-- **Upgrade restarts (historical).** Rolling these changes out restarted every workload once.
-  In-place upgrades kept the old Installation, so the CIDR and resource changes needed a manual
-  edit (D81, D97).
+- **Upgrade restarts (historical).** Rolling these changes out restarted every workload once;
+  in-place upgrades needed a manual CIDR and resource edit (D81, D97).
 
 ## Open questions for reviewers
 
 1. **D67: redeploy serving gap.** `requiresStoppedPredecessors` is true for every dedicated
    revision, so the worker stops the serving Harness and Gateway before preparing the successor,
    and Gateways use `Recreate`. Dogfood measured about 75 s at first, then 19.8-34.9 s (Codex)
-   and 26.2-32.4 s (embedded). A replacement that cannot start makes it an outage (D95; #849
-   shows the downed state). Configuration shapes known to break the Gateway are now refused
+   and 26.2-32.4 s (embedded). A replacement that cannot start makes it an outage (D95). Configuration shapes known to break the Gateway are now refused
    before the stop (`configuration-rules.ts`), but a rejected credential still is not.
    **Implemented default:** accept the gap; the
    [Kubernetes Compute reference](../../docs/reference/drivers/kubernetes-compute.md#execution-modes)
@@ -274,14 +275,13 @@ for like; they match #816's projection. #791 and #816 published no live after-me
    ClusterRole, granted per tenant namespace by operator RoleBindings. Alternative: a narrower
    role for the nudge, or a nudge that needs no Pod write.
 5. **Pairing wait on the serial worker.** **Default:** 8 s per setup and 20 s per binding, in
-   memory, granted again after a controller restart, and ended early when other Work is
-   claimable. Remaining alternative: dispatch different Agents' Work concurrently.
+   memory (reset by a controller restart), ended early when other Work is claimable. Remaining alternative: dispatch different Agents' Work concurrently.
 6. **CPU overcommit.** **Default:** limit `"4"`, request `100m`. A `limits.cpu` quota counts the
    whole limit, and bursts can overcommit nodes.
 
 ## Delivery history
 
-The design landed in pieces between 2026-09-29 and 2026-10-04, each PR reviewed on its own:
+The design landed in pieces between 2026-09-29 and 2026-10-04:
 setup-code volume and Harness node wiring from the first start ([#616]); binding ConfigMap and
 hot apply ([#640]); Gateway created alongside the Harness ([#652]); in-place respawn ([#668]);
 status-proxy CIDR in the launcher ([#791], D68); pairing inside the pass ([#816]); per-setup
