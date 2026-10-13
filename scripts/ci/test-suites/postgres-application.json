@@ -6,13 +6,14 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-health.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
     "tests/integration/occ-metrics.test.mjs"
@@ -120,7 +121,12 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
       "expectedTests": [
-        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
+        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
+      "expectedTests": [
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "Agent stop cleans a terminal candidate without an active revision",
         "Agent stop reauthorizes the recorded actor before Compute mutation",

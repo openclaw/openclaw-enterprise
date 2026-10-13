@@ -954,7 +954,48 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const { lanes } = loadTestSuites(
     fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
   );
-  // Every Image Runtime Startup part, so a new part cannot drop out of the smoke.
+  // Find runtime image files by path in every lane, so a file under a lane with any name
+  // cannot drop out of the smoke silently.
+  const runtimeImageFiles = [
+    ...new Set(
+      Object.values(lanes).flatMap((lane) =>
+        lane.files
+          .map((file) => file.path)
+          .filter((path) => path.startsWith("tests/integration/runtime-image-")),
+      ),
+    ),
+  ];
+  // Runtime image files the release smoke does not run, why, and the lane that holds them
+  // (null: any lane).
+  const notInSmoke = {
+    // Drives the image helpers against a stand-in docker binary; it needs no image.
+    "tests/integration/runtime-image-failure-output.test.mjs": null,
+    // Image Model Probes files: the release smoke has never run them. The outcomes moved
+    // into Image Runtime Startup 2 and stay out of the smoke.
+    "tests/integration/runtime-image-model-probe.test.mjs": "images-model-probes",
+    "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
+  };
+  for (const [path, lane] of Object.entries(notInSmoke)) {
+    const holders = Object.keys(lanes).filter((name) =>
+      lanes[name].files.some((file) => file.path === path),
+    );
+    assert.ok(
+      lane === null ? holders.length > 0 : holders.includes(lane),
+      `${path} is no longer in ${lane ?? "a lane"}; review whether the release smoke should run it.`,
+    );
+  }
+  // Image Runtime Startup files outside the runtime-image-* names.
+  const otherSmokeFiles = ["tests/integration/workspace-files-native.test.mjs"];
+  assert.deepEqual(
+    [...runtimeImageSmokeTests].sort(),
+    [
+      ...runtimeImageFiles.filter((path) => !Object.hasOwn(notInSmoke, path)),
+      ...otherSmokeFiles,
+    ].sort(),
+    "Keep the release smoke list equal to the runtime image files; drop a notInSmoke entry once the smoke runs it.",
+  );
+
+  // Second check, by lane name: every Image Runtime Startup part, and every file in them.
   const startupLanes = Object.keys(lanes).filter((lane) =>
     /^images-runtime-startup(?:-\d+)?$/.test(lane),
   );
@@ -964,16 +1005,9 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     "images-runtime-startup-3",
   ]);
   const laneFiles = startupLanes.flatMap((lane) => lanes[lane].files.map((file) => file.path));
-  // The model probe outcomes moved into lane 2 from Image Model Probes, whose files
-  // the release smoke has never run. Every other file a lane splits off must stay in
-  // the release smoke, or a native-platform release loses those cases silently.
-  const ciOnly = ["tests/integration/runtime-image-model-probe-outcomes.test.mjs"];
-  for (const path of ciOnly) {
-    assert.ok(laneFiles.includes(path), `${path} is no longer in a runtime startup lane.`);
-  }
   assert.deepEqual(
     [...runtimeImageSmokeTests].sort(),
-    laneFiles.filter((path) => !ciOnly.includes(path)).sort(),
-    "Keep the release smoke list equal to the lane files; drop a ciOnly entry once the smoke runs it.",
+    laneFiles.filter((path) => !Object.hasOwn(notInSmoke, path)).sort(),
+    "Keep the release smoke list equal to the Image Runtime Startup lane files.",
   );
 });

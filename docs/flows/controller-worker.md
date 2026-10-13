@@ -389,8 +389,9 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
   [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
   [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs),
-  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs) and
-  [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
+  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
+  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs) and
+  [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback on the authenticated route after changing IAM Drivers.

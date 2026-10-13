@@ -3466,7 +3466,7 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       "      while (process.ppid === shell && Date.now() < deadline) {",
       "        await new Promise((resolve) => setTimeout(resolve, 10));",
       "      }",
-      "      throw new Error('secretauthvalue cluster already removed');",
+      "      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });",
       "    },",
       "  };",
       "}",
@@ -3520,7 +3520,11 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   assert.equal(summary.status, "failed");
   // A cleanup that fails while the job runs is still a cleanup failure.
   assert.deepEqual(summary.files[0].cleanup, { status: "failed", error: { name: "Error" } });
-  assert.deepEqual(summary.files[1].cleanup, { status: "cancelled" });
+  // The cancelled record keeps the error's name and code, never its message.
+  assert.deepEqual(summary.files[1].cleanup, {
+    status: "cancelled",
+    error: { name: "Error", code: "ENOENT" },
+  });
   assert.deepEqual(
     summary.issues.map(({ code, file }) => [code, file]),
     [
@@ -3528,7 +3532,10 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       ["cleanup-cancelled", "tests/integration/cancelled.test.mjs"],
     ],
   );
-  assert.doesNotMatch(await readFile(resultsPath, "utf8"), /secretauthvalue/);
+  assert.doesNotMatch(
+    `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`,
+    /secretauthvalue/,
+  );
 });
 
 for (const scenario of [

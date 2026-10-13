@@ -1021,7 +1021,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         cleanupResult = { status: "passed" };
       } catch (error) {
         if (jobCancelling()) {
-          cleanupResult = { status: "cancelled" };
+          // Keep the sanitized error: a parent that died for another reason (OOM-killed step
+          // shell, closed terminal) also reads as a cancellation.
+          cleanupResult = { status: "cancelled", error: sanitizeError(error) };
           issues.push(
             issue("cleanup-cancelled", `cleanup stopped by job cancellation for ${relativePath}`, {
               file: relativePath,
