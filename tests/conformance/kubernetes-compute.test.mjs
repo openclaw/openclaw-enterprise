@@ -8965,8 +8965,10 @@ test("a Preset header name that waits on a variable is checked once filled", () 
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
+  // The name up to its first invalid character, with a placeholder as written, or the code point
+  // of an invalid first character (finding 1251).
   const invalidName =
-    /^Configuration setting \S+ must use valid HTTP header names, not "[\w-]*…"\.$/;
+    /^Configuration setting \S+ must use valid HTTP header names, not (?:"(?:[\w-]|\{\{ vars\.\w+ \}\})*…"|one that starts with U\+[0-9A-F]{4,})\.$/;
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
   // The Preset save's render: the values with defaults, and where it left placeholders.
   const preset = (values) => {
@@ -9191,17 +9193,18 @@ test("model provider credential headers and request auth are refused on every pr
       "models.providers.p.headers",
       credentialHeader(name),
     ]),
+    // Finding 1251: an invalid first character is named by its code point.
     ...[
-      "authorization ",
-      " x-api-key",
-      "Authorization\u200b",
-      "\u0410uthorization",
-      "x api key",
-      "",
-    ].map((name) => [
+      ["authorization ", invalidName("authorization…")],
+      [" x-api-key", "must use valid HTTP header names, not one that starts with U+0020"],
+      ["Authorization\u200b", invalidName("Authorization…")],
+      ["\u0410uthorization", "must use valid HTTP header names, not one that starts with U+0410"],
+      ["x api key", invalidName("x…")],
+      ["", invalidName("")],
+    ].map(([name, requirement]) => [
       provider("p", { headers: { [name]: "v" } }),
       "models.providers.p.headers",
-      invalidName(name === "" ? "" : `${/^[\w-]*/.exec(name)[0]}…`),
+      requirement,
     ]),
     [
       provider("p", { request: { headers: { "authorization\t": "v" } } }),

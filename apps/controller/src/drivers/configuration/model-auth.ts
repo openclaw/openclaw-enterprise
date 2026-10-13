@@ -2,27 +2,22 @@ import type {
   ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { isCredentialHeaderName, ModelCredentialValueError } from "@openclaw-enterprise/occ";
+import {
+  isCredentialHeaderName,
+  ModelCredentialValueError,
+  urlHoldsUserinfo,
+} from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 export class ConfigurationValidationError extends Error {}
 
-const pointer = (...segments: readonly string[]): string =>
-  segments.map((segment) => `/${segment.replaceAll("~", "~0").replaceAll("/", "~1")}`).join("");
+const pointer = (...segments: readonly (string | number)[]): string =>
+  segments
+    .map((segment) => `/${String(segment).replaceAll("~", "~0").replaceAll("/", "~1")}`)
+    .join("");
 
 const urlCredentialMessage = (path: string): string =>
   `Configuration field ${path} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
-
-// A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and so is a
-// model endpoint's (fetch refuses a URL that holds one). A whole ${NAME} reference or an
-// unparsable URL is left to the runtime.
-function hasUrlCredentials(value: string): boolean {
-  if (!URL.canParse(value)) {
-    return false;
-  }
-  const url = new URL(value);
-  return url.username !== "" || url.password !== "";
-}
 
 // The provider headers refused as literals before the 2026-10-12 notice.
 const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
@@ -87,11 +82,12 @@ export function validateModelCredentialReferences(
       }
       continue;
     }
-    const rows: [readonly string[], Record<string, unknown> | undefined][] = [
+    // A model's index is a number, as in the paths `options.unresolved` locates text by.
+    const rows: [readonly (string | number)[], Record<string, unknown> | undefined][] = [
       [providerPath, config],
       ...(Array.isArray(config?.models) ? config.models : []).map(
-        (model, index): [readonly string[], Record<string, unknown> | undefined] => [
-          [...providerPath, "models", String(index)],
+        (model, index): [readonly (string | number)[], Record<string, unknown> | undefined] => [
+          [...providerPath, "models", index],
           asRecord(model),
         ],
       ),
@@ -137,7 +133,10 @@ export function validateModelCredentialReferences(
         [[...path, "baseUrl"], row?.baseUrl],
         [[...path, "request", "proxy", "url"], proxy?.url],
       ] as const) {
-        if (typeof url === "string" && hasUrlCredentials(url)) {
+        // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and
+        // so is a model endpoint's (fetch refuses a URL that holds one), even where a variable
+        // or an environment reference fills its host or port (finding 1250).
+        if (typeof url === "string" && urlHoldsUserinfo(url, options.unresolved?.(urlPath))) {
           throw new ModelCredentialValueError(pointer(...urlPath), urlCredentialMessage);
         }
       }

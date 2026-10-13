@@ -399,6 +399,7 @@ export {
   isCredentialHeaderName,
   isHttpFieldName,
   PROVIDER_MODELS_LIST,
+  urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";

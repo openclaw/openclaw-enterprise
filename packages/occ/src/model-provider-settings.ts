@@ -143,6 +143,85 @@ function fillUrl(literals: readonly string[], hostToken: string): string {
   return text;
 }
 
+// `literals` with each unescaped environment reference in them split out as one more variable:
+// the runtime fills it before it uses the value.
+function splitEnvironmentReferences(literals: readonly string[]): string[] {
+  const split = [""];
+  for (const [index, literal] of literals.entries()) {
+    if (index > 0) {
+      split.push("");
+    }
+    let position = 0;
+    for (const match of literal.matchAll(environmentReference)) {
+      split[split.length - 1] += literal.slice(position, match.index);
+      if (match[1] === undefined) {
+        split.push("");
+      } else {
+        split[split.length - 1] += match[0];
+      }
+      position = match.index + match[0].length;
+    }
+    split[split.length - 1] += literal.slice(position);
+  }
+  return split;
+}
+
+/**
+ * Whether a URL carries a user name or password: a credential in the URL (finding 1244). On a
+ * Preset save, `literals` is the text around its unfilled variables (`unresolved`), and an
+ * environment reference is a variable too, so the URL need not parse as written (finding 1250).
+ * Each variable is filled with the token for where it sits, as for the baseUrl rule, so literal
+ * text before an `@` in the authority, or a variable that is the whole user name or password,
+ * is found whatever fills the host, the port or the path. A variable before the scheme's colon
+ * fills the scheme; one that leads the URL with no colon after it fills a scheme and a host.
+ * Text no stand-in parses is read for an `@` in its authority, and so is a literal port that only
+ * a variable supplying an `@` could make parse (`user:pass{{ vars.host }}`). A whole reference or
+ * variable is no credential: it is checked once filled.
+ */
+export function urlHoldsUserinfo(value: string, literals: readonly string[] = [value]): boolean {
+  const [head = "", ...tail] = splitEnvironmentReferences(literals).map((literal) =>
+    literal.replaceAll(/[\t\n\r]/g, ""),
+  );
+  const parts = [head.slice(head.search(/[^\0- ]|$/)), ...tail];
+  // The scheme ends at the first colon that comes before any slash, query, fragment or `@`.
+  const index = parts.findIndex((part) => /[:/\\?#@]/.test(part));
+  const part = parts[index] ?? "";
+  const at = part.search(/[:/\\?#@]/);
+  let scheme: string;
+  let rest: string[];
+  if (part[at] === ":") {
+    scheme = index === 0 ? part.slice(0, at + 1) : "https:";
+    rest = [part.slice(at + 1), ...parts.slice(index + 1)];
+  } else if (index !== 0 && parts.length > 1) {
+    // A variable leads the URL: an origin, or a scheme and the start of a host.
+    scheme = "https:";
+    rest = [`//${parts[0]}`, ...parts.slice(1)];
+  } else {
+    return false;
+  }
+  let parsed = false;
+  for (const hostToken of ["x", "1"]) {
+    const text = scheme + fillUrl(rest, hostToken);
+    if (URL.canParse(text)) {
+      const url = new URL(text);
+      if (url.username !== "" || url.password !== "") {
+        return true;
+      }
+      parsed = true;
+    }
+  }
+  // The authority as a special scheme reads it, with each variable filled as above.
+  const filled = fillUrl(rest, "x");
+  const authority = filled.slice(filled.search(/[^/\\]|$/)).split(/[/\\?#]/, 1)[0] ?? "";
+  const sign = authority.lastIndexOf("@");
+  if (sign !== -1) {
+    const userinfo = authority.slice(0, sign);
+    return userinfo !== "" && userinfo !== ":";
+  }
+  const port = /^(?:\[[^\]]*\]|[^:[\]]*):(.*)$/.exec(authority)?.[1];
+  return !parsed && rest.length > 1 && port !== undefined && /\D/.test(port);
+}
+
 function validateSettings(
   settings: Record<string, unknown>,
   path: readonly (string | number)[],
@@ -238,11 +317,35 @@ export function validateModelProviderSettings(
  * header, as the credential header refusal does, so a name a Preset variable filled is found
  * (finding 1218), but only up to its first invalid character and at most 23 characters: a value
  * pasted into the name ("Authorization: Bearer …", or a bare token and a newline) is never
- * echoed whole (finding 1222), and the cut shows where the name went wrong.
+ * echoed whole (finding 1222), and the cut shows where the name went wrong. On a Preset save,
+ * `literals` is the text around the name's unfilled variables, whose placeholders are shown as
+ * written. A name whose first character is invalid is named by that character's code point
+ * instead of an empty quote (finding 1251).
  */
-export function invalidHeaderNameRequirement(name: string): string {
-  const valid = HTTP_FIELD_NAME_START.exec(name)?.[0] ?? "";
-  return `must use valid HTTP header names, not ${quotedSettingKey(valid.length < name.length ? `${valid}…` : valid, 24)}`;
+export function invalidHeaderNameRequirement(
+  name: string,
+  literals: readonly string[] = [name],
+): string {
+  let shown = "";
+  let rest = name;
+  for (const [index, literal] of literals.entries()) {
+    if (index > 0) {
+      const placeholder = /^\{\{ vars\.[^}]*\}\}/.exec(rest)?.[0] ?? "";
+      shown += placeholder;
+      rest = rest.slice(placeholder.length);
+    }
+    const valid = HTTP_FIELD_NAME_START.exec(literal)?.[0] ?? "";
+    if (valid.length < literal.length) {
+      if (shown === "" && valid === "") {
+        const point = literal.codePointAt(0) ?? 0;
+        return `must use valid HTTP header names, not one that starts with U+${point.toString(16).toUpperCase().padStart(4, "0")}`;
+      }
+      return `must use valid HTTP header names, not ${quotedSettingKey(`${shown}${valid}…`, 24)}`;
+    }
+    shown += valid;
+    rest = rest.slice(literal.length);
+  }
+  return `must use valid HTTP header names, not ${quotedSettingKey(shown, 24)}`;
 }
 
 // Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
@@ -267,7 +370,10 @@ function validateHeaderNames(
     );
     if (invalid !== undefined) {
       throw new ConfigurationHarnessError(
-        configurationSettingMessage(headersSetting, invalidHeaderNameRequirement(invalid)),
+        configurationSettingMessage(
+          headersSetting,
+          invalidHeaderNameRequirement(invalid, unresolved([...headersPath, invalid], true)),
+        ),
       );
     }
   }
