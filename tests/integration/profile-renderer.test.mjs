@@ -1001,7 +1001,8 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
         ["https://otel.example.invalid"],
         "is not supported by installation profiles.",
       ],
-      // Profiles leave the chart's default Collector image; a values file may override it.
+      // Profiles leave the chart's default Collector image (a values file may override it, and the
+      // chart checks it); this pins that preflight takes no image field.
       [
         "controlPlane.loggingCollector.image",
         [

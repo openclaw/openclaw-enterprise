@@ -831,6 +831,7 @@ test(
           ["registry.example.invalid/otel/collector", true],
           ["Registry.Example.invalid/otel/collector:Release_1", true],
           ["[fd00::1]:5000/otel/collector", true],
+          ["[FD00::1]:5000/otel/collector", true],
           ["registry.example.invalid/Otel/collector", false],
           ["registry.example.invalid:5000/otel/Collector:release_1", false],
           ["Registry.Example.invalid/otel/Collector", false],
