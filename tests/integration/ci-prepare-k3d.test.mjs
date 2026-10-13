@@ -29,7 +29,7 @@ async function eachSettled(items, each) {
 describe("CI k3d preparation", { concurrency: true }, () => {
   test("fixture preparation rejects an unknown proxy source before publishing its environment", async (t) => {
     const commands = await fixtureImageCommands(t, "missing-proxy-source");
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.status, 1);
     assertStderrMatch(
       result.stderr,
@@ -39,7 +39,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assert.equal(state.env, undefined);
     await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     // Failed preparation retains ownership so cleanup can remove the partial cluster.
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
@@ -71,7 +71,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           ? { OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS: "5000" }
           : {},
       );
-      const result = await commands.prepareAsync();
+      const result = await commands.prepare();
       assert.equal(result.error, undefined, "diagnostics must finish within the CLI watchdog");
       assert.equal(result.status, 1);
       assert.match(result.stderr.trim().split("\n").at(-1), error);
@@ -129,7 +129,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       assert.equal(cluster.status, "planned");
       assert.equal(state.env, undefined);
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-      const cleanup = await commands.cleanupAsync();
+      const cleanup = await commands.cleanup();
       assert.equal(cleanup.status, 0, cleanup.stderr);
       await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
       await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
@@ -160,7 +160,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "cluster-create-hangs-once", undefined, {
       OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "5000",
     });
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.error, undefined, "a hung create must not reach the CLI watchdog");
     assert.equal(result.status, 0, result.stderr);
     assertStderrMatch(
@@ -200,7 +200,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
     assert.equal(clusters.length, 1);
     assert.equal(clusters[0].status, "ready");
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
@@ -225,7 +225,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         }
       }
     });
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     escaped = await readFile(escapedPids, "utf8").catch(() => "");
     assert.equal(result.error, undefined, "held output must not reach the CLI watchdog");
     assert.equal(result.status, 0, result.stderr);
@@ -245,7 +245,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     for (const pid of await hungK3dProcesses(commands)) {
       assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
     }
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
@@ -253,7 +253,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "cluster-create-hangs", undefined, {
       OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "3000",
     });
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.error, undefined, "a hung create must not reach the CLI watchdog");
     assert.equal(result.status, 1);
     assert.match(
@@ -277,7 +277,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assert.equal(cluster.status, "planned");
     assert.equal(state.env, undefined);
     await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
     await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
@@ -375,7 +375,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
   for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
     test(`fixture preparation reports unavailable storage without publishing workload inputs: ${scenario}`, async (t) => {
       const commands = await fixtureImageCommands(t, scenario);
-      const result = await commands.prepareAsync();
+      const result = await commands.prepare();
       assert.equal(result.status, 1);
       assertStderrMatch(result.stderr, /CI fixture storage controller is not ready/);
       assertStderrMatch(result.stderr, /CrashLoopBackOff/);
@@ -386,7 +386,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
       const state = JSON.parse(await readFile(commands.statePath, "utf8"));
       assert.equal(state.env, undefined);
-      const cleanup = await commands.cleanupAsync();
+      const cleanup = await commands.cleanup();
       assert.equal(cleanup.status, 0, cleanup.stderr);
     });
   }
@@ -414,7 +414,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           // Stop at the next independent preparation boundary after image import.
           OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
         });
-        const result = await commands.prepareAsync();
+        const result = await commands.prepare();
         assert.equal(result.status, 1);
         const calls = await commands.commands();
         const pulls = calls.filter(
@@ -443,7 +443,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           assert.equal(imported[0].sourceImage, immutableImage);
           assert.equal(imported[0].hostImageId, `sha256:${"b".repeat(64)}`);
         }
-        const cleanup = await commands.cleanupAsync();
+        const cleanup = await commands.cleanup();
         assert.equal(cleanup.status, 0, cleanup.stderr);
         assert.ok(
           !(await commands.commands()).some(
@@ -482,7 +482,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
           OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
         });
-        const result = await commands.prepareAsync();
+        const result = await commands.prepare();
         assert.equal(result.status, 1, scenario);
         assertStderrMatch(
           result.stderr,
@@ -509,7 +509,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           false,
           scenario,
         );
-        const cleanup = await commands.cleanupAsync();
+        const cleanup = await commands.cleanup();
         assert.equal(cleanup.status, 0, cleanup.stderr);
       },
     );
@@ -519,13 +519,13 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "hung-host-owned", undefined, {
       OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
     });
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.status, 1);
     assertStderrMatch(
       result.stderr,
       /The container engine did not answer within 3000 ms \(image inspect localhost\/\S+\/fixture:local\)\./,
     );
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
@@ -535,7 +535,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       const commands = await fixtureImageCommands(t, scenario, "k3d-fixture-configuration", {
         OPENCLAW_CI_K3S_IMAGE: image,
       });
-      const result = await commands.prepareAsync();
+      const result = await commands.prepare();
       assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
       const state = JSON.parse(await readFile(commands.statePath, "utf8"));
       const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
@@ -555,14 +555,14 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         );
         assert.equal(state.env, undefined);
       }
-      const cleanup = await commands.cleanupAsync();
+      const cleanup = await commands.cleanup();
       assert.equal(cleanup.status, 0, cleanup.stderr);
     });
   });
 
   test("fixture preparation waits for a late worker and its containerd before importing", async (t) => {
     const commands = await fixtureImageCommands(t, "late-worker");
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.status, 0, result.stderr);
     assertStderrMatch(
       result.stderr,
@@ -587,7 +587,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       ({ args }) => args[0] === "exec" && args[1] === "-i" && args[2].endsWith("-agent-0"),
     );
     assert.ok(agentProbe >= 0 && agentImport > agentProbe);
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
@@ -595,7 +595,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "containerd-down", undefined, {
       OPENCLAW_CI_K3D_CONTAINERD_WAIT_MS: "2000",
     });
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.status, 1);
     assertStderrMatch(
       result.stderr,
@@ -613,7 +613,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       evidence.failure,
       /image import into k3d nodes failed: containerd on k3d-\S+-agent-0 did not answer/,
     );
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
@@ -621,7 +621,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "hung-containerd-probe", undefined, {
       OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: "3000",
     });
-    const result = await commands.prepareAsync();
+    const result = await commands.prepare();
     assert.equal(result.status, 1);
     assertStderrMatch(
       result.stderr,
@@ -640,7 +640,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       calls.some(({ args }) => args[0] === "exec" && args[1] === "-i"),
       false,
     );
-    const cleanup = await commands.cleanupAsync();
+    const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
@@ -661,7 +661,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
   ]) {
     test(`fixture preparation retries an import once only for the node socket: ${scenario}`, async (t) => {
       const commands = await fixtureImageCommands(t, scenario);
-      const result = await commands.prepareAsync();
+      const result = await commands.prepare();
       assert.equal(result.status, imported ? 0 : 1, result.stderr);
       assert.equal(
         /containerd refused the image import; waiting for it/.test(result.stderr),
@@ -696,7 +696,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         );
         assert.match(evidence.failure, /image import into k3d nodes failed/);
       }
-      const cleanup = await commands.cleanupAsync();
+      const cleanup = await commands.cleanup();
       assert.equal(cleanup.status, 0, cleanup.stderr);
     });
   }
