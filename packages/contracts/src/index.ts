@@ -1742,6 +1742,15 @@ export interface HarnessDeviceAuthorization {
 export type HarnessDeviceAuthorizationResult =
   { readonly status: "pending" } | { readonly status: "ready"; readonly credential: string };
 
+/**
+ * Options for Configuration rules that also run on Preset defaults. `unresolved` names text its
+ * writer fills in later (an unfilled Preset variable): a rule leaves a header name that holds it
+ * to the Configuration the filled Preset creates, which is checked like any other.
+ */
+export interface ConfigurationValidationOptions {
+  readonly unresolved?: (text: string) => boolean;
+}
+
 export interface ComputeDriver extends Driver {
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
@@ -1786,9 +1795,13 @@ export interface ComputeDriver extends Driver {
    * Side-effect-free check of Configuration values against rules the Driver applies on every
    * topology, at Configuration create and update, Agent provisioning and Preset save (on the
    * values rendered with defaults). Throws ConfigurationHarnessError, naming the setting but
-   * never its value. validateHarnessAuth applies the same rules at deployment.
+   * never its value. validateHarnessAuth applies the same rules at deployment. Preset saves pass
+   * `options.unresolved`, which names their unfilled variables.
    */
-  validateConfiguration?(configuration: Readonly<OpenClawConfigurationDocument>): void;
+  validateConfiguration?(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void;
   /**
    * Side-effect-free check that the first deployment of an Agent with initial workspace files
    * can deliver them on this Harness topology, at Agent create and update while the setup is

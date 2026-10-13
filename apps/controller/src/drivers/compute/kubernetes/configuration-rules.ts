@@ -1,10 +1,14 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
 import {
   INVALID_HEADER_NAME,
+  isAdmittedHeaderName,
   isCredentialHeaderName,
-  isHttpFieldName,
   keyedSettingPath,
   PROVIDER_MODELS_LIST,
+  quotedSettingKey,
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
@@ -131,8 +135,10 @@ const PROVIDER_ENVIRONMENT =
   "the Agent's Harness authentication binding owns model provider environment";
 const MODEL_CREDENTIAL_ENVIRONMENT =
   /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
-const CREDENTIAL_HEADER =
-  "must not set a credential header (authorization, any key, token, secret, password or cookie)";
+// The refusal names the header, so it explains itself whatever word the rule matched; never its
+// value. A header name is not a secret. A long one is cut so the message fits its cap.
+const credentialHeaderRequirement = (name: string): string =>
+  `must not set the credential header ${quotedSettingKey(name, 40)} (its name marks a credential): ${HARNESS_BINDING}`;
 
 /**
  * Providers of the model references in agents.defaults.model and agents.entries.*.model.
@@ -169,13 +175,15 @@ export function selectedModelProviders(
  * on every topology, so the Configuration must not carry its own: no `auth` profiles, no
  * model credential environment variables, and on any model provider or its models no
  * credential header (in `headers` or `request.headers`) and no `request.auth` credential.
- * Header names must be valid HTTP field names, so a lookalike cannot slip past the match.
- * (The provider apiKey rule depends on the Harness, so it stays in Harness authentication
- * admission, on selected providers only.)
+ * Header names must be valid HTTP field names, so a lookalike cannot slip past the match; on a
+ * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked once
+ * filled, as on every Compute. (The provider apiKey rule depends on the Harness, so it stays in
+ * Harness authentication admission, on selected providers only.)
  */
 export function requireHarnessCredentialBinding(
   configuration: Readonly<OpenClawConfigurationDocument>,
   createError: SettingError,
+  options?: ConfigurationValidationOptions,
 ): void {
   if (Object.keys(asRecord(configuration.auth) ?? {}).length > 0) {
     throw createError("auth", `must be empty: ${HARNESS_BINDING}`);
@@ -214,11 +222,11 @@ export function requireHarnessCredentialBinding(
         [`${setting}.request.headers`, request?.headers],
       ] as const) {
         for (const name of Object.keys(asRecord(headers) ?? {})) {
-          if (!isHttpFieldName(name)) {
+          if (!isAdmittedHeaderName(name, options)) {
             throw createError(headersSetting, INVALID_HEADER_NAME);
           }
           if (isCredentialHeaderName(name)) {
-            throw createError(headersSetting, `${CREDENTIAL_HEADER}: ${HARNESS_BINDING}`);
+            throw createError(headersSetting, credentialHeaderRequirement(name));
           }
         }
       }

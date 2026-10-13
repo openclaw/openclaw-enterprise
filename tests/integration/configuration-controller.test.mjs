@@ -838,8 +838,8 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     await configurationDriver.update({ ...stored, values });
   };
   const binding = "model credentials come from the Agent's Harness authentication binding";
-  const credentialHeader =
-    "must not set a credential header (authorization, any key, token, secret, password or cookie)";
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential)`;
   const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
 
   for (const [values, message] of [
@@ -871,7 +871,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
           providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
         },
       },
-      setting("models.providers.openai.headers", `${credentialHeader}: ${binding}`),
+      setting("models.providers.openai.headers", `${credentialHeader("X-Api-Key")}: ${binding}`),
     ],
     // OpenClaw's request transport overrides carry credentials too (finding 1142).
     [
@@ -883,7 +883,10 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
           },
         },
       },
-      setting("models.providers.openai.request.headers", `${credentialHeader}: ${binding}`),
+      setting(
+        "models.providers.openai.request.headers",
+        `${credentialHeader("Authorization")}: ${binding}`,
+      ),
     ],
     [
       {
@@ -909,7 +912,10 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
           providers: { google: { headers: { "x-goog-api-key": "${GOOGLE_API_KEY}" } } },
         },
       },
-      setting("models.providers.google.headers", `${credentialHeader}: ${binding}`),
+      setting(
+        "models.providers.google.headers",
+        `${credentialHeader("x-goog-api-key")}: ${binding}`,
+      ),
     ],
   ]) {
     const label = JSON.stringify(values);
@@ -1617,7 +1623,7 @@ test("A stored Configuration with request credentials an older release accepted 
   const sentinel = `synthetic-request-credential-${randomUUID()}`;
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
-  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, any key, token, secret, password or cookie): ${binding}.`;
+  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set the credential header "x-goog-api-key" (its name marks a credential): ${binding}.`;
 
   for (const [label, stale, message] of [
     [

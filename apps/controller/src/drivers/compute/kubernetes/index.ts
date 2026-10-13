@@ -58,6 +58,7 @@ import type {
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
   ComputeRevisionContext,
+  ConfigurationValidationOptions,
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
   CredentialSource,
@@ -3528,9 +3529,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * and Preset defaults refuse the content where it is written: supported channel providers,
    * and model credentials only through the Harness authentication binding.
    */
-  validateConfiguration(configuration: Readonly<OpenClawConfigurationDocument>): void {
+  validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
-    requireHarnessCredentialBinding(configuration, callerSettingError);
+    requireHarnessCredentialBinding(configuration, callerSettingError, options);
   }
 
   getGatewayEndpoint(revision: AgentRevision): string | undefined {

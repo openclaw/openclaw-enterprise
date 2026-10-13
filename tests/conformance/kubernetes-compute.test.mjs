@@ -8843,8 +8843,8 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
     );
   }
   const binding = "model credentials come from the Agent's Harness authentication binding";
-  const credentialHeader =
-    "must not set a credential header (authorization, any key, token, secret, password or cookie)";
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential)`;
   for (const [conflicting, message] of [
     [
       { env: { ANTHROPIC_API_KEY: "fixture" } },
@@ -8860,7 +8860,7 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
     ],
     [
       { models: { providers: { anthropic: { headers: { "x-api-key": "fixture" } } } } },
-      `Configuration setting models.providers.anthropic.headers ${credentialHeader}: ${binding}.`,
+      `Configuration setting models.providers.anthropic.headers ${credentialHeader("x-api-key")}: ${binding}.`,
     ],
     [
       {
@@ -8872,7 +8872,7 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
           },
         },
       },
-      `Configuration setting models.providers.anthropic.models.0.headers ${credentialHeader}: ${binding}.`,
+      `Configuration setting models.providers.anthropic.models.0.headers ${credentialHeader("x-api-key")}: ${binding}.`,
     ],
   ]) {
     // Every topology refuses these, so Configuration save runs the same rule.
@@ -8919,7 +8919,9 @@ test("model provider credential headers and request auth are refused on every pr
     [{ id: "codex", version: "1.0.0", mode: "dedicated" }, "codex/gpt-5"],
   ];
   const binding = "model credentials come from the Agent's Harness authentication binding";
-  const credentialHeader = `must not set a credential header (authorization, any key, token, secret, password or cookie): ${binding}`;
+  // Finding 1208: the refusal names the header, never its value.
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential): ${binding}`;
   const requestAuth = `must be unset or {mode: "provider-default"}: ${binding}`;
   const invalidName = "must use valid HTTP header names";
   const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
@@ -8927,17 +8929,17 @@ test("model provider credential headers and request auth are refused on every pr
     [
       provider("p", { request: { headers: { Authorization: "Bearer sk-literal" } } }),
       "models.providers.p.request.headers",
-      credentialHeader,
+      credentialHeader("Authorization"),
     ],
     [
       provider("p", { request: { headers: { "x-api-key": "${K}" } } }),
       "models.providers.p.request.headers",
-      credentialHeader,
+      credentialHeader("x-api-key"),
     ],
     [
       provider("p", { models: [{ id: "m", request: { headers: { authorization: "x" } } }] }),
       "models.providers.p.models.0.request.headers",
-      credentialHeader,
+      credentialHeader("authorization"),
     ],
     [
       provider("p", { request: { auth: { mode: "authorization-bearer", token: "sk-literal" } } }),
@@ -9067,7 +9069,7 @@ test("model provider credential headers and request auth are refused on every pr
     ].map((name) => [
       provider("p", { headers: { [name]: "${K}" } }),
       "models.providers.p.headers",
-      credentialHeader,
+      credentialHeader(name),
     ]),
     ...[
       "authorization ",
@@ -9103,6 +9105,44 @@ test("model provider credential headers and request auth are refused on every pr
       }
     }
   }
+  // Finding 1208: a long header name is cut so the message keeps its 256-character cap.
+  const longName = `x-${"a".repeat(300)}-token`;
+  assert.throws(
+    () => driver.validateConfiguration(provider("p", { headers: { [longName]: "${K}" } })),
+    (error) =>
+      error.name === "ConfigurationHarnessError" &&
+      error.message.length <= 256 &&
+      error.message ===
+        `Configuration setting models.providers.p.headers ${credentialHeader(`x-${"a".repeat(37)}…`)}.`,
+  );
+  // Finding 1207: on a Preset save, a header name that waits on an unfilled variable is checked
+  // once filled, as on every Compute; a name the rule matches around it is still refused.
+  const unresolved = (text) => text.includes("{{ vars.");
+  for (const headers of [
+    { headers: { "{{ vars.header }}": "v" } },
+    { request: { headers: { "{{ vars.header }}": "v" } } },
+    { models: [{ id: "m", headers: { "{{ vars.header }}": "v" } }] },
+  ]) {
+    const values = provider("p", headers);
+    driver.validateConfiguration(values, { unresolved });
+    assert.throws(() => driver.validateConfiguration(values), {
+      name: "ConfigurationHarnessError",
+      message: new RegExp(`${invalidName}\\.$`),
+    });
+  }
+  assert.throws(
+    () =>
+      driver.validateConfiguration(
+        provider("p", { headers: { "{{ vars.p }}-Authorization": "v" } }),
+        {
+          unresolved,
+        },
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: `Configuration setting models.providers.p.headers ${credentialHeader("{{ vars.p }}-Authorization")}.`,
+    },
+  );
   // Providers reached only through other selection keys are refused too.
   for (const agents of [
     { defaults: { model: "openai/gpt-5", imageModel: "anthropic/claude-x" } },
@@ -9121,7 +9161,7 @@ test("model provider credential headers and request auth are refused on every pr
         }),
       {
         name: "ConfigurationHarnessError",
-        message: `Configuration setting models.providers.anthropic.headers ${credentialHeader}.`,
+        message: `Configuration setting models.providers.anthropic.headers ${credentialHeader("x-api-key")}.`,
       },
     );
   }

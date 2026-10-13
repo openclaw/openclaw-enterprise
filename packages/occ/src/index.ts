@@ -32,6 +32,7 @@ import type {
   ComputeDriver,
   Configuration,
   ConfigurationDriver,
+  ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
@@ -300,6 +301,7 @@ export {
   IAMPolicyValidationError,
   IAMRoleInUseError,
   keyedSettingPath,
+  quotedSettingKey,
   ModelCredentialValueError,
   ModelProviderSettingError,
   NamespaceNotEmptyError,
@@ -393,6 +395,7 @@ export {
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export {
   INVALID_HEADER_NAME,
+  isAdmittedHeaderName,
   isCredentialHeaderName,
   isHttpFieldName,
   PROVIDER_MODELS_LIST,
@@ -863,6 +866,12 @@ const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
 
 // What a Preset variable without a default renders to in a template's default values.
 const PRESET_VARIABLE_PLACEHOLDER = /\{\{ vars\.[A-Za-z_][A-Za-z0-9_]* \}\}/;
+
+// Preset saves pass these to every Configuration rule they run (the shared model provider rules
+// and Compute's), so a value that waits on an unfilled variable is checked once filled.
+const PRESET_DEFAULTS_VALIDATION: ConfigurationValidationOptions = {
+  unresolved: (text) => PRESET_VARIABLE_PLACEHOLDER.test(text),
+};
 
 /**
  * The most references a Secret read or delete examines. Each one costs authorization work,
@@ -4264,10 +4273,8 @@ export class OpenClawController {
       // The model provider and Compute rules first, as on Configuration create and update, so
       // a value they refuse gets the same message wherever it is written. A variable without a
       // default is still a placeholder here; the Configuration it fills is checked on create.
-      validateModelProviderSettings(values, {
-        unresolved: (text) => PRESET_VARIABLE_PLACEHOLDER.test(text),
-      });
-      this.validateComputeConfiguration(values);
+      validateModelProviderSettings(values, PRESET_DEFAULTS_VALIDATION);
+      this.validateComputeConfiguration(values, PRESET_DEFAULTS_VALIDATION);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values);
     }
@@ -4278,9 +4285,12 @@ export class OpenClawController {
   // where it is written (Configuration create and update, provisioning, Preset defaults), with
   // the Driver's ConfigurationHarnessError naming the setting. A stored Configuration that
   // predates a rule still reads; deployment refuses it with the same message.
-  private validateComputeConfiguration(values: Readonly<OpenClawConfigurationDocument>): void {
+  private validateComputeConfiguration(
+    values: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
     const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
-    compute?.validateConfiguration?.(values);
+    compute?.validateConfiguration?.(values, options);
   }
 
   async createSecret(

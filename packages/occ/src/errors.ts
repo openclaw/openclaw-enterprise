@@ -350,10 +350,27 @@ function keyedSettingMessage(
  * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
  */
 export function keyedSettingPath(parent: string, key: string): string {
-  const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+  const shown = shownKey(key);
   return /^[A-Za-z0-9_-]+$/.test(shown)
     ? `${parent}.${shown}`
     : `${parent}[${JSON.stringify(shown)}]`;
+}
+
+// Control, format, line and paragraph separator characters and lone surrogates show as ?.
+const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+
+/**
+ * A submitted key a message names, such as a header name, in double quotes: characters
+ * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
+ * so the message keeps its cap. Use it only for keys that are not secrets.
+ */
+export function quotedSettingKey(key: string, limit: number): string {
+  const characters = Array.from(shownKey(key));
+  return JSON.stringify(
+    characters.length <= limit
+      ? characters.join("")
+      : `${characters.slice(0, limit - 1).join("")}…`,
+  );
 }
 
 /**

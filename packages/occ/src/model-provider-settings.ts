@@ -1,4 +1,7 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 
 import {
@@ -39,7 +42,7 @@ const environmentReference = /\$\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/;
 
 // A value its writer fills in later: a runtime environment reference, or what `unresolved`
 // names (an unfilled Preset variable).
-type Unresolved = (text: string) => boolean;
+type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;
 
 function validateSettings(
   settings: Record<string, unknown>,
@@ -94,7 +97,7 @@ export function providerModelsListError(key: string): ConfigurationHarnessError 
  */
 export function validateModelProviderSettings(
   values: OpenClawConfigurationDocument,
-  { unresolved = () => false }: { readonly unresolved?: Unresolved } = {},
+  { unresolved = () => false }: ConfigurationValidationOptions = {},
 ): void {
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
@@ -137,8 +140,8 @@ function validateHeaderNames(
     [`${setting}.request.headers`, asRecord(settings.request)?.headers],
   ] as const) {
     if (
-      !Object.keys(asRecord(headers) ?? {}).every(
-        (name) => isHttpFieldName(name) || unresolved(name),
+      !Object.keys(asRecord(headers) ?? {}).every((name) =>
+        isAdmittedHeaderName(name, { unresolved }),
       )
     ) {
       throw new ConfigurationHarnessError(
@@ -155,6 +158,18 @@ const HTTP_FIELD_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 /** Whether `name` is a valid HTTP field name (an RFC 9110 token). */
 export function isHttpFieldName(name: string): boolean {
   return HTTP_FIELD_NAME.test(name);
+}
+
+/**
+ * Whether a model provider header name passes the header name rule: a valid HTTP field name, or,
+ * on a Preset save, one that holds an unfilled variable (`unresolved`), checked once filled.
+ * Every Compute and Kubernetes Compute's credential rule use it, so a Preset saves alike on both.
+ */
+export function isAdmittedHeaderName(
+  name: string,
+  { unresolved }: ConfigurationValidationOptions = {},
+): boolean {
+  return isHttpFieldName(name) || unresolved?.(name) === true;
 }
 
 // A header whose last hyphen-, underscore- or dot-separated word names a credential:
