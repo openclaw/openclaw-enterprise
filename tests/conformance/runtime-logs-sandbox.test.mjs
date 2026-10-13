@@ -132,27 +132,54 @@ function openShellSandboxDriver(gatewayClient) {
   );
 }
 
-async function sandboxFixture(options = {}) {
-  const gateway = logOnlyGatewayClient();
-  const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE });
-  const sandboxDriver = openShellSandboxDriver(gateway.client);
-  if (options.sandboxName !== undefined) {
+/** The shared app's cursor key; tests that forge earlier cursor formats sign with it. */
+const CURSOR_SECRET = "disposable-runtime-log-cursor-secret-32";
+/** The running test's gateway client and Driver identity override. */
+let current;
+let sharedApp;
+
+/**
+ * One controller app serves every `sandboxFixture()`: its construction, admin sign-in and
+ * bootstrap cost more than most tests' reads. Tests run one at a time, so the app's
+ * OpenShell gateway client forwards to the current test's client. Each test deploys its
+ * own Agent (its own Sandbox, cursors and rate limit) and sees only its own audit events.
+ */
+function sandboxApp() {
+  sharedApp ??= (async () => {
+    const sandboxDriver = openShellSandboxDriver(
+      new Proxy({}, { get: (_, property) => current.client[property] }),
+    );
     const read = sandboxDriver.readSandboxLogs.bind(sandboxDriver);
     // Exercise the core's accepted Driver identity width without replacing paging.
-    sandboxDriver.readSandboxLogs = async (...args) => ({
-      ...(await read(...args)),
-      sandbox: options.sandboxName,
+    sandboxDriver.readSandboxLogs = async (...args) => {
+      const chunk = await read(...args);
+      return current.sandboxName === undefined ? chunk : { ...chunk, sandbox: current.sandboxName };
+    };
+    return createRuntimeLogFixture({
+      computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
+      sandboxDriver,
+      agentRuntimeLogs: { enabled: true, cursorSecret: CURSOR_SECRET },
     });
-  }
-  const fixture = await createRuntimeLogFixture({
-    computeDriver,
-    sandboxDriver,
-    ...(options.cursorSecret === undefined
-      ? {}
-      : { agentRuntimeLogs: { enabled: true, cursorSecret: options.cursorSecret } }),
-  });
+  })();
+  return sharedApp;
+}
+
+async function sandboxFixture({ client, sandboxName } = {}) {
+  const gateway = logOnlyGatewayClient();
+  const fixture = await sandboxApp();
+  current = { client: client ?? gateway.client, sandboxName };
+  const auditFrom = fixture.auditSink.events.length;
   const target = await fixture.deployAgent("sandbox-logs");
-  return { ...fixture, gateway, target };
+  return {
+    ...fixture,
+    auditSink: {
+      get events() {
+        return fixture.auditSink.events.slice(auditFrom);
+      },
+    },
+    gateway,
+    target,
+  };
 }
 
 function canaries() {
@@ -314,8 +341,7 @@ test("sandbox log pages never contain planted credentials from command lines or 
 });
 
 test("sandbox cursors from before keyed line hashes expire into a new audited view", async () => {
-  const cursorSecret = "disposable-legacy-keyed-hash-cursor-secret";
-  const { gateway, target, request, auditSink } = await sandboxFixture({ cursorSecret });
+  const { gateway, target, request, auditSink } = await sandboxFixture();
   gateway.state.lines = [
     sandboxLine(1, "NET:OPEN [INFO] ALLOWED curl(1) -> a.example.com:443"),
     sandboxLine(2, "NET:OPEN [INFO] ALLOWED curl(1) -> b.example.com:443"),
@@ -325,7 +351,7 @@ test("sandbox cursors from before keyed line hashes expire into a new audited vi
   assert.match(first.data.cursor, /^v2\./);
   const payload = first.data.cursor.split(".")[1];
   // The previous release signed v1 envelopes without the version in the MAC.
-  const mac = createHmac("sha256", cursorSecret)
+  const mac = createHmac("sha256", CURSOR_SECRET)
     .update(`occ-runtime-logs-cursor\0${payload}`)
     .digest("base64url");
   const views = () =>
@@ -1741,11 +1767,7 @@ test("sandbox full timed checkpoints retain their gap through final drain below 
 
 for (const wideIdentity of [false, true]) {
   test(`sandbox full overlap cuts keep ${wideIdentity ? "maximum Driver identities" : "legacy cursors"} within admission limits`, async () => {
-    const cursorSecret = "disposable-legacy-baseline-cursor-secret-32";
-    const fixture = await sandboxFixture({
-      cursorSecret,
-      ...(wideIdentity ? { sandboxName: "s".repeat(253) } : {}),
-    });
+    const fixture = await sandboxFixture(wideIdentity ? { sandboxName: "s".repeat(253) } : {});
     const start = Date.now() - 1000;
     const row = (i, message) => ({
       sandboxId: wideIdentity ? "i".repeat(128) : SANDBOX_ID,
@@ -1775,7 +1797,7 @@ for (const wideIdentity of [false, true]) {
       const decoded = JSON.parse(Buffer.from(cursor.split(".")[1], "base64url"));
       decoded.h = decoded.h.match(/.{16}/g);
       const payload = Buffer.from(JSON.stringify(decoded)).toString("base64url");
-      const mac = createHmac("sha256", cursorSecret)
+      const mac = createHmac("sha256", CURSOR_SECRET)
         .update(`occ-runtime-logs-cursor\0v2\0${payload}`)
         .digest("base64url");
       cursor = `v2.${payload}.${mac}`;
@@ -1970,15 +1992,11 @@ test("sandbox full wire-cut pages retain already-delivered untimed prefixes", as
       };
     },
   };
-  const fixture = await createRuntimeLogFixture({
-    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
-    sandboxDriver: openShellSandboxDriver(gatewayClient),
-  });
-  const target = await fixture.deployAgent("full-mixed-wire-tail");
+  const { request, target } = await sandboxFixture({ client: gatewayClient });
   const seen = [];
   let cursor;
   for (let poll = 0; poll < 3; poll += 1) {
-    const response = await fixture.request(
+    const response = await request(
       "GET",
       target.logsPath(
         `source=sandbox&tailLines=100${cursor === undefined ? "" : `&cursor=${cursor}`}`,
