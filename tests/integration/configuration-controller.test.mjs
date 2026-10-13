@@ -2236,6 +2236,24 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       },
       "/skills/entries/list/env/GOPROXY",
     ],
+    // A space in the userinfo still reads as userinfo (WHATWG, Python), `${a/}` is no reference
+    // (names are upper case), and a backslash ends a `file` authority.
+    [
+      { skills: { entries: { space: { env: { INDEX: `https://u:p w${sentinel}@pypi` } } } } },
+      "/skills/entries/space/env/INDEX",
+    ],
+    [
+      {
+        skills: {
+          entries: { lower: { env: { INDEX: `https://ok\${a/},https:u:${sentinel}@h` } } },
+        },
+      },
+      "/skills/entries/lower/env/INDEX",
+    ],
+    [
+      { skills: { entries: { file: { env: { INDEX: `file://h\\https:u:${sentinel}@h` } } } } },
+      "/skills/entries/file/env/INDEX",
+    ],
   ];
   for (const [values, field] of refused) {
     await t.test(`refuses ${field}`, async () => {
@@ -2278,6 +2296,18 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       assert.equal(JSON.stringify(response.body).includes(sentinel), false);
     });
   }
+  // A value whose URLs would take too long to check is refused rather than block the controller.
+  await t.test("refuses a value too costly to check", async () => {
+    const values = { skills: { entries: { x: { env: { X: "${A:-://}".repeat(2000) } } } } };
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(
+      response.body.error.message,
+      "Configuration field /skills/entries/x/env/X holds too many URLs or ${NAME} references to check for a user name or password. Shorten it, or make the whole value a ${NAME} reference.",
+    );
+  });
   // Nothing refused was stored.
   assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
   assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
@@ -2326,7 +2356,9 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     PLAIN: "use https: everywhere, ask ops@example.test",
     NEWS: "news:ops@example.test",
     WINDOWS_ADMIN: "Windows:admin@example.test",
-    ARGS: "--proxy=http://proxy.example.test:3128 --user=ops@example.test",
+    ARGS: "--proxy=http://proxy.example.test:3128/ --user=ops@example.test",
+    JSON: '{"url": "https://api.example.test", "contact": "ops@example.test"}',
+    ORIGINS: "http://localhost:3000,http://127.0.0.1:3000",
     NO_PROXY: "localhost,.svc,10.0.0.0/8",
     LOG_LEVEL: "debug",
   };

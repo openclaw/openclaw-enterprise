@@ -3,6 +3,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  environmentReference,
   isCredentialHeaderName,
   ModelCredentialValueError,
   urlHoldsUserinfo,
@@ -26,26 +27,43 @@ const urlCredentialMessage = (path: string): string =>
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
-// Each URL `text` may hold, from its scheme to the end of its authority, where `\0` marks an
-// unfilled Preset variable. URL parsers (WHATWG's, Python's) drop tabs and newlines, and read
-// userinfo after a special scheme with one slash or none (`https:u:pw@host`). A candidate is a
-// colon with two slashes after it, or one after a scheme that ends in `http(s)`, `ws(s)` or
-// `ftp` or holds a variable or `${VAR}` reference (each also between the colon and the
-// slashes), and with no space after it. An authority also ends at a space, which no parser
-// reads there (`--proxy=http://p:3128 --user=me@host`). A candidate inside the authority of one
-// already returned is part of it, so each character is read a bounded number of times.
-function environmentUrls(value: string): string[] {
+const environmentCostMessage = (path: string): string =>
+  `Configuration field ${path} holds too many URLs or \${NAME} references to check for a user name or password. Shorten it, or make the whole value a \${NAME} reference.`;
+
+// The most work `environmentUrls` and the userinfo check may do on one environment value, in
+// characters read (each rendering of each URL counts): about 0.1 s.
+const ENVIRONMENT_URL_BUDGET = 1 << 22;
+
+// Each URL `value` may hold, from its scheme to the end of its authority, where `\0` marks an
+// unfilled Preset variable; `undefined` when checking them would exceed the budget. URL parsers
+// (WHATWG's, Python's) drop tabs and newlines, and read userinfo after a special scheme with one
+// slash or none (`https:u:pw@host`). A candidate is a colon with two slashes after it, or one
+// after a scheme that ends in `http(s)`, `ws(s)` or `ftp` or holds a variable or `${VAR}`
+// reference (each also between the colon and the slashes), with no space after it. References
+// are read as the runtime reads them (`environmentReference`; `$${VAR}` is literal text). A
+// candidate inside the authority of one already returned is part of it, unless it sits in a
+// reference whose fallback could end that authority.
+function environmentUrls(value: string): string[] | undefined {
   const text = value.replaceAll(/[\t\n\r]/g, "");
-  // Each `${VAR}` or `${VAR:-fallback}` reference, by its start and by its end.
+  // Each reference, by its start and by its end; `inside` marks the start of the one at each
+  // index, and `count` how many start before it.
   const after = new Map<number, number>();
   const before = new Map<number, number>();
   const inside = new Int32Array(text.length + 1).fill(-1);
-  for (const { index, 0: reference } of text.matchAll(/\$\{[^{}$]*\}/g)) {
-    after.set(index, index + reference.length);
-    before.set(index + reference.length, index);
-    inside.fill(index, index + 1, index + reference.length);
+  const count = new Int32Array(text.length + 2);
+  for (const { index, 0: reference, 1: escaped } of text.matchAll(environmentReference)) {
+    if (escaped === undefined) {
+      after.set(index, index + reference.length);
+      before.set(index + reference.length, index);
+      inside.fill(index, index + 1, index + reference.length);
+      count[index + 1] = 1;
+    }
   }
-  const skip = (from: number, slash: boolean): [number, number] => {
+  for (let index = 1; index < count.length; index += 1) {
+    count[index] = (count[index] ?? 0) + (count[index - 1] ?? 0);
+  }
+  let work = text.length;
+  const skip = (from: number): [number, number] => {
     let index = from;
     let slashes = 0;
     for (;;) {
@@ -54,7 +72,7 @@ function environmentUrls(value: string): string[] {
         index = end;
       } else if (text[index] === "\0") {
         index += 1;
-      } else if (slash && (text[index] === "/" || text[index] === "\\")) {
+      } else if (text[index] === "/" || text[index] === "\\") {
         index += 1;
         slashes += 1;
       } else {
@@ -62,7 +80,7 @@ function environmentUrls(value: string): string[] {
       }
     }
   };
-  const urls: string[] = [];
+  const spans: [number, number][] = [];
   let covered = { from: 0, to: 0 };
   for (const { index: colon } of text.matchAll(/:/g)) {
     let start = colon;
@@ -77,37 +95,45 @@ function environmentUrls(value: string): string[] {
       }
     }
     const scheme = text.slice(start, colon);
-    const variable = /\0|\$\{/.test(scheme);
+    const variable = /\0/.test(scheme) || count[colon] !== count[start];
     const special = /(?:^|[^A-Za-z0-9+.])(?:https?|wss?|ftp)$/i.test(scheme);
-    const [authority, slashes] = skip(colon + 1, true);
+    const [authority, slashes] = skip(colon + 1);
+    work += authority - start;
     if (slashes < 2 && (!(variable || special) || text[colon + 1] === " ")) {
       continue;
     }
-    // Inside the authority of a URL already returned, and not inside a reference whose fallback
-    // could end that authority, this candidate's authority is a suffix of that one.
     const reference = inside[colon] ?? -1;
     if (
       colon >= covered.from &&
       authority < covered.to &&
-      (reference === -1 || !/[ /?#\\]/.test(text.slice(reference, after.get(reference))))
+      (reference === -1 || !/[/?#\\]/.test(text.slice(reference, after.get(reference))))
     ) {
       continue;
     }
+    // `file` is special to the URL parser too: a backslash ends its authority. A double quote
+    // ends a URL inside JSON text.
+    const backslash = variable || special || /(?:^|[^A-Za-z0-9+.])file$/i.test(scheme);
     let end = authority;
     while (end < text.length) {
       const skipped = after.get(end);
       if (skipped !== undefined) {
         end = skipped;
-      } else if (/[ /?#]/.test(text[end] ?? "") || (text[end] === "\\" && (variable || special))) {
+      } else if (/["/?#]/.test(text[end] ?? "") || (text[end] === "\\" && backslash)) {
         break;
       } else {
         end += 1;
       }
     }
-    covered = { from: authority, to: end };
-    urls.push(text.slice(start, end + 1));
+    end = Math.min(end + 1, text.length);
+    // The check renders every fallback in the URL, so its cost grows with each reference.
+    work += (end - start) * (3 + (count[end] ?? 0) - (count[start] ?? 0));
+    if (work > ENVIRONMENT_URL_BUDGET) {
+      return undefined;
+    }
+    covered = { from: authority, to: end - 1 };
+    spans.push([start, end]);
   }
-  return urls;
+  return spans.map(([start, end]) => text.slice(start, end));
 }
 
 // The provider headers refused as literals before the 2026-10-12 notice.
@@ -186,11 +212,15 @@ export function validateModelCredentialReferences(
     if (typeof value !== "string") {
       return;
     }
+    // `\0` stands for each unfilled variable: a process environment cannot hold one.
+    const urls = environmentUrls((options.unresolved?.(path) ?? [value]).join("\0"));
+    if (urls === undefined) {
+      throw new ModelCredentialValueError(pointer(...path), environmentCostMessage);
+    }
     if (proxy) {
       refuseUrlUserinfo(path, value, true);
     }
-    // `\0` stands for each unfilled variable: a process environment cannot hold one.
-    for (const url of environmentUrls((options.unresolved?.(path) ?? [value]).join("\0"))) {
+    for (const url of urls) {
       if (urlHoldsUserinfo(value, url.split("\0"))) {
         throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
       }
