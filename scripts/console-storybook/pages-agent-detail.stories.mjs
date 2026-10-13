@@ -89,3 +89,6 @@ export const SharingGranted = { ...story("agentSharingGranted") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
+
+export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
+export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");

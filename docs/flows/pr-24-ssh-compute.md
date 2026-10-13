@@ -76,8 +76,10 @@ operations require matching bindings and the selected Compute identity.
 Admission and dispatch require the explicit `runtime` binding. The snapshot
 contains only the method: neither source authorization nor credential resolution
 runs for it, while Agent/Configuration authorization and worker reauthorization
-remain required. `SshComputeDriver.validateHarnessAuth` rejects managed credentials
-and dedicated Harnesses; preparation also rejects OCC Secret delivery and Sandbox use.
+remain required. `SshComputeDriver.validateHarnessAuth` rejects dedicated
+Harnesses (a fixed `409`), then any other method through `requireHarnessAuthMethod`
+(`compute/harness-auth-method.ts`), which names `harnessAuth.method` (`400`).
+Preparation also rejects OCC Secret delivery and Sandbox use.
 SSH dispatches selected `beforeWorkloadStart` hooks during activation, before
 starting the candidate workload.
 

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -1129,6 +1130,114 @@ test("Static Checks runs every check the CI lanes skip", () => {
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
 });
 
+test("lane lists outside the lane table name every lane they must", async () => {
+  const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
+  // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
+  // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
+  // from either condition builds its images cold, and nothing fails.
+  const action = loadYaml(".github/actions/run-ci-lane/action.yml");
+  const lanesIn = (expression) =>
+    [...String(expression).matchAll(/inputs\.lane == '([a-z0-9-]+)'/g)]
+      .map((match) => match[1])
+      .sort();
+  const { imageCacheLanes } = await import(
+    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
+  );
+  const cached = [...imageCacheLanes.keys()].sort();
+  const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
+  const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
+  assert.deepEqual(lanesIn(exposeStep.if), cached);
+  assert.deepEqual(lanesIn(prepareStep.env.OCC_CI_IMAGE_CACHE), cached);
+  for (const lane of Object.keys(suiteIndex.lanes).filter((name) => name.startsWith("images-"))) {
+    assert.ok(cached.includes(lane), `${lane} restores the image cache`);
+  }
+
+  // A full-integration "all" run reports every same-SHA matrix lane, and with the
+  // jobs it reads directly covers the whole full group. A lane missing here fails
+  // only a manual full run, as "missing".
+  const fullIntegration = loadYaml(".github/workflows/full-integration.yml");
+  const aggregate = fullIntegration.jobs["full-aggregate"];
+  const script = aggregate.steps.find((step) => step.name === "Write selected job state").run;
+  const lists = [...script.matchAll(/for \(const name of (\[[^\]]*\])\)/g)].map((match) =>
+    JSON.parse(match[1]),
+  );
+  assert.equal(lists.length, 2, "full-aggregate names the same-SHA lanes and its own jobs");
+  const [sameSha, ownJobs] = lists;
+  assert.deepEqual(
+    [...sameSha].sort(),
+    fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include
+      .map((entry) => entry.lane)
+      .sort(),
+  );
+  for (const job of ["pr-safe-same-sha", "runtime-image-fixture", ...ownJobs]) {
+    assert.ok(aggregate.needs.includes(job), `full-aggregate needs ${job}`);
+  }
+  assert.deepEqual(
+    ["runtime-image-fixture", ...sameSha, ...ownJobs].sort(),
+    [...suiteIndex.groups.full].sort(),
+  );
+});
+
+// Finding 1209: a hung file outlived its 25-minute job under the runner's 60-minute per-file
+// timeout, so GitHub cancelled the job with no results file and no test name. Every lane job
+// gives the lane action its own timeout-minutes, and the action stops the lane's files five
+// minutes before it.
+test("every lane job stops its test files before its own timeout", (t) => {
+  const action = loadYaml(".github/actions/run-ci-lane/action.yml");
+  const deadline = action.runs.steps[0];
+  assert.equal(deadline.id, "deadline", "the deadline counts the lane's setup too");
+  const runLane = action.runs.steps.find((step) => step.name === "Run lane");
+  assert.equal(runLane.env.CI_RUNNER_DEADLINE_MS, "${{ steps.deadline.outputs.ms }}");
+
+  const callers = [];
+  for (const name of readdirSync(join(repositoryRoot, ".github/workflows"))) {
+    const workflow = loadYaml(`.github/workflows/${name}`);
+    for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (step.uses !== "./.github/actions/run-ci-lane") {
+          continue;
+        }
+        callers.push(`${name} ${id}`);
+        const timeout = job["timeout-minutes"];
+        assert.equal(String(step.with["job-timeout-minutes"]), String(timeout), `${name} ${id}`);
+        let minutes = [timeout];
+        if (timeout === "${{ matrix.timeout }}") {
+          const rows = job.strategy.matrix.include;
+          minutes = (Array.isArray(rows) ? rows : laneTable()).map((row) => row.timeout);
+        }
+        for (const value of minutes) {
+          assert.ok(Number.isInteger(value) && value > 5, `${name} ${id} timeout ${value}`);
+        }
+      }
+    }
+  }
+  for (const caller of ["ci.yml pr-safe", "ci.yml runtime-image-fixture", "qa-advisory.yml qa"]) {
+    assert.ok(callers.includes(caller), caller);
+  }
+
+  // The step itself: five minutes before the job's timeout, measured from its start.
+  const root = mkdtempSync(join(tmpdir(), "lane-deadline-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const output = join(root, "output");
+  const setDeadline = (minutes) => {
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-c", deadline.run], {
+      encoding: "utf8",
+      env: { ...process.env, JOB_TIMEOUT_MINUTES: minutes, GITHUB_OUTPUT: output },
+    });
+    return { status: result.status, output: readFileSync(output, "utf8") };
+  };
+  const before = Date.now();
+  const set = setDeadline("25");
+  const after = Date.now();
+  assert.equal(set.status, 0);
+  const ms = Number(/^ms=(\d+)\n$/.exec(set.output)?.[1]);
+  assert.ok(ms >= before + 20 * 60_000 && ms <= after + 20 * 60_000, set.output);
+  for (const minutes of ["", "5", "25.5", "x", "${{ matrix.timeout }}"]) {
+    assert.deepEqual(setDeadline(minutes), { status: 1, output: "" }, minutes);
+  }
+});
+
 // Runs impact-gate.mjs on a needs object, writing needs.json in `root`.
 function runGate(root, needs, mode, lanes) {
   const raw = join(root, "raw-needs.json");
@@ -1212,14 +1321,17 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     "images-model-probes",
     "images-runtime-startup",
     "images-runtime-startup-2",
+    "images-runtime-startup-3",
     "runtime-image-fixture",
     "k3d-fixture-configuration",
     "k3d-fixture-state",
     "k3d-fixture-plugins",
+    "k3d-fixture-oauth",
     "k3d-observability",
     "logging-collector",
     "repository-credentials-container",
     "repository-credentials-platform",
+    "keycloak-oidc",
   ];
   // A declared lane must actually have a runner in both full-coverage paths.
   // This catches a manifest/gate update that accidentally omits a new matrix job.
@@ -1237,7 +1349,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       "runtime-image-fixture",
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
-    [...lanes, "k3d-observability-demo", "keycloak-oidc"].sort(),
+    [...lanes, "k3d-observability-demo"].sort(),
   );
   await all(["docs", "full"], async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {

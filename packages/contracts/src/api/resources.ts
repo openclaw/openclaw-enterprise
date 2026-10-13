@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
   AgentId,
@@ -1087,6 +1088,24 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    cleanup: Type.Union(
+      [
+        Type.Null(),
+        Type.Object(
+          {
+            status: Type.Union(
+              ["queued", "running", "succeeded", "failed"].map((status) => Type.Literal(status)),
+            ),
+            nextAttemptAt: Type.Union([Timestamp, Type.Null()]),
+          },
+          { additionalProperties: false },
+        ),
+      ],
+      {
+        description:
+          "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed.",
+      },
+    ),
     progress: Type.Union(
       [
         Type.Null(),
@@ -1131,6 +1150,10 @@ export const AgentDeploymentStatusSchema = Type.Object(
             message: Type.String({ minLength: 1 }),
             data: Type.Optional(
               Type.Union([
+                Type.Object(
+                  { preparation: ComputePreparationFailureEvidenceSchema },
+                  { additionalProperties: false },
+                ),
                 Type.Object(
                   {
                     timeoutMs: Type.Integer({ minimum: 1 }),
@@ -1419,7 +1442,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
               },
               { additionalProperties: false },
             ),
-            { maxItems: 16 },
+            { maxItems: 256 },
           ),
           available: Type.Boolean(),
           unavailableCode: Type.Optional(Type.Literal("NO_POD")),

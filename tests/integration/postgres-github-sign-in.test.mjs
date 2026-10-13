@@ -740,7 +740,10 @@ test(
       url: `/api/auth/providers/github/callback?state=${unavailableAttempt.state}&code=provider-unavailable`,
       headers: { cookie: unavailableAttempt.cookie },
     });
-    assert.equal(unavailable.headers.location, "/console/?authError=github");
+    assert.equal(
+      unavailable.headers.location,
+      "/console/?authError=github&authReason=provider-unavailable",
+    );
     assert.equal(unavailable.headers["set-cookie"], undefined);
     const offlinePassword = await app.inject({
       method: "POST",

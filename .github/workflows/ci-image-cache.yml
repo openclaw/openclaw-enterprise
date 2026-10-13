@@ -62,7 +62,7 @@ jobs:
           persist-credentials: false
       - name: Verify checkout source
         run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

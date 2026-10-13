@@ -1386,6 +1386,11 @@ test(
               }),
               line({
                 severity: "WARN",
+                event: "authentication.forwarded-refused-warning",
+                code: "TRUSTED_PROXY_NOT_CONFIGURED",
+              }),
+              line({
+                severity: "WARN",
                 event: "authentication.recovery-seed-warning",
                 message: `OCC_AUTH_GITHUB_RECOVERY_USER_ID differs ${canary}`,
               }),
@@ -1487,6 +1492,10 @@ test(
         api("WARN", {
           "event.name": "authentication.password-sign-in-warning",
           "occ.code": "EXTERNAL_IDENTITY_MISSING",
+        }),
+        api("WARN", {
+          "event.name": "authentication.forwarded-refused-warning",
+          "occ.code": "TRUSTED_PROXY_NOT_CONFIGURED",
         }),
         api("WARN", { "event.name": "authentication.recovery-seed-warning" }),
         summary("occ-worker", "WARN", "stderr", {

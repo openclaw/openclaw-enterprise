@@ -1,4 +1,7 @@
 import type { WorkspaceSetup } from "./workspace-setup.ts";
+
+export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
+export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 import type {
   AgentRuntimeDescription,
   AgentRuntimeDescribeOptions,
@@ -1638,7 +1641,8 @@ export interface RuntimeFailureEvidence {
  * Why an unready revision is still pending, when Compute knows: its Pods cannot be
  * scheduled, or its workloads are ready but the workspace node has not connected.
  */
-export type ComputePendingReason = "WORKLOAD_UNSCHEDULABLE" | "WORKSPACE_NODE_PENDING";
+export type ComputePendingReason =
+  "WORKLOAD_UNSCHEDULABLE" | "WORKSPACE_NODE_PENDING" | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
 
 export interface ComputeReadiness extends Scope {
   readonly namespaceId: string;
@@ -1738,6 +1742,15 @@ export interface HarnessDeviceAuthorization {
 export type HarnessDeviceAuthorizationResult =
   { readonly status: "pending" } | { readonly status: "ready"; readonly credential: string };
 
+/**
+ * Options for Configuration rules that also run on Preset defaults. `unresolved` names text its
+ * writer fills in later (an unfilled Preset variable): a rule defers a header name that holds one
+ * to the Configuration the filled Preset creates, which is checked like any other.
+ */
+export interface ConfigurationValidationOptions {
+  readonly unresolved?: (text: string) => boolean;
+}
+
 export interface ComputeDriver extends Driver {
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
@@ -1782,18 +1795,25 @@ export interface ComputeDriver extends Driver {
    * Side-effect-free check of Configuration values against rules the Driver applies on every
    * topology, at Configuration create and update, Agent provisioning and Preset save (on the
    * values rendered with defaults). Throws ConfigurationHarnessError, naming the setting but
-   * never its value. validateHarnessAuth applies the same rules at deployment.
+   * never its value. validateHarnessAuth applies the same rules at deployment. Preset saves pass
+   * `options.unresolved`, which names their unfilled variables.
    */
-  validateConfiguration?(configuration: Readonly<OpenClawConfigurationDocument>): void;
+  validateConfiguration?(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void;
   /**
    * Side-effect-free check that the first deployment of an Agent with initial workspace files
    * can deliver them on this Harness topology, at Agent create and update while the setup is
-   * pending, and at provisioning. Throws ConfigurationHarnessError, naming the setting, for
-   * Configuration content preparation would refuse; any other error is an Installation refusal.
+   * pending, at deployment and at provisioning. `sandboxDriverId` names the Sandbox Driver the
+   * revision would be pinned to, if any. Throws ConfigurationHarnessError, naming the setting,
+   * for Configuration content preparation would refuse; any other error is an Installation
+   * refusal.
    */
   validateWorkspaceSetup?(
     harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
+    sandboxDriverId?: string,
   ): void;
   validateHarnessAuth?(
     harness: RevisionHarnessDescriptor,
@@ -1870,6 +1890,10 @@ export interface ComputeDriver extends Driver {
     signal: AbortSignal,
     options?: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus>;
+  /**
+   * Throws OCC's ComputePreparationFailedError when initialization is terminal.
+   * The worker durably fails deployment and schedules stopRevision for cleanup.
+   */
   prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,

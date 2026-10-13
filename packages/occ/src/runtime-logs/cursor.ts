@@ -2,6 +2,15 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import type { RuntimeLogSourceId } from "@openclaw-enterprise/contracts";
 
 const PURPOSE = "occ-runtime-logs-cursor";
+const LINE_HASH_PURPOSE = "occ-runtime-logs-line-hash";
+/**
+ * v2 cursors carry keyed line hashes and authenticate the version. v1 carried
+ * plain SHA-256 line hashes that no longer match; a v1 cursor that still
+ * verifies is treated as expired, so the next read starts a new audited view
+ * with a `cursor_expired` gap instead of de-duplicating against stale hashes.
+ */
+const VERSION = "v2";
+const LEGACY_VERSION = "v1";
 export const RUNTIME_LOG_CURSOR_TTL_MS = 60 * 60 * 1000;
 const MAX_HASHES = 48;
 
@@ -38,6 +47,7 @@ export interface ContainerLogWindowCheckpoint {
 
 export interface RuntimeLogCursorPosition {
   readonly viewId: string;
+  readonly container?: string;
   readonly pod: string;
   readonly podUid: string;
   readonly restartCount: number;
@@ -78,10 +88,12 @@ export type RuntimeLogCursorDecode =
 export interface RuntimeLogCursorCodec {
   encode(binding: RuntimeLogCursorBinding, position: RuntimeLogCursorPosition): string;
   decode(token: string, binding: RuntimeLogCursorBinding, now?: number): RuntimeLogCursorDecode;
-}
-
-export function runtimeLogLineHash(raw: string): string {
-  return createHash("sha256").update(raw).digest("base64url").slice(0, 16);
+  /**
+   * Keyed 96-bit digest of raw log text for cursor de-duplication and window
+   * checkpoints. Cursors are signed, not encrypted, so a plain hash of an
+   * unredacted line would let a reader test guesses for masked values offline.
+   */
+  lineHash(raw: string): string;
 }
 
 export function newRuntimeLogViewId(): string {
@@ -96,6 +108,12 @@ function bindingHash(binding: RuntimeLogCursorBinding): string {
 }
 
 function mac(secret: string, value: string): string {
+  return createHmac("sha256", secret)
+    .update(`${PURPOSE}\0${VERSION}\0${value}`)
+    .digest("base64url");
+}
+
+function legacyMac(secret: string, value: string): string {
   return createHmac("sha256", secret).update(`${PURPOSE}\0${value}`).digest("base64url");
 }
 
@@ -237,6 +255,8 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
   if (
     (record.w !== undefined && window === undefined) ||
     (record.cw !== undefined && container === undefined) ||
+    (record.c !== undefined &&
+      (typeof record.c !== "string" || !/^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/.test(record.c))) ||
     typeof record.v !== "string" ||
     typeof record.p !== "string" ||
     typeof record.u !== "string" ||
@@ -264,6 +284,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
   }
   return {
     viewId: record.v,
+    ...(record.c === undefined ? {} : { container: record.c as string }),
     pod: record.p,
     podUid: record.u,
     restartCount: record.r as number,
@@ -279,17 +300,25 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
   };
 }
 
-/** HMAC-signed with the auth secret, the same construction as session binding. */
+/**
+ * HMAC-signed with the auth secret, the same construction as session binding.
+ * Line hashes use a subkey derived from the same secret under a distinct purpose.
+ */
 export function createRuntimeLogCursorCodec(secret: string): RuntimeLogCursorCodec {
   if (typeof secret !== "string" || secret.length < 32) {
     throw new TypeError("The runtime log cursor secret must be at least 32 characters.");
   }
+  const lineKey = createHmac("sha256", secret).update(LINE_HASH_PURPOSE).digest();
   return Object.freeze({
+    lineHash(raw: string): string {
+      return createHmac("sha256", lineKey).update(raw).digest("base64url").slice(0, 16);
+    },
     encode(binding: RuntimeLogCursorBinding, value: RuntimeLogCursorPosition): string {
       const payload = Buffer.from(
         JSON.stringify({
           b: bindingHash(binding),
           v: value.viewId,
+          ...(value.container === undefined ? {} : { c: value.container }),
           p: value.pod,
           u: value.podUid,
           r: value.restartCount,
@@ -333,11 +362,16 @@ export function createRuntimeLogCursorCodec(secret: string): RuntimeLogCursorCod
                 ],
         }),
       ).toString("base64url");
-      return `v1.${payload}.${mac(secret, payload)}`;
+      return `${VERSION}.${payload}.${mac(secret, payload)}`;
     },
     decode(token: string, binding: RuntimeLogCursorBinding, now = Date.now()) {
       const parts = token.split(".");
-      if (parts.length !== 3 || parts[0] !== "v1" || !sameMac(parts[2]!, mac(secret, parts[1]!))) {
+      const legacy = parts[0] === LEGACY_VERSION;
+      if (
+        parts.length !== 3 ||
+        (parts[0] !== VERSION && !legacy) ||
+        !sameMac(parts[2]!, (legacy ? legacyMac : mac)(secret, parts[1]!))
+      ) {
         return { status: "invalid" } as const;
       }
       let parsed: unknown;
@@ -353,6 +387,17 @@ export function createRuntimeLogCursorCodec(secret: string): RuntimeLogCursorCod
         decoded.issuedAt > now + 60_000
       ) {
         return { status: "invalid" } as const;
+      }
+      if (legacy) {
+        // Its hashes are unkeyed and would never match: drop them and the window
+        // witnesses, and expire the view rather than resume it.
+        const {
+          sandboxWindow: _sandbox,
+          containerWindow: _container,
+          frontierCount: _count,
+          ...rest
+        } = decoded;
+        return { status: "expired", position: { ...rest, lastHashes: [] } } as const;
       }
       return now - decoded.issuedAt > RUNTIME_LOG_CURSOR_TTL_MS
         ? ({ status: "expired", position: decoded } as const)

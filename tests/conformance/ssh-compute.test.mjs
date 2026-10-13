@@ -896,13 +896,16 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
   await assert.rejects(f.driver.prepareRevision(rev), /bound Namespace and Agent/);
   await f.driver.ensureNamespace(tenant);
   bind(f.driver, rev);
-  for (const harnessAuth of [
-    undefined,
-    { method: "api_key" },
-    { method: "chatgpt_service_account" },
-    { method: "runtime", source: {} },
-  ]) {
+  for (const harnessAuth of [undefined, { method: "runtime", source: {} }]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), /operator-managed/);
+  }
+  // Another method is an Agent setting the caller can change: OCC answers 400 with this message.
+  for (const harnessAuth of [{ method: "api_key" }, { method: "chatgpt_service_account" }]) {
+    await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), {
+      name: "ConfigurationHarnessError",
+      message:
+        "Agent setting harnessAuth.method must be runtime for embedded OpenClaw on SSH Compute: change harnessAuth.",
+    });
   }
   for (const harness of [
     { id: "codex", mode: "dedicated" },

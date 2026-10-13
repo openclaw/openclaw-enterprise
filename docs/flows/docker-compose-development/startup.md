@@ -42,9 +42,14 @@ graph TD
   R -- "Deadline or query failure" --> X["<b>Fail startup</b><br/>Skip Installation writing"]
   F -- "OpenShell" --> H["<b>Own Workspace</b><br/>OpenShell operator mode"]
   E -- "OpenShell" --> H
-  G --> I["<b>Record cleanup</b><br/>Exact engine and resources"]
+  G -- "Password-only" --> I["<b>Record cleanup</b><br/>Exact engine and resources"]
   G -- "Canceled" --> J["<b>Fail startup</b><br/>Clean owned resources"]
   H --> I
+  E -- "Optional Keycloak profile" --> K["Provision Keycloak, TLS and Pod DNS"]
+  K --> G
+  G -- "Keycloak ready" --> L["Second Helm pass: OIDC and recovery-only passwords"]
+  L --> M["Attach Alice to the existing administrator"]
+  M --> I
 ```
 
 ## Execution trace
@@ -99,13 +104,10 @@ or PostgreSQL administrator URL.
 
 `compose.yaml:services.bootstrap`, `scripts/bootstrap-installation.mjs`
 
-After migration exits `0`, Compose runs the shared initializer with development
-inputs. Fresh bootstrap creates the human and non-Agent service
-administrators, singleton Installation, native IAM seed, audit evidence, and
-initial service-key response. It also creates the `default` Namespace in `provisioning` state; worker reconciliation later
-provisions its backing Docker boundary. Existing Installations retain their
-Namespaces, accounts, keys, IAM policy, configuration, and revision history; a
-missing, expired, or revoked key never triggers reissue.
+After migration exits `0`, bootstrap creates administrators, Installation, native
+IAM, audit evidence, service key, and a `provisioning` default Namespace. The
+worker provisions its Docker boundary. Existing Installation state is preserved;
+missing, expired, or revoked keys never trigger reissue.
 
 Only the initializer mounts `occ_bootstrap_data`; the API and worker load
 committed state after initializer success. The
@@ -137,12 +139,11 @@ operator-owned directory; otherwise the helper creates a private temporary
 directory. It never overwrites an existing file, prints `data.key`, or reruns
 bootstrap to replace a missing key.
 
-`dev-up` then reads the Installation with `./bin/occ installation get` and the
-copied key. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
-maps the `x-api-key` to the Installation-scoped service administrator. Startup requires the returned resource ID to match the copied key response's `meta.installationId`. The
-[service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
-owns admission and `401` rejection without cookie fallback; current IAM policy
-still authorizes each resource operation.
+`./bin/occ installation get` uses the copied key. The returned Installation ID
+must match the key's `meta.installationId`. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
+resolves the Installation-scoped service administrator; IAM authorizes each
+operation. The [service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
+owns admission and `401` rejection without cookie fallback.
 
 When `OCC_CONFIG_PATH` is absent, PostgreSQL-backed development selects the
 filesystem Configuration Driver from `OCC_DEVELOPMENT_CONFIGURATION_ROOT`.
@@ -176,11 +177,9 @@ Compose service with Docker-compatible engine access.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-Before tool discovery or state creation, `upK3d` requires the control-plane Kubernetes
-namespace name to match a DNS label of at most 63 characters. Cleanup accepts historical,
-longer Namespace names in recorded state and deletes only the validated recorded
-cluster through its recorded engine endpoint; other state and ownership checks
-still apply.
+Before tools or state creation, `upK3d` requires a control-plane Namespace DNS label
+of at most 63 characters. Cleanup accepts longer historical names but retains all
+ownership checks and deletes only the recorded cluster through its recorded endpoint.
 
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
 without changing host DNS.
@@ -248,16 +247,13 @@ Without OpenShell, the Installation selects the bundled Presets and curated
 Codex Plugin Driver, and startup copies the generated administrator password and
 service key into the private state directory.
 
-When repository inputs are selected, `internal/occdev/repository_k3d.go` first
-validates them. After authenticated bootstrap and Namespace readiness, it
-substitutes the server-assigned Namespace ID into the immutable registry,
-generates a CA and exact-host broker certificate, creates separate Kubernetes
-inputs, and upgrades Helm with the selected Repo Driver and worker sidecar.
-Startup fails unless authenticated repository discovery matches the approved
-references and profiles; it proves no model turn, native sandbox, or Git
-operation. The
-[local repository procedure](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs)
-owns the required inputs.
+For selected repository inputs, `internal/occdev/repository_k3d.go` validates them,
+then waits for authenticated bootstrap and Namespace readiness. It binds the
+server-assigned Namespace ID, generates a CA and exact-host broker certificate,
+creates Kubernetes inputs, and upgrades Helm with the Repo Driver and worker
+sidecar. Authenticated discovery must match approved references and profiles;
+this proves no model turn, native sandbox, or Git operation. See the
+[required repository inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
 The default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` uses the Compose snapshot.
 Unsupported values fail before resource creation. The
@@ -286,12 +282,12 @@ cluster's internal load-balancer hostname with TLS verification. It and the
 container configuration are readable by non-root containers behind the private
 host directory and mounted read-only into the API and Kubernetes worker. Neither receives the engine socket.
 
-The lifecycle imports runtime and OpenShell images under engine-recorded names,
-including Podman `localhost/` tags and Docker Hub familiar names. `internal/occdev/kubernetes.go:engineImageReference` treats an omitted tag as
-`:latest` and rejects missing or ambiguous matches. `importDevelopmentImage` owns
-the subsequent import and in-cluster digest resolution. Before `writeInstallation`, `internal/occdev/up.go:Up` and
-`internal/occdev/openshell_k3d.go:upK3d` call
-`internal/occdev/status_proxy_k3d.go:developmentStatusProxySource`. Node inventory keeps caller context outside polling.
+`internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names
+(including Podman `localhost/` and Docker Hub), defaults omitted tags to `:latest`,
+and rejects missing or ambiguous matches. `importDevelopmentImage` imports and
+resolves cluster digests. Before `writeInstallation`, both startup paths call
+`internal/occdev/status_proxy_k3d.go:developmentStatusProxySource`; node inventory
+retains caller context outside polling.
 
 `internal/occdev/up.go:poll` bounds route queries to two minutes via `internal/occdev/command.go:command`
 (`exec.CommandContext`), so deadline or cancellation stops blocked queries; default
@@ -319,13 +315,12 @@ owns OpenShell Gateway placement and per-Namespace workspace resources.
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`,
 `internal/occdev/state.go:readState`.
 
-After API and worker readiness, both bootstrap readers read private temporary
-key copies and bind the `occclient` Installation request to startup cancellation
-before exporting the key exclusively. Its ID
-must match bootstrap output. Cancellation fails verification and starts owned
-cleanup. OpenShell also waits for its bootstrap Namespace and operator-mode Workspace.
-Namespace readiness and repository discovery apply their polling deadline
-through `occclient.Client.WithContext`, preserving the original client.
+After API/worker readiness, both bootstrap readers use private temporary keys
+and cancellation-bound `occclient` requests. Installation IDs must match bootstrap
+before exclusive key export; cancellation triggers owned cleanup. OpenShell also
+waits for its bootstrap Namespace and operator-mode Workspace. Namespace readiness
+and repository discovery use `occclient.Client.WithContext` for polling deadlines,
+preserving the original client.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
@@ -341,6 +336,17 @@ project volumes. Cleanup continues after individual errors, retaining state on a
 returned external `--key-output` file stays operator-owned; startup removes a
 newly written external key if a later OpenShell readiness step fails.
 
+### 15. Start and remove the optional Keycloak profile
+
+`internal/occdev/keycloak_k3d.go:installDevelopmentKeycloak`,
+`internal/occdev/keycloak_k3d.go:signInDevelopmentKeycloak`,
+`internal/occdev/down.go:cleanup`.
+
+With `OCC_DEVELOPMENT_SIGN_IN=keycloak`, Kubernetes-only sandbox `none` provisions
+Keycloak before authenticated readiness, then enables OIDC and attaches Alice to
+the administrator. See the [Keycloak lifecycle](keycloak.md) for validation,
+DNS/TLS, both Helm passes, recovery and destructive teardown.
+
 ## Debugging and Verification
 
 - `node --test tests/integration/dev-up.test.mjs` exercises profile selection,
@@ -350,6 +356,9 @@ newly written external key if a later OpenShell readiness step fails.
   selects the Kubernetes-only real-cluster proof.
 - `OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`
   selects the Compose-backed real-cluster proof.
+- `OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs`
+  selects the [real launcher cases](../../testing/keycloak.md#local-launcher-coverage),
+  including Keycloak login, persistence and failure cleanup.
 - A successful startup does not prove Agent creation, model credentials, or a
   model turn. Follow the owning runtime integration procedure for those claims.
 
@@ -369,7 +378,12 @@ newly written external key if a later OpenShell readiness step fails.
 
 - 2026-10-08 15:23: Reconciled current Docker preflight behavior with failed exclusive-output cleanup and clarified tool and image ownership. (authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14 - 3cffa93e76aedec4b2f35d14f9824b4531640449)
 
+- 2026-10-08 09:30: Trimmed repeated startup detail after integration. (authoring-run/de31a6a4-b02f-464c-8652-662a7b152fe2 - 9506de602a55f57bf19fa02ba0c7b844aa5a6649)
+
+- 2026-10-07 23:31: Documented optional Keycloak startup, identity attachment and cleanup. (authoring-run/aaa97aa0-d766-4366-af99-089d183c088a - c14b315969527a4e1f3fc3bd525e54d2ed5ec030)
+
 - 2026-10-06 17:46: Remove newly created exclusive outputs after file-write failures. (authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744 - 6508695f267e1441bf5a797b9710965f9b10990a)
+
 - 2026-10-05 16:01: Rejected interrupted Docker response streams in the request owner. (authoring-run/91705365-6496-4de8-943f-15c1ba105410 - 9b5a60467022d815d1259ff30d3ed64657657247)
 
 - 2026-10-05 14:02: Matched the API and initializer localhost auth origin acceptance. (authoring-run/cb5a7445-804a-48ad-8c35-118ae9f417b1 - 91e316e7a559f5a09884262755f8fe2a9b655d72)

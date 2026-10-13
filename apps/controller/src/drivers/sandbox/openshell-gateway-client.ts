@@ -630,6 +630,15 @@ function profileDiagnosticsFailure(response: RecordValue, operation: string): vo
 }
 
 const MAX_SANDBOX_LOG_LINES = 2000;
+/**
+ * The largest response message the client accepts, after decompression: the grpc-js
+ * default, pinned because it is what bounds `GetSandboxLogs`. OpenShell does not limit
+ * a log line's length, so a read (up to 2000 lines; OCC asks for at most 1000) is
+ * buffered whole before OCC withholds oversized lines. A larger response fails the
+ * read with `RESOURCE_EXHAUSTED` instead of being cut.
+ * grpc-js has no per-call limit, and every other RPC already had this one.
+ */
+const MAX_RECEIVE_MESSAGE_BYTES = 4 * 1024 * 1024;
 
 /** RFC 3339 with up to nanosecond precision to a protobuf Timestamp. */
 function timestampMessage(value: string): { seconds: string; nanos: number } {
@@ -1901,7 +1910,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
     return {
       grpc,
-      client: new OpenShell(endpoint.target, credentials) as unknown as OpenShellGrpcClient,
+      client: new OpenShell(endpoint.target, credentials, {
+        "grpc.max_receive_message_length": MAX_RECEIVE_MESSAGE_BYTES,
+      }) as unknown as OpenShellGrpcClient,
     };
   }
 }
