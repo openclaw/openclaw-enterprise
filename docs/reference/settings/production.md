@@ -143,7 +143,10 @@ reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs ca
 link-local exception, so keep them narrow.
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
-return `403`. Failed password sign-ins have per-email limits only: browsers behind
+return `403` on API calls (sign-in still works), and the API logs
+`authentication.forwarded-refused-warning` at most once a minute: code
+`TRUSTED_PROXY_NOT_CONFIGURED`, or `TRUSTED_PROXY_PEER_UNTRUSTED` when the sending
+peer is outside `api.trustedProxy.cidrs`. Failed password sign-ins have per-email limits only: browsers behind
 a proxy share its address. With GitHub, Google or OIDC, start, callback, and result
 key on browser cookies; start has only an active cap and the 1,000-pending-attempt
 cap. Startup logs `authentication.sign-in-limit-warning`; Helm notes and profile

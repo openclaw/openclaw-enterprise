@@ -1678,6 +1678,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   });
 
+  // A proxy that adds forwarded headers, with api.trustedProxy unset or not covering it,
+  // makes every API call fail with 403 while sign-in still works. Tell the operator why, at
+  // most once a minute; the record names the cause only, never an address.
+  let forwardedRefusalWarnedAt: number | undefined;
+  function warnForwardedRefusal(): void {
+    const now = performance.now();
+    if (forwardedRefusalWarnedAt !== undefined && now - forwardedRefusalWarnedAt < 60_000) {
+      return;
+    }
+    forwardedRefusalWarnedAt = now;
+    options.logger?.warn({
+      event: "authentication.forwarded-refused-warning",
+      code:
+        options.trustedProxies === undefined
+          ? "TRUSTED_PROXY_NOT_CONFIGURED"
+          : "TRUSTED_PROXY_PEER_UNTRUSTED",
+    });
+  }
+
   async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
@@ -1742,6 +1761,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.headers).some(
         (name) => name === "forwarded" || name === "x-real-ip" || name.startsWith("x-forwarded-"),
       );
+    if (forwarded && !development.enabled) {
+      warnForwardedRefusal();
+    }
     if (
       forwarded ||
       (development.enabled &&
@@ -1754,7 +1776,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         "FORBIDDEN",
         development.enabled
           ? "Development admission is restricted to direct loopback requests."
-          : "Production admission requires a direct request.",
+          : "Production admission requires a direct request or forwarded headers from a configured trusted proxy.",
       );
     }
 

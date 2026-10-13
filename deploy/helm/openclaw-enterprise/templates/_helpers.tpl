@@ -748,6 +748,12 @@ capabilities:
 {{/*
 Install and upgrade notice for api.trustedProxy. It warns rather than fails: installs whose
 API sees each client's own address (for example, behind a source-preserving NLB) are valid.
+Re-checked 2026-10-13 before making it a refusal: an HTTP proxy without a trusted proxy is
+already refused at runtime (every API call is 403 and the API logs
+authentication.forwarded-refused-warning); a TCP proxy that hides client addresses cannot be
+seen by the chart or the API; and forcing a value there leads operators to list the TCP proxy
+as trusted, which keys the address limits on one shared address, so a few failed sign-ins
+limit every user.
 */}}
 {{- define "openclaw.trustedProxy.notice" -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
@@ -760,7 +766,8 @@ WARNING: api.trustedProxy is not set. With GitHub, Google or OIDC sign-in, faile
 password sign-ins are then limited per email only, and external sign-in
 starts have no per-client limit, because every browser behind a proxy shares its
 address. Set api.trustedProxy unless the API sees each client's own address, as
-behind a Network Load Balancer that preserves source addresses.
+behind a Network Load Balancer that preserves source addresses. Behind an HTTP
+proxy, API calls fail with 403 until it is set.
 {{- else -}}
 NOTE: api.trustedProxy is not set, so failed password sign-ins are limited per
 email only. Set api.trustedProxy when a proxy fronts the API to add the
