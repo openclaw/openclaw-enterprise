@@ -18,8 +18,8 @@ real Installation.
 **What breaks.** Profile preflight refuses an uppercase letter in the repository
 path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
 which Kubernetes refused to pull; an uppercase registry host or tag still
-passes. Preflight, the chart and API startup also refuse any `@` before the
-`auth.baseUrl` host (`https://@host`), which Node silently dropped, and
+passes. Preflight, the chart, API startup and the bootstrap Job also refuse any
+`@` before the `auth.baseUrl` host (`https://@host`), which Node silently dropped, and
 preflight refuses it in `controlPlane.observabilityUrl`.
 
 **Who is affected.** Profiles or values that use those spellings.

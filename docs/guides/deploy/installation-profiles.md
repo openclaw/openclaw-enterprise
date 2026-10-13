@@ -97,8 +97,8 @@ release-name syntax and be at most 53 characters. Image references in
 must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
 casing fails preflight without emitting deployable files. The controller and repository
 references also follow the chart's rule: a letter or digit first,
-then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest. Kubernetes refuses
-an uppercase repository path, so only the registry host and tag may use uppercase. `controlPlane.adminEmail`
+then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest. In all three, only
+the registry host and tag may use uppercase. `controlPlane.adminEmail`
 must be an administrator email the bootstrap Job accepts after trim and lowercase:
 one `@` and a dotted domain.
 
