@@ -740,6 +740,8 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
     ["ibm", "acme/platform"],
     ["İstanbul", "acme/istanbul"],
     ["İSTANBUL", "acme/istanbul"],
+    // The same İ typed as I and a combining dot above.
+    ["I\u0307stanbul", "acme/istanbul"],
     ["ıstanbul", "acme/istanbul"],
     ["Ibm", "acme/platform"],
   ]) {

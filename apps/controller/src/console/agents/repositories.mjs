@@ -18,7 +18,7 @@ const DESCRIPTION_REFRESH_TIMEOUT = 30 * 60_000;
 // Turkish capital İ lowers to i and a combining dot above, so the dot is dropped, and the
 // dotless ı reads as i, so a query of İstanbul or ıstanbul finds istanbul (finding 1252).
 const searchCase = (value) =>
-  value.toLocaleLowerCase("en-US").replaceAll("i\u0307", "i").replaceAll("ı", "i");
+  value.toLocaleLowerCase("en-US").replaceAll("ı", "i").replaceAll("i\u0307", "i");
 
 function recentRepositories(key) {
   if (!key) {
