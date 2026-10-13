@@ -7,9 +7,8 @@ and use the suite-specific infrastructure below.
 ## Start a reusable development environment
 
 Use the [local Kubernetes OpenShell profile](../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
-for an ordinary OpenClaw Enterprise development stack. That profile starts the
-real control plane, Gateway, and operator Workspaces. It prepares the supported
-fail-closed Agent path but does not create an Agent.
+for a development control plane, Gateway, and operator Workspaces. It prepares
+the fail-closed path without creating an Agent.
 
 Create the private Kubernetes-only OpenShell `v0.1.3-pre.2` environment from the
 repository root:
@@ -22,14 +21,11 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The launcher uses Docker or Podman only to host k3d and build or import images.
-PostgreSQL, the OCE API and worker, and OpenShell Gateway run inside the cluster.
-It leaves the environment running and does not change the default kubeconfig or
-context. The generated OpenShell Backend uses a 30-second request deadline so a
-loaded local cluster can complete create-time mutations without an avoidable
-unknown outcome. Its disposable kubelet retains the imported immutable
-OpenShell images until teardown because later revisions cannot pull them. No
-model credential is needed for environment startup.
+Docker or Podman hosts k3d and builds/imports images; PostgreSQL, OCE and the
+OpenShell Gateway run in-cluster. The environment remains running without
+changing the default kubeconfig or context. A 30-second Backend deadline
+accommodates loaded clusters. The disposable kubelet retains imported immutable
+images until teardown. Startup needs no model credential.
 
 Stop the reusable environment before proving the setup and cleanup lifecycle in
 a separate fresh cluster:
@@ -53,10 +49,9 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-This case verifies the real Compose-backed control plane, the private Envoy
-NodePort and trust projection, the OpenShell Gateway NodePort, operator
-Workspace, and combined Compose and cluster cleanup. It uses the same
-disposable-cluster and no-model-turn boundary as the Kubernetes-only case.
+This verifies the Compose control plane, private Envoy routing and trust,
+OpenShell Gateway NodePort, operator Workspace, and combined cleanup. Like the
+Kubernetes-only case, it uses a disposable cluster without model turns.
 
 The OpenShell CI lane runs this lifecycle through `scripts/dev-up` and
 `scripts/dev-down` before its credentialed Sandbox case.
@@ -73,9 +68,8 @@ the absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` before every command to keep
 multiple checkouts separate. Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or
 `podman` when automatic engine selection is ambiguous.
 
-This launcher does not start a supported production Installation or an
-interactive OCC Agent. The credentialed compatibility experiment remains the
-separate real Sandbox suite below.
+This is not production qualification or an interactive Agent. Use the
+credentialed Sandbox suite below for model execution.
 
 ## OpenShell Sandbox
 
@@ -200,10 +194,9 @@ first browser session uses the dedicated-native profile without the Gateway
 receiving the Harness's model credential.
 
 The native `test` provisions two Agents sharing one credential source. Both
-read/write workspace files and complete new-session and retained-session model
-turns. A Gateway-issued setup and its signed device authority must work at A
-and fail at B. Auth-only probes use loopback-forwarded `/node`, independently
-of network policy; they never substitute for the actual Harness.
+perform workspace reads/writes and new/retained-session model turns. Setup and
+signed device authority must work at A and fail at B. Auth-only probes use
+loopback-forwarded `/node`; they prove neither network policy nor the Harness.
 
 An unused setup expires naturally after ten minutes; no clock, database or
 envelope tampering is permitted. A fresh setup remains usable. Revoking A's
@@ -277,16 +270,13 @@ The pinned Kubernetes driver chooses workload identity independently of
 supervisor probes with `TMPDIR=/tmp`, then the native process uses a private
 child under its revision runtime home. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
-for the current boundary. This source change alone does not establish live
+for the current boundary. This source change alone does not prove
 OpenShift admission, Landlock, enrollment, or model execution.
 
-Local `sandbox-driver-startup`, `controller-lifecycle`, and
-`postgres-platform-state` integration tests cover driver selection and Backend
-membership, revision lifecycle, and persistence. The
-`credential-source-occ`, `openshell-gateway-wire`, and `kubernetes-compute`
-conformance tests cover credential source admission, provider RPC encoding, and
-Compute's credential-source rendering. None of these exercises the real
-OpenShell tools.
+Local `sandbox-driver-startup`, `controller-lifecycle` and
+`postgres-platform-state` tests cover selection, lifecycle and persistence.
+`credential-source-occ`, `openshell-gateway-wire` and `kubernetes-compute` cover
+admission, RPC encoding and rendering—not real OpenShell execution.
 
 ### Development profile
 
@@ -319,8 +309,7 @@ This case proves development orchestration, the two real charts, Driver-owned
 operator resource reconciliation, Gateway Workspace creation, and the
 credential-source CLI and API path. The synthetic key proves no model
 authentication. It does not create an Agent or Sandbox; for the manual Agent
-walkthrough, see [Use a credential source on the local OpenShell profile](../guides/deploy/openshell-credential-sources.md). The
-The real Sandbox Driver case is the Agent-level proof for the ordinary
+walkthrough, see [Use a credential source on the local OpenShell profile](../guides/deploy/openshell-credential-sources.md). The real Sandbox Driver case is the Agent-level proof for the ordinary
 plugin-free dedicated Codex workflow.
 
 ## OpenShell test environment

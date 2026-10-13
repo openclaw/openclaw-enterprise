@@ -40,6 +40,7 @@ const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
 const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
+const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 function sandboxInstallation() {
   const configuration = installation();
@@ -261,7 +262,8 @@ function nativePreparationClient(context) {
       if (deployment === undefined) {
         throw { code: 404 };
       }
-      return structuredClone(deployment);
+      // Use the same decoder as KubernetesObjectApi.read, including nested SDK models.
+      return ObjectSerializer.deserialize(JSON.parse(JSON.stringify(deployment)), "V1Deployment");
     }
     return read(resource);
   };
@@ -272,7 +274,7 @@ function nativePreparationClient(context) {
       metadata: { ...resource.metadata, uid: "preparation-uid", generation: 1 },
       status: { availableReplicas: 1, observedGeneration: 1 },
     };
-    return structuredClone(deployment);
+    return ObjectSerializer.deserialize(JSON.parse(JSON.stringify(deployment)), "V1Deployment");
   };
   client.delete = async (resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
     assert.equal(resource.kind, "Deployment");
@@ -3002,8 +3004,44 @@ async function orphanedNativePreparation() {
   const resource = prepared[0];
   const deployment = await api.read(resource);
   const context = { ...fixture.context, revision };
-  return { driver, gateway, api, resource, deployment, context };
+  return { driver, gateway, api, resource, deployment, context, requirements };
 }
+
+test("OpenShell resumes an SDK-decoded preparer after losing its create response", async () => {
+  const { driver, gateway, api, resource, context, requirements } =
+    await orphanedNativePreparation();
+  api.create = async () => assert.fail("a retry must adopt the existing preparer");
+  let sandboxCreates = 0;
+  gateway.createSandbox = async (request) => {
+    await assert.rejects(api.read(resource), (error) => error.code === 404);
+    sandboxCreates++;
+    return { name: request.name, serviceUrls: {} };
+  };
+
+  // The original response was lost, not the Deployment. Reconciliation must verify
+  // its SDK-decoded content, finish preparation, and remove the writer before launch.
+  const sandbox = await driver.provisionHarness({ ...context, requirements });
+  assert.equal(sandbox.revisionId, context.revision.id);
+  assert.equal(sandboxCreates, 1);
+  assert.equal(gateway.providers.size, 1);
+});
+
+test("OpenShell preparer adoption still rejects changed SDK-decoded security content", async () => {
+  const { driver, gateway, api, resource, deployment, context, requirements } =
+    await orphanedNativePreparation();
+  deployment.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation = true;
+  const read = api.read;
+  api.read = async (target) => (target.kind === "Deployment" ? deployment : read(target));
+  api.create = async () => assert.fail("a foreign preparer must not be replaced");
+  api.delete = async () => assert.fail("a foreign preparer must not be deleted");
+  gateway.createSandbox = async () => assert.fail("a foreign preparer must prevent launch");
+
+  await assert.rejects(
+    driver.provisionHarness({ ...context, requirements }),
+    /foreign workspace preparation Deployment/,
+  );
+  assert.equal((await api.read(resource)).metadata.uid, deployment.metadata.uid);
+});
 
 test("OpenShell revision cleanup removes an orphaned preparer before its provider and replays safely", async () => {
   const { driver, gateway, api, resource, context } = await orphanedNativePreparation();

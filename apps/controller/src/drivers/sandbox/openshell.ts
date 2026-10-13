@@ -1522,7 +1522,9 @@ async function prepareNativeWorkspace(
   if (existing === undefined) {
     existing = await api.create<V1Deployment>(resource);
   } else {
-    const observed = asRecord(existing.spec?.template?.spec);
+    // Kubernetes reads contain SDK model instances and unset optional fields.
+    // Compare their JSON content without weakening the ownership or spec checks.
+    const observed = asRecord(JSON.parse(JSON.stringify(existing.spec?.template?.spec ?? {})));
     const expected = asRecord(podSpec)!;
     const observedContainer = asRecord((observed?.containers as unknown[])?.[0]);
     const expectedContainer = asRecord((expected.containers as unknown[])[0]);
