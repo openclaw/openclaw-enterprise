@@ -275,14 +275,14 @@ State on 2026-10-13, all on `main`:
   one online restart after review confirmed the secret is read only at startup.
 - **Forwarded-request diagnosis: #2287 (`41ebd3826`)**, logged as
   `authentication.forwarded-refused-warning`.
-- **Local Keycloak profile: #1137 (`6becd3a8e`) and #1138 (`b1695fd2a`).** Full Integration
-  `dev-up-k3d` passed 6 of 6, with no skips and cleanup passed, at final #1138 head
-  `4f0bd9b3c`
-  ([run 38370119656](https://github.com/openclaw/openclaw-enterprise/actions/runs/38370119656)).
+- **Local Keycloak profile: #1137 (`6becd3a8e`) and #1138 (`b1695fd2a`).** Follow-up
+  #2356 tested administrator mutations and revoked-session denial. At its head `0f2bde92`,
+  `dev-up-k3d` passed all six cases, without skips, and cleanup passed
+  ([run 38455655121](https://github.com/openclaw/openclaw-enterprise/actions/runs/38455655121)).
   On macOS 26.7.1 ARM64, Docker Desktop 4.94.0 ran `0232c95a`. After user-approved hosts
   and CA trust setup, an agent verified Alice’s Keycloak login and administrator recovery login
   in fresh Chrome 156 Incognito. Both origins showed secure connections, without warning
-  bypasses. The stack remains available for review.
+  bypasses.
 - **Private CA: #1774 (`cb63275da`).** The reported production-shaped check covers 9 of 9
   cases, including a negative control, both rotation paths and Agent Pods receiving only the
   Gateway CA; this RFC has no reviewer-accessible recording to verify that report.
