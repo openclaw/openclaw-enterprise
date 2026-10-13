@@ -4099,7 +4099,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        boundary: "credential_gateway",
+        boundary: "credential_refresh",
         reason: error.reason,
         failure: error.failure,
       });

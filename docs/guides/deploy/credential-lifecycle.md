@@ -100,6 +100,11 @@ access-token retrieval and external-token attachments, and Sandbox token injecti
 the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 There is no installation opt-in flag.
 
+The initial Codex exchange runs in the OCE API Pods. If sign-in reports
+`auth.openai.com` unreachable, check API Pod HTTPS egress to that issuer (Helm
+`api.modelDiscoveryCidrs`) and retry. OpenShell's gateway needs its own issuer
+access for subsequent refresh.
+
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.
 2. Search and select plugins using the resulting credential source, then create

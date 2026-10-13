@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";
 
 export const CODEX_OAUTH_TYPE = "codex-oauth";
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -59,34 +60,63 @@ async function responseRecord(response: Response): Promise<Record<string, unknow
   throw new Error("Codex OAuth returned an invalid response.");
 }
 
+// A rejected fetch never received HTTP: retain only a bounded failure class, not
+// messages, addresses, provider text, or the nested transport error.
+function unreachable(error: unknown): DeviceAuthorizationStartError {
+  if (error instanceof Error && error.name === "AbortError") {
+    return new DeviceAuthorizationStartError("unavailable", "AbortError");
+  }
+  const cause =
+    error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
+  let failure = "fetch_failed";
+  if (typeof cause?.code === "string") {
+    failure = cause.code;
+  } else if (error instanceof Error && error.name !== "TypeError") {
+    failure = error.name;
+  }
+  return new DeviceAuthorizationStartError("unreachable", failure);
+}
+
 export async function startCodexDeviceAuthorization(
   sourceId: string,
   signal: AbortSignal,
 ): Promise<CredentialSourceDeviceAuthorization> {
-  const response = await responseRecord(
-    await fetch("https://auth.openai.com/api/accounts/deviceauth/usercode", {
+  let reply: Response;
+  try {
+    reply = await fetch("https://auth.openai.com/api/accounts/deviceauth/usercode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_id: CODEX_OAUTH_CLIENT_ID }),
       signal,
-    }),
-  );
-  const deviceAuthId = required(response.device_auth_id);
-  const userCode = required(response.user_code);
-  const interval = Number(response.interval ?? 5);
-  return {
-    verificationUrl: "https://auth.openai.com/codex/device",
-    userCode,
-    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-    intervalSeconds: Number.isFinite(interval) ? Math.max(1, interval) : 5,
-    privateState: JSON.stringify({
-      sourceId,
-      deviceAuthId,
+    });
+  } catch (error) {
+    throw unreachable(error);
+  }
+  if (!reply.ok) {
+    await reply.body?.cancel().catch(() => {});
+    throw new DeviceAuthorizationStartError("unavailable", `HTTP_${reply.status}`);
+  }
+  try {
+    const response = await responseRecord(reply);
+    const deviceAuthId = required(response.device_auth_id);
+    const userCode = required(response.user_code);
+    const interval = Number(response.interval ?? 5);
+    return {
+      verificationUrl: "https://auth.openai.com/codex/device",
       userCode,
-      configureRequestId: randomUUID(),
-      rotateRequestId: randomUUID(),
-    }),
-  };
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      intervalSeconds: Number.isFinite(interval) ? Math.max(1, interval) : 5,
+      privateState: JSON.stringify({
+        sourceId,
+        deviceAuthId,
+        userCode,
+        configureRequestId: randomUUID(),
+        rotateRequestId: randomUUID(),
+      }),
+    };
+  } catch {
+    throw new DeviceAuthorizationStartError("unavailable", "invalid_response");
+  }
 }
 
 export function codexDeviceAuthorizationState(sourceId: string, privateState: string) {

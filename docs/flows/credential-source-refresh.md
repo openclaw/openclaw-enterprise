@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-13
-last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
+last_updated_session: authoring-run/0754f915-95b1-457f-b261-5b1474f1dfe1
 ---
 
 # Credential source refresh Flow
@@ -95,6 +95,15 @@ the login-session Secret. Compare-and-swap permits one poll; OCC rechecks scope
 and both Driver selections before accepting completion. An uncertain exchange
 closes the handle without removing the source or replaying its grant.
 
+`apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
+starts the issuer request from the API Pods. It preserves the existing
+`DeviceAuthorizationStartError` distinction: connection failure or timeout is
+`unreachable`; HTTP rejection, malformed replies, and `AbortError` are
+`unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
+`auth.openai.com` and API Pod egress only for `unreachable`. The
+`device_authorization.start_failed` warning keeps the Refresh boundary and bounded
+failure class, never provider messages, response bodies, or nested causes.
+
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
 performs the Codex exchange, configures OpenShell with refresh material, and
 stores trusted account metadata. Before acquiring a code, its issuer polling
@@ -186,6 +195,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 19:42: Restore issuer-connectivity diagnostics at the Refresh-owned device-login boundary. (authoring-run/0754f915-95b1-457f-b261-5b1474f1dfe1 - 70431971c6b1e9157634d36a9d911480ad6d833f)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 

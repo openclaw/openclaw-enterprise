@@ -576,7 +576,7 @@ test("missing login-session fencing refuses device authorization before Gateway 
   assert.equal(fixture.gateway.calls.length, before);
 });
 
-test("a failed Gateway login start retains a manageable source and sanitizes the failure", async (t) => {
+test("a failed Refresh login start retains a manageable source and sanitizes the failure", async (t) => {
   const lines = [];
   const logger = createOccLogger({
     component: "occ-api",
@@ -603,6 +603,9 @@ test("a failed Gateway login start retains a manageable source and sanitizes the
   const warning = lines.find((line) => line.event === "device_authorization.start_failed");
   assert.equal(warning?.severity, "WARN");
   assert.equal(warning.reason, "unavailable");
+  assert.equal(warning.failure, "unclassified");
+  assert.equal(warning.boundary, "credential_refresh");
+  assert.equal(response.body.error.message, "Device login could not start. Try again.");
   assert.equal(JSON.stringify(lines).includes(DEVICE_ACCESS_TOKEN), false);
   assert.deepEqual(
     (await fixture.request("GET", `/namespaces/${fixture.namespace.id}/secrets`)).data,

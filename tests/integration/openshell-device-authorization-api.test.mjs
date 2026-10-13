@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
@@ -15,6 +16,22 @@ function jwt(payload) {
 
 test("Console device login completes through the paired OpenShell Refresh Driver without exposing its grant", async (t) => {
   const clock = createControlledClock();
+  const logs = [];
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "info",
+    destination: {
+      write(chunk) {
+        logs.push(
+          ...String(chunk)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        );
+        return true;
+      },
+    },
+  });
   const providers = new Map();
   const operations = [];
   const expirationTime = new Date(Date.now() + 3_600_000).toISOString();
@@ -103,6 +120,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   const fixture = await createConsoleAppFixture(t, {
     computeDriver: compute,
     secretDriver: secrets,
+    logger,
     now: () => new Date(clock.wallNow()),
   });
   await fixture.bootstrap();
@@ -115,6 +133,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   let exchanges = 0;
   let polls = 0;
   let loseExchangeResponse = false;
+  let startFailure;
   const pollFailures = [
     new Response(null, { status: 429 }),
     new Response(null, { status: 503 }),
@@ -126,6 +145,12 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     }
     assert.equal(init.method, "POST");
     if (url === "https://auth.openai.com/api/accounts/deviceauth/usercode") {
+      if (startFailure instanceof Error) {
+        throw startFailure;
+      }
+      if (startFailure !== undefined) {
+        return startFailure;
+      }
       return Response.json({
         device_auth_id: "synthetic-device-handle",
         user_code: "TEST-CODE",
@@ -279,4 +304,47 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       "responses and session storage must contain no credential material",
     );
   }
+  // The actual Refresh-owned issuer request must distinguish blocked API egress from
+  // a reachable service refusing login. Provider text and nested causes stay private.
+  const privateText = "private-device-start-response";
+  const connectionCause = Object.assign(new Error(`connect refused ${privateText}`), {
+    code: "ECONNREFUSED",
+  });
+  const failures = [
+    [new TypeError("fetch failed", { cause: connectionCause }), "unreachable", "ECONNREFUSED"],
+    [new DOMException(privateText, "TimeoutError"), "unreachable", "TimeoutError"],
+    [new DOMException(privateText, "AbortError"), "unavailable", "AbortError"],
+    [Response.json({ error: privateText }, { status: 503 }), "unavailable", "HTTP_503"],
+    [new Response(privateText), "unavailable", "invalid_response"],
+  ];
+  for (const [failure, reason, failureClass] of failures) {
+    startFailure = failure;
+    const warningsBefore = logs.filter(
+      (line) => line.event === "device_authorization.start_failed",
+    ).length;
+    const rejected = await fixture.request("POST", path, { body: { harnessId: "codex" } });
+    assert.equal(rejected.status, 503, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    if (reason === "unreachable") {
+      assert.match(
+        rejected.body.error.message,
+        /auth\.openai\.com.*HTTPS egress.*API Pods.*api\.modelDiscoveryCidrs/,
+      );
+    } else {
+      assert.equal(rejected.body.error.message, "Device login could not start. Try again.");
+    }
+    const warnings = logs.filter((line) => line.event === "device_authorization.start_failed");
+    assert.equal(warnings.length, warningsBefore + 1);
+    assert.deepEqual(
+      {
+        severity: warnings.at(-1).severity,
+        boundary: warnings.at(-1).boundary,
+        reason: warnings.at(-1).reason,
+        failure: warnings.at(-1).failure,
+      },
+      { severity: "WARN", boundary: "credential_refresh", reason, failure: failureClass },
+    );
+    assert.equal(JSON.stringify([rejected.body, logs]).includes(privateText), false);
+  }
+  assert.equal(exchanges, 2, "failed starts must never acquire or redeem an authorization code");
 });
