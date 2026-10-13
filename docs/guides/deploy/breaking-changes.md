@@ -28,6 +28,23 @@ still start.
 **Steps.** Write the host as four decimal octets (`127.0.0.1` for
 `0177.0.0.1`) and restart.
 
+## 2026-10-13: runtime images follow the control-plane image rule
+
+**What breaks.** Profile preflight refuses a `runtime.image` that does not start
+with a letter or digit, or that contains a character other than letters, digits,
+`.`, `_`, `:`, `/`, or `-`, before `@sha256:` and 64 lowercase hexadecimal
+characters. Helm already refuses that reference on `images.gateway` and
+`images.agent`.
+
+**Who is affected.** Profiles whose runtime reference uses another character,
+such as `+`. An ordinary registry reference with a lowercase SHA-256 digest
+still renders.
+
+**How to tell.** Preflight reports `runtime.image must be an immutable image
+reference with a SHA-256 digest` and writes no deployment files.
+
+**Steps.** Use the runtime image's registry reference with its digest.
+
 ## 2026-10-13: IP database hosts are verified against the certificate
 
 **What breaks.** A PostgreSQL URL whose host is an IP literal and whose TLS

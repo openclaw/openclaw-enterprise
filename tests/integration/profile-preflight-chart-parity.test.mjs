@@ -680,6 +680,29 @@ fieldParity("controller image references get the same verdict from preflight and
   chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
 });
 
+fieldParity("runtime image references get the same verdict from preflight and the chart", {
+  cases: [
+    ...controlPlaneImageCases,
+    ["registry.example.invalid/openclaw-enterprise/runtime", true],
+    ["registry.example.invalid/openclaw-enterprise/runtime+extra", false],
+  ],
+  label: (name) => name,
+  controlPlane: () => ({}),
+  extraInput: (name) => ({
+    runtime: {
+      ...input({}).runtime,
+      image: `${name}@sha256:${"b".repeat(64)}`,
+    },
+  }),
+  values: (name) => ({
+    images: {
+      gateway: `${name}@sha256:${"b".repeat(64)}`,
+      agent: `${name}@sha256:${"b".repeat(64)}`,
+    },
+  }),
+  chartError: /images\.(gateway|agent) must be an approved immutable SHA-256 image reference/,
+});
+
 fieldParity(
   "repository credential image references get the same verdict from preflight and the chart",
   {

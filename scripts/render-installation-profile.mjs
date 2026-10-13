@@ -38,9 +38,10 @@ const secretKeyRule = {
   validate: isKubernetesSecretKey,
   description: "a Kubernetes Secret key of at most 253 characters",
 };
-const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
-// The chart's rule for control-plane images: the controller (which also feeds
-// prepare-bootstrap-volume) and repository credentials.
+// The chart's rule for every images.* value, including the controller (which
+// also feeds prepare-bootstrap-volume), and for repository credentials.
+// runtime.image uses it too: Helm applies the same pattern to images.gateway
+// and images.agent.
 const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
@@ -1349,7 +1350,7 @@ function buildRendered(profile, parsed, diagnostics) {
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
-    pattern: digestImage,
+    pattern: controlPlaneDigestImage,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
