@@ -1922,6 +1922,48 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
     [{ tts: { providers: { microsoft: { proxy: userinfo } } } }, "/tts/providers/microsoft/proxy"],
     [
       {
+        agents: {
+          entries: {
+            main: {
+              tts: { personas: { calm: { providers: { microsoft: { proxy: userinfo } } } } },
+            },
+          },
+        },
+      },
+      "/agents/entries/main/tts/personas/calm/providers/microsoft/proxy",
+    ],
+    [
+      {
+        channels: {
+          discord: {
+            accounts: {
+              ops: { voice: { tts: { providers: { microsoft: { proxy: userinfo } } } } },
+            },
+          },
+        },
+      },
+      "/channels/discord/accounts/ops/voice/tts/providers/microsoft/proxy",
+    ],
+    [
+      { talk: { providers: { microsoft: { proxy: userinfo } } } },
+      "/talk/providers/microsoft/proxy",
+    ],
+    [
+      {
+        plugins: {
+          entries: {
+            acpx: {
+              config: {
+                mcpServers: { docs: { command: "docs-mcp", env: { HTTPS_PROXY: userinfo } } },
+              },
+            },
+          },
+        },
+      },
+      "/plugins/entries/acpx/config/mcpServers/docs/env/HTTPS_PROXY",
+    ],
+    [
+      {
         plugins: {
           entries: {
             "voice-call": {
@@ -2108,6 +2150,9 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     [{ baseUrl: "https:\\models.example.test" }, baseUrl()],
     [{ baseUrl: "https:${MODEL_HOST}/v1" }, baseUrl()],
     [{ models: [{ id: "m", baseUrl: "http:/${MODEL_HOST}" }] }, baseUrl("models/0/baseUrl")],
+    // The runtime renders a fallback when its variable is unset.
+    [{ baseUrl: "${MODEL_URL:-https:/models.example.test/v1}" }, baseUrl()],
+    [{ baseUrl: "https://${MODEL_HOST:-}/v1" }, baseUrl()],
   ]) {
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values: gateway(settings) },
@@ -2175,6 +2220,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     "http://localhost:${MODEL_PORT}/v1",
     "https://${MODEL_HOST}/v1",
     "${MODEL_BASE_URL}/v1",
+    "${MODEL_URL:-https://models.example.test}/v1",
   ]) {
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values: gateway({ baseUrl: value }) },

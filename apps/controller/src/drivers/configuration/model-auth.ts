@@ -41,7 +41,7 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
  * channel proxies, MCP server URLs, proxy environment variables (also an MCP server's), Codex's
- * network proxy and speech provider proxies.
+ * network proxy and speech and Talk provider proxies.
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -200,50 +200,57 @@ export function validateModelCredentialReferences(
         environments.push([[...at, "servers", server, "env"], asRecord(asRecord(settings)?.env)]);
       }
     }
-    // The proxy URLs plugins read (finding 1259): Codex's network proxy, and a speech provider's
-    // `proxy` (Microsoft's) in every TTS block, voice-call's and its numbers' included.
+    // The proxy URLs plugins read (finding 1259): Codex's network proxy, the acpx plugin's MCP
+    // server environments, and a speech provider's `proxy` (Microsoft's) in every TTS block and
+    // Talk provider.
     const plugins = asRecord(asRecord(values.plugins)?.entries);
-    const codex = ["plugins", "entries", "codex", "config", "appServer", "networkProxy"];
-    const networkProxy = codex
-      .slice(2)
-      .reduce<Record<string, unknown> | undefined>(
-        (parent, key) => asRecord(parent?.[key]),
-        plugins,
-      );
+    const get = (parent: unknown, keys: readonly string[]): unknown =>
+      keys.reduce((value, key) => asRecord(value)?.[key], parent);
+    const at = (parent: unknown, keys: readonly string[]) => asRecord(get(parent, keys));
+    const codex = ["codex", "config", "appServer", "networkProxy"];
     for (const field of ["proxyUrl", "socksUrl"]) {
-      refuseUrlUserinfo([...codex, field], networkProxy?.[field]);
+      refuseUrlUserinfo(["plugins", "entries", ...codex, field], get(plugins, [...codex, field]));
     }
+    const acpx = ["acpx", "config", "mcpServers"];
+    for (const [server, settings] of Object.entries(at(plugins, acpx) ?? {})) {
+      environments.push([
+        ["plugins", "entries", ...acpx, server, "env"],
+        asRecord(asRecord(settings)?.env),
+      ]);
+    }
+    // TTS blocks: the Gateway's, each Agent's, Discord voice's (and its accounts'), voice-call's
+    // and its numbers'. Each holds `providers` and personas that hold them too.
+    const keyed = (path: readonly string[], each: readonly string[]): [SettingPath, unknown][] =>
+      Object.entries(at(values, path) ?? {}).map(([key, settings]) => [
+        [...path, key, ...each],
+        get(settings, each),
+      ]);
     const voiceCall = ["plugins", "entries", "voice-call", "config"];
-    const voiceCallConfig = asRecord(asRecord(plugins?.["voice-call"])?.config);
-    const agents = asRecord(values.agents)?.list;
-    const speech: [SettingPath, unknown][] = [
+    const discord = ["channels", "discord"];
+    const tts: [SettingPath, unknown][] = [
       [["tts"], values.tts],
-      ...(Array.isArray(agents) ? agents : []).map((agent, index): [SettingPath, unknown] => [
-        ["agents", "list", index, "tts"],
-        asRecord(agent)?.tts,
-      ]),
-      [[...voiceCall, "tts"], voiceCallConfig?.tts],
-      ...Object.entries(asRecord(voiceCallConfig?.numbers) ?? {}).map(
-        ([number, route]): [SettingPath, unknown] => [
-          [...voiceCall, "numbers", number, "tts"],
-          asRecord(route)?.tts,
-        ],
-      ),
+      ...keyed(["agents", "entries"], ["tts"]),
+      [[...discord, "voice", "tts"], get(values, [...discord, "voice", "tts"])],
+      ...keyed([...discord, "accounts"], ["voice", "tts"]),
+      [[...voiceCall, "tts"], get(values, [...voiceCall, "tts"])],
+      ...keyed([...voiceCall, "numbers"], ["tts"]),
     ];
-    for (const [at, tts] of speech) {
-      const blocks: [SettingPath, Record<string, unknown> | undefined][] = [
-        [at, asRecord(tts)],
-        ...Object.entries(asRecord(asRecord(tts)?.personas) ?? {}).map(
-          ([persona, settings]): [SettingPath, Record<string, unknown> | undefined] => [
-            [...at, "personas", persona],
-            asRecord(settings),
+    const providerBlocks: [SettingPath, unknown][] = [
+      ...tts.flatMap(([path, block]): [SettingPath, unknown][] => [
+        [path, block],
+        ...Object.entries(at(block, ["personas"]) ?? {}).map(
+          ([persona, settings]): [SettingPath, unknown] => [
+            [...path, "personas", persona],
+            settings,
           ],
         ),
-      ];
-      for (const [path, block] of blocks) {
-        for (const [provider, settings] of Object.entries(asRecord(block?.providers) ?? {})) {
-          refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
-        }
+      ]),
+      [["talk"], values.talk],
+      [["talk", "realtime"], get(values, ["talk", "realtime"])],
+    ];
+    for (const [path, block] of providerBlocks) {
+      for (const [provider, settings] of Object.entries(at(block, ["providers"]) ?? {})) {
+        refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
       }
     }
     for (const [prefix, settings] of environments) {

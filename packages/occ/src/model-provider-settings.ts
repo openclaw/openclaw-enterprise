@@ -65,9 +65,10 @@ const isRuntimeUrl = (value: unknown): boolean => {
 
 // Whether a baseUrl that holds an environment reference writes exactly two slashes after a literal
 // http(s) scheme, as `isRuntimeUrl` requires (finding 1259): `https:${HOST}/v1` is refused, though
-// the URL parser would read it filled. The runtime fills the reference before it parses the URL,
-// so the text after the slashes is its to check. `literals` is the text around the references
-// and any Preset variables.
+// the URL parser would read it filled, and so is a fallback that renders `https:/v1` or
+// `https:///v1`. The runtime fills the reference before it parses the URL, so the text after the
+// slashes is its to check. `literals` is one rendering of the text around the references and any
+// Preset variables.
 function writesSchemeSlashes(literals: readonly string[]): boolean {
   const [first = ""] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
   const scheme = /^[\0- ]*https?:/i.exec(first);
@@ -212,13 +213,18 @@ function splitEnvironmentReferences(
  * (`https:{{ vars.host }}/v1@beta`).
  */
 export function urlHoldsUserinfo(value: string, literals: readonly string[] = [value]): boolean {
-  // Every reference set, every fallback rendered, and each fallback alone with the rest set.
+  return environmentRenderings(literals).some(holdsUserinfo);
+}
+
+// `literals` as the runtime may render its environment references: every reference set, every
+// fallback rendered, and each fallback alone with the rest set.
+function environmentRenderings(literals: readonly string[]): string[][] {
   const { fallbacks } = splitEnvironmentReferences(literals, () => false);
   return [
     () => false,
     () => true,
     ...Array.from({ length: fallbacks }, (_, only) => (index: number) => index === only),
-  ].some((fallback) => holdsUserinfo(splitEnvironmentReferences(literals, fallback)));
+  ].map((fallback) => splitEnvironmentReferences(literals, fallback));
 }
 
 function holdsUserinfo(literals: readonly string[]): boolean {
@@ -304,9 +310,7 @@ function validateSettings(
     const literals = unresolved([...path, "baseUrl"]);
     if (
       environment(baseUrl)
-        ? !writesSchemeSlashes(
-            splitEnvironmentReferences(literals ?? [String(baseUrl)], () => false),
-          )
+        ? !environmentRenderings(literals ?? [String(baseUrl)]).every(writesSchemeSlashes)
         : literals === undefined
           ? !isRuntimeUrl(baseUrl)
           : !fillsAsRuntimeUrl(literals)
