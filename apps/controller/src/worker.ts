@@ -59,6 +59,7 @@ import {
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
   repositoryCleanupRevisionId,
+  revisionAdmittedBeforeWork,
   isRepositoryRuntimeRetirementWork,
   provisioningEffectReceipt as provisioningEffectReceiptForRecord,
   provisioningPendingEffect,
@@ -2020,7 +2021,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if (active !== undefined && Date.parse(active.createdAt) > claim.createdAt.getTime()) {
+      if (active !== undefined && !revisionAdmittedBeforeWork(active, claim)) {
         await this.finalizeAgentStop(claim, { outcome: "success", code: "STOP_SUPERSEDED", agent });
         return;
       }
@@ -2045,7 +2046,7 @@ export class ControllerWorker {
           (revision) =>
             revision.id !== active?.id &&
             ownedByCompute(revision) &&
-            Date.parse(revision.createdAt) <= claim.createdAt.getTime(),
+            revisionAdmittedBeforeWork(revision, claim),
         ),
       ];
       if (
@@ -4327,10 +4328,7 @@ export class ControllerWorker {
           const revision = await this.state.read((view) =>
             view.revisions.findRevision(attempt.namespaceId, attempt.agentId, attempt.revisionId),
           );
-          if (
-            revision !== undefined &&
-            Date.parse(revision.createdAt) <= claim.createdAt.getTime()
-          ) {
+          if (revision !== undefined && revisionAdmittedBeforeWork(revision, claim)) {
             await this.closeRevisionCredentials(claim, revision);
           }
         }

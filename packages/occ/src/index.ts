@@ -474,6 +474,7 @@ export {
   CREDENTIAL_WITHDRAWAL_TARGET,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
+  revisionAdmittedBeforeWork,
   runtimeFailureCause,
   validateRuntimeFailureEvidence,
   type DeploymentStatus,
@@ -6968,6 +6969,7 @@ export class OpenClawController {
           }
         }
       }
+      // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
           id: this.nextIdentifier("agent_revision"),
