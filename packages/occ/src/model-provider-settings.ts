@@ -51,10 +51,29 @@ const holdsEnvironmentReference = (value: unknown): boolean =>
 // Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;
 
+// An http(s) URL must write exactly two slashes after its scheme (a backslash reads as a slash).
+// The URL parser treats them as optional: `https:/v1` and `https:v1` parse with `v1` as the host
+// (finding 1259), and an empty authority (`https:///v1`, as an empty Preset variable for the
+// host renders it) with the first path segment as the host (finding 1256).
 const isRuntimeUrl = (value: unknown): boolean => {
   const url = typeof value === "string" && URL.canParse(value) ? new URL(value) : undefined;
-  return url?.protocol === "http:" || url?.protocol === "https:";
+  return (
+    (url?.protocol === "http:" || url?.protocol === "https:") &&
+    /^[\0- ]*https?:[/\\]{2}(?![/\\])/i.test(String(value).replaceAll(/[\t\n\r]/g, ""))
+  );
 };
+
+// Whether a baseUrl that holds an environment reference writes exactly two slashes after a literal
+// http(s) scheme, as `isRuntimeUrl` requires (finding 1259): `https:${HOST}/v1` is refused, though
+// the URL parser would read it filled, and so is a fallback that renders `https:/v1` or
+// `https:///v1`. The runtime fills the reference before it parses the URL, so the text after the
+// slashes is its to check. `literals` is one rendering of the text around the references and any
+// Preset variables.
+function writesSchemeSlashes(literals: readonly string[]): boolean {
+  const [first = ""] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
+  const scheme = /^[\0- ]*https?:/i.exec(first);
+  return scheme === null || /^[/\\]{2}(?![/\\])/.test(first.slice(scheme[0].length));
+}
 
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
 // for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
@@ -194,13 +213,18 @@ function splitEnvironmentReferences(
  * (`https:{{ vars.host }}/v1@beta`).
  */
 export function urlHoldsUserinfo(value: string, literals: readonly string[] = [value]): boolean {
-  // Every reference set, every fallback rendered, and each fallback alone with the rest set.
+  return environmentRenderings(literals).some(holdsUserinfo);
+}
+
+// `literals` as the runtime may render its environment references: every reference set, every
+// fallback rendered, and each fallback alone with the rest set.
+function environmentRenderings(literals: readonly string[]): string[][] {
   const { fallbacks } = splitEnvironmentReferences(literals, () => false);
   return [
     () => false,
     () => true,
     ...Array.from({ length: fallbacks }, (_, only) => (index: number) => index === only),
-  ].some((fallback) => holdsUserinfo(splitEnvironmentReferences(literals, fallback)));
+  ].map((fallback) => splitEnvironmentReferences(literals, fallback));
 }
 
 function holdsUserinfo(literals: readonly string[]): boolean {
@@ -266,16 +290,31 @@ function validateSettings(
   path: readonly (string | number)[],
   provider: boolean,
   unresolved: Unresolved,
+  unresolvedType: ConfigurationValidationOptions["unresolvedType"],
 ) {
   const { baseUrl, api } = settings;
+  // A number or boolean variable that is the whole baseUrl or api fills it with no string, which
+  // fails every launch (finding 1257).
+  for (const field of ["baseUrl", "api"] as const) {
+    const type = unresolvedType?.([...path, field]);
+    if (type !== undefined && type !== "string") {
+      throw new ModelProviderSettingError(pointer(...path, field), field);
+    }
+  }
   // The runtime resolves an environment reference before it validates the value.
   const environment = holdsEnvironmentReference;
   // On a provider, the runtime treats a blank baseUrl as unset and uses a built-in
   // provider's default endpoint; a model's baseUrl must be a nonempty URL.
   const unsetBaseUrl = provider && typeof baseUrl === "string" && baseUrl.trim() === "";
-  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl && !environment(baseUrl)) {
+  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl) {
     const literals = unresolved([...path, "baseUrl"]);
-    if (literals === undefined ? !isRuntimeUrl(baseUrl) : !fillsAsRuntimeUrl(literals)) {
+    if (
+      environment(baseUrl)
+        ? !environmentRenderings(literals ?? [String(baseUrl)]).every(writesSchemeSlashes)
+        : literals === undefined
+          ? !isRuntimeUrl(baseUrl)
+          : !fillsAsRuntimeUrl(literals)
+    ) {
       throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
     }
   }
@@ -319,7 +358,7 @@ export function providerModelsListError(key: string): ConfigurationHarnessError 
  */
 export function validateModelProviderSettings(
   values: OpenClawConfigurationDocument,
-  { unresolved = () => undefined }: ConfigurationValidationOptions = {},
+  { unresolved = () => undefined, unresolvedType }: ConfigurationValidationOptions = {},
 ): void {
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
@@ -329,7 +368,7 @@ export function validateModelProviderSettings(
     }
     const path = ["models", "providers", providerName] as const;
     const setting = keyedSettingPath("models.providers", providerName);
-    validateSettings(settings, path, true, unresolved);
+    validateSettings(settings, path, true, unresolved, unresolvedType);
     const models = settings.models;
     // The list first, as the Kubernetes rule does, so both name the same setting.
     if (models !== undefined && !Array.isArray(models)) {
@@ -339,7 +378,13 @@ export function validateModelProviderSettings(
     for (const [index, model] of (Array.isArray(models) ? models : []).entries()) {
       const modelSettings = asRecord(model);
       if (modelSettings !== undefined) {
-        validateSettings(modelSettings, [...path, "models", index], false, unresolved);
+        validateSettings(
+          modelSettings,
+          [...path, "models", index],
+          false,
+          unresolved,
+          unresolvedType,
+        );
         validateHeaderNames(
           modelSettings,
           [...path, "models", index],

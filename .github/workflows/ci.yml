@@ -127,9 +127,11 @@ jobs:
       # Application uses 32vcpu too: it runs up to eight of its twelve files at
       # once, one per CPU (16vcpu caps it at four). Checks and Conformance 1
       # uses it for the same reason: on 16vcpu it ran four files at a time,
-      # its tests took 112-192 s, and it finished last. So does Console
-      # Browser 2: on 16vcpu its browser files ran four at a time and it was
-      # CPU-bound (its files' summed time rose and fell with the lane's).
+      # its tests took 112-192 s, and it finished last. So do Console
+      # Browser 2, Checks and Conformance 2 and Console Browser: on 16vcpu
+      # their files ran four at a time and were CPU-bound (their summed time
+      # rose and fell with the lane's; from 10-13 13:00Z files nobody changed
+      # took 20-30 % longer there while 32vcpu lanes stayed flat).
       # Repository Credentials Platform stays on 16vcpu: on 32vcpu its image
       # import and its long case took as long. Keycloak OIDC stays on 8vcpu,
       # the runner it soaked on before joining CI Required. The other lanes
@@ -145,8 +147,8 @@ jobs:
           LANE_TABLE: |
             [
               {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},

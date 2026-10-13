@@ -2682,13 +2682,22 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
       },
     ],
   );
-  // The model profile stays limited to the Harness binaries.
-  await driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000f4"), {
+  // A model source owns its profile too, limited to the Harness binaries.
+  const profileOf = (sourceId) =>
+    profiles.get(
+      [...providers.values()].find(
+        ({ labels }) => labels["openclaw.dev/credential-source-id"] === sourceId,
+      )?.type,
+    );
+  const model = "cs_00000000-0000-4000-8000-0000000000f4";
+  await driver.registerSource(context(model), {
     type: "openai",
     config: {},
     secrets: { api_key: "synthetic-openai-key" },
   });
-  assert.deepEqual(profiles.get("oce-openai").binaries, ["/usr/local/bin/codex"]);
+  assert.equal(profileOf(model).inferenceCapable, true);
+  assert.deepEqual(profileOf(model).binaries, ["/usr/local/bin/codex"]);
+  assert.equal(profiles.has("oce-openai"), false, "no profile is shared between sources");
 
   // Two sources on one revision cannot share a placeholder variable.
   await driver.registerSource(context(second), tokenInput(endpoint));
@@ -2732,15 +2741,19 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   assert.deepEqual(deletedProfiles, [provider.name]);
   assert.equal(profiles.has(provider.name), false);
   assert.equal(profiles.size, 2);
-  // The shared model profile stays while another model source still uses it.
-  await driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000f5"), {
+  // Removing one model source removes only its profile; the other model source keeps its own.
+  const secondModel = "cs_00000000-0000-4000-8000-0000000000f5";
+  await driver.registerSource(context(secondModel), {
     type: "openai",
     config: {},
     secrets: { api_key: "synthetic-openai-key" },
   });
-  await driver.removeSource(context("cs_00000000-0000-4000-8000-0000000000f4"));
-  assert.deepEqual(deletedProfiles, [provider.name]);
-  assert.equal(profiles.has("oce-openai"), true);
+  const modelProfile = profileOf(model).id;
+  const secondModelProfile = profileOf(secondModel).id;
+  assert.notEqual(modelProfile, secondModelProfile);
+  await driver.removeSource(context(model));
+  assert.deepEqual(deletedProfiles, [provider.name, modelProfile]);
+  assert.equal(profiles.has(secondModelProfile), true);
 });
 
 /** A bearer-token source of the recording store, registered under `driver`. */
@@ -2818,7 +2831,7 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
   await narrowed.attachForRevision(revisionContext([updated, deployed]));
   assert.deepEqual(profileWrites, []);
 
-  // The shared model profile follows the Harness binaries the same way.
+  // A model source's profile follows the Harness binaries the same way.
   const model = "cs_00000000-0000-4000-8000-000000000103";
   await narrowed.registerSource(gateway.context(model), gateway.input());
   const retargeted = driverWith({
@@ -2826,7 +2839,7 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
     toolBinaries: ["/usr/bin/curl"],
   });
   await retargeted.attachForRevision(revisionContext([gateway.source(model)]));
-  assert.deepEqual(profiles.get("oce-openai").binaries, ["/opt/codex/bin/codex"]);
+  assert.deepEqual(profileOf(gateway.source(model)).binaries, ["/opt/codex/bin/codex"]);
 });
 
 test("an OpenShell profile write that lost a race to the same profile still attaches", async () => {

@@ -99,7 +99,7 @@ test(
     const sourceId = `poc-source-${randomUUID()}`;
     const name = openShellProviderName(sourceId);
     const credentialKey = "CODEX_ACCESS_TOKEN";
-    const profileId = "oce-codex-oauth";
+    const profileId = name;
     const signal = AbortSignal.timeout(120_000);
     const driver = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/local/bin/codex"] },

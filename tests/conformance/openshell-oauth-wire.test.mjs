@@ -173,7 +173,7 @@ test(
         assert.equal(call.request.workspace_scope.workspace, workspace);
         callback(null, {
           provider: {
-            type: "oce-codex-oauth",
+            type: provider,
             metadata: {
               name: provider,
               resource_version: "7",

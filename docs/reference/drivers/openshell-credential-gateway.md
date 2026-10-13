@@ -177,25 +177,25 @@ a private issuer CA; see [issuer trust setup](../../testing/openshell-oauth.md#p
 ## How sources map to OpenShell
 
 Each OCC Namespace maps to one operator-mode OpenShell Workspace with the same
-name as its Kubernetes namespace. The Driver manages two objects in that
+name as its Kubernetes namespace. The Driver manages these objects in that
 Workspace:
 
-- **Provider profile `oce-openai`.** Registration imports this profile when
-  missing. It exposes the credential as `OPENAI_API_KEY`, inserts it as a bearer
-  `authorization` header, and binds it to `api.openai.com:443` with `rest`
-  protocol and path `/v1/**`, for the configured binaries only. A digest
-  annotation records the profile content; a configuration change updates the
-  profile on the next registration, update, or deployment.
-- **Provider profile per `bearer-token` source.** Its ID equals the source's
-  provider name. It exposes the token as the source's `env_var` and binds it to
-  the source's `host`, `port`, and `path` with `rest` protocol, for
-  `toolBinaries` only. `removeSource` deletes it with the provider.
-- **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
-  characters of the SHA-256 digest of the source ID. Labels record OCC
-  ownership, the source ID, and the Namespace ID. The provider's
-  `profile_workspace` names its own workspace, where OCC imported the profile. A
-  retried registration adopts an existing provider only when those labels match;
-  otherwise it fails.
+- **One provider profile per source.** Its ID equals the provider name;
+  `removeSource` deletes both. Profiles are never shared. A content-digest
+  annotation tracks configuration changes, reconciled on registration, source
+  update, or deployment.
+  - An `openai` source's profile exposes the key as `OPENAI_API_KEY`, inserts
+    it as a bearer `authorization` header, and binds it to `api.openai.com:443`
+    with `rest` protocol and path `/v1/**`, for the configured binaries only.
+  - A `codex-oauth` source's profile exposes `CODEX_ACCESS_TOKEN` for ChatGPT
+    requests. The paired Refresh Driver owns issuer exchange and refresh material.
+  - A `bearer-token` source's profile exposes the token as the source's
+    `env_var` and binds it to the source's `host`, `port`, and `path` with
+    `rest` protocol, for `toolBinaries` only.
+- **One provider per source.** Its name is `oce-cs-` plus 24 hexadecimal
+  characters of the source ID's SHA-256 digest. Labels record OCC ownership,
+  source ID, and Namespace ID; `profile_workspace` names its own workspace.
+  Registration retries require the source's ownership labels and profile ID.
 - **Workspace.** OCC resolves the Namespace's workspace from Compute's runtime
   placement, so registration uses the same workspace as the paired Sandbox.
 
@@ -276,8 +276,8 @@ not from OpenShell administrators or OCC itself. With the selected gateway:
   `api.openai.com`.
 - **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
   any Workspace. A Workspace admin, which includes OCC's gateway principal, can
-  update the `oce-openai` profile to add hosts or binaries while Sandboxes use
-  it, so anyone holding the Backend credential can redirect the key. With
+  update a source's profile to add hosts or binaries while Sandboxes use it,
+  so anyone holding the Backend credential can redirect the key. With
   `allow_unauthenticated_users` enabled, every caller that reaches the gateway
   is a Platform Admin; never enable it outside disposable development. The OCC
   worker can read the source's Kubernetes Secret directly.

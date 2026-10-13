@@ -23,7 +23,6 @@ import type {
 
 import {
   CODEX_OAUTH_TYPE,
-  CODEX_PROFILE_ID,
   CODEX_OAUTH_CLIENT_ID,
   CODEX_ACCOUNT_CONFIG,
   CODEX_ACCESS_TOKEN_ENV,
@@ -317,7 +316,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     );
     if (
       !provider ||
-      provider.type !== CODEX_PROFILE_ID ||
+      provider.type !== openShellProviderName(context.source.id) ||
       provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
       provider.labels["openclaw.dev/credential-source-id"] !== context.source.id
     ) {

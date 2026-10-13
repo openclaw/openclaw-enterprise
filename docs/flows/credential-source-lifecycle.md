@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-13
-last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Credential source lifecycle Flow
@@ -90,12 +90,11 @@ Values remain in memory only for the authorized external call.
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-The transaction commits a `registering` source and its Secret references before
-external effects. OCC resolves Compute's Sandbox namespace and calls Gateway
-`registerSource` with a 30-second deadline. OpenShell creates the workspace
-profile and labeled provider; replay adopts only matching ownership. Refresh
-material goes only to the paired Refresh Driver, with initialization described
-in the [refresh flow](credential-source-refresh.md).
+OCC commits a `registering` source with Secret references before resolving
+Compute's Sandbox namespace and calling Gateway `registerSource` (30-second
+deadline). OpenShell creates the source-owned profile and labeled provider;
+replay requires matching ownership. Only the Refresh Driver receives refresh
+material; see the [refresh flow](credential-source-refresh.md).
 
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup leaves `deleting`. A thrown call may still take effect, so cleanup always
@@ -192,15 +191,14 @@ No legacy Agent refresh bundle is imported.
 `packages/occ/src/index.ts:deleteCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:removeSource`
 
-The transaction authorizes `delete`, requires a selected gateway (`409`), and
-locks the source. Agent draft, active revision or pending deployment references
-return `409`; withdrawal-only references return `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`;
-another owning Driver returns `503`. It moves `registering` or `ready` to
-`deleting`; triggers forbid leaving that state or returning to `registering`.
-Outside the transaction, OCC removes refresh state through the selected Refresh
-Driver, then Gateway `removeSource` confirms deletion of the owned provider,
-then its profile if no same-type provider remains. Failure leaves `deleting`
-and returns `503`.
+Deletion authorizes `delete`, requires a selected gateway (`409`), and locks
+the source. Draft, active-revision or pending-deployment references return `409`;
+withdrawal-only references return `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`; another
+owning Driver returns `503`. It moves `registering` or `ready` to `deleting`;
+triggers forbid leaving that state or returning to `registering`. Outside the
+transaction, OCC removes refresh state through the Refresh Driver, then Gateway
+`removeSource` confirms provider deletion and removes its source-owned profile.
+Failure retains `deleting` and returns `503`.
 
 Even after removal, OCC retains the record and returns `503` until `CREDENTIAL_REGISTRATION_FENCE_MS`
 (70 seconds after `createdAt`): late registration effects and Backend calls each
@@ -321,7 +319,11 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-13 18:56: Use source-owned OpenShell profiles for Codex OAuth. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - af184d6224af7c60b81027ca307097ecfc5007cc)
+
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
+- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
 
 - 2026-10-09 20:28: Retain external Harness authentication alongside explicit Agent source-list admission. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
 

@@ -87,8 +87,21 @@ function exitIfAbandoned() {
 // node:test runs a hook added while its after hooks run after the ones already registered, and
 // that hook starts the grace if any step, in a test or a later hook, was abandoned. node:test
 // skips the after hooks after a failing one, so a failed `cleanup`, or one called without a
-// context, starts the grace at once; after a later root after hook fails, the file waits for the
-// runner's file timeout.
+// context, starts the grace at once. A later root after hook that fails skips that hook too
+// (finding 1258), so a step abandoned before or after `cleanup` also arms a backstop: an exit
+// 60 s later, unref'd too, well before the runner's file timeout. Normally the grace ends the
+// file first.
+const abandonedExitBackstopMs = 60_000;
+// Set once `cleanup` has run: the tests are done, so a step abandoned from then on is teardown's.
+let exitBackstopMs;
+let exitBackstopTimer;
+
+function exitAfterBackstop() {
+  if (abandonedSteps > 0 && exitBackstopMs !== undefined) {
+    exitBackstopTimer ??= setTimeout(() => process.exit(), exitBackstopMs).unref();
+  }
+}
+
 function exitAfterRootHooks(context) {
   if (typeof context?.after !== "function") {
     exitIfAbandoned();
@@ -106,6 +119,7 @@ export async function disposeStep(step, limitMs, work) {
       new Promise((_, reject) => {
         timer = setTimeout(() => {
           abandonedSteps += 1;
+          exitAfterBackstop();
           const error = new Error(
             `revision fixture teardown: ${step} did not finish within ${limitMs} ms`,
           );
@@ -121,7 +135,11 @@ export async function disposeStep(step, limitMs, work) {
 }
 
 // One template per owning test file; importing this helper registers no tests or hooks.
-export function createWorkerRevisionFixtures(testFile) {
+// `exitBackstopMs` replaces the abandoned-step backstop for the fixture's own exit tests.
+export function createWorkerRevisionFixtures(
+  testFile,
+  { exitBackstopMs: backstopMs = abandonedExitBackstopMs } = {},
+) {
   // Each test owns a database (Work claims span one), copied from one migrated template
   // per file rather than migrated again. Nothing connects to the template itself. A failed
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
@@ -139,6 +157,8 @@ export function createWorkerRevisionFixtures(testFile) {
       }
       failed = false;
     } finally {
+      exitBackstopMs ??= backstopMs;
+      exitAfterBackstop();
       exitAfterRootHooks(failed ? undefined : context);
     }
   }

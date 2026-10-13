@@ -11,6 +11,9 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 export class ConfigurationValidationError extends Error {}
 
+// A setting's location, as `options.unresolved` takes it: a list index is a number.
+type SettingPath = readonly (string | number)[];
+
 const pointer = (...segments: readonly (string | number)[]): string =>
   segments
     .map((segment) => `/${String(segment).replaceAll("~", "~0").replaceAll("/", "~1")}`)
@@ -18,6 +21,10 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 
 const urlCredentialMessage = (path: string): string =>
   `Configuration field ${path} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+
+// Proxy environment variables, in any case (`HTTPS_PROXY`, `all_proxy`, `npm_config_proxy`).
+// `NO_PROXY` lists hosts, not a proxy.
+const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
 // The provider headers refused as literals before the 2026-10-12 notice.
 const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
@@ -31,7 +38,10 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * Driver refuses to read one. A document an older release saved with a literal in a slot
  * refused since still reads, so its operator can see and replace it; every write and
  * deployment checks all slots. A Preset save passes `unresolved`, so a credential header name that
- * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`).
+ * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
+ * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
+ * channel proxies, MCP server URLs, proxy environment variables (also an MCP server's), Codex's
+ * network proxy and speech and Talk provider proxies.
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -63,6 +73,26 @@ export function validateModelCredentialReferences(
       return;
     }
     throw new ModelCredentialValueError(path);
+  };
+  // The refusal names the field, never its value. A Preset save passes `unresolved`, the text
+  // around each unfilled variable at that path.
+  const refuseUrlUserinfo = (
+    path: readonly (string | number)[],
+    value: unknown,
+    schemeless = false,
+  ): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const [head = "", ...tail] = options.unresolved?.(path) ?? [value];
+    if (
+      urlHoldsUserinfo(value, [head, ...tail]) ||
+      (schemeless &&
+        !/^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(head) &&
+        urlHoldsUserinfo(value, [`http://${head}`, ...tail]))
+    ) {
+      throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
   };
 
   const providers = asRecord(asRecord(values.models)?.providers);
@@ -129,20 +159,109 @@ export function validateModelCredentialReferences(
           validateReference(tls?.[field], pointer(...tlsPath, field));
         }
       }
-      for (const [urlPath, url] of [
-        [[...path, "baseUrl"], row?.baseUrl],
-        [[...path, "request", "proxy", "url"], proxy?.url],
-      ] as const) {
-        // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and
-        // so is a model endpoint's (fetch refuses a URL that holds one), even where a variable
-        // or an environment reference fills its host or port (finding 1250).
-        if (typeof url === "string" && urlHoldsUserinfo(url, options.unresolved?.(urlPath))) {
-          throw new ModelCredentialValueError(pointer(...urlPath), urlCredentialMessage);
+      // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and
+      // so is a model endpoint's (fetch refuses a URL that holds one), even where a variable
+      // or an environment reference fills its host or port (finding 1250).
+      refuseUrlUserinfo([...path, "baseUrl"], row?.baseUrl);
+      refuseUrlUserinfo([...path, "request", "proxy", "url"], proxy?.url);
+    }
+  }
+  const env = asRecord(values.env);
+  if (!stored) {
+    // The other native URLs a password can ride in (finding 1255): the Gateway's egress proxy,
+    // every channel's proxy and its accounts', and MCP server URLs, on the Gateway and on nodes.
+    refuseUrlUserinfo(["proxy", "proxyUrl"], asRecord(values.proxy)?.proxyUrl);
+    for (const [channel, settings] of Object.entries(asRecord(values.channels) ?? {})) {
+      const config = asRecord(settings);
+      refuseUrlUserinfo(["channels", channel, "proxy"], config?.proxy);
+      for (const [account, accountSettings] of Object.entries(asRecord(config?.accounts) ?? {})) {
+        refuseUrlUserinfo(
+          ["channels", channel, "accounts", account, "proxy"],
+          asRecord(accountSettings)?.proxy,
+        );
+      }
+    }
+    // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
+    // process it starts, and an MCP server's `env` its stdio process (finding 1259). Clients such
+    // as curl and git read a value without a scheme as http. On a Preset save, a name that waits
+    // on a variable is matched as the text around it (`{{ vars.scheme }}_PROXY`), as for
+    // credential header names.
+    const environments: [readonly string[], Record<string, unknown> | undefined][] = [
+      [["env"], env],
+      [["env", "vars"], asRecord(env?.vars)],
+    ];
+    for (const at of [["mcp"], ["nodeHost", "mcp"]]) {
+      const mcp = at.reduce<Record<string, unknown> | undefined>(
+        (parent, key) => asRecord(parent?.[key]),
+        values,
+      );
+      for (const [server, settings] of Object.entries(asRecord(mcp?.servers) ?? {})) {
+        refuseUrlUserinfo([...at, "servers", server, "url"], asRecord(settings)?.url);
+        environments.push([[...at, "servers", server, "env"], asRecord(asRecord(settings)?.env)]);
+      }
+    }
+    // The proxy URLs plugins read (finding 1259): Codex's network proxy, the acpx plugin's MCP
+    // server environments, and a speech provider's `proxy` (Microsoft's) in every TTS block and
+    // Talk provider.
+    const plugins = asRecord(asRecord(values.plugins)?.entries);
+    const get = (parent: unknown, keys: readonly string[]): unknown =>
+      keys.reduce((value, key) => asRecord(value)?.[key], parent);
+    const at = (parent: unknown, keys: readonly string[]) => asRecord(get(parent, keys));
+    const codex = ["codex", "config", "appServer", "networkProxy"];
+    for (const field of ["proxyUrl", "socksUrl"]) {
+      refuseUrlUserinfo(["plugins", "entries", ...codex, field], get(plugins, [...codex, field]));
+    }
+    const acpx = ["acpx", "config", "mcpServers"];
+    for (const [server, settings] of Object.entries(at(plugins, acpx) ?? {})) {
+      environments.push([
+        ["plugins", "entries", ...acpx, server, "env"],
+        asRecord(asRecord(settings)?.env),
+      ]);
+    }
+    // TTS blocks: the Gateway's, each Agent's, Discord voice's (and its accounts'), voice-call's
+    // and its numbers'. Each holds `providers` and personas that hold them too.
+    const keyed = (path: readonly string[], each: readonly string[]): [SettingPath, unknown][] =>
+      Object.entries(at(values, path) ?? {}).map(([key, settings]) => [
+        [...path, key, ...each],
+        get(settings, each),
+      ]);
+    const voiceCall = ["plugins", "entries", "voice-call", "config"];
+    const discord = ["channels", "discord"];
+    const tts: [SettingPath, unknown][] = [
+      [["tts"], values.tts],
+      ...keyed(["agents", "entries"], ["tts"]),
+      [[...discord, "voice", "tts"], get(values, [...discord, "voice", "tts"])],
+      ...keyed([...discord, "accounts"], ["voice", "tts"]),
+      [[...voiceCall, "tts"], get(values, [...voiceCall, "tts"])],
+      ...keyed([...voiceCall, "numbers"], ["tts"]),
+    ];
+    const providerBlocks: [SettingPath, unknown][] = [
+      ...tts.flatMap(([path, block]): [SettingPath, unknown][] => [
+        [path, block],
+        ...Object.entries(at(block, ["personas"]) ?? {}).map(
+          ([persona, settings]): [SettingPath, unknown] => [
+            [...path, "personas", persona],
+            settings,
+          ],
+        ),
+      ]),
+      [["talk"], values.talk],
+      [["talk", "realtime"], get(values, ["talk", "realtime"])],
+    ];
+    for (const [path, block] of providerBlocks) {
+      for (const [provider, settings] of Object.entries(at(block, ["providers"]) ?? {})) {
+        refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
+      }
+    }
+    for (const [prefix, settings] of environments) {
+      for (const name of Object.keys(settings ?? {})) {
+        const literal = options.unresolved?.([...prefix, name], true)?.join("");
+        if ([name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text))) {
+          refuseUrlUserinfo([...prefix, name], settings?.[name], true);
         }
       }
     }
   }
-  const env = asRecord(values.env);
   for (const [prefix, settings] of [
     [["env"], env],
     [["env", "vars"], asRecord(env?.vars)],

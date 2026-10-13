@@ -31,7 +31,6 @@ import {
 
 import {
   CODEX_OAUTH_TYPE,
-  CODEX_PROFILE_ID,
   CODEX_ACCESS_TOKEN_ENV,
   CODEX_ACCOUNT_CONFIG,
   CODEX_OAUTH_TOKEN_URL,
@@ -77,9 +76,7 @@ interface OpenShellSourceType {
   validate(config: Readonly<Record<string, string>>): void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
   credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
-  /** Shared by every source of the type, or owned by one source and removed with it. */
-  readonly profileScope: "type" | "source";
-  profileId(sourceId: string): string;
+  /** The source's own profile, named like its provider and removed with it. */
   profile(
     sourceId: string,
     config: Readonly<Record<string, string>>,
@@ -220,8 +217,6 @@ function oauth2SourceType(
     refresh: Object.freeze({ strategy, configMaterial: Object.freeze(["client_id", "scope"]) }),
     validate: (config) => validateOAuth2Config(type, config),
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
-    profileScope: "source",
-    profileId: (sourceId) => openShellProviderName(sourceId),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options) =>
       bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
@@ -268,10 +263,8 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
     validate() {},
     credentials: () => Object.freeze({ access_token: CODEX_ACCESS_TOKEN_ENV }),
-    profileScope: "type",
-    profileId: () => CODEX_PROFILE_ID,
-    profile: (_sourceId, _config, options) => ({
-      id: CODEX_PROFILE_ID,
+    profile: (sourceId, _config, options) => ({
+      id: openShellProviderName(sourceId),
       displayName: "Codex OAuth (Experimental)",
       category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
       credentials: [
@@ -313,10 +306,8 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
     validate: () => {},
     credentials: () => Object.freeze({ api_key: "OPENAI_API_KEY" }),
-    profileScope: "type",
-    profileId: () => "oce-openai",
-    profile: (_sourceId, _config, options) => ({
-      id: "oce-openai",
+    profile: (sourceId, _config, options) => ({
+      id: openShellProviderName(sourceId),
       displayName: "OpenAI API key (OpenClaw Enterprise)",
       category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
       credentials: [
@@ -344,8 +335,6 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
-    profileScope: "source",
-    profileId: (sourceId) => openShellProviderName(sourceId),
     profile: (sourceId, config, options) =>
       bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
         name: "token",
@@ -463,10 +452,6 @@ function sourceType(
  * depend on the current configuration: a source registered before `toolBinaries` was removed,
  * or before the refresh role was deselected, still has to be deletable.
  */
-function knownSourceType(type: string): OpenShellSourceType {
-  return findSourceType(SOURCE_TYPES, type);
-}
-
 function findSourceType(types: readonly OpenShellSourceType[], type: string): OpenShellSourceType {
   const found = types.find((entry) => entry.catalog.type === type);
   if (found === undefined) {
@@ -492,15 +477,11 @@ export function openShellRefreshSourceType(type: string):
   });
 }
 
-function ownedBy(
-  provider: OpenShellProviderResponse,
-  sourceId: string,
-  type: OpenShellSourceType,
-): boolean {
+function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
   return (
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
     provider.labels[SOURCE_ID_LABEL] === sourceId &&
-    provider.type === type.profileId(sourceId)
+    provider.type === openShellProviderName(sourceId)
   );
 }
 
@@ -584,7 +565,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         {
           workspace,
           name,
-          type: type.profileId(context.source.id),
+          type: name,
           labels: {
             [MANAGED_BY_LABEL]: MANAGED_BY,
             [SOURCE_ID_LABEL]: context.source.id,
@@ -600,7 +581,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Replay after an uncertain create adopts only this exact source's provider.
       const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !ownedBy(existing, context.source.id, type)) {
+      if (existing === undefined || !ownedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -631,7 +612,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(existing, context.source.id, type)) {
+    if (!ownedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -685,7 +666,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (provider === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(provider, context.source.id, knownSourceType(context.source.type))) {
+    if (!ownedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
@@ -698,10 +679,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const name = openShellProviderName(context.source.id);
     const client = this.client(context);
-    const type = knownSourceType(context.source.type);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      if (!ownedBy(existing, context.source.id, type)) {
+      if (!ownedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -711,14 +691,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         throw new OpenShellCredentialGatewayFailure("The OpenShell provider was not deleted.");
       }
     }
-    // Workspace deletion requires no profiles: a source-owned profile goes with its source, and
-    // the last source of a type removes the type's shared profile.
-    const profileId = type.profileId(context.source.id);
-    const remaining =
-      type.profileScope === "source" ? [] : await client.listProviders(workspace, context.signal);
-    if (!remaining.some((provider) => provider.type === profileId)) {
-      await client.deleteProviderProfile(workspace, profileId, context.signal);
-    }
+    // Workspace deletion requires no profiles, and each source's profile goes with it.
+    await client.deleteProviderProfile(workspace, name, context.signal);
   }
 
   async attachForRevision(
@@ -745,7 +719,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       const name = openShellProviderName(source.id);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id, type)) {
+      if (provider === undefined || !ownedBy(provider, source.id)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );
@@ -862,7 +836,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       openShellProviderName(context.source.id),
       context.signal,
     );
-    if (!provider || !ownedBy(provider, context.source.id, knownSourceType(CODEX_OAUTH_TYPE))) {
+    if (!provider || !ownedBy(provider, context.source.id)) {
       throw new ScopeViolationError(
         "The OpenShell provider is not owned by this Codex OAuth source.",
       );

@@ -9,6 +9,7 @@ function jwt(payload) {
 
 function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse } = {}) {
   const providers = new Map();
+  const profiles = new Map();
   const operations = [];
   const http = [];
   let pending = true;
@@ -75,8 +76,12 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
   // Simulate only OpenShell storage/RPC responses. The Driver performs the real device
   // response parsing, source ownership checks, handoff sequencing, and attachment projection.
   const client = {
-    async getProviderProfile() {},
-    async importProviderProfile() {},
+    async getProviderProfile(_workspace, id) {
+      return profiles.get(id);
+    },
+    async importProviderProfile(_workspace, profile) {
+      profiles.set(profile.id, profile);
+    },
     async createProvider(input) {
       providers.set(input.name, { ...input, config: {}, resourceVersion: "1" });
     },
@@ -147,6 +152,8 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
   return {
     driver,
     refresh,
+    providers,
+    profiles,
     rotationRequests,
     context,
     register,
@@ -168,6 +175,15 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
   const f = fixture(t);
   const owner = await f.register("source-owner");
   const other = await f.register("source-other");
+  // Separate OAuth sources must not share a profile: changing or removing one
+  // source's endpoint/binary policy must leave the other's policy intact.
+  const registered = [...f.providers.values()];
+  assert.equal(registered.length, 2);
+  assert.notEqual(registered[0].type, registered[1].type);
+  for (const provider of registered) {
+    assert.equal(provider.type, provider.name);
+    assert.equal(f.profiles.get(provider.type)?.id, provider.name);
+  }
   assert.deepEqual(await f.refresh.refreshStatus(owner), { state: "pending" });
   const login = await f.refresh.startDeviceAuthorization(owner);
   assert.equal(login.verificationUrl, "https://auth.openai.com/codex/device");
