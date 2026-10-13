@@ -105,8 +105,8 @@ Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects
 Kubernetes-only. Before state creation, Kubernetes-only rejects API-port
 collisions and records engine, cluster, namespace, port and key destination.
 Both verify the pinned archive, package charts and import digest-pinned
-Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports
-PostgreSQL and resolves in-cluster digests.
+Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports them
+with PostgreSQL and resolves in-cluster digests.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -123,9 +123,9 @@ neither retries nor diagnoses the failure.
 
 After Helm, `network.providerHarness` records Gateway
 ClusterIP, Pod selector and TCP/8080. The Agent Gateway aliases only the advertised hostname to that IP, preserving
-HTTP Host for routing. NetworkPolicy admits only those Pods/port.
+HTTP Host for routing. NetworkPolicy lets it reach only those Pods/port.
 
-Compose hosts PostgreSQL, OCC and its k3d worker; Kubernetes-only uses
+Compose runs PostgreSQL, OCC and its k3d-targeting worker; Kubernetes-only uses
 `oce-system` and in-cluster authentication. Both install private Envoy routing
 and operator Workspaces, limiting Gateway access to API, worker, supervisor
 callbacks and dedicated Agent Gateways. See
@@ -361,15 +361,13 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 ## Changelog
 
-- 2026-10-13 07:10: Merge main. (land-2251-1924)
-
 - 2026-10-10 12:40: Declare the Sandbox HOME for native hook credentials; hooks trust the file-delivered Gateway CA. (fix-1017)
+
+- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-10-09 19:45: Cover both runtime architectures in the development credential policy. (authoring-run/1e7118f7-bdb0-4564-894c-02f990f75e67 - bd540bcdef63cdc719e73192e4dbe99c365953c3)
 
 - 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds; tighten setup prose. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
-
-- 2026-10-09 23:18: Accept bracketed IPv6 endpoints. (authoring-run/6eefb93e-33fb-450a-9657-51ebe15a686e - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 
