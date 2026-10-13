@@ -66,18 +66,29 @@ const disposeLimitsMs = {
 
 // A step left running can hold the process open (a socket, a child, a timer), so the file would
 // sit idle after its last test until the runner's file timeout killed it (finding 1223). Once the
-// file's own teardown is done, a process that had abandoned a step exits after this grace,
-// which leaves the test runner time to report. The timer is unref'd: a process with nothing
-// left to wait for exits on its own first. So `cleanup` must be the file's last root after hook,
-// and the file must run under `node --test`, whose parent process counts the file's results
-// (node:test sets a failing exit code only once the event loop drains).
+// file's teardown is done, a process that had abandoned a step exits after this grace, which
+// leaves the test runner time to report. The timer is unref'd: a process with nothing left to
+// wait for exits on its own first. The file must run under `node --test`, whose parent process
+// counts the file's results (node:test sets a failing exit code only once the event loop drains).
 const abandonedExitGraceMs = 2_000;
 let abandonedSteps = 0;
+let exitArmed = false;
 
-function exitIfAbandoned() {
-  if (abandonedSteps > 0) {
-    // process.exit() keeps the exit code; the test runner reads results from its reports.
-    setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+// `cleanup` runs as a root after hook, with the root test's context. The grace starts from an
+// after hook it adds there, which runs once every root after hook the file registered has run,
+// in whatever order (node:test reads the hook list as it runs it): a timer armed in `cleanup`
+// itself cut off a later root after hook (finding 1246). Without a context it starts now.
+function exitIfAbandoned(context) {
+  if (abandonedSteps === 0 || exitArmed) {
+    return;
+  }
+  exitArmed = true;
+  // process.exit() keeps the exit code; the test runner reads results from its reports.
+  const arm = () => void setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+  if (typeof context?.after === "function") {
+    context.after(arm);
+  } else {
+    arm();
   }
 }
 
@@ -109,8 +120,8 @@ export function createWorkerRevisionFixtures(testFile) {
   // per file rather than migrated again. Nothing connects to the template itself. A failed
   // template preparation is not cached: the next test retries it, and cleanup ignores it.
   let template;
-  // The owning file registers this as its last after hook.
-  async function cleanup() {
+  // The owning file registers this as a root after hook: `after(cleanup)`.
+  async function cleanup(context) {
     try {
       const prepared = await template?.catch(() => undefined);
       if (prepared !== undefined) {
@@ -120,7 +131,7 @@ export function createWorkerRevisionFixtures(testFile) {
         );
       }
     } finally {
-      exitIfAbandoned();
+      exitIfAbandoned(context);
     }
   }
 

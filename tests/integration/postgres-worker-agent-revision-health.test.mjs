@@ -130,6 +130,11 @@ import test, { after } from "node:test";
 import { createWorkerRevisionFixtures, disposeStep } from ${JSON.stringify(helper.href)};
 const { cleanup } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
+// A root after hook registered after cleanup, slower than the exit grace, still finishes.
+after(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  console.log("later after hook finished");
+});
 test("a stuck step is abandoned at its limit", async () => {
   assert.equal(await disposeStep("worker stop", 5_000, () => "stopped"), "stopped");
   // A pool.end() that never settles while its socket keeps the event loop alive.
@@ -169,6 +174,8 @@ test("a stuck step is abandoned at its limit", async () => {
   assert.equal(signal, null, `the file was still running after 30 s:\n${output}`);
   assert.equal(status, 0, output);
   assert.match(output, /revision fixture teardown: pool end did not finish within 100 ms/);
+  // Finding 1246: the exit grace starts once every root after hook has run, not at cleanup.
+  assert.match(output, /later after hook finished/);
 });
 
 // The worker is serial. A Compute wait that only saves a later pass asks whether
