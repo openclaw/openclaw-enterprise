@@ -67,6 +67,7 @@ jobs:
           profile: full
           node-version: "24.16.0"
           artifact-prefix: qa-advisory-${{ matrix.installation }}
+          job-timeout-minutes: 120
       - name: Summarize selected scenarios
         if: always()
         run: node scripts/ci/qa-matrix-summary.mjs

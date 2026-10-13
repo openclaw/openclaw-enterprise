@@ -182,6 +182,7 @@ jobs:
           profile: ${{ matrix.profile }}
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: ${{ matrix.timeout }}
       - name: Upload repository credential image identities
         if: always() && matrix.lane == 'repository-credentials-container'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -210,6 +211,7 @@ jobs:
           profile: postgres
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 60
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
@@ -237,6 +239,7 @@ jobs:
           profile: images
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 40
 
   k3d-model:
     name: k3d Model Runtime
@@ -263,6 +266,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 120
 
   gateway-routing:
     name: Gateway Routing
@@ -288,6 +292,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 35
 
   production-tui:
     name: Production TUI
@@ -315,6 +320,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 50
 
   slack:
     name: Slack Live
@@ -345,6 +351,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 35
 
   provider-account:
     name: Provider Account
@@ -377,6 +384,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 25
 
   openshell:
     name: OpenShell
@@ -406,6 +414,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 120
 
   k3d-otel:
     name: k3d OTEL
@@ -431,6 +440,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 65
 
   helper-timeout:
     name: Helper Timeout
@@ -449,6 +459,7 @@ jobs:
           profile: baseline
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 12
 
   logging-collector:
     name: Logging Collector
@@ -467,6 +478,7 @@ jobs:
           profile: images
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 30
 
   dev-up-k3d:
     name: Local Kubernetes Installation
@@ -487,6 +499,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 180
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
@@ -626,6 +639,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+          job-timeout-minutes: 240
       - name: Retain QA outcomes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

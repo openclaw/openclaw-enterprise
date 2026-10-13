@@ -358,6 +358,7 @@ jobs:
           profile: ${{ matrix.profile }}
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+          job-timeout-minutes: ${{ matrix.timeout }}
           # Static Checks runs them in this workflow.
           static-checks: "false"
       - name: Upload repository credential image identities
@@ -392,6 +393,7 @@ jobs:
           profile: postgres
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+          job-timeout-minutes: 60
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report

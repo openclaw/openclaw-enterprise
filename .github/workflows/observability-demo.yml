@@ -59,6 +59,7 @@ jobs:
           profile: k3d
           node-version: "24.16.0"
           artifact-prefix: demo-results
+          job-timeout-minutes: 20
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report

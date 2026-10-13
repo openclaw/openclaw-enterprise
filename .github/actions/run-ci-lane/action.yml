@@ -20,9 +20,27 @@ inputs:
       separate job).
     required: false
     default: "true"
+  job-timeout-minutes:
+    description: >-
+      The calling job's timeout-minutes. The runner stops every test file three minutes
+      before it, so a hung file is recorded with the tests it was running instead of the
+      job being cancelled with no results.
+    required: true
 runs:
   using: composite
   steps:
+    # First, so the deadline counts the lane's setup too.
+    - id: deadline
+      name: Set lane deadline
+      shell: bash
+      env:
+        JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+      run: |
+        if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 3 )); then
+          echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 3." >&2
+          exit 1
+        fi
+        printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 3) * 60000 ))" >> "$GITHUB_OUTPUT"
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}
@@ -156,6 +174,9 @@ runs:
     - name: Run lane
       shell: bash
       env:
+        # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
+        # is left before the lane deadline.
+        CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
         CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the

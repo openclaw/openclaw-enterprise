@@ -2417,6 +2417,96 @@ test("run records a timeout that came before any test started", async (t) => {
   assert(record.elapsedMs >= 2000, String(record.elapsedMs));
 });
 
+// Finding 1209: a file hung in its teardown for 22 minutes, past the job's 25-minute timeout,
+// under the 60-minute per-file timeout. GitHub cancelled the job, so the results file was never
+// written and nothing named the test. The lane deadline stops the file first and names it.
+test("run stops a hung file at the lane deadline, names its test and starts nothing after it", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/deadline.json");
+  const resultsPath = join(root, "results/deadline.json");
+  const marker = join(root, "state/later-started");
+  await writeFile(
+    join(root, "tests/integration/teardown.test.mjs"),
+    [
+      'import test from "node:test";',
+      'test("passes first", () => {});',
+      'test("hangs in its teardown", async (t) => {',
+      "  // Like a worker stop that never returns; the interval keeps the file alive.",
+      "  t.after(() => new Promise(() => setInterval(() => {}, 1_000)));",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/later.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      `test("would start past the deadline", () => writeFileSync(${JSON.stringify(marker)}, ""));`,
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      deadline: {
+        files: [
+          { path: "tests/integration/teardown.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["deadline"] },
+  });
+
+  const started = Date.now();
+  const result = run(
+    root,
+    [
+      "run",
+      "deadline",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    // No per-file timeout: the default (60 minutes) is far past the deadline.
+    { CI_RUNNER_TEST_TIMEOUT_MS: "", CI_RUNNER_DEADLINE_MS: String(started + 4_000) },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  assert(Date.now() - started < 30_000, "the deadline stopped the lane");
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [teardown, later] = summary.files;
+  assert.equal(teardown.status, "failed");
+  const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
+  assert.equal(timeout.file, "tests/integration/teardown.test.mjs");
+  assert.match(timeout.message, /cut to the lane deadline/);
+  assert.match(timeout.message, /while running "hangs in its teardown"$/);
+  // The job log names it too, not only the diagnostics artifact.
+  assert.match(
+    result.stderr,
+    /run-tests: issue test-timeout tests\/integration\/teardown\.test\.mjs: .* while running "hangs in its teardown"\n/,
+  );
+  const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
+  assert.equal(record.reason, "timeout");
+  assert.equal(record.laneDeadline, true);
+  assert(record.timeoutMs > 0 && record.timeoutMs <= 4_000, String(record.timeoutMs));
+  assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 3 }]);
+  // The serial file behind it never started.
+  assert.equal(later.status, "failed");
+  assert.equal(later.counts.total, 0);
+  assert.deepEqual(
+    later.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/prepare.json");
