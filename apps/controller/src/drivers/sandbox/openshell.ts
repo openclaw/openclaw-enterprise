@@ -1606,6 +1606,21 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       "OpenShell requires at least one sandbox network policy.",
     );
   }
+  const networkPolicyNames = new Set<string>();
+  for (const policy of options.policy.networkPolicies) {
+    const name = nonempty(policy.name, "OpenShell network policy name");
+    if (name === "workspace-node-enrollment") {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell network policy name workspace-node-enrollment is reserved.",
+      );
+    }
+    if (networkPolicyNames.has(name)) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell network policy name ${name} must be unique.`,
+      );
+    }
+    networkPolicyNames.add(name);
+  }
   networkPolicies(options);
   if (
     options.providers !== undefined &&

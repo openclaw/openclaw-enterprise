@@ -130,7 +130,8 @@ Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
 
-Each v0.1.3-pre.2 network policy needs a nonempty executable path. Optional
+Each v0.1.3-pre.2 network policy needs a unique name and a nonempty executable
+path. `workspace-node-enrollment` is reserved. Optional
 values are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`. The Driver rejects the old `passthrough`
 spelling; use `skip` for uninspected TLS relay.

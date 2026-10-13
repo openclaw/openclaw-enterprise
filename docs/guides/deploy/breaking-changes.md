@@ -158,6 +158,26 @@ positive safe integer.` The message does not name `timeoutMs`.
 **Steps.** Set `gateway.readiness.timeoutMs` to a positive millisecond window.
 The real helper uses 120000. Then start again.
 
+## 2026-10-13: OpenShell network policy names must be unique
+
+**What breaks.** Controller startup refuses an Installation whose
+`policy.networkPolicies` repeat a name, or name a policy
+`workspace-node-enrollment`. Those configurations start today. A duplicate name
+keeps only the last rule. A policy named `workspace-node-enrollment` is replaced
+when a workspace-node binding exists.
+
+**Who is affected.** Installations with duplicate policy names, or with a policy
+named `workspace-node-enrollment`.
+
+**How to tell.** Startup logs `startup-error` with code
+`OPENSHELL_NETWORK_POLICY_NAME_REJECTED` and reason `rename-or-merge`. The log
+does not include the policy name. Loading the Installation configuration names
+the duplicate or reserved policy.
+
+**Steps.** Rename or merge duplicate `policy.networkPolicies` names. Rename a
+policy called `workspace-node-enrollment`. Keep each policy's binaries and
+endpoints. _untested_ against a live Installation.
+
 ## 2026-10-12: cluster and execution API ports must be canonical decimals
 
 **What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`

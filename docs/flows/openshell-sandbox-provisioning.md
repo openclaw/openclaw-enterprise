@@ -193,7 +193,9 @@ keys, the old `passthrough` TLS spelling, or policies without executable paths
 fail before launch. Gateway readiness requires positive `timeoutMs`. Startup
 logs `startup-error` code `STARTUP_FAILED`, does not name that field, and stops
 before Kubernetes calls. The Installation loader reports that the timeout must
-be a positive safe integer.
+be a positive safe integer. Duplicate names and reserved
+`workspace-node-enrollment` fail before the Driver is built. Rename; keep
+binaries and endpoints.
 
 Kubernetes Compute invokes `provisionHarness` only after the workspace-node
 setup Secret exists. The Driver creates or adopts the runtime provider with the final node
