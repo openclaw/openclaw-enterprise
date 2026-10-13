@@ -1522,6 +1522,7 @@ const validation = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "validat
 process.stdout.write(JSON.stringify({
   excluded: config.plugins.entries.codex.config.codexDynamicToolsExclude,
   triggers: config.cron.triggers,
+  memoryFlush: config.agents.defaults.compaction.memoryFlush,
   codexProvider: config.models.providers.codex,
   openaiProvider: config.models.providers.openai,
   valid: JSON.parse(validation.stdout).valid,
@@ -1539,9 +1540,13 @@ process.stdout.write(JSON.stringify({
         "gateway_exec",
         "gateway_process",
         "terminal",
+        "portal",
         "openclaw",
+        "plugins",
+        "gateway",
       ],
       triggers: { enabled: false },
+      memoryFlush: { enabled: false },
       codexProvider: {
         models: codexProvider.models,
         baseUrl: "http://127.0.0.1:9",

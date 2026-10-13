@@ -2140,6 +2140,9 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
       throw unsupported("plugins.entries.codex.config.codexDynamicToolsExclude", "a list");
     }
     object(object(configuration.cron, "cron")?.triggers, "cron.triggers");
+    const defaults = object(object(configuration.agents, "agents")?.defaults, "agents.defaults");
+    const compaction = object(defaults?.compaction, "agents.defaults.compaction");
+    object(compaction?.memoryFlush, "agents.defaults.compaction.memoryFlush");
   }
   const providers = object(object(configuration.models, "models")?.providers, "models.providers");
   for (const [key, provider] of Object.entries(providers ?? {})) {
