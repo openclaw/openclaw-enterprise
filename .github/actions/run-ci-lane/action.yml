@@ -22,25 +22,27 @@ inputs:
     default: "true"
   job-timeout-minutes:
     description: >-
-      The calling job's timeout-minutes. The runner stops every test file three minutes
-      before it, so a hung file is recorded with the tests it was running instead of the
-      job being cancelled with no results.
+      The calling job's timeout-minutes. The runner stops every test file five minutes
+      before it (counted from this action's start), so a hung file is recorded with the
+      tests it was running instead of the job being cancelled with no results.
     required: true
 runs:
   using: composite
   steps:
-    # First, so the deadline counts the lane's setup too.
+    # First, so the deadline counts the lane's setup too. Steps before the action (checkout,
+    # mirror and credential setup) are not counted, so the margin after the deadline is a
+    # little under five minutes: enough to stop the file, clean up and write the results.
     - id: deadline
       name: Set lane deadline
       shell: bash
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
       run: |
-        if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 3 )); then
-          echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 3." >&2
+        if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
+          echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
           exit 1
         fi
-        printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 3) * 60000 ))" >> "$GITHUB_OUTPUT"
+        printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}

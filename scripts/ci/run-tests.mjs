@@ -439,6 +439,21 @@ function laneDeadlineMs() {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+function laneDeadlinePassed() {
+  const deadline = laneDeadlineMs();
+  return deadline !== undefined && Date.now() >= deadline;
+}
+
+function laneDeadlineIssue(relativePath) {
+  return issue(
+    "lane-deadline",
+    `the lane deadline passed before this file started: ${relativePath}`,
+    {
+      file: relativePath,
+    },
+  );
+}
+
 // The file's timeout: the per-file limit, cut to what is left before the lane deadline.
 function fileTimeout() {
   const limitMs = testTimeoutMs();
@@ -908,13 +923,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   // A file queued behind a hung one starts nothing past the lane deadline.
-  const deadline = laneDeadlineMs();
-  if (deadline !== undefined && Date.now() >= deadline) {
-    issues.push(
-      issue("lane-deadline", `the lane deadline passed before this file started: ${relativePath}`, {
-        file: relativePath,
-      }),
-    );
+  if (laneDeadlinePassed()) {
+    issues.push(laneDeadlineIssue(relativePath));
     return emptyFileResult(relativePath, issues);
   }
 
@@ -947,6 +957,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       });
       return emptyFileResult(relativePath, issues);
     }
+  }
+
+  // Preparation can outlast the deadline too; the cleanup below still runs.
+  if (laneDeadlinePassed()) {
+    issues.push(laneDeadlineIssue(relativePath));
   }
 
   const env = mergeEnv(
@@ -1081,7 +1096,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
 
   if (nodeResult?.error?.code === "ETIMEDOUT") {
     // Name the tests it was running in the job log too: the diagnostics report is an artifact.
-    const running = (details?.interruptedTests ?? []).map(({ name }) => JSON.stringify(name));
+    const names = (details?.interruptedTests ?? []).map(({ name }) => JSON.stringify(name));
+    const running = names.slice(0, 5);
+    if (names.length > running.length) {
+      running.push(`and ${names.length - running.length} more`);
+    }
     issues.push(
       issue(
         "test-timeout",

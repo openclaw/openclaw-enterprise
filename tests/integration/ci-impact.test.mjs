@@ -1180,7 +1180,7 @@ test("lane lists outside the lane table name every lane they must", async () => 
 
 // Finding 1209: a hung file outlived its 25-minute job under the runner's 60-minute per-file
 // timeout, so GitHub cancelled the job with no results file and no test name. Every lane job
-// gives the lane action its own timeout-minutes, and the action stops the lane's files three
+// gives the lane action its own timeout-minutes, and the action stops the lane's files five
 // minutes before it.
 test("every lane job stops its test files before its own timeout", (t) => {
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
@@ -1206,7 +1206,7 @@ test("every lane job stops its test files before its own timeout", (t) => {
           minutes = (Array.isArray(rows) ? rows : laneTable()).map((row) => row.timeout);
         }
         for (const value of minutes) {
-          assert.ok(Number.isInteger(value) && value > 3, `${name} ${id} timeout ${value}`);
+          assert.ok(Number.isInteger(value) && value > 5, `${name} ${id} timeout ${value}`);
         }
       }
     }
@@ -1215,7 +1215,7 @@ test("every lane job stops its test files before its own timeout", (t) => {
     assert.ok(callers.includes(caller), caller);
   }
 
-  // The step itself: three minutes before the job's timeout, measured from its start.
+  // The step itself: five minutes before the job's timeout, measured from its start.
   const root = mkdtempSync(join(tmpdir(), "lane-deadline-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const output = join(root, "output");
@@ -1232,8 +1232,8 @@ test("every lane job stops its test files before its own timeout", (t) => {
   const after = Date.now();
   assert.equal(set.status, 0);
   const ms = Number(/^ms=(\d+)\n$/.exec(set.output)?.[1]);
-  assert.ok(ms >= before + 22 * 60_000 && ms <= after + 22 * 60_000, set.output);
-  for (const minutes of ["", "3", "25.5", "x", "${{ matrix.timeout }}"]) {
+  assert.ok(ms >= before + 20 * 60_000 && ms <= after + 20 * 60_000, set.output);
+  for (const minutes of ["", "5", "25.5", "x", "${{ matrix.timeout }}"]) {
     assert.deepEqual(setDeadline(minutes), { status: 1, output: "" }, minutes);
   }
 });

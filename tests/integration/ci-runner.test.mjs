@@ -46,16 +46,19 @@ function runnerEnv(env = {}) {
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
     CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
+    // The fixture runners never inherit the lane's own deadline.
+    CI_RUNNER_DEADLINE_MS: "",
     ...fixtureGitEnv,
     ...env,
   };
 }
 
-function run(root, args, env = {}) {
+function run(root, args, env = {}, { timeout } = {}) {
   return spawnSync(process.execPath, [runnerPath, ...args], {
     cwd: repositoryRoot,
     encoding: "utf8",
     env: runnerEnv(env),
+    timeout,
   });
 }
 
@@ -2476,10 +2479,12 @@ test("run stops a hung file at the lane deadline, names its test and starts noth
     ],
     // No per-file timeout: the default (60 minutes) is far past the deadline.
     { CI_RUNNER_TEST_TIMEOUT_MS: "", CI_RUNNER_DEADLINE_MS: String(started + 4_000) },
+    // Without the deadline the runner would wait out the 60-minute default.
+    { timeout: 60_000 },
   );
 
+  assert.equal(result.error, undefined, "the deadline stopped the lane");
   assert.equal(result.status, 1, result.stderr);
-  assert(Date.now() - started < 30_000, "the deadline stopped the lane");
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   const [teardown, later] = summary.files;
   assert.equal(teardown.status, "failed");
@@ -2505,6 +2510,69 @@ test("run stops a hung file at the lane deadline, names its test and starts noth
     ["lane-deadline"],
   );
   await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("run starts no tests after a preparation that outlasted the lane deadline, and still cleans up", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/slow-prepare.json");
+  const resultsPath = join(root, "results/slow-prepare.json");
+  const started = join(root, "state/test-started");
+  const cleaned = join(root, "state/cleaned-up");
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      'import { writeFile } from "node:fs/promises";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      "export async function prepareFile() {",
+      "  await delay(2_500);",
+      `  return { cleanup: () => writeFile(${JSON.stringify(cleaned)}, "") };`,
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/prepared.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      `test("would start past the deadline", () => writeFileSync(${JSON.stringify(started)}, ""));`,
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { prepared: { files: [{ path: "tests/integration/prepared.test.mjs" }] } },
+    groups: { ci: ["prepared"] },
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "prepared",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    { CI_RUNNER_DEADLINE_MS: String(Date.now() + 1_000) },
+    { timeout: 60_000 },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  assert.equal(summary.files[0].nodeExitCode, null);
+  assert.deepEqual(summary.files[0].cleanup, { status: "passed" });
+  await readFile(cleaned);
+  await assert.rejects(readFile(started), { code: "ENOENT" });
 });
 
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {

@@ -447,7 +447,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'helper-timeout'
-    timeout-minutes: 12
+    # Its one test spends 300 s; the lane deadline stops tests five minutes before this.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -459,7 +460,7 @@ jobs:
           profile: baseline
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
-          job-timeout-minutes: 12
+          job-timeout-minutes: 15
 
   logging-collector:
     name: Logging Collector
