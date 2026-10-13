@@ -415,12 +415,20 @@ test("the official Kubernetes client rejects ambiguous identities and insecure A
 test("Kubernetes Configuration rejects literal model credentials before writes and stored reads", async () => {
   const driver = createDriver();
   const sentinel = "synthetic-model-credential-not-for-configuration";
-  const valuesWithCredential = [
+  // Slots no release ever stored a literal in: refused on writes and on stored reads.
+  const refusedWhenStored = [
     { models: { providers: { openai: { apiKey: sentinel } } } },
     { models: { providers: { codex: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
     { models: { providers: { openai: { headers: { "x-api-key": sentinel } } } } },
-    // Other credential header names, model rows and OpenClaw's request transport overrides
-    // (findings 1142 and 1143).
+    { env: { OPENAI_API_KEY: sentinel } },
+    { env: { ANTHROPIC_API_KEY: sentinel } },
+    { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
+    { env: { vars: { CODEX_ACCESS_TOKEN: sentinel } } },
+  ];
+  // Other credential header names, model rows and OpenClaw's request transport overrides
+  // (findings 1142 and 1143), refused since the 2026-10-12 notice. An older release stored
+  // them, so a stored one still reads and its operator can replace it.
+  const refusedOnWrite = [
     { models: { providers: { google: { headers: { "x-goog-api-key": sentinel } } } } },
     { models: { providers: { openai: { headers: { "Proxy-Authorization": sentinel } } } } },
     { models: { providers: { openai: { headers: { Cookie: `session=${sentinel}` } } } } },
@@ -462,12 +470,8 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
         },
       },
     },
-    { env: { OPENAI_API_KEY: sentinel } },
-    { env: { ANTHROPIC_API_KEY: sentinel } },
-    { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
-    { env: { vars: { CODEX_ACCESS_TOKEN: sentinel } } },
   ];
-  for (const values of valuesWithCredential) {
+  for (const values of [...refusedWhenStored, ...refusedOnWrite]) {
     const unsafe = { ...configuration, values };
     for (const operation of ["create", "update"]) {
       await assert.rejects(driver[operation](unsafe), (error) => {
@@ -480,14 +484,21 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
       });
     }
     const stored = driver.manifest(unsafe, "existing-tenant");
-    await assert.rejects(
-      driver.checkedConfiguration(stored, configuration, "existing-tenant"),
-      (error) => {
-        assert.match(error.message, /security boundaries/);
-        assert.equal(error.message.includes(sentinel), false);
-        return true;
-      },
-    );
+    if (refusedWhenStored.includes(values)) {
+      await assert.rejects(
+        driver.checkedConfiguration(stored, configuration, "existing-tenant"),
+        (error) => {
+          assert.match(error.message, /security boundaries/);
+          assert.equal(error.message.includes(sentinel), false);
+          return true;
+        },
+      );
+    } else {
+      assert.deepEqual(
+        await driver.checkedConfiguration(stored, configuration, "existing-tenant"),
+        unsafe,
+      );
+    }
   }
   // A proxy URL with a user name or password carries the proxy credential in the URL.
   for (const url of [
@@ -1108,4 +1119,48 @@ test("Kubernetes Configuration changes only the exact ConfigMap it read", async 
       "2026-08-20T00:00:00.000Z";
     await assert.rejects(driver.inspectExact(configuration), ConfigurationConflictError);
   }
+});
+
+test("Kubernetes Configuration reads and replaces a stored document with credentials refused since it was saved", async () => {
+  // An older release stored a literal request.auth token in a ConfigMap. After the upgrade the
+  // Driver reads it and accepts a replacement without it, so the operator can repair it; a
+  // write or deployment validation that keeps the literal is still refused.
+  const sentinel = "synthetic-model-credential-not-for-configuration";
+  const { client, driver } = await storedConfiguration();
+  const stale = {
+    ...configuration,
+    values: {
+      ...configuration.values,
+      models: {
+        providers: {
+          openai: {
+            ...configuration.values.models.providers.openai,
+            request: { auth: { mode: "authorization-bearer", token: sentinel } },
+          },
+        },
+      },
+    },
+  };
+  const [key, stored] = [...client.configMaps.entries()][0];
+  client.configMaps.set(key, {
+    ...stored,
+    data: { "openclaw.json": JSON.stringify(stale.values) },
+  });
+
+  assert.deepEqual(await driver.read(configuration), stale);
+  const refusal = (error) => {
+    assert.equal(
+      error.message,
+      "Configuration field /models/providers/openai/request/auth/token holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+    );
+    return true;
+  };
+  // Deployment validates the stored document before it is admitted.
+  await assert.rejects(driver.validate(stale), refusal);
+  await assert.rejects(driver.update({ ...stale, generation: 2 }), refusal);
+  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
+
+  assert.deepEqual(await driver.update(nextGeneration), nextGeneration);
+  assert.equal(client.configMaps.get(key).data["openclaw.json"].includes(sentinel), false);
+  assert.deepEqual(await driver.read({ id: configuration.id, namespaceId }), nextGeneration);
 });

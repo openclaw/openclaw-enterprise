@@ -1367,3 +1367,126 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   assert.equal(JSON.stringify(unreadable.body).includes(sentinel), false);
   assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
 });
+
+test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {
+  // The 2026-10-12 notice: an older release saved model credentials in a provider's request
+  // transport settings. After the upgrade the bundled Driver must still read and replace that
+  // document so its operator can remove them, while save and deployment refuse it with the
+  // Kubernetes Compute rule's message, before any revision or runtime resource exists.
+  const root = await mkdtemp(join(tmpdir(), "occ-upgrade-configuration-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const kubernetes = createTestKubernetesComputeDriver("compute-upgrade-repair");
+  const computeDriver = createReadyComputeDriver("compute-upgrade-repair", {
+    implementation: "integration-compute-substrate",
+    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Upgraded Configuration consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "upgrade-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  const path = join(root, namespace.id, `${configurationId}.json`);
+  const sentinel = `synthetic-request-credential-${randomUUID()}`;
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
+  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, API key, token, secret, password or cookie): ${binding}.`;
+
+  for (const [stale, message] of [
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
+          },
+        },
+      },
+      requestAuth,
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { auth: { mode: "header", headerName: "x-key", value: sentinel } } },
+          },
+        },
+      },
+      requestAuth,
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: { openai: { request: { headers: { "x-goog-api-key": sentinel } } } },
+        },
+      },
+      credentialHeader,
+    ],
+  ]) {
+    const label = Object.keys(stale.models.providers.openai.request).join();
+    // Seed the document the older release stored, directly in the Driver's storage.
+    const current = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify({ ...current, values: stale }));
+
+    // It still reads, so its operator can see what to remove.
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, `${label}: ${JSON.stringify(read.body)}`);
+    assert.deepEqual(read.body.data.values, stale, label);
+    const agents = await request(context.app, "GET", `/namespaces/${namespace.id}/agents`);
+    assert.equal(agents.status, 200, label);
+    assert.deepEqual(
+      agents.body.data.map((listed) => listed.configurationId),
+      [configurationId],
+      label,
+    );
+
+    // Saving it unchanged and deploying it are refused with the same named message, and no
+    // revision is admitted.
+    const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
+    assert.equal(resaved.status, 400, `${label}: ${JSON.stringify(resaved.body)}`);
+    assert.equal(resaved.body.error.message, message, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(deployed.body.error.message, message, label);
+    for (const body of [resaved.body, deployed.body]) {
+      assert.equal(JSON.stringify(body).includes(sentinel), false, label);
+    }
+    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+    assert.deepEqual(revisions.body.data, [], label);
+
+    // An edit that removes the credential repairs it.
+    const repaired = await request(context.app, "PATCH", item, { body: { values: valid } });
+    assert.equal(repaired.status, 200, `${label}: ${JSON.stringify(repaired.body)}`);
+    assert.deepEqual(repaired.body.data.values, valid, label);
+    assert.equal((await readFile(path, "utf8")).includes(sentinel), false, label);
+  }
+  // The repaired Configuration deploys through the Agent's Harness authentication binding.
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
+});

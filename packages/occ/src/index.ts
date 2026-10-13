@@ -6819,6 +6819,9 @@ export class OpenClawController {
         compute,
         sandbox,
       );
+      // The Compute rules first, as on Configuration save, so a stored Configuration that
+      // predates a rule both refuse gets the message its next save would.
+      this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
         throw new ScopeViolationError(

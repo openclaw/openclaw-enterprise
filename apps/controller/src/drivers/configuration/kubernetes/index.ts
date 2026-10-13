@@ -126,6 +126,17 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   }
 
   async validate(configuration: Configuration): Promise<void> {
+    this.checkConfiguration(configuration, false);
+  }
+
+  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
+    this.checkValues(document, false);
+  }
+
+  // A stored ConfigMap is held to the credential slots refused before it could have been
+  // saved (validateModelCredentialReferences' `stored`), so a document an older release saved
+  // under a later rule still reads and can be replaced; writes and deployment check them all.
+  private checkConfiguration(configuration: Configuration, stored: boolean): void {
     const resource = asRecord(configuration);
     if (resource === undefined) {
       throw new ConfigurationValidationError("Configuration is required.");
@@ -143,15 +154,15 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     if (Number.isNaN(Date.parse(createdAt))) {
       throw new ConfigurationValidationError("Configuration creation time must be valid.");
     }
-    await this.validateValues(configuration.values);
+    this.checkValues(configuration.values, stored);
   }
 
-  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
+  private checkValues(document: OpenClawConfigurationDocument, stored: boolean): void {
     const values = asRecord(document);
     if (values === undefined) {
       throw new ConfigurationValidationError("Configuration values must be a JSON object.");
     }
-    validateModelCredentialReferences(document);
+    validateModelCredentialReferences(document, { stored });
     if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
       throw new ConfigurationValidationError(
         "Configuration exceeds the Kubernetes ConfigMap size limit.",
@@ -424,7 +435,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
       );
     }
     try {
-      await this.validate(configuration);
+      this.checkConfiguration(configuration, true);
     } catch {
       throw new ConfigurationOwnershipError(
         "The stored ConfigMap violates Configuration security boundaries.",

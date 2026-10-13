@@ -20,8 +20,22 @@ function hasUrlCredentials(value: string): boolean {
   return url.username !== "" || url.password !== "";
 }
 
-/** Known native model credential slots must store unresolved references, never values. */
-export function validateModelCredentialReferences(values: OpenClawConfigurationDocument): void {
+// The provider headers refused as literals before the 2026-10-12 notice.
+const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
+
+/**
+ * Known native model credential slots must store unresolved references, never values.
+ *
+ * `stored` checks a document read back from storage: only the slots refused before the
+ * 2026-10-12 notice (the provider `apiKey`, its `authorization`, `api-key` and `x-api-key`
+ * headers, and the model credential environment), which no stored document can hold. A
+ * document an older release saved with a literal in a slot refused since still reads, so its
+ * operator can see and replace it; every write and deployment checks all slots.
+ */
+export function validateModelCredentialReferences(
+  values: OpenClawConfigurationDocument,
+  { stored = false }: { readonly stored?: boolean } = {},
+): void {
   const validateReference = (value: unknown, path: string, authorizationHeader = false): void => {
     if (value === undefined || value === null) {
       return;
@@ -52,6 +66,18 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
     const config = asRecord(provider);
     const providerPath = ["models", "providers", providerName] as const;
     validateReference(config?.apiKey, pointer(...providerPath, "apiKey"));
+    if (stored) {
+      for (const [name, value] of Object.entries(asRecord(config?.headers) ?? {})) {
+        if (STORED_CREDENTIAL_HEADER.test(name)) {
+          validateReference(
+            value,
+            pointer(...providerPath, "headers", name),
+            /authorization$/i.test(name),
+          );
+        }
+      }
+      continue;
+    }
     const rows: [readonly string[], Record<string, unknown> | undefined][] = [
       [providerPath, config],
       ...(Array.isArray(config?.models) ? config.models : []).map(
