@@ -293,7 +293,13 @@ test(
     await t.test("an IdP outage fails OIDC closed and leaves recovery working", async () => {
       idp.mode = "error";
       try {
-        await assertRefused({ subject: memberSubject }, "IdP outage", "PROVIDER_UNAVAILABLE");
+        // The Console says the IdP is unavailable, not to get attached (finding 1193).
+        await assertRefused(
+          { subject: memberSubject },
+          "IdP outage",
+          "PROVIDER_UNAVAILABLE",
+          "provider-unavailable",
+        );
         assert.equal((await passwordSignIn(app, origin, admin, address())).statusCode, 200);
       } finally {
         idp.mode = "up";

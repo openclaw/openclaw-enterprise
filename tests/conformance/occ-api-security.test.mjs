@@ -1607,7 +1607,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   for (const [label, forged, session] of [
     ["foreign principal", first.data.cursor, other.session],
     ["tampered", tamperedCursor, viewer.session],
-    ["another source", first.data.cursor.replace("v1.", "v1.e"), viewer.session],
+    ["another source", first.data.cursor.replace("v2.", "v2.e"), viewer.session],
   ]) {
     const rejected = await fixture.request(
       "GET",

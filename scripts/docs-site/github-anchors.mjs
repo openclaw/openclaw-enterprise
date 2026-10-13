@@ -2,6 +2,23 @@ import fs from "node:fs";
 import GithubSlugger from "github-slugger";
 import { parseFrontmatter } from "./vendor/docs-markdown.mjs";
 
+/** Visible heading text as GitHub slugger sees it, not raw Markdown inline source. */
+export function githubHeadingVisibleText(inlineToken) {
+  if (inlineToken === undefined || inlineToken === null) {
+    return "";
+  }
+  if (inlineToken.type === "image") {
+    return "";
+  }
+  if (inlineToken.type === "text" || inlineToken.type === "code_inline") {
+    return inlineToken.content;
+  }
+  if (Array.isArray(inlineToken.children)) {
+    return inlineToken.children.map((child) => githubHeadingVisibleText(child)).join("");
+  }
+  return "";
+}
+
 // Fragment targets of a Markdown file as GitHub renders it: github-slugger heading
 // slugs (duplicates get -1, -2, ...) plus explicit HTML id/name anchors.
 export function createGithubAnchorReader(md) {
@@ -17,11 +34,7 @@ export function createGithubAnchorReader(md) {
     const ids = new Set();
     for (let i = 0; i < tokens.length; i++) {
       if (tokens[i].type === "heading_open") {
-        const heading = (tokens[i + 1].children ?? [])
-          .filter((child) => child.type === "text" || child.type === "code_inline")
-          .map((child) => child.content)
-          .join("");
-        ids.add(slugger.slug(heading));
+        ids.add(slugger.slug(githubHeadingVisibleText(tokens[i + 1])));
       }
     }
     for (const match of text.matchAll(/<[a-z][^>]*?\s(?:id|name)=(["'])([^"']+)\1/gi)) {

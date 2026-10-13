@@ -11,7 +11,7 @@ import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logg
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 function positiveEnvironment(name, fallback) {
@@ -232,7 +232,8 @@ try {
   }
   emitOccLogEvent(logger, {
     event: "worker.startup-error",
-    ...(startupDependencyFailure(error) ?? { code: workerStartupFailureCode(error) }),
+    ...(startupDependencyFailure(error) ??
+      startupPolicyNameFailure(error) ?? { code: workerStartupFailureCode(error) }),
   });
   process.exitCode = 1;
 }

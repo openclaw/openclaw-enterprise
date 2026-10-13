@@ -131,6 +131,17 @@ the Agent Gateway. Exact workload identity, approved mounts and privileges,
 source withdrawal, denied egress, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+After the tool-source turns, the Codex scenario deploys a second Agent that
+attaches one of the tool sources. When the first Agent withdraws that source,
+the second Agent still receives its token. The scenario then checks that:
+
+- no Pod of the Agent mounts or references the stored source Secret;
+- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
+  files hold no upstream credential. Files are matched outside the Pod, so no
+  credential-derived value enters it;
+- deployment diagnostics, runtime status and logs, and the Namespace's audit
+  events hold neither a credential nor an OpenShell placeholder.
+
 The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a

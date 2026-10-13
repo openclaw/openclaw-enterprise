@@ -1128,10 +1128,12 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       assert.match(github, /external sign-in\nstarts have no per-client limit/);
       assert.match(google, /^WARNING: api\.trustedProxy is not set\./);
       assert.match(oidc, /^WARNING: api\.trustedProxy is not set\. With GitHub, Google or OIDC/);
+      assert.match(oidc, /Behind an HTTP\nproxy, API calls fail with 403 until it is set\.$/);
       assert.match(
         none,
         /^NOTE: api\.trustedProxy is not set, so failed password sign-ins are limited per\nemail only/,
       );
+      assert.match(none, /Behind an HTTP proxy, API calls fail with 403 until it\nis set\.$/);
       assert.equal(quiet.length, proxied.length * 2);
       for (const text of quiet) {
         assert.equal(text, "");

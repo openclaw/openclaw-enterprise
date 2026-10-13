@@ -1,10 +1,8 @@
 # View Agent runtime status and logs
 
-The **Logs** tab on an Agent version shows its Pods, restarts, recent Kubernetes
-Events and a bounded, redacted page of container output or, for OpenShell
-sandboxed Agents, sandbox policy decisions. Use it to find out why a
-version crashes, restarts or stops serving. Nothing is stored on the server: each
-read fetches one page from the cluster through the Compute Driver.
+Use an Agent version’s **Logs** tab to inspect Pods, container exits, Events,
+redacted output or Sandbox policy decisions. Reads fetch through Compute;
+raw logs are not persisted.
 
 Runtime status and logs are available for **Kubernetes Compute** only. Docker and
 SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
@@ -17,12 +15,14 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    When the latest deployment failed, **Deployment activity** links straight to
    that version's Logs tab.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists its recent warning Events, prefixed with their container. Last termination
+   lists every main and init container's state and recent warning Events, prefixed
+   with their container. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
-   [Sandbox source](#sandbox-source)), and a **Pod** when there are several.
+   [Sandbox source](#sandbox-source)), then a **Pod / container** stream.
+   A successful init container does not establish that the main process succeeded.
    While no Harness Pod is ready, the Gateway logs failed connections to it
    (`ECONNREFUSED`); the console then points you to the **Agent (Harness)**
    source for the cause (such as a failed model probe), or to Deployment
@@ -60,11 +60,13 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/
 
 Container timestamps are returned in UTC, preserving their available nanosecond precision.
 
-`runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `previous`,
+`runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `container`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
 `download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;
 unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
-read only newer lines of the same view. Container cursors count the lines delivered at their newest timestamp, so a
+read only newer lines of the same view. Select an advertised main or init
+container; omission selects the first main container. Changing containers starts
+a new audited view. Container cursors count the lines delivered at their newest timestamp, so a
 later line at that timestamp is returned once, even with identical text. When a
 tail or Driver byte cut leaves unknown whether a read began at that timestamp's
 first line, or an older cursor lacks the count, such a line can stay hidden until

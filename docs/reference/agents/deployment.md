@@ -160,17 +160,18 @@ the setting and what is accepted, never its value, before any revision is create
 ### Pending deployment progress
 
 While a revision is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live Pod
+when Compute knows. Kubernetes reports `HARNESS_CREDENTIAL_BOOTSTRAP_PENDING`
+while an OAuth bootstrap Job runs, `REVISION_UNSCHEDULABLE` when a live Pod
 of the revision has `PodScheduled` `False` with reason `Unschedulable`, for
 example for want of node memory, and `WORKSPACE_NODE_PENDING` when the Harness
 and gateway are ready and only the workspace node's gateway connection is
 outstanding. Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
-not connected. Otherwise the code is `REVISION_INCOMPLETE`. These codes change no
-outcome: the revision stays pending until it is ready, a held runtime failure
-ends it, or the convergence deadline passes. The worker rechecks an unready
-revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
+not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
+pending until it is ready, a held runtime failure ends it, or the convergence
+deadline passes, which also retires a pending bootstrap. The worker rechecks an
+unready revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
 apply its workspace node, so activation fails at once with
@@ -219,15 +220,16 @@ deployment error's `data.runtimeFailure` names the runtime component, check,
 time and, when the runtime classified it, a `cause`: a `kind` and an optional
 `detail` token from this closed vocabulary.
 
-| `kind`           | Meaning                                                    | `detail`                                                                                                                                                           |
-| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                      |
-| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
-| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                 |
-| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                               |
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
+| ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                                    |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
 
 OpenClaw's `format` covers an unknown model and a request the provider rejected
-as malformed, such as invalid provider settings. A rejected credential is
+as malformed, such as invalid provider settings. A 429 or usage limit is
+`rate_limit`. A rejected credential is
 `RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
 neither has a cause. The runtime builds a cause only from these tokens, and
 Compute drops any other cause while keeping the code, so it never carries

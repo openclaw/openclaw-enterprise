@@ -45,6 +45,7 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     ["images-model-probes", ["runtime"]],
     ["images-runtime-startup", ["runtime"]],
     ["images-runtime-startup-2", ["runtime"]],
+    ["images-runtime-startup-3", ["runtime"]],
   ]) {
     const statePath = join(directory, `${lane}.json`);
     await rm(commandsPath, { force: true });

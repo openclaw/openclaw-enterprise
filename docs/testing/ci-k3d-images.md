@@ -31,17 +31,26 @@ OpenShell retains its separately pinned image. Mutable overrides fail before
 resource creation. Clean up a failed run's owned resources with
 `node scripts/ci/cleanup.mjs --state <private-state-file>` before reusing its state path.
 
-`k3d cluster create` times out after five minutes (hosted runners take under a
-minute, node image pull included; `OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` overrides
-it). The timeout stops k3d's whole process group. A preparation command still
-running 5 seconds after its timeout's SIGTERM gets SIGKILL, and 5 seconds later
-preparation stops waiting for output that escaped descendants hold open
+`k3d cluster create` times out after two minutes, and its retry after five
+(hosted runners take under a minute, node image pull included;
+`OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` sets both). The timeout stops k3d's whole
+process group. A preparation command still running 5 seconds after its
+timeout's SIGTERM gets SIGKILL, and 5 seconds later preparation stops waiting
+for output that escaped descendants hold open
 (`OPENCLAW_CI_COMMAND_KILL_GRACE_MS` overrides both). Preparation then writes the
 lane's cluster diagnostics (10 seconds per command;
 `OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS` overrides it), deletes the partial
 cluster and retries once; a second timeout fails preparation and leaves the
 cluster to lane cleanup. The node Ready wait starts only after every owned node
 has registered (up to two minutes).
+
+A timed-out create's diagnostics also keep k3d's own output (the step it stopped
+in), each node's process list, and the load balancer's state. k3d starts the load
+balancer only after K3s reports ready, and its node entrypoint keeps a server
+running after K3s exits. A load balancer still `created` beside a running server
+whose log ends in `connection refused` API retries therefore means K3s exited.
+Node log excerpts replace those retries with one line per target and outcome,
+with first and last times, so K3s's last lines stay visible.
 
 Preparation reuses a supplied immutable workload image in the local Docker daemon
 only when `docker image inspect` records the requested digest in `RepoDigests`;

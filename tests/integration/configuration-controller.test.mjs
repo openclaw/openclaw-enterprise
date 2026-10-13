@@ -450,6 +450,61 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   assert.deepEqual(updated.body.data.values, local);
 });
 
+test("Configuration HTTP refuses a model provider models setting that is not a list", async () => {
+  // Finding 1186: the credential rules walk only a list of model rows, so a record of rows
+  // carried a literal credential header past them into storage, and OpenClaw refused the
+  // document only when the Gateway started. Every provider is checked, selected or not.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const sentinel = "synthetic-model-credential-not-for-configuration";
+  const message = (key) => `Configuration setting ${key}.models must be an array of model entries.`;
+  for (const [values, setting] of [
+    [
+      {
+        models: {
+          providers: {
+            gateway: { models: { m: { id: "m", headers: { "x-api-key": sentinel } } } },
+          },
+        },
+      },
+      "models.providers.gateway",
+    ],
+    [
+      { models: { providers: { "my gateway": { models: null } } } },
+      'models.providers["my gateway"]',
+    ],
+    [{ models: { providers: { openai: { models: "gpt-5" } } } }, "models.providers.openai"],
+  ]) {
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assert.equal(rejected.body.error.message, message(setting));
+  }
+  assert.deepEqual(configurationDriver.storedConfigurations(), []);
+
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: createOpenClawConfiguration() },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  const failedUpdate = await request(context.app, "PATCH", item, {
+    body: { values: { models: { providers: { gateway: { models: {} } } } } },
+  });
+  assert.equal(failedUpdate.status, 400, JSON.stringify(failedUpdate.body));
+  assert.equal(failedUpdate.body.error.message, message("models.providers.gateway"));
+  const unchanged = await request(context.app, "GET", item);
+  assert.deepEqual(unchanged.body.data, created.body.data);
+  // A list, an empty one, or no models setting still saves.
+  const listed = { models: { providers: { gateway: { models: [] }, openai: {} } } };
+  const updated = await request(context.app, "PATCH", item, { body: { values: listed } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(updated.body.data.values, listed);
+});
+
 test("Configuration save refuses an agents roster every deployment refuses, with deployment's text", async () => {
   // Deployment runs the real Kubernetes Compute roster rules, as production admission does.
   const kubernetes = createTestKubernetesComputeDriver("compute-roster-integration");
@@ -783,6 +838,8 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     await configurationDriver.update({ ...stored, values });
   };
   const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader = (name) =>
+    `must not set the credential header "${name}" (its name marks a credential)`;
   const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
 
   for (const [values, message] of [
@@ -814,9 +871,50 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
           providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
         },
       },
+      setting("models.providers.openai.headers", `${credentialHeader("X-Api-Key")}: ${binding}`),
+    ],
+    // OpenClaw's request transport overrides carry credentials too (finding 1142).
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { headers: { Authorization: "Bearer ${MODEL_TOKEN}" } } },
+          },
+        },
+      },
       setting(
-        "models.providers.openai.headers",
-        `must not set an authorization header: ${binding}`,
+        "models.providers.openai.request.headers",
+        `${credentialHeader("Authorization")}: ${binding}`,
+      ),
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: {
+              request: { auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" } },
+            },
+          },
+        },
+      },
+      setting(
+        "models.providers.openai.request.auth",
+        `must be unset or {mode: "provider-default"}: ${binding}`,
+      ),
+    ],
+    // A provider the primary model does not select is still reachable (imageModel, /model).
+    [
+      {
+        ...valid,
+        models: {
+          providers: { google: { headers: { "x-goog-api-key": "${GOOGLE_API_KEY}" } } },
+        },
+      },
+      setting(
+        "models.providers.google.headers",
+        `${credentialHeader("x-goog-api-key")}: ${binding}`,
       ),
     ],
   ]) {
@@ -840,6 +938,12 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
     assert.equal(deployed.body.error.message, message, label);
+    // Agent save checks the same rule on the stored row.
+    const agentSaved = await request(context.app, "PATCH", agentPath, {
+      body: { configurationId },
+    });
+    assert.equal(agentSaved.status, 400, `${label}: ${JSON.stringify(agentSaved.body)}`);
+    assert.equal(agentSaved.body.error.message, message, label);
     await storeAsOlderRelease(valid);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
@@ -1322,5 +1426,279 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   const unreadable = await request(context.app, "GET", `${collection}/${id}`);
   assert.equal(unreadable.status, 503);
   assert.equal(JSON.stringify(unreadable.body).includes(sentinel), false);
+  assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
+});
+
+test("Without Kubernetes Compute, Configuration and Preset saves refuse what every Compute refuses", async (t) => {
+  // Findings 1189-1191: a Compute without validateConfiguration (Docker) relies on the shared
+  // model provider rules and the Configuration Driver alone. Preset saves skipped the shared
+  // rules, header names no HTTP client sends were stored, and plausible credential header
+  // names (version, dot and new words) took literals.
+  const root = await mkdtemp(join(tmpdir(), "occ-model-rules-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  // Like Docker Compute: ready Namespaces, no validateConfiguration.
+  const computeDriver = createReadyComputeDriver("compute-without-configuration-rules");
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
+  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  const invalidName = (setting) =>
+    `Configuration setting ${setting} must use valid HTTP header names.`;
+  const listMessage =
+    "Configuration setting models.providers.gateway.models must be an array of model entries.";
+  const refused = [
+    [
+      gateway({ headers: { "x-api-key ": sentinel } }),
+      invalidName("models.providers.gateway.headers"),
+    ],
+    [
+      gateway({ models: [{ id: "m", request: { headers: { Authorizatioн: sentinel } } }] }),
+      invalidName("models.providers.gateway.models.0.request.headers"),
+    ],
+    [gateway({ models: {} }), listMessage],
+    // The list first, as on Kubernetes Compute, when a header name is refused too.
+    [gateway({ models: {}, headers: { "x-api-key ": sentinel } }), listMessage],
+    [gateway({ models: { m: { id: "m", headers: { "x-api-key": sentinel } } } }), listMessage],
+    [
+      gateway({ baseUrl: "ftp://models.example.test" }),
+      "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+    ],
+  ];
+  for (const [values, message] of refused) {
+    for (const [collection, body] of [
+      [configurations, { kind: "agent", values }],
+      [presets, { name: "Refused", template: { configuration: { values } } }],
+    ]) {
+      const response = await request(context.app, "POST", collection, { body });
+      assert.equal(response.status, 400, `${collection}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.error.message, message, collection);
+      assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+    }
+  }
+  // Credential header names the widened rule matches take only references.
+  for (const name of [
+    "Authentication",
+    "X-Authentication",
+    "X-JWT",
+    "X-JWT-Assertion",
+    "X-Client-Assertion",
+    "X-Hmac",
+    "X-Otp",
+    "X-Pin",
+    "X-Pwd",
+    "X-Pass",
+    "X-License",
+    "X-Api-Key-V2",
+    "x-signature-v1",
+    "x.authorization",
+    "x.token",
+  ]) {
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: gateway({ headers: { [name]: sentinel } }) },
+    });
+    assert.equal(response.status, 400, `${name}: ${JSON.stringify(response.body)}`);
+    assert.match(
+      response.body.error.message,
+      /^Configuration field \/models\/providers\/gateway\/headers\/\S+ holds a credential value inline/,
+      name,
+    );
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  }
+  assert.deepEqual(await readdir(root), []);
+  const listed = await request(context.app, "GET", presets);
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual(listed.body.data, []);
+
+  // Benign names and a bearer reference under an Authentication header still save.
+  const accepted = gateway({
+    headers: {
+      Authentication: "Bearer ${GATEWAY_TOKEN}",
+      "X-Partition-Key": "p",
+      "X-Shard-Key": "s",
+      "X-Sort-Key": "s",
+      "X-Dedup-Key": "d",
+      "X-Passthrough": "on",
+      "X-Pinned-Version": "1",
+      "x-api-key-version": "2",
+    },
+    models: [{ id: "m", request: { headers: { "x.trace.id": "t" } } }],
+  });
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const preset = await request(context.app, "POST", presets, {
+    body: { name: "Accepted", template: { configuration: { values: accepted } } },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  // A variable without a default is checked when its Configuration is created, not before.
+  const variables = {
+    url: { type: "string" },
+    api: { type: "string" },
+    header: { type: "string" },
+  };
+  const templated = await request(context.app, "POST", presets, {
+    body: {
+      name: "Templated",
+      template: {
+        variables,
+        configuration: {
+          values: gateway({
+            baseUrl: "{{ vars.url }}",
+            api: "{{ vars.api }}",
+            models: [{ id: "m", baseUrl: "https://{{ vars.url }}/v1" }],
+            headers: { "{{ vars.header }}": "v" },
+          }),
+        },
+      },
+    },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+  // A default is checked like any value.
+  const defaulted = await request(context.app, "POST", presets, {
+    body: {
+      name: "Defaulted",
+      template: {
+        variables: { url: { type: "string", default: "ftp://models.example.test" } },
+        configuration: { values: gateway({ baseUrl: "{{ vars.url }}" }) },
+      },
+    },
+  });
+  assert.equal(defaulted.status, 400, JSON.stringify(defaulted.body));
+  assert.equal(
+    defaulted.body.error.message,
+    "Configuration field /models/providers/gateway/baseUrl must be an absolute http or https URL.",
+  );
+});
+
+test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {
+  // The 2026-10-12 notice: an older release saved model credentials in a provider's request
+  // transport settings. After the upgrade the bundled Driver must still read and replace that
+  // document so its operator can remove them, while save and deployment refuse it with the
+  // Kubernetes Compute rule's message, before any revision or runtime resource exists.
+  const root = await mkdtemp(join(tmpdir(), "occ-upgrade-configuration-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const kubernetes = createTestKubernetesComputeDriver("compute-upgrade-repair");
+  const computeDriver = createReadyComputeDriver("compute-upgrade-repair", {
+    implementation: "integration-compute-substrate",
+    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Upgraded Configuration consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "upgrade-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  const path = join(root, namespace.id, `${configurationId}.json`);
+  const sentinel = `synthetic-request-credential-${randomUUID()}`;
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
+  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set the credential header "x-goog-api-key" (its name marks a credential): ${binding}.`;
+
+  for (const [label, stale, message] of [
+    [
+      "request.auth authorization-bearer",
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
+          },
+        },
+      },
+      requestAuth,
+    ],
+    [
+      "request.auth header",
+      {
+        ...valid,
+        models: {
+          providers: {
+            openai: { request: { auth: { mode: "header", headerName: "x-key", value: sentinel } } },
+          },
+        },
+      },
+      requestAuth,
+    ],
+    [
+      "request.headers",
+      {
+        ...valid,
+        models: {
+          providers: { openai: { request: { headers: { "x-goog-api-key": sentinel } } } },
+        },
+      },
+      credentialHeader,
+    ],
+  ]) {
+    // Seed the document the older release stored, directly in the Driver's storage.
+    const current = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify({ ...current, values: stale }));
+
+    // It still reads, so its operator can see what to remove.
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, `${label}: ${JSON.stringify(read.body)}`);
+    assert.deepEqual(read.body.data.values, stale, label);
+    const agents = await request(context.app, "GET", `/namespaces/${namespace.id}/agents`);
+    assert.equal(agents.status, 200, label);
+    assert.deepEqual(
+      agents.body.data.map((listed) => listed.configurationId),
+      [configurationId],
+      label,
+    );
+
+    // Saving it unchanged and deploying it are refused with the same named message, and no
+    // revision is admitted.
+    const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
+    assert.equal(resaved.status, 400, `${label}: ${JSON.stringify(resaved.body)}`);
+    assert.equal(resaved.body.error.message, message, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(deployed.body.error.message, message, label);
+    for (const body of [resaved.body, deployed.body]) {
+      assert.equal(JSON.stringify(body).includes(sentinel), false, label);
+    }
+    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+    assert.deepEqual(revisions.body.data, [], label);
+
+    // An edit that removes the credential repairs it.
+    const repaired = await request(context.app, "PATCH", item, { body: { values: valid } });
+    assert.equal(repaired.status, 200, `${label}: ${JSON.stringify(repaired.body)}`);
+    assert.deepEqual(repaired.body.data.values, valid, label);
+    assert.equal((await readFile(path, "utf8")).includes(sentinel), false, label);
+  }
+  // The repaired Configuration deploys through the Agent's Harness authentication binding.
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
 });

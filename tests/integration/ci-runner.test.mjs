@@ -46,16 +46,19 @@ function runnerEnv(env = {}) {
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
     CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
+    // The fixture runners never inherit the lane's own deadline.
+    CI_RUNNER_DEADLINE_MS: "",
     ...fixtureGitEnv,
     ...env,
   };
 }
 
-function run(root, args, env = {}) {
+function run(root, args, env = {}, { timeout } = {}) {
   return spawnSync(process.execPath, [runnerPath, ...args], {
     cwd: repositoryRoot,
     encoding: "utf8",
     env: runnerEnv(env),
+    timeout,
   });
 }
 
@@ -2417,6 +2420,169 @@ test("run records a timeout that came before any test started", async (t) => {
   assert(record.elapsedMs >= 2000, String(record.elapsedMs));
 });
 
+// Finding 1209: a file hung in its teardown for 22 minutes, past the job's 25-minute timeout,
+// under the 60-minute per-file timeout. GitHub cancelled the job, so the results file was never
+// written and nothing named the test. The lane deadline stops the file first and names it.
+test("run stops a hung file at the lane deadline, names its test and starts nothing after it", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/deadline.json");
+  const resultsPath = join(root, "results/deadline.json");
+  const marker = join(root, "state/later-started");
+  await writeFile(
+    join(root, "tests/integration/teardown.test.mjs"),
+    [
+      'import test from "node:test";',
+      'test("passes first", () => {});',
+      'test("hangs in its teardown", async (t) => {',
+      "  // Like a worker stop that never returns; the interval keeps the file alive.",
+      "  t.after(() => new Promise(() => setInterval(() => {}, 1_000)));",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/later.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      'test("would start past the deadline", () => writeFileSync(process.env.CI_RUNNER_MARKER, ""));',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      deadline: {
+        files: [
+          { path: "tests/integration/teardown.test.mjs" },
+          { path: "tests/integration/later.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["deadline"] },
+  });
+
+  const started = Date.now();
+  const result = run(
+    root,
+    [
+      "run",
+      "deadline",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    // No per-file timeout: the default (60 minutes) is far past the deadline.
+    {
+      CI_RUNNER_TEST_TIMEOUT_MS: "",
+      CI_RUNNER_DEADLINE_MS: String(started + 4_000),
+      CI_RUNNER_MARKER: marker,
+    },
+    // Without the deadline the runner would wait out the 60-minute default.
+    { timeout: 60_000 },
+  );
+
+  assert.equal(result.error, undefined, "the deadline stopped the lane");
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const [teardown, later] = summary.files;
+  assert.equal(teardown.status, "failed");
+  const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
+  assert.equal(timeout.file, "tests/integration/teardown.test.mjs");
+  assert.match(timeout.message, /cut to the lane deadline/);
+  assert.match(timeout.message, /while running "hangs in its teardown"$/);
+  // The job log names it too, not only the diagnostics artifact.
+  assert.match(
+    result.stderr,
+    /run-tests: issue test-timeout tests\/integration\/teardown\.test\.mjs: .* while running "hangs in its teardown"\n/,
+  );
+  const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
+  assert.equal(record.reason, "timeout");
+  assert.equal(record.laneDeadline, true);
+  assert(record.timeoutMs > 0 && record.timeoutMs <= 4_000, String(record.timeoutMs));
+  assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 3 }]);
+  // The serial file behind it never started.
+  assert.equal(later.status, "failed");
+  assert.equal(later.counts.total, 0);
+  assert.deepEqual(
+    later.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("run starts no tests after a preparation that outlasted the lane deadline, and still cleans up", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/slow-prepare.json");
+  const resultsPath = join(root, "results/slow-prepare.json");
+  const started = join(root, "state/test-started");
+  const cleaned = join(root, "state/cleaned-up");
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      'import { writeFile } from "node:fs/promises";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      "export async function prepareFile() {",
+      "  await delay(2_500);",
+      '  return { cleanup: () => writeFile(process.env.CI_RUNNER_CLEANUP_MARKER, "") };',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/prepared.test.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      'test("would start past the deadline", () => writeFileSync(process.env.CI_RUNNER_MARKER, ""));',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { prepared: { files: [{ path: "tests/integration/prepared.test.mjs" }] } },
+    groups: { ci: ["prepared"] },
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "prepared",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    {
+      CI_RUNNER_DEADLINE_MS: String(Date.now() + 1_000),
+      CI_RUNNER_MARKER: started,
+      CI_RUNNER_CLEANUP_MARKER: cleaned,
+    },
+    { timeout: 60_000 },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => entry.code),
+    ["lane-deadline"],
+  );
+  assert.equal(summary.files[0].nodeExitCode, null);
+  assert.deepEqual(summary.files[0].cleanup, { status: "passed" });
+  await readFile(cleaned);
+  await assert.rejects(readFile(started), { code: "ENOENT" });
+});
+
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/prepare.json");
@@ -3335,6 +3501,35 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           probeDoneMs: 1,
           readyMs: 1,
         }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "gateway-model-probe",
+          stopped: true,
+          elapsedMs: 4_321,
+          budgetMs: 15_000,
+          extra: "secretauthvalue-extra",
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "secretauthvalue-case",
+          stopped: true,
+          elapsedMs: 1,
+          budgetMs: 15_000,
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "codex-ready",
+          stopped: "secretauthvalue-stopped",
+          elapsedMs: 1,
+          budgetMs: 15_000,
+        }),
+        measurement({
+          kind: "runtime-sigterm",
+          case: "codex-ready",
+          stopped: false,
+          elapsedMs: 1.5,
+          budgetMs: 15_000,
+        }),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -3404,8 +3599,109 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       probeDoneMs: null,
       readyMs: null,
     },
+    {
+      kind: "runtime-sigterm",
+      case: "gateway-model-probe",
+      stopped: true,
+      elapsedMs: 4_321,
+      budgetMs: 15_000,
+    },
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+});
+
+test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/cancelled.json");
+  // GitHub cancels a step by signalling and then killing its shell, never this runner, which
+  // finishes as an orphan beside the job's own cleanup step. The second file's cleanup kills
+  // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
+  // cleanup step makes it.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      "export async function prepareFile({ file }) {",
+      "  if (file.path.endsWith('plain.test.mjs')) {",
+      "    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };",
+      "  }",
+      "  return {",
+      "    cleanup: async () => {",
+      "      const shell = process.ppid;",
+      "      process.kill(shell, 'SIGKILL');",
+      "      const deadline = Date.now() + 10_000;",
+      "      while (process.ppid === shell && Date.now() < deadline) {",
+      "        await new Promise((resolve) => setTimeout(resolve, 10));",
+      "      }",
+      "      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });",
+      "    },",
+      "  };",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["plain", "cancelled"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      cancel: {
+        files: [
+          { path: "tests/integration/plain.test.mjs" },
+          { path: "tests/integration/cancelled.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["cancel"] },
+  });
+
+  // A parent process stands in for the step's shell: it waits for the runner until the second
+  // file's cleanup kills it. No shell parses any of these arguments.
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      'require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), { stdio: "inherit" });',
+      process.execPath,
+      runnerPath,
+      "run",
+      "cancel",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      join(root, "state/cancelled.json"),
+      "--results",
+      resultsPath,
+    ],
+    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 30_000 },
+  );
+
+  assert.equal(result.signal, "SIGKILL", result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.status, "failed");
+  // A cleanup that fails while the job runs is still a cleanup failure.
+  assert.deepEqual(summary.files[0].cleanup, { status: "failed", error: { name: "Error" } });
+  // The cancelled record keeps the error's name and code, never its message.
+  assert.deepEqual(summary.files[1].cleanup, {
+    status: "cancelled",
+    error: { name: "Error", code: "ENOENT" },
+  });
+  assert.deepEqual(
+    summary.issues.map(({ code, file }) => [code, file]),
+    [
+      ["cleanup-failed", "tests/integration/plain.test.mjs"],
+      ["cleanup-cancelled", "tests/integration/cancelled.test.mjs"],
+    ],
+  );
+  assert.doesNotMatch(
+    `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`,
+    /secretauthvalue/,
+  );
 });
 
 for (const scenario of [

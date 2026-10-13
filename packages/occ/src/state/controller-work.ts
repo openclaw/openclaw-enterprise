@@ -1,4 +1,5 @@
 import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 import { ScopeViolationError } from "../errors.ts";
@@ -33,6 +34,10 @@ export interface DeploymentStatusResult {
       readonly code: string;
       readonly message: string;
     } | null;
+    readonly nextAttemptAt: string | null;
+  } | null;
+  readonly cleanup: {
+    readonly status: DeploymentStatus;
     readonly nextAttemptAt: string | null;
   } | null;
 }
@@ -73,6 +78,10 @@ export function deploymentProgressForWork(
     case "WORKSPACE_NODE_BINDING_PENDING":
       code = attempt.code;
       message = "Workloads are ready; waiting for the Gateway to apply the workspace node.";
+      break;
+    case "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING":
+      code = attempt.code;
+      message = "Waiting for harness credential initialization to finish.";
       break;
     case "DEPENDENCY_UNAVAILABLE":
       code = attempt.code;
@@ -210,6 +219,8 @@ export interface ControllerWork {
   readonly attemptCount: number;
   readonly claimToken?: string;
   readonly leaseExpiresAt?: Date;
+  /** Claim liveness judged by the State store's clock when it read this work. */
+  readonly leaseActive?: boolean;
   readonly completedAt?: Date;
   readonly reasonCode?: string;
   readonly resultData?: Readonly<Record<string, unknown>>;
@@ -221,6 +232,26 @@ export interface ClaimedWork extends ControllerWork {
   readonly state: "claimed";
   readonly claimToken: string;
   readonly leaseExpiresAt: Date;
+  /**
+   * Milliseconds since `createdAt` when the claim was granted or renewed, by the State store's
+   * clock. `createdAt` is on that clock too, so subtracting it from the controller's clock would
+   * shift the age by their skew.
+   */
+  readonly ageMs: number;
+}
+
+/**
+ * Whether a revision was admitted no later than `work` was created: the revisions a stop or
+ * deletion owns. The PostgreSQL store stamps both on its own clock, so controller clock skew
+ * cannot move a running revision past the stop (finding 1195); revisions it admitted before
+ * that fix keep the controller's stamp. Both reads are truncated to milliseconds, and a tie
+ * counts as earlier, so the stop still stops the revision.
+ */
+export function revisionAdmittedBeforeWork(
+  revision: { readonly createdAt: string },
+  work: { readonly createdAt: Date },
+): boolean {
+  return Date.parse(revision.createdAt) <= work.createdAt.getTime();
 }
 
 export interface EnqueueWork {
@@ -362,6 +393,22 @@ export function validateFailureData(
 ): Readonly<Record<string, unknown>> | undefined {
   if (data === undefined) {
     return undefined;
+  }
+  if (
+    reasonCode === "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" ||
+    reasonCode === "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT"
+  ) {
+    if (
+      typeof data !== "object" ||
+      data === null ||
+      Array.isArray(data) ||
+      Object.keys(data).length !== 1 ||
+      !Object.hasOwn(data, "preparation") ||
+      !isComputePreparationFailureEvidence((data as Record<string, unknown>).preparation)
+    ) {
+      throw new ScopeViolationError("Compute preparation failure data has unsupported fields.");
+    }
+    return immutableCopy(data as Record<string, unknown>);
   }
   if (reasonCode === "CONVERGENCE_DEADLINE_EXCEEDED") {
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -516,13 +563,28 @@ export function controllerWorkDeploymentStatus(
   if (work.state === "failed_permanent") {
     return "failed";
   }
-  if (work.state === "claimed") {
-    if (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime()) {
-      return "running";
-    }
-    return "queued";
+  if (controllerWorkLeaseActive(work, now)) {
+    return "running";
   }
   return "queued";
+}
+
+/**
+ * Whether claimed work still holds a live lease. Leases are granted and expired on the
+ * database clock; the controller's clock can disagree with it, so the store's own judgement
+ * wins when it read one, and `now` is only a fallback for stores without a clock.
+ */
+export function controllerWorkLeaseActive(
+  work: Readonly<ControllerWork>,
+  now: Date = new Date(),
+): boolean {
+  if (work.state !== "claimed") {
+    return false;
+  }
+  return (
+    work.leaseActive ??
+    (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime())
+  );
 }
 
 function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
@@ -537,6 +599,10 @@ function deploymentErrorMessage(code: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
       return "Deployment convergence deadline exceeded.";
+    case "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED":
+      return "Harness credential initialization failed. Correct the cause and deploy again.";
+    case "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT":
+      return "Harness credential initialization exceeded its deadline. Correct the cause and deploy again.";
     case "RUNTIME_AUTHENTICATION_FAILED":
       return "Deployment runtime credentials were rejected.";
     case "RUNTIME_CPU_STARVED":

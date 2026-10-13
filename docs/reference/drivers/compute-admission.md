@@ -9,11 +9,11 @@ trusted Installation settings, never the backend.
 
 | Method                                                                            | Called at                                                                                                                                                                     | Refusal                                                                                                                                                              |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validateConfiguration(configuration)`                                            | Configuration create and update, Agent provisioning, and Preset create and update (values rendered with defaults)                                                             | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
+| `validateConfiguration(configuration, options?)`                                  | Configuration create and update, Agent provisioning, and Preset create and update (rendered with defaults; `options.unresolved` marks unfilled variables)                     | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
 | `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update, with `null` bindings, when the binding is `runtime` or a Secret and the Configuration selects a model | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
 | `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                                                       | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
-| `validateWorkspaceSetup(harness, configuration)`                                  | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files                             | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
-| `validateRepositoryCredentials(harness, sandboxDriverId?)`                        | Deployment with repository bindings, which requires it, and Agent create and update with repository bindings                                                                  | Any error becomes a fixed `409`.                                                                                                                                     |
+| `validateWorkspaceSetup(harness, configuration, sandboxDriverId?)`                | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files                             | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
+| `validateRepositoryCredentials(harness, sandboxDriverId?)`                        | Deployment with repository bindings, which requires it, Agent create and update, and the provisioning request, with repository bindings                                       | Any error becomes a fixed `409`.                                                                                                                                     |
 
 A message names the setting and what the Driver accepts, never a submitted
 value, in at most 256 characters. Agent provisioning also calls
@@ -50,10 +50,38 @@ Agent that fails a check still reads; its next update must fix the pair.
 
 - an enabled `channels.<provider>` other than `slack` or `msteams`;
 - a non-empty `auth`;
-- an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_`, or
-  `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or `CODEX_LOGIN_MODE`;
-- an `authorization`, `api-key` or `x-api-key` header on a selected model
-  provider or one of its models.
+- an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
+  case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or
+  `CODEX_LOGIN_MODE`;
+- on any `models.providers.<provider>`, whether or not a model setting
+  selects it: a credential header in `headers` (on the provider or one of
+  its models) or `request.headers`, a header name that is not a valid HTTP
+  field name, and a `request.auth` other than exactly
+  `{mode: "provider-default"}`. A credential header's last hyphen-,
+  underscore- or dot-separated word is `auth`, `authorization`, `token`,
+  `secret`, `password`, `cookie`, `credential(s)`, `signature`, `jwt` or a
+  like word, or its name ends in `key` (not an idempotency, cache, dedup,
+  partition, shard or sort key), before any trailing algorithm or version
+  word such as `-sha256`, `-ed25519` or `-v2`; the
+  [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
+  The refusal quotes the header's name, never its value. On a Preset save, a
+  header name that waits on a variable without a default is checked once
+  filled.
+  A `models` that is not a list is refused too: it would hide its rows.
+
+These close the credential slots in a provider's `headers` and `request`.
+The provider `apiKey` stays, checked against the Harness binding on selected
+providers only. The Configuration Driver accepts the `apiKey`, the credential
+headers, `request.auth.token` and `.value` and the TLS client keys only as
+references, and refuses a `request.proxy.url` with a user name or password.
+On Kubernetes a reference does not admit a credential header or a non-default
+`request.auth`: model credentials come only from the Agent's Harness
+authentication binding. Deployment runs `validateConfiguration` on the stored
+values before the Configuration Driver validates them, so a stored
+Configuration that predates a rule gets its save message.
+A credential under a header name the rule does not match, in
+`localService.env`, or as a literal in another `env` name that a reference
+reads, still passes: the binding cannot see what a name means.
 
 `validateHarnessAuth` applies these first, then names the Agent's
 `harnessAuth.method` when its topology cannot use it (embedded OpenClaw takes
@@ -67,9 +95,17 @@ no Sandbox Driver; a credential source needs its paired Sandbox) stays a fixed
 The channel runtime rule stays at deployment: it depends on the execution mode
 and the Installation's `runtime.channels`.
 
-`validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone (or
-none) and the managed workspace path (or `/home/node/workspace` on a dedicated
-Harness); preparation also needs runtime storage, an Installation setting.
+[SSH Compute](ssh-compute.md) runs only embedded OpenClaw (other topologies get
+a fixed `409`) and names `harnessAuth.method` for any method but `runtime`,
+through the same
+[shared rule](../../../apps/controller/src/drivers/compute/harness-auth-method.ts).
+
+`validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone, in
+any letter case (or none), and the managed workspace path (or
+`/home/node/workspace` on a dedicated Harness); preparation also needs runtime
+storage, an Installation setting. Kubernetes Compute first refuses any Harness
+in a Sandbox, with a `409` naming the Sandbox: its Sandbox carries no workspace
+initializer, and OpenShell moves the OpenClaw workspace to its mount.
 [Docker Compute](../../../apps/controller/src/drivers/compute/docker/index.ts)
 applies the same
 [shared rule](../../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts),

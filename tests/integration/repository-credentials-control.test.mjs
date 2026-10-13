@@ -9,7 +9,10 @@ import {
   startRegistryCredentialServiceFixture,
 } from "../fixtures/repository-credentials/registry.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import {
+  createResourceScope,
+  createTestResourceScope,
+} from "../fixtures/repository-credentials/resources.mjs";
 import { createServer as createTlsServer, request as tlsRequest } from "node:https";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -733,7 +736,15 @@ test(
 );
 
 async function boundControlFixture(t, limits = {}, repositories = undefined) {
-  const fixture = await startRegistryCredentialServiceFixture(t, {
+  // One scope owns every cleanup of these tests. node:test stops a test's after hooks at
+  // the first failure, so a failed fixture cleanup used to skip the receipt listener and
+  // relay hooks registered after it and leave their servers holding the file open. The scope
+  // runs cleanups in reverse and keeps going past a failure. The service reports to the
+  // receipt listener while it stops, so that listener's own scope closes last.
+  const resources = createTestResourceScope(t);
+  const receiptResources = createResourceScope();
+  resources.after(() => receiptResources.close());
+  const fixture = await startRegistryCredentialServiceFixture(resources, {
     namespaceId: `ns_${randomUUID()}`,
     autoOpen: false,
     maximumDurationSeconds: 1200,
@@ -763,7 +774,7 @@ async function boundControlFixture(t, limits = {}, repositories = undefined) {
     };
   };
   const input = inputFor(bindings[0].repositoryRef);
-  const receipts = await startReceiptState(t, fixture, bindings, deadlineWallMs);
+  const receipts = await startReceiptState(receiptResources, fixture, bindings, deadlineWallMs);
   const freshId = () => `${fixture.clock.wallNow()}-${randomUUID()}`;
   const send = (value, id = freshId(), socketPath = fixture.config.gateway.controlSocket) =>
     control(
@@ -773,7 +784,7 @@ async function boundControlFixture(t, limits = {}, repositories = undefined) {
       { ...value, durableAdmission: true },
       { "x-admission-id": id },
     );
-  return { ...fixture, input, inputFor, freshId, send, receipts };
+  return { ...fixture, resources, input, inputFor, freshId, send, receipts };
 }
 
 test(
@@ -904,8 +915,8 @@ test("control refuses loose requests before acting on them", { timeout: 15000 },
   assert.equal(fixture.service.status(sessionId).state, "OPEN");
 });
 
-async function holdControlRequest(t, target) {
-  const directory = await socketDirectory(t, "rcs-held-");
+async function holdControlRequest(owner, target) {
+  const directory = await socketDirectory(owner, "rcs-held-");
   const socketPath = join(directory, "relay.sock");
   const sockets = new Set();
   let captured;
@@ -947,7 +958,7 @@ async function holdControlRequest(t, target) {
     relay.listen(socketPath, resolve);
   });
   await chmod(socketPath, 0o600);
-  t.after(async () => {
+  owner.after(async () => {
     for (const socket of sockets) {
       socket.destroy();
     }
@@ -962,7 +973,7 @@ test(
   async (t) => {
     const fixture = await boundControlFixture(t, { sessions: 1 });
     const { input, send, freshId, clock } = fixture;
-    const held = await holdControlRequest(t, fixture.config.gateway.controlSocket);
+    const held = await holdControlRequest(fixture.resources, fixture.config.gateway.controlSocket);
     const id = freshId();
     await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
     const delayed = send(input, id, held.socketPath);
@@ -1067,12 +1078,12 @@ test(
       }
       return transact.call(this, work);
     };
-    t.after(() => {
+    fixture.resources.after(() => {
       receipts.state.transact = transact;
       release();
     });
     const disposed = [];
-    t.after(fixture.service.observeDisposal((status) => disposed.push(status)));
+    fixture.resources.after(fixture.service.observeDisposal((status) => disposed.push(status)));
     const pending = send(input, id);
     await reached;
     await clock.advance(1000);
@@ -1136,7 +1147,7 @@ test(
 
     // The journal reserves, then fails to record the opened session.
     const transact = receipts.state.transact;
-    t.after(() => {
+    fixture.resources.after(() => {
       receipts.state.transact = transact;
     });
     let calls = 0;
@@ -1195,6 +1206,133 @@ test(
     assert.equal(recovered.status, 200);
     assert.equal(recovered.body.state, "DISPOSED");
     assert.equal(recovered.body.sessionId, (await receipt(lostId)).sessionId);
+  },
+);
+
+test(
+  "a refused admission keeps a reservation whose fence did not commit and the next recovery fences it",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = await boundControlFixture(t, {}, defaultRegistryRepositories);
+    const { inputFor, send, freshId, receipts } = fixture;
+    const receipt = async (id) =>
+      receipts.state.read((view) => view.repositorySessions.findBrokerReceipt(id));
+    const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
+    const id = freshId();
+    await receipts.prepare(id, invalid.repositoryRef, invalid.durationSeconds);
+    const transact = receipts.state.transact;
+    let calls = 0;
+    receipts.state.transact = async function (work) {
+      calls += 1;
+      // The first transaction reserves the receipt. The second is the fence.
+      if (calls === 2) {
+        throw new Error("fixture-unavailable");
+      }
+      return transact.call(this, work);
+    };
+    t.after(() => {
+      receipts.state.transact = transact;
+    });
+    // Reservation commits, then the fence transaction fails. The refusal is still
+    // invalid input, and the receipt must stay reserved for a later fence.
+    const missing = { status: 404, body: { error: "admission-missing" } };
+    assert.deepEqual(await send(invalid, id), {
+      status: 400,
+      body: { error: "invalid-request" },
+    });
+    assert.equal((await receipt(id)).state, "reserved");
+    receipts.state.transact = transact;
+    assert.deepEqual(await send({ ...invalid, recoverOnly: true }, id), missing);
+    assert.equal((await receipt(id)).state, "fenced");
+    assert.deepEqual(await send(invalid, id), missing);
+  },
+);
+
+test(
+  "reservations whose fence did not commit are fenced again and forgotten past their window",
+  { timeout: 15000 },
+  async (t) => {
+    // Capacity is two admission records. A repository has one active attempt, so each
+    // admission that reaches the journal uses its own repository: repo-a is refused,
+    // repo-b fails to bind and repo-c opens.
+    const fixture = await boundControlFixture(t, { sessions: 1 }, [
+      ...defaultRegistryRepositories,
+      { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
+    ]);
+    const { inputFor, send, freshId, clock, receipts } = fixture;
+    const receipt = async (id) =>
+      receipts.state.read((view) => view.repositorySessions.findBrokerReceipt(id));
+    const prepared = async (input) => {
+      const id = freshId();
+      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+      return id;
+    };
+    const transact = receipts.state.transact;
+    // Each entry decides one transaction: true fails it. Past the plan, `down` decides.
+    let plan = [];
+    let down = false;
+    receipts.state.transact = async function (work) {
+      if (plan.length > 0 ? plan.shift() : down) {
+        throw new Error("fixture-unavailable");
+      }
+      return transact.call(this, work);
+    };
+    t.after(() => {
+      receipts.state.transact = transact;
+    });
+    const refused = [];
+    // A refused open: the reservation commits, then the fence transaction fails.
+    const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
+    const invalidId = await prepared(invalid);
+    plan = [false, true];
+    assert.deepEqual(await send(invalid, invalidId), {
+      status: 400,
+      body: { error: "invalid-request" },
+    });
+    refused.push([invalid, invalidId]);
+    // A failed bind: the reservation commits, then the bind and the fence fail. The
+    // broker closes the session it never handed out.
+    const unbound = inputFor("repo-b");
+    const unboundId = await prepared(unbound);
+    plan = [false, true, true];
+    assert.deepEqual(await send(unbound, unboundId), {
+      status: 503,
+      body: { error: "unavailable" },
+    });
+    refused.push([unbound, unboundId]);
+    for (const [, id] of refused) {
+      assert.equal((await receipt(id)).state, "reserved");
+    }
+    const valid = inputFor("repo-c");
+    // Both records fill capacity inside their admission window.
+    plan = [];
+    assert.deepEqual(await send(valid, freshId()), {
+      status: 503,
+      body: { error: "overloaded" },
+    });
+    await clock.advance(60_001);
+    // Past the window the sweep fences them again. While the journal stays away the
+    // fences fail and the records still count.
+    down = true;
+    assert.deepEqual(await send(valid, freshId()), {
+      status: 503,
+      body: { error: "overloaded" },
+    });
+    for (const [, id] of refused) {
+      assert.equal((await receipt(id)).state, "reserved");
+    }
+    // Once a fence commits, its record is forgotten and the next admission opens.
+    down = false;
+    const opened = await send(valid, await prepared(valid));
+    assert.equal(opened.status, 201);
+    assert.equal(opened.body.session.state, "OPEN");
+    for (const [input, id] of refused) {
+      assert.equal((await receipt(id)).state, "fenced");
+      assert.deepEqual(await send(input, id), {
+        status: 404,
+        body: { error: "admission-missing" },
+      });
+    }
   },
 );
 

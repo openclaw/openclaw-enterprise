@@ -245,7 +245,9 @@ install_actionlint() {
 install_browser_dependencies() {
   if [[ -n "${CI:-}" ]]; then
     need_command pnpm
-    pnpm exec playwright install --with-deps chromium
+    # Every test launches Chromium headless, which runs the headless shell, so
+    # skip the full Chrome for Testing download (about 190 MB, 7 s).
+    pnpm exec playwright install --with-deps --only-shell chromium
   else
     echo "Skipping local browser installation; browser setup is CI-only." >&2
   fi
