@@ -1146,7 +1146,8 @@ console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " 
     const slow = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);\n`;
     await writeFile(dockerPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
     await writeFile(corepackPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
-    // Like the worker revision suite: a template per process, then a copy per test.
+    // A template per process, then a copy per test, like the worker revision suite, whose
+    // template is the database the runner prepared for its file.
     const program = `
 const { prepareFile } = await import(process.argv[1]);
 const options = {
