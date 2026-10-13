@@ -66,7 +66,7 @@ function workerStartupFailureCode(error) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
   if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info)/.test(
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must be an absolute HTTP)/.test(
       message,
     )
   ) {

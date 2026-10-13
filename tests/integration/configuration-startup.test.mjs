@@ -167,6 +167,8 @@ test("API and worker refuse a bad observability host or runtime image before ope
     "http://2130706433",
     "http://@192.168.1.1",
     "http://@grafana.example.internal/d",
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    "javascript:alert(1)",
   ]) {
     configuration.observability = { url: shorthand };
     await writeFile(path, JSON.stringify(configuration), "utf8");
