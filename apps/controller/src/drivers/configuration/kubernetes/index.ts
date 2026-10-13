@@ -10,6 +10,7 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   JSONSchema,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
@@ -93,12 +94,16 @@ function checkConfiguration(configuration: Configuration, stored: boolean): void
   checkValues(configuration.values, stored);
 }
 
-function checkValues(document: OpenClawConfigurationDocument, stored: boolean): void {
+function checkValues(
+  document: OpenClawConfigurationDocument,
+  stored: boolean,
+  options?: ConfigurationValidationOptions,
+): void {
   const values = asRecord(document);
   if (values === undefined) {
     throw new ConfigurationValidationError("Configuration values must be a JSON object.");
   }
-  validateModelCredentialReferences(document, { stored });
+  validateModelCredentialReferences(document, { ...options, stored });
   if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
     throw new ConfigurationValidationError(
       "Configuration exceeds the Kubernetes ConfigMap size limit.",
@@ -166,8 +171,11 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     checkConfiguration(configuration, false);
   }
 
-  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
-    checkValues(document, false);
+  async validateValues(
+    document: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    checkValues(document, false, options);
   }
 
   async create(configuration: Configuration): Promise<Configuration> {

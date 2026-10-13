@@ -229,7 +229,7 @@ export function requireHarnessCredentialBinding(
           if (!isAdmittedHeaderName(name, options, headersAt)) {
             throw createError(headersSetting, invalidHeaderNameRequirement(name));
           }
-          if (isCredentialHeaderName(name)) {
+          if (isCredentialHeaderName(name, options, headersAt)) {
             throw createError(headersSetting, credentialHeaderRequirement(name));
           }
         }
