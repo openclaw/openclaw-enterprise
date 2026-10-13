@@ -68,7 +68,7 @@ export function spawnResult(command, args, { env, timeout = watchdogMs } = {}) {
       child[stream].on("data", (chunk) => (output[stream] += chunk));
     }
     const timer = setTimeout(() => {
-      error = Object.assign(new Error(`${args[0]} ETIMEDOUT`), { code: "ETIMEDOUT" });
+      error = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
       child.kill("SIGTERM");
       child.stdout.destroy();
       child.stderr.destroy();
@@ -161,7 +161,7 @@ function finish(stdout = "") {
   process.exit(0);
 }
 // An external command that does not answer; preparation must time it out. It exits
-// on its own after the CLI watchdogs, so a regression or a killed preparation cannot
+// on its own after the CLI watchdog, so a regression or a killed preparation cannot
 // leave it running.
 async function hang() {
   setTimeout(() => process.exit(124), ${hungCommandExitMs});
