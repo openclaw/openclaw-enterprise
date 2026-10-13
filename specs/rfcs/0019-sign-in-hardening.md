@@ -10,7 +10,7 @@ status_note: "Retroactive record. Every decision below is already implemented on
 - **ID:** RFC-0019
 - **Created:** 2026-10-01
 - **Last updated:** 2026-10-13
-- **Source baseline:** `main` at `521549dff`. Every symbol and number below was read there; rechecked at `04d01d02e`, `bf67a4317` and `07590c64e`.
+- **Source baseline:** `main` at `521549dff`. Every symbol and number below was read there; rechecked through `07590c64e`.
 - **RFC PR:** [#856](https://github.com/openclaw/openclaw-enterprise/pull/856)
 - **Related:** [RFC-0007](0007-human-federated-sign-in/index.md) owns GitHub sign-in, the attempt,
   receipt and session-key design, and the original sign-in admission section, which this record
@@ -27,8 +27,9 @@ its own; no human has reviewed the combined design, which needs an auth design r
 record states what landed, why, and what it costs, so a reviewer can accept, change, or reopen it.
 
 Password sign-in in both profiles uses one failure-counting limiter, keyed on email and (only
-behind a trusted proxy) client address. Spent budgets pace attempts instead of dropping them.
-Administrators and the recovery account are paced, never refused by sequential guessing. A
+behind a trusted proxy) client address. A spent budget delays an ordinary attempt, then
+refuses it with `429`. Administrators and the recovery account are paced and still checked,
+never refused by sequential guessing. A
 browser that signed in before gets its own lane through a known-device cookie. Operators can
 limit password sign-in to the recovery account. External sign-in keeps RFC-0007's flow with
 tighter edges, and sessions from a removed or reconfigured provider end.
@@ -45,6 +46,10 @@ proxy every browser behind the ingress shared one budget; T5, anyone could spend
 account's lane. Enabling GitHub or Google was not a mitigation: every account kept a password,
 under an older, harsher limiter.
 
+Two profiles answer password sign-in. Any configured GitHub, Google or OIDC provider selects
+the **guarded** profile: the controller's own `/oce/password` endpoint checks the password and
+issues the session. Otherwise the **password-only** profile uses Better Auth's email sign-in.
+
 ## Decision as landed
 
 ### Password admission (both profiles)
@@ -52,10 +57,13 @@ under an older, harsher limiter.
 `passwordFailureAdmission` in [`admission.ts`](../../apps/controller/src/auth/admission.ts),
 behind the `PasswordSignInAdmission` seam. [#727](https://github.com/openclaw/openclaw-enterprise/pull/727)
 moved the external-provider profile's `/oce/password` onto it from attempt-counting
-`keyedAdmission` and dropped that profile's global 4+1 password concurrency cap.
+`keyedAdmission` and dropped that profile's global password concurrency cap: 4 attempts at once,
+plus 1 slot only the recovery account could use.
 
-- **Lanes.** 10 failures per minute per email; 20 per client address, only when
-  `OCC_AUTH_TRUSTED_PROXY_CIDRS` resolves the address. In-flight attempts count, so concurrent
+- **Lanes.** 10 failures per minute per email; 20 per client address whenever
+  `OCC_AUTH_TRUSTED_PROXY_CIDRS` is set. The address is read from the forwarded header only when
+  the socket peer is trusted; otherwise, or when the header is malformed, it is the socket peer.
+  In-flight attempts count, so concurrent
   guesses cannot overrun a lane. Successes never spend budget, and a success in the shared lane
   clears the email's failures, not the address's
   ([#613](https://github.com/openclaw/openclaw-enterprise/pull/613),
@@ -65,7 +73,7 @@ moved the external-provider profile's `/oce/password` onto it from attempt-count
   cannot reset someone's budget. The table holds 4,096 entries; when it is full of spent
   entries, a new key goes to the slow lane and its password is still checked.
 - **Slow lane.** Past the budget, an attempt waits for one of two slots for its email (16 may
-  wait, 1,024 across all emails, 16 password checks at once) and holds the slot for a floor
+  wait, 1,024 across all emails, 16 lookups or password checks at once) and holds the slot for a floor
   that doubles from 1 s to 8 s. Only a reserved account's password is then checked. Every
   other outcome is `429` with `Retry-After` after the same floor, so status and timing do not
   reveal whether the email exists or is reserved. Reserved means an Installation administrator
@@ -73,15 +81,19 @@ moved the external-provider profile's `/oce/password` onto it from attempt-count
   under `recovery-only`, only the recovery account.
 - **Audit.** Every password sign-in whose password is checked writes `authentication.login`; a
   wrong password or unknown email is denied with `INVALID_CREDENTIALS` and no account. Audit
-  writes fail closed, ordinarily with `503`. A wrong password whose denial audit fails still
-  counts as a failure (`DenialAuditUnavailable`, `countsAsSignInFailure`), so an audit outage
-  cannot open unlimited guessing
-  ([#707](https://github.com/openclaw/openclaw-enterprise/pull/707) password-only,
-  [#738](https://github.com/openclaw/openclaw-enterprise/pull/738) guarded, via
-  `refusePassword` and `PASSWORD_DENIAL_AUDIT_UNAVAILABLE`). That failure is `503` within the
-  budget and when a full table sends the attempt to the slow lane. Once a reserved account's
-  budget is spent, `slowLane` answers it like any other wrong password there:
-  `SignInRateLimited` (`429`).
+  writes fail closed. A wrong password whose denial audit fails still counts as a failure
+  (`DenialAuditUnavailable`, `countsAsSignInFailure`), so an audit outage cannot open unlimited
+  guessing ([#707](https://github.com/openclaw/openclaw-enterprise/pull/707) password-only,
+  [#738](https://github.com/openclaw/openclaw-enterprise/pull/738) guarded, via `refusePassword`).
+  Each row except the paced reserved one spends budget:
+
+  | Profile | Situation                                             | Status                                                   |
+  | ------- | ----------------------------------------------------- | -------------------------------------------------------- |
+  | Both    | Wrong password or unknown email, audit written        | `401`                                                    |
+  | Both    | Same, denial audit fails, within budget or full table | `503` (`PASSWORD_DENIAL_AUDIT_UNAVAILABLE` when guarded) |
+  | Both    | Reserved account past its budget, wrong password      | `429` (`SignInRateLimited`), whether or not audit fails  |
+  | Guarded | Password outside 12–128 characters or email over 254  | `401` before any check, unaudited                        |
+
 - **Unstorable email** ([#1343](https://github.com/openclaw/openclaw-enterprise/pull/1343),
   after this record's window): an email containing a NUL character or an unpaired surrogate is
   refused inside admission with `400` `INVALID_REQUEST`, without a known-device read, an account
@@ -98,7 +110,7 @@ moved the external-provider profile's `/oce/password` onto it from attempt-count
 - **Visibility** (#695). Without a trusted proxy, startup logs
   `authentication.sign-in-limit-warning` (`TRUSTED_PROXY_NOT_CONFIGURED`) and Helm NOTES warn;
   nothing fails, since a source-preserving load balancer needs no proxy. The first slowed
-  attempt per lane per minute logs `authentication.sign-in-limited` with the lane and a keyed
+  attempt per key per minute logs `authentication.sign-in-limited` with the lane and a keyed
   hash, never the email or address.
 
 ### Known-device exemption
@@ -108,7 +120,8 @@ moved the external-provider profile's `/oce/password` onto it from attempt-count
 [#728](https://github.com/openclaw/openclaw-enterprise/pull/728),
 [#760](https://github.com/openclaw/openclaw-enterprise/pull/760)):
 
-- Every successful sign-in (external only when the account has a password) sets `__Host-occ_known_device` (`occ_known_device` when cookies are not Secure, as on an HTTP base URL): HttpOnly, `SameSite=Strict`, host-only, 90 days,
+- Every successful sign-in (external only when the account has a password; password-only
+  only when the account-state read before the check succeeds) sets `__Host-occ_known_device` (`occ_known_device` when cookies are not Secure, as on an HTTP base URL): HttpOnly, `SameSite=Strict`, host-only, 90 days,
   up to three `v2` entries. Each entry is a MAC over a hash of the email, the issue time and a
   nonce, plus a second MAC binding it to the account's password state (user, password method,
   that method's `authentication_version`; in the guarded profile only enrolled, enabled
@@ -193,25 +206,26 @@ RFC-0007 and RFC-0001 own the flow. These PRs tightened it:
 
 Who can keep whom out, after these changes. "New browser" means no valid known-device entry.
 
-| Target                                                  | Attacker needs                                                                                                                        | Result                                                                                                                           |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Ordinary account, known browser                         | Spend the email lane                                                                                                                  | No effect while proof reads succeed                                                                                              |
-| Ordinary account, new browser (password-only, or `all`) | 10 failures per minute at the email, from anywhere                                                                                    | `429` for that minute, renewable (T1 remains)                                                                                    |
-| Administrator or recovery, new browser                  | About 18 concurrent attempts at the email                                                                                             | Crowded out of the slow lane; fewer only delays them (T2 remains)                                                                |
-| Administrator or recovery, known browser                | Spend the email lane                                                                                                                  | No effect: own lane and slots                                                                                                    |
-| Any known browser                                       | 600 proof reads per minute across about 20 MAC-valid entries, which only a signed-in user can mint                                    | Every known browser falls back to the shared lane for that minute (inferred from code, not tested)                               |
-| Everyone, no trusted proxy                              | Spray failures at about 4,096 distinct emails per minute from one source                                                              | Each attempt hashes a password; the table fills and new keys are paced by one shared floor (up to 8 s), still checked (inferred) |
-| External start                                          | Keep 8 starts active (one source without a trusted proxy, two addresses with one), or about 1,000 starts during one user's round trip | Other starts get `429`, or that user's attempt is evicted and must restart                                                       |
+| Target                                                  | Attacker needs                                                                                                                                                     | Result                                                                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Ordinary account, known browser                         | Spend the email lane                                                                                                                                               | No effect while proof reads succeed                                                                                              |
+| Ordinary account, new browser (password-only, or `all`) | 10 failures per minute at the email, from anywhere                                                                                                                 | `429` for that minute, renewable (T1 remains)                                                                                    |
+| Administrator or recovery, new browser                  | About 18 concurrent attempts at the email                                                                                                                          | Crowded out of the slow lane; fewer only delays them (T2 remains)                                                                |
+| Administrator or recovery, known browser                | Spend the email lane                                                                                                                                               | No effect: own lane and slots                                                                                                    |
+| Any known browser                                       | 600 proof reads per minute across about 20 MAC-valid entries; each sign-in mints a fresh one, so one account holder who keeps the cookie from 20 sign-ins has them | Every known browser falls back to the shared lane for that minute (inferred from code, not tested)                               |
+| Everyone, no trusted proxy                              | Spray failures at about 4,096 distinct emails per minute from one source                                                                                           | Each attempt hashes a password; the table fills and new keys are paced by one shared floor (up to 8 s), still checked (inferred) |
+| External start                                          | Keep 8 starts active (one source without a trusted proxy, two addresses with one), or about 1,000 starts during one user's round trip                              | Other starts get `429`, or that user's attempt is evicted and must restart                                                       |
 
-Reserved accounts are paced, not refused: guessing continues at about 15 per minute per email
-past the budget so a stranger cannot keep them out sequentially. The per-email lane accepts T1
+Reserved accounts are paced, not refused, so a stranger cannot keep them out sequentially.
+The cost: slow-lane failures for them are not counted and the window rolls every minute, so
+guessing continues at about 25 per minute per email (10 within budget, about 15 paced). The per-email lane accepts T1
 for new browsers; without it a distributed attacker guesses each email freely.
 
 ## Alternatives considered
 
 - **Per-(address, email) limit with no bypass:** reverted before launch; locks out the only
   administrator.
-- **Pace everyone, refuse no one:** removes T1 but allows about 36,000 guesses per email per day
+- **Pace everyone, refuse no one:** removes T1 but allows about 36,000 guesses per email per day (25 per minute)
   and spreads T2 to every account.
 - **Require a trusted proxy in Helm:** rejected for valid source-preserving setups and existing
   upgrades; warnings instead.
@@ -228,6 +242,9 @@ for new browsers; without it a distributed attacker guesses each email freely.
 - No global cap on concurrent password hashing in the shared lane since #727.
 - Re-enabling an account restores entries issued before the disable if the password did not
   change. There is no per-device or per-account revoke short of a reset or secret rotation.
+- An `OCC_AUTH_TRUSTED_PROXY_CIDRS` list that does not match the real ingress peer silently
+  keys every browser on the ingress address, so all share one 20-failure address lane (T4
+  returns). `TRUSTED_PROXY_NOT_CONFIGURED` fires only when the variable is unset.
 - Address keys hash the full address, so an IPv6 client can rotate within its prefix.
 - `recovery-only` strands accounts without an external identity; startup only warns.
 - #797 ends sessions on next use; an unused stale session never authenticates but stays until
