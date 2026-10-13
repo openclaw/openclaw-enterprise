@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -16,7 +16,6 @@ import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
-  runtimeLogLineHash,
   validRuntimeLogFrontierTime,
 } from "../../packages/occ/src/runtime-logs/cursor.ts";
 
@@ -1111,7 +1110,7 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
 
 // Controlled Driver output; the reader, authenticated cursor and sanitizer are real.
 // These source tests do not qualify a Kubernetes/provider deployment.
-function pollReader() {
+function pollReader({ secret = randomBytes(32).toString("hex") } = {}) {
   const binding = {
     principalId: "synthetic-person",
     agentId: "agent-test",
@@ -1124,7 +1123,7 @@ function pollReader() {
     container: "gateway",
     restartCount: 0,
   };
-  const codec = createRuntimeLogCursorCodec(randomBytes(32).toString("hex"));
+  const codec = createRuntimeLogCursorCodec(secret);
   let cursor;
   let reads = 0;
   let admissions = 0;
@@ -1855,7 +1854,7 @@ function cursorCodecFixture() {
     restartCount: 0,
     previous: false,
     lastTime: "2026-09-30T12:00:00Z",
-    lastHashes: [runtimeLogLineHash("worker ready")],
+    lastHashes: [codec.lineHash("worker ready")],
     frontierComplete: true,
     frontierCount: 1,
     issuedAt,
@@ -1878,12 +1877,14 @@ test("runtime log cursor codec refuses other bindings, altered envelopes and fut
   ]) {
     assert.equal(status(cursor, { bound }), "invalid", label);
   }
-  // Only the exact three-part v1 envelope verifies; a short MAC is refused, not thrown.
+  // Only the exact three-part v2 envelope verifies; a short MAC is refused, not thrown.
+  // The MAC covers the version, so relabelling a v2 cursor as v1 does not verify.
   const [, payload, mac] = cursor.split(".");
   for (const [label, forged] of [
     ["extra part", `${cursor}.extra`],
-    ["version", `v2.${payload}.${mac}`],
-    ["short MAC", `v1.${payload}.${mac.slice(0, -1)}`],
+    ["version", `v1.${payload}.${mac}`],
+    ["unknown version", `v3.${payload}.${mac}`],
+    ["short MAC", `v2.${payload}.${mac.slice(0, -1)}`],
   ]) {
     assert.equal(status(forged), "invalid", label);
   }
@@ -1896,13 +1897,115 @@ test("runtime log cursor codec refuses other bindings, altered envelopes and fut
 
 test("runtime log cursor codec keeps the newest 48 hashes, hashes raw lines exactly and needs a 32-character secret", () => {
   const { codec, binding, issuedAt, position } = cursorCodecFixture();
-  const hashes = Array.from({ length: 49 }, (_, index) => runtimeLogLineHash(`worker ${index}`));
+  const hashes = Array.from({ length: 49 }, (_, index) => codec.lineHash(`worker ${index}`));
   const many = codec.encode(binding, { ...position, lastHashes: hashes, frontierCount: 49 });
   assert.deepEqual(codec.decode(many, binding, issuedAt).position.lastHashes, hashes.slice(-48));
   // Frontier hashes compare raw lines exactly.
-  assert.notEqual(runtimeLogLineHash("worker ready"), runtimeLogLineHash("worker ready "));
+  assert.notEqual(codec.lineHash("worker ready"), codec.lineHash("worker ready "));
   assert.throws(() => createRuntimeLogCursorCodec("s".repeat(31)), TypeError);
   assert.doesNotThrow(() => createRuntimeLogCursorCodec("s".repeat(32)));
+});
+
+function cursorPayload(cursor) {
+  return JSON.parse(Buffer.from(cursor.split(".")[1], "base64url").toString("utf8"));
+}
+function plainLineHash(raw) {
+  return createHash("sha256").update(raw).digest("base64url").slice(0, 16);
+}
+// The pre-keying envelope: version outside the MAC and plain SHA-256 line hashes.
+function legacyCursor(secret, payload) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const mac = createHmac("sha256", secret)
+    .update(`occ-runtime-logs-cursor\0${encoded}`)
+    .digest("base64url");
+  return `v1.${encoded}.${mac}`;
+}
+
+test("runtime log cursor line hashes are keyed by the server secret, not plain SHA-256", async () => {
+  const secret = randomBytes(32).toString("hex");
+  const reader = pollReader({ secret });
+  // A low-entropy value that redaction masks; its raw-line digest must not be testable.
+  const secretLine = "db login password=hunter2";
+  const lines = [timedLog("worker ready", 0), timedLog(secretLine, 0)];
+  const page = await reader.poll(lines);
+  assert.equal(JSON.stringify(page.records).includes("hunter2"), false);
+  const payload = cursorPayload(reader.cursor);
+  const carried = payload.h.match(/.{16}/g);
+  assert.deepEqual(
+    carried,
+    lines.map(({ raw }) => reader.codec.lineHash(raw)),
+  );
+  for (const { raw } of lines) {
+    assert.equal(carried.includes(plainLineHash(raw)), false, raw);
+  }
+  // Same secret, same digest; another secret cannot reproduce it.
+  assert.equal(
+    createRuntimeLogCursorCodec(secret).lineHash(secretLine),
+    reader.codec.lineHash(secretLine),
+  );
+  assert.notEqual(
+    createRuntimeLogCursorCodec(randomBytes(32).toString("hex")).lineHash(secretLine),
+    reader.codec.lineHash(secretLine),
+  );
+  // Nor is the line hash the cursor MAC key applied directly.
+  assert.notEqual(
+    createHmac("sha256", secret).update(secretLine).digest("base64url").slice(0, 16),
+    reader.codec.lineHash(secretLine),
+  );
+  // Frontier hashes and byte-cut window checkpoints (container and Sandbox) all go
+  // through the keyed codec; the readers have no unkeyed digest of their own.
+  for (const file of ["read.ts", "sandbox.ts"]) {
+    const source = await readFile(
+      new URL(`../../packages/occ/src/runtime-logs/${file}`, import.meta.url),
+      "utf8",
+    );
+    assert.equal(/node:crypto|createHash|createHmac/.test(source), false, file);
+  }
+});
+
+test("runtime log cursor keyed hashes still de-duplicate and resume", async () => {
+  const reader = pollReader();
+  const first = [timedLog("worker ready", 0), timedLog("worker ready", 0), timedLog("a", 1)];
+  assert.deepEqual(messages(await reader.poll(first)), ["worker ready", "worker ready", "a"]);
+  // The overlap at the frontier is consumed; a new copy and later lines are kept.
+  assert.deepEqual(messages(await reader.poll([...first, timedLog("a", 1), timedLog("b", 2)])), [
+    "a",
+    "b",
+  ]);
+  assert.deepEqual(messages(await reader.poll([timedLog("a", 1), timedLog("b", 2)])), []);
+  assert.equal(reader.admissions, 1);
+});
+
+test("runtime log cursors from before keyed hashes expire into a new audited view", async () => {
+  const secret = randomBytes(32).toString("hex");
+  const reader = pollReader({ secret });
+  const lines = [timedLog("worker ready", 0), timedLog("worker ready", 0), timedLog("a", 1)];
+  await reader.poll(lines);
+  const current = cursorPayload(reader.cursor);
+  // What the previous release issued for the same position: plain hashes, v1 MAC.
+  const legacy = legacyCursor(secret, { ...current, h: plainLineHash("a") });
+  const decoded = reader.codec.decode(legacy, reader.binding);
+  assert.equal(decoded.status, "expired");
+  assert.deepEqual(decoded.position.lastHashes, []);
+  assert.equal(decoded.position.containerWindow, undefined);
+  // Forged, foreign or malformed legacy envelopes stay invalid.
+  assert.equal(reader.codec.decode(`${legacy.slice(0, -2)}AA`, reader.binding).status, "invalid");
+  assert.equal(
+    reader.codec.decode(legacy, { ...reader.binding, principalId: "other-person" }).status,
+    "invalid",
+  );
+  assert.equal(
+    reader.codec.decode(legacyCursor(secret, { ...current, r: -1 }), reader.binding).status,
+    "invalid",
+  );
+  const before = reader.admissions;
+  const page = await reader.poll([...lines, timedLog("b", 2)], { query: { cursor: legacy } });
+  // A visible gap and a fresh audited view, never a silent de-duplication.
+  assert.ok(page.records.some(({ type, reason }) => type === "gap" && reason === "cursor_expired"));
+  assert.equal(reader.admissions, before + 1);
+  assert.deepEqual(messages(page), ["worker ready", "worker ready", "a", "b"]);
+  assert.match(reader.cursor, /^v2\./);
+  assert.notEqual(cursorPayload(reader.cursor).v, current.v);
 });
 
 test("runtime log cursor refuses signed positions with malformed fields", () => {
@@ -2281,13 +2384,12 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
           }
           const legacyPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
           const mac = createHmac("sha256", cursorSecret)
-            .update("occ-runtime-logs-cursor")
-            .update("\0")
+            .update("occ-runtime-logs-cursor\0v2\0")
             .update(legacyPayload)
             .digest("base64url");
           const legacy = await fixture.request(
             "GET",
-            target.logsPath(`source=gateway&tailLines=100&cursor=v1.${legacyPayload}.${mac}`),
+            target.logsPath(`source=gateway&tailLines=100&cursor=v2.${legacyPayload}.${mac}`),
           );
           assert.equal(
             legacy.status,

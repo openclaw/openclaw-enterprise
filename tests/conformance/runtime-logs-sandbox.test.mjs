@@ -313,6 +313,40 @@ test("sandbox log pages never contain planted credentials from command lines or 
   );
 });
 
+test("sandbox cursors from before keyed line hashes expire into a new audited view", async () => {
+  const cursorSecret = "disposable-legacy-keyed-hash-cursor-secret";
+  const { gateway, target, request, auditSink } = await sandboxFixture({ cursorSecret });
+  gateway.state.lines = [
+    sandboxLine(1, "NET:OPEN [INFO] ALLOWED curl(1) -> a.example.com:443"),
+    sandboxLine(2, "NET:OPEN [INFO] ALLOWED curl(1) -> b.example.com:443"),
+  ];
+  const first = await request("GET", target.logsPath("source=sandbox"));
+  assert.equal(first.status, 200, first.text);
+  assert.match(first.data.cursor, /^v2\./);
+  const payload = first.data.cursor.split(".")[1];
+  // The previous release signed v1 envelopes without the version in the MAC.
+  const mac = createHmac("sha256", cursorSecret)
+    .update(`occ-runtime-logs-cursor\0${payload}`)
+    .digest("base64url");
+  const views = () =>
+    auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view").length;
+  const viewsBefore = views();
+  gateway.state.lines.push(sandboxLine(3, "NET:OPEN [INFO] ALLOWED curl(1) -> c.example.com:443"));
+  const legacy = await request(
+    "GET",
+    target.logsPath(`source=sandbox&cursor=${encodeURIComponent(`v1.${payload}.${mac}`)}`),
+  );
+  assert.equal(legacy.status, 200, legacy.text);
+  // A visible gap, the whole tail again and a fresh audited view; nothing is silently
+  // de-duplicated against hashes the server can no longer reproduce.
+  assert.deepEqual(
+    legacy.data.records.map((record) => record.fields?.dst_host ?? record.reason),
+    ["cursor_expired", "a.example.com", "b.example.com", "c.example.com"],
+  );
+  assert.equal(views(), viewsBefore + 1);
+  assert.match(legacy.data.cursor, /^v2\./);
+});
+
 test("sandbox follow resumes after the anchor and labels buffer loss and a full window", async () => {
   const { gateway, target, request, auditSink } = await sandboxFixture();
   gateway.state.lines = [
@@ -1690,14 +1724,14 @@ for (const wideIdentity of [false, true]) {
     ];
     let cursor = prime.data.cursor;
     if (!wideIdentity) {
-      // Existing v1 cursors store overlap hashes as an array; retain route decoding.
+      // Earlier cursors stored overlap hashes as an array; retain route decoding.
       const decoded = JSON.parse(Buffer.from(cursor.split(".")[1], "base64url"));
       decoded.h = decoded.h.match(/.{16}/g);
       const payload = Buffer.from(JSON.stringify(decoded)).toString("base64url");
       const mac = createHmac("sha256", cursorSecret)
-        .update(`occ-runtime-logs-cursor\0${payload}`)
+        .update(`occ-runtime-logs-cursor\0v2\0${payload}`)
         .digest("base64url");
-      cursor = `v1.${payload}.${mac}`;
+      cursor = `v2.${payload}.${mac}`;
     }
     const seen = [];
     for (let page = 0; page < 10; page += 1) {
@@ -1714,7 +1748,7 @@ for (const wideIdentity of [false, true]) {
       seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
       cursor = response.data.cursor;
       assert.ok(cursor.length <= 2048);
-      assert.match(cursor, /^v1\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$/);
+      assert.match(cursor, /^v2\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$/);
       if (!response.data.truncated) {
         break;
       }

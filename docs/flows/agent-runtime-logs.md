@@ -115,6 +115,12 @@ byte-cut tail then emits `window_exceeded`). If every poll stalls because a line
 cut line is over about 3 seconds old, the cursor resumes from the current read.
 `window_exceeded` dates the lost interval. A carried PEM block loses its time
 boundary and stays conservatively masked. Earlier lines are dropped.
+The cursor is signed, not encrypted. Every line and window hash it carries is
+a 96-bit HMAC under a subkey derived from the cursor secret
+(`occ-runtime-logs-line-hash`), never a plain digest of raw text, so a reader
+cannot test guesses for masked values. The `v2` MAC covers the version; a `v1`
+cursor from an earlier release that still verifies is treated as expired
+(`cursor_expired` gap, new audited view), because its plain hashes no longer match.
 For the frontier time, the cursor stores `frontierComplete`, `frontierCount`
 and the last 16 hashes. Positional de-duplication requires a complete frontier,
 its group's first line in the read (an earlier timestamp or a short uncut page),
@@ -238,6 +244,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13: Key cursor line and window hashes under the cursor secret; `v1` cursors expire into a new view. (fix-log-cursor-hash)
 
 - 2026-10-12 11:55: Advertise and select actual main and init container streams with container-bound audit views. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
 
