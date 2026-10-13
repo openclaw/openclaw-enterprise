@@ -2,7 +2,7 @@
 
 Create your own Agent in the Kubernetes installation from [Local setup](quickstart.md),
 deploy it, and get a real response from an OpenAI model. You choose the Agent
-name and supply an OpenAI API key or, for dedicated Codex, a personal access token. The Agent stays in your installation
+name and supply an OpenAI API key or, for dedicated Codex with OpenShell, a personal access token. The Agent stays in your installation
 after the command exits.
 
 ## Before you start
@@ -26,7 +26,7 @@ after the command exits.
   is set. An exported key is used as is, so clear a stale one with
   `env -u OPENAI_API_KEY` to be prompted instead.
 
-For dedicated Codex, a personal access token (including a service-account token)
+For dedicated Codex with OpenShell, a personal access token (including a service-account token)
 can replace the API key. Supply `CODEX_ACCESS_TOKEN` through your secret manager
 or set `CODEX_ACCESS_TOKEN_FILE` to its private file. Select one credential input;
 do not also set an API-key input. The helper records the authentication method

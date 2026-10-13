@@ -27,7 +27,7 @@ another prompt or verify it again.
   --replace-key    Replace this Agent's saved model key and deploy a new revision.
 
 OPENCLAW_FIRST_AGENT_MODEL defaults to ${defaultAgentModel} for a new Agent. Set OPENAI_API_KEY,
-use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. For dedicated Codex,
+use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. For dedicated Codex with OpenShell,
 set CODEX_ACCESS_TOKEN or CODEX_ACCESS_TOKEN_FILE to use a personal access token. A normal repeat
 uses the previously stored key. Set OCC_DEVELOPMENT_STATE_DIRECTORY if Local Setup
 used a custom state directory.
@@ -542,7 +542,7 @@ function expectedHarnessAuth(record) {
   return record.sandboxDriver === "openshell"
     ? { method: "credential_source", sourceId: record.credentialSourceId }
     : {
-        method: record.authMethod,
+        method: "api_key",
         source: { kind: "secret", namespaceId: record.namespaceId, id: record.secretId },
       };
 }
@@ -816,9 +816,12 @@ async function main(options) {
     };
     if (
       !["api_key", "codex_pat"].includes(record.authMethod) ||
-      (record.authMethod === "codex_pat" && options.harness !== "codex")
+      (record.authMethod === "codex_pat" &&
+        (options.harness !== "codex" || local.sandboxDriver !== "openshell"))
     ) {
-      throw new Error("Personal access tokens require the dedicated Codex Harness.");
+      throw new Error(
+        "Personal access tokens in this helper require OpenShell with dedicated Codex.",
+      );
     }
     if (
       (process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE) &&
