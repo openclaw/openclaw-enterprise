@@ -8051,6 +8051,7 @@ export class OpenClawController {
     const restrictionIds = snapshotIds(evidence?.restrictionIds);
     if (
       typeof allowed !== "boolean" ||
+      typeof reason !== "string" ||
       !isNonEmptyString(driverId) ||
       !evidence ||
       (identityId !== undefined && !isNonEmptyString(identityId)) ||
