@@ -138,13 +138,13 @@ any address except link-local `169.254.0.0/16`. To narrow it, list the `web` and
 IPv4 ranges from `https://api.github.com/meta` and keep them current.
 A non-empty list replaces the default, so an egress proxy on a link-local address is
 reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs carry no
-link-local exception.
+link-local exception, so keep them narrow.
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
 return `403` on API calls (sign-in still works), and the API logs
 `authentication.forwarded-refused-warning` at most once a minute: code
 `TRUSTED_PROXY_NOT_CONFIGURED`, or `TRUSTED_PROXY_PEER_UNTRUSTED` when the sending
-peer is outside `api.trustedProxy.cidrs`. Without a proxy, a client such as a
+peer is outside `api.trustedProxy.cidrs`. Without a proxy, a
 scanner sending `X-Forwarded-For` can trigger `TRUSTED_PROXY_NOT_CONFIGURED`;
 ignore it and leave `api.trustedProxy` unset. Failed password sign-ins have per-email limits only: browsers behind
 a proxy share its address. With GitHub, Google or OIDC, start, callback, and result
