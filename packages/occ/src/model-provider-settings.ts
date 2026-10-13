@@ -51,9 +51,14 @@ const holdsEnvironmentReference = (value: unknown): boolean =>
 // Text its writer fills in later: `unresolved` locates an unfilled Preset variable's text.
 type Unresolved = NonNullable<ConfigurationValidationOptions["unresolved"]>;
 
+// An http(s) URL whose written authority is empty (`https:///v1`, as an empty Preset variable
+// for the host renders it) parses with the first path segment as its host (finding 1256).
 const isRuntimeUrl = (value: unknown): boolean => {
   const url = typeof value === "string" && URL.canParse(value) ? new URL(value) : undefined;
-  return url?.protocol === "http:" || url?.protocol === "https:";
+  return (
+    (url?.protocol === "http:" || url?.protocol === "https:") &&
+    !/^[\0- ]*https?:[/\\]{3}/i.test(String(value).replaceAll(/[\t\n\r]/g, ""))
+  );
 };
 
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
@@ -266,8 +271,17 @@ function validateSettings(
   path: readonly (string | number)[],
   provider: boolean,
   unresolved: Unresolved,
+  unresolvedType: ConfigurationValidationOptions["unresolvedType"],
 ) {
   const { baseUrl, api } = settings;
+  // A number or boolean variable that is the whole baseUrl or api fills it with no string, which
+  // fails every launch (finding 1257).
+  for (const field of ["baseUrl", "api"] as const) {
+    const type = unresolvedType?.([...path, field]);
+    if (type !== undefined && type !== "string") {
+      throw new ModelProviderSettingError(pointer(...path, field), field);
+    }
+  }
   // The runtime resolves an environment reference before it validates the value.
   const environment = holdsEnvironmentReference;
   // On a provider, the runtime treats a blank baseUrl as unset and uses a built-in
@@ -319,7 +333,7 @@ export function providerModelsListError(key: string): ConfigurationHarnessError 
  */
 export function validateModelProviderSettings(
   values: OpenClawConfigurationDocument,
-  { unresolved = () => undefined }: ConfigurationValidationOptions = {},
+  { unresolved = () => undefined, unresolvedType }: ConfigurationValidationOptions = {},
 ): void {
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
@@ -329,7 +343,7 @@ export function validateModelProviderSettings(
     }
     const path = ["models", "providers", providerName] as const;
     const setting = keyedSettingPath("models.providers", providerName);
-    validateSettings(settings, path, true, unresolved);
+    validateSettings(settings, path, true, unresolved, unresolvedType);
     const models = settings.models;
     // The list first, as the Kubernetes rule does, so both name the same setting.
     if (models !== undefined && !Array.isArray(models)) {
@@ -339,7 +353,13 @@ export function validateModelProviderSettings(
     for (const [index, model] of (Array.isArray(models) ? models : []).entries()) {
       const modelSettings = asRecord(model);
       if (modelSettings !== undefined) {
-        validateSettings(modelSettings, [...path, "models", index], false, unresolved);
+        validateSettings(
+          modelSettings,
+          [...path, "models", index],
+          false,
+          unresolved,
+          unresolvedType,
+        );
         validateHeaderNames(
           modelSettings,
           [...path, "models", index],

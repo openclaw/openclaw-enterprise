@@ -187,13 +187,16 @@ export function validateModelCredentialReferences(
       }
     }
     // Proxy environment (HTTPS_PROXY, http_proxy, ALL_PROXY, ...) reaches the Gateway and every
-    // process it starts. Clients such as curl and git read a value without a scheme as http.
+    // process it starts. Clients such as curl and git read a value without a scheme as http. On a
+    // Preset save, a name that waits on a variable is matched as the text around it
+    // (`{{ vars.scheme }}_PROXY`), as for credential header names.
     for (const [prefix, settings] of [
       [["env"], env],
       [["env", "vars"], asRecord(env?.vars)],
     ] as const) {
       for (const name of Object.keys(settings ?? {})) {
-        if (PROXY_ENVIRONMENT.test(name)) {
+        const literal = options.unresolved?.([...prefix, name], true)?.join("");
+        if ([name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text))) {
           refuseUrlUserinfo([...prefix, name], settings?.[name], true);
         }
       }

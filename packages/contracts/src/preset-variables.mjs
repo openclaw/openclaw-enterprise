@@ -123,7 +123,8 @@ function tokens(text, definitions, path) {
   return parts;
 }
 
-// `located(literals, text)` receives the literal text around the placeholders left in `text`.
+// `located(literals, text, type)` receives the literal text around the placeholders left in
+// `text`, and the declared type of a variable that is the whole value.
 function substitute(text, definitions, inputs, path, key, partial, located) {
   const parts = tokens(text, definitions, path);
   const refs = parts.filter((part) => typeof part !== "string");
@@ -173,7 +174,7 @@ function substitute(text, definitions, inputs, path, key, partial, located) {
     }
   }
   if (literals.length > 1) {
-    located?.(literals, result);
+    located?.(literals, result, whole ? definitions[refs[0].name].type : undefined);
   }
   return result;
 }
@@ -184,13 +185,22 @@ function placeholderLocation(path, key) {
   return JSON.stringify([key ? "key" : "value", ...path]);
 }
 
+// Where admission finds the declared type of a variable without a value that is a whole value.
+function wholeVariableLocation(path) {
+  return JSON.stringify(["type", ...path]);
+}
+
 // `placeholders` collects admission's placeholder locations; `at` is the path in
 // configuration.values (undefined outside it).
 function walk(value, definitions, inputs, path, keys, partial, placeholders, at) {
   const located = (key) =>
     placeholders && at
-      ? (literals, text) =>
-          placeholders.set(placeholderLocation(key ? [...at, text] : at, key), literals)
+      ? (literals, text, type) => {
+          placeholders.set(placeholderLocation(key ? [...at, text] : at, key), literals);
+          if (type !== undefined) {
+            placeholders.set(wholeVariableLocation(at), type);
+          }
+        }
       : undefined;
   if (typeof value === "string") {
     return substitute(value, definitions, inputs, path, false, partial, located(false));
@@ -329,11 +339,14 @@ export function presetTemplateDefaults(template) {
  * once filled. `unresolved(path, key)` returns the literal text around the placeholders of the
  * string at `path` (an object key: `key` true, `path` ending in the rendered key), or undefined.
  * Escaped tokens and defaults that read like tokens are literal text: elsewhere they are checked
- * as written, and beside a placeholder they are part of its literal text.
+ * as written, and beside a placeholder they are part of its literal text. `unresolvedType(path)`
+ * returns the declared type of such a variable that is the whole value at `path`: a number or
+ * boolean variable fills it with no string (finding 1257).
  * @param {import('./presets.ts').PresetTemplate} template
  * @returns {{
  *   settings: import('./presets.ts').PresetLaunchSettings,
  *   unresolved: (path: readonly (string | number)[], key?: boolean) => readonly string[] | undefined,
+ *   unresolvedType: (path: readonly (string | number)[]) => import('./presets.ts').PresetVariable['type'] | undefined,
  * }}
  */
 export function presetTemplateDefaultsWithPlaceholders(template) {
@@ -342,6 +355,7 @@ export function presetTemplateDefaultsWithPlaceholders(template) {
   return {
     settings,
     unresolved: (path, key = false) => placeholders.get(placeholderLocation(path, key)),
+    unresolvedType: (path) => placeholders.get(wholeVariableLocation(path)),
   };
 }
 

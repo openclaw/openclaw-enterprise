@@ -1755,6 +1755,13 @@ export interface ConfigurationValidationOptions {
     path: readonly (string | number)[],
     key?: boolean,
   ) => readonly string[] | undefined;
+  /**
+   * The declared type of an unfilled variable that is the whole value at `path`, or undefined:
+   * a number or boolean fills a field that takes text with no string.
+   */
+  readonly unresolvedType?: (
+    path: readonly (string | number)[],
+  ) => "string" | "number" | "boolean" | "password" | undefined;
 }
 
 export interface ComputeDriver extends Driver {

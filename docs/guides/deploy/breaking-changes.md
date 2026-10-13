@@ -114,18 +114,21 @@ or `request.proxy.url` whose host or port is a variable or `${VAR}` (or in its
 first header character by code point: `not one that starts with U+007B`. A
 Preset saved with one still reads but cannot launch: edit it. A later change
 refuses one in `proxy.proxyUrl`, a channel or channel account `proxy`, an MCP
-server `url`, and `env` proxy variables such as `HTTPS_PROXY` in any case.
+server `url`, and `env` proxy variables such as `HTTPS_PROXY` in any case; a
+`baseUrl` with an empty host (`https:///v1`, as an empty variable leaves it);
+and a number or boolean variable as the whole `baseUrl` or `api`.
 
-**Who is affected.** Configurations with such a header, a `baseUrl` with a
+**Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
+Their Agents' next deployment fails until they are edited.
 
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,
-or `Configuration field /models/providers/<provider>/baseUrl carries a user name or password in the URL.`
+or `Configuration field <field> carries a user name or password in the URL.`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
 list of model objects, or remove it. Remove the user name and password from
-`baseUrl`, or make the whole URL a `${NAME}` reference.
+the URL, or make the whole URL a `${NAME}` reference.
 
 ## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
 

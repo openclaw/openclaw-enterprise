@@ -8,7 +8,10 @@ import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  renderPresetTemplate,
+} from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -1937,6 +1940,11 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
       { env: { vars: { HTTPS_PROXY: `${sentinel}@{{ vars.host }}:3128` } } },
       "/env/vars/HTTPS_PROXY",
     ],
+    // A variable in the name is matched as the text around it.
+    [
+      { env: { vars: { "{{ vars.host }}_PROXY": `http://u:${sentinel}@proxy.example:3128` } } },
+      "/env/vars/{{ vars.host }}_PROXY",
+    ],
   ]) {
     const response = await request(context.app, "POST", presets, {
       body: { name: "Refused", template: { variables, configuration: { values } } },
@@ -1994,6 +2002,96 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
   assert.equal(resaved.status, 400, JSON.stringify(resaved.body));
   assert.equal(resaved.body.error.message, message("/proxy/proxyUrl"));
+});
+
+test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
+  // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
+  // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is
+  // the whole baseUrl or api saved, and failed every launch.
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-fill-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-preset-fill");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  const baseUrl = (field = "baseUrl") =>
+    `Configuration field /models/providers/gateway/${field} must be an absolute http or https URL.`;
+  const api =
+    "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.";
+
+  // An empty written authority, however it is spelled, is refused on Configuration create.
+  for (const [settings, message] of [
+    [{ baseUrl: "https:///v1" }, baseUrl()],
+    [{ baseUrl: " HTTP:\\\\\\v1" }, baseUrl()],
+    [{ baseUrl: "https:/\t//v1" }, baseUrl()],
+    [
+      { models: [{ id: "m", baseUrl: "http:////models.example.test/v1" }] },
+      baseUrl("models/0/baseUrl"),
+    ],
+  ]) {
+    const response = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: gateway(settings) },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, message);
+  }
+
+  const template = (variables, settings) => ({
+    variables,
+    configuration: { values: gateway(settings) },
+  });
+  const hostVariable = { baseUrl: "https://{{ vars.h }}/v1" };
+  for (const [variables, settings, message] of [
+    // An empty default is a literal empty host.
+    [{ h: { type: "string", default: "" } }, hostVariable, baseUrl()],
+    [{ n: { type: "number" } }, { baseUrl: "{{ vars.n }}" }, baseUrl()],
+    [{ b: { type: "boolean" } }, { baseUrl: "{{ vars.b }}" }, baseUrl()],
+    [{ n: { type: "number" } }, { api: "{{ vars.n }}" }, api],
+    [
+      { b: { type: "boolean" } },
+      { models: [{ id: "m", baseUrl: "{{ vars.b }}" }] },
+      baseUrl("models/0/baseUrl"),
+    ],
+  ]) {
+    const response = await request(context.app, "POST", presets, {
+      body: { name: "Refused", template: template(variables, settings) },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, message);
+  }
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // A host variable without a default saves; filled empty at launch, its Configuration is refused.
+  const variables = { h: { type: "string" }, n: { type: "number" }, u: { type: "string" } };
+  const values = {
+    ...hostVariable,
+    models: [{ id: "m", baseUrl: "{{ vars.u }}", contextWindow: "{{ vars.n }}" }],
+  };
+  const saved = await request(context.app, "POST", presets, {
+    body: { name: "Filled at launch", template: template(variables, values) },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const launch = (inputs) =>
+    request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate(saved.body.data.template, inputs).configuration,
+      },
+    });
+  const empty = await launch({ h: "", n: 1000, u: "https://models.example.test/v1" });
+  assert.equal(empty.status, 400, JSON.stringify(empty.body));
+  assert.equal(empty.body.error.message, baseUrl());
+  const filled = await launch({
+    h: "models.example.test",
+    n: 1000,
+    u: "https://models.example.test/v1",
+  });
+  assert.equal(filled.status, 201, JSON.stringify(filled.body));
 });
 
 test("A stored Configuration with request credentials an older release accepted reads, is repaired by an edit, and does not deploy", async (t) => {
