@@ -106,8 +106,9 @@ auth:
     clientSecretKey: client-secret
     # Optional CA certificate bundle for the IdP (no private keys). Both or neither.
     # API-only process-wide Node trust, combined with Gateway roots. Replace API Pods on rotation.
-    # Requires a separate database.caSecretName and application URL sslmode=verify-full
-    # with sslrootcert selecting database.caMountPath/database.caKey.
+    # Requires a separate database.caSecretName and an application URL with a DNS host
+    # (not an IP), sslmode=verify-full and sslrootcert=database.caMountPath/database.caKey.
+    # May share a public CA bundle Secret with gatewayRouting.caSecretName.
     caSecretName: ""
     caSecretKey: ""
     # client_secret_post (default) or client_secret_basic.
