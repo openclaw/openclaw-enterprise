@@ -83,16 +83,35 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
   });
 }
 
-// Replaces `object[key]` until the returned restore runs, at the latest when the case ends.
+// Replaces `object[key]` until the returned restore runs, at the latest when the case ends. An own
+// property gets its value back; an inherited one (a prototype method) is uncovered again.
 function replaceForCase(context, object, key, value) {
+  const own = Object.getOwnPropertyDescriptor(object, key);
   object[key] = value;
-  const restore = () => delete object[key];
+  let restored = false;
+  const restore = () => {
+    if (restored) {
+      return;
+    }
+    restored = true;
+    if (own === undefined) {
+      delete object[key];
+    } else {
+      Object.defineProperty(object, key, own);
+    }
+  };
   context.after(restore);
   return restore;
 }
 
+// Namespace names are unique in the shared app, so a case that runs again gets a new one.
+let namespaces = 0;
+
 async function createNamespace(fixture, name) {
-  const result = await request(fixture.app, "/namespaces", { body: { name } });
+  namespaces += 1;
+  const result = await request(fixture.app, "/namespaces", {
+    body: { name: `${name} ${namespaces}` },
+  });
   assert.equal(result.response.status, 201);
   await fixture.controller.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(result.payload.data.id, "provisioning", "ready"),
@@ -252,7 +271,7 @@ test("Agent workspace file routes read and replace fixed files through the selec
   assert.equal(JSON.stringify(audits).includes("new soul"), false);
 });
 
-test("Agent workspace file routes enforce read and operate permissions separately", async () => {
+test("Agent workspace file routes enforce read and operate permissions separately", async (context) => {
   const workspaceFilesAccess = {
     async read(read) {
       return { status: "ok", file: { name: read.filename, content: "readable\n" } };
@@ -264,10 +283,11 @@ test("Agent workspace file routes enforce read and operate permissions separatel
   const fixture = await createFixture({ workspaceFilesAccess });
   const namespace = await createNamespace(fixture, "Reader tenant");
   const { agent } = await createAgent(fixture, namespace, "Reader visible Agent");
-  // The reader's tenant A grant names the first Namespace any case created; read this one.
+  // The reader's tenant A grant names the first Namespace any case created; read this one, and
+  // leave the shared grant as it was for the next case.
   for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
     if (["role-tenant-a-reader", "binding-tenant-a-reader"].includes(grant.id)) {
-      grant.namespaceId = namespace.id;
+      replaceForCase(context, grant, "namespaceId", namespace.id);
     }
   }
   const session = fixture.session(fixture.tenantAReader);

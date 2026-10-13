@@ -351,12 +351,15 @@ async function createFixture({
   auditSink = new InMemoryAuditSink(),
   logLines = [],
 } = {}) {
-  Object.assign(running, { computeDriver, auditSink, logLines });
   const { implementation } = computeDriver;
   if (!apps.has(implementation)) {
+    // Building the app signs the administrator in, which audits and logs: into a sink and lines
+    // no case reads, so a case sees only its own.
+    Object.assign(running, { computeDriver, auditSink: new InMemoryAuditSink(), logLines: [] });
     apps.set(implementation, createSharedApp(implementation));
   }
   const shared = await apps.get(implementation);
+  Object.assign(running, { computeDriver, auditSink, logLines });
   shared.resetPolicy();
   return { ...shared, auditSink, computeDriver };
 }
