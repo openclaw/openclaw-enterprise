@@ -2431,7 +2431,9 @@ export class OpenClawController {
         }
         await this.authorizeProvisioningRecord(state, principalId, replay);
         const work = await state.operations.findWork(replay.workId);
-        const result = Object.freeze({ provisioning: provisioningProgress(replay, work) });
+        const result = Object.freeze({
+          provisioning: provisioningProgress(replay, work, this.clock()),
+        });
         if (auditEvent) {
           await state.audit.append(auditEvent(result));
         }
@@ -2560,7 +2562,7 @@ export class OpenClawController {
       if (work === undefined) {
         throw new DependencyUnavailableError("The provisioning work is unavailable.");
       }
-      return Object.freeze({ provisioning: provisioningProgress(record, work) });
+      return Object.freeze({ provisioning: provisioningProgress(record, work, this.clock()) });
     });
   }
 
@@ -2612,11 +2614,13 @@ export class OpenClawController {
       // authentication checks the status read skips.
       await this.authorizeProvisioningRecord(state, principalId, record);
       if (record.status === "queued" || record.status === "running") {
-        return Object.freeze({ provisioning: provisioningProgress(record, observed) });
+        return Object.freeze({
+          provisioning: provisioningProgress(record, observed, this.clock()),
+        });
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
       const work = await state.operations.findWork(record.workId);
-      return Object.freeze({ provisioning: provisioningProgress(retried, work) });
+      return Object.freeze({ provisioning: provisioningProgress(retried, work, this.clock()) });
     });
   }
 

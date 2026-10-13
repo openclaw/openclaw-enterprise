@@ -20,6 +20,7 @@ import {
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -711,6 +712,61 @@ test(
       unit.provisioning.cancel(cleanupClaim, {
         code: "PROVISIONING_CANCELLED",
         message: "admission-only test completed without worker dispatch",
+      }),
+    );
+    assert.equal(cancelled.status, "cancelled");
+  },
+);
+
+test(
+  "provisioning status judges claim liveness by the database clock, not the controller clock",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId } = admitted.data.provisioning;
+    const statusPath = `/namespaces/${namespace.id}/agents/provision/${encodeURIComponent(workId)}`;
+    const apiStatus = async () => {
+      const observed = await fixture.request("GET", statusPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status;
+    };
+    // The State read with a controller clock skewed far from PostgreSQL's.
+    const statusAt = (instant) =>
+      fixture.state.read(async (state) => {
+        const found = await state.provisioning.findWithWork(workId);
+        assert.notEqual(found?.work, undefined, "the provisioning job must join its queue row");
+        return provisioningProgress(found.record, found.work, new Date(instant)).status;
+      });
+    const setLease = (interval) =>
+      fixture.pool.query(
+        `UPDATE occ.controller_work
+         SET lease_expires_at = clock_timestamp() + $2::interval
+         WHERE idempotency_key = $1 AND state = 'claimed'`,
+        [workId, interval],
+      );
+
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    assert.equal(await apiStatus(), "running");
+    // A controller clock ahead of the lease still reports the live claim.
+    assert.equal(await statusAt("2999-01-01T00:00:00Z"), "running");
+
+    // An expired claim is waiting for a new worker, not running.
+    await setLease("-1 second");
+    assert.equal(await apiStatus(), "queued");
+    // A controller clock behind the lease still reports the expired claim as waiting.
+    assert.equal(await statusAt("1970-01-01T00:00:00Z"), "queued");
+
+    await setLease("10 minutes");
+    const cancelled = await fixture.state.transact((unit) =>
+      unit.provisioning.cancel(claim, {
+        code: "PROVISIONING_CANCELLED",
+        message: "lease liveness test completed without worker dispatch",
       }),
     );
     assert.equal(cancelled.status, "cancelled");

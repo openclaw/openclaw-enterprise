@@ -543,18 +543,28 @@ export function controllerWorkDeploymentStatus(
   if (work.state === "failed_permanent") {
     return "failed";
   }
-  if (work.state === "claimed") {
-    // Leases are granted and expired on the database clock; the controller's
-    // clock can disagree with it, so prefer the store's own judgement.
-    const leaseActive =
-      work.leaseActive ??
-      (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime());
-    if (leaseActive) {
-      return "running";
-    }
-    return "queued";
+  if (controllerWorkLeaseActive(work, now)) {
+    return "running";
   }
   return "queued";
+}
+
+/**
+ * Whether claimed work still holds a live lease. Leases are granted and expired on the
+ * database clock; the controller's clock can disagree with it, so the store's own judgement
+ * wins when it read one, and `now` is only a fallback for stores without a clock.
+ */
+export function controllerWorkLeaseActive(
+  work: Readonly<ControllerWork>,
+  now: Date = new Date(),
+): boolean {
+  if (work.state !== "claimed") {
+    return false;
+  }
+  return (
+    work.leaseActive ??
+    (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime())
+  );
 }
 
 function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
