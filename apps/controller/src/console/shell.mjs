@@ -263,7 +263,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       ? document.activeElement
       : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
-    // reset(), publicPanel() and a session-less render close it.
+    // After reset() or publicPanel(), or in a render without a session, it starts closed.
     const drawerOpen =
       Boolean(session) &&
       mobileLayout.matches &&
@@ -443,7 +443,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       if (drawerFocus && !target) {
         closeDrawer();
       } else {
-        openDrawer(false);
+        // Focus left on the page body would stay outside the drawer, behind inert content.
+        openDrawer(!target && !menuFocus && document.activeElement === document.body);
         target?.focus({ preventScroll: true });
       }
     }
