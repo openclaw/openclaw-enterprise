@@ -2445,7 +2445,7 @@ test("run stops a hung file at the lane deadline, names its test and starts noth
     [
       'import { writeFileSync } from "node:fs";',
       'import test from "node:test";',
-      `test("would start past the deadline", () => writeFileSync(${JSON.stringify(marker)}, ""));`,
+      'test("would start past the deadline", () => writeFileSync(process.env.CI_RUNNER_MARKER, ""));',
       "",
     ].join("\n"),
   );
@@ -2478,7 +2478,11 @@ test("run stops a hung file at the lane deadline, names its test and starts noth
       resultsPath,
     ],
     // No per-file timeout: the default (60 minutes) is far past the deadline.
-    { CI_RUNNER_TEST_TIMEOUT_MS: "", CI_RUNNER_DEADLINE_MS: String(started + 4_000) },
+    {
+      CI_RUNNER_TEST_TIMEOUT_MS: "",
+      CI_RUNNER_DEADLINE_MS: String(started + 4_000),
+      CI_RUNNER_MARKER: marker,
+    },
     // Without the deadline the runner would wait out the 60-minute default.
     { timeout: 60_000 },
   );
@@ -2525,7 +2529,7 @@ test("run starts no tests after a preparation that outlasted the lane deadline, 
       'import { setTimeout as delay } from "node:timers/promises";',
       "export async function prepareFile() {",
       "  await delay(2_500);",
-      `  return { cleanup: () => writeFile(${JSON.stringify(cleaned)}, "") };`,
+      '  return { cleanup: () => writeFile(process.env.CI_RUNNER_CLEANUP_MARKER, "") };',
       "}",
       "",
     ].join("\n"),
@@ -2535,7 +2539,7 @@ test("run starts no tests after a preparation that outlasted the lane deadline, 
     [
       'import { writeFileSync } from "node:fs";',
       'import test from "node:test";',
-      `test("would start past the deadline", () => writeFileSync(${JSON.stringify(started)}, ""));`,
+      'test("would start past the deadline", () => writeFileSync(process.env.CI_RUNNER_MARKER, ""));',
       "",
     ].join("\n"),
   );
@@ -2559,7 +2563,11 @@ test("run starts no tests after a preparation that outlasted the lane deadline, 
       "--results",
       resultsPath,
     ],
-    { CI_RUNNER_DEADLINE_MS: String(Date.now() + 1_000) },
+    {
+      CI_RUNNER_DEADLINE_MS: String(Date.now() + 1_000),
+      CI_RUNNER_MARKER: started,
+      CI_RUNNER_CLEANUP_MARKER: cleaned,
+    },
     { timeout: 60_000 },
   );
 
