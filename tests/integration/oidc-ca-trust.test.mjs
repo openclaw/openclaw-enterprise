@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
+import { readHarnessNodeCa } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   callbackState,
   createIdTokenSigner,
@@ -88,6 +90,20 @@ test(
         false,
       );
       const hasGatewayCa = gateway === gatewayValues || gateway === externalGatewayCa;
+      // Harness node enrollment reads the Gateway-only bundle, never the combined one.
+      assert.deepEqual(
+        container.env.filter(({ name }) => name === "OCC_GATEWAY_CA_PATH"),
+        [
+          {
+            name: "OCC_GATEWAY_CA_PATH",
+            value: hasGatewayCa ? "/etc/openclaw/gateway-ca/ca.crt" : "",
+          },
+        ],
+      );
+      assert.equal(
+        pod(original, "api").containers[0].env.some(({ name }) => name === "OCC_GATEWAY_CA_PATH"),
+        false,
+      );
       assert.deepEqual(init.args.slice(3), [
         "/etc/openclaw/api-extra-ca/ca.crt",
         "/etc/openclaw/oidc-ca/ca.crt",
@@ -123,6 +139,7 @@ test("OIDC CA chart refuses partial, malformed and disabled configuration", tool
       ...caValues,
       "auth.oidc.caSecretKey": value,
     })),
+    { ...caValues, "auth.oidc.caSecretKey": "..roots.pem" },
   ]) {
     await assert.rejects(renderProductionChart({ ...oidcValues, ...values }), (error) => {
       assert.equal(error.code, 1);
@@ -146,6 +163,28 @@ test("OIDC CA chart refuses partial, malformed and disabled configuration", tool
       },
     );
   }
+});
+
+test("OIDC CA reserves the assembled API CA mount from database.caMountPath", tooling, async () => {
+  const values = {
+    ...oidcValues,
+    ...caValues,
+    "database.caMountPath": "/etc/openclaw/api-extra-ca",
+  };
+  await assert.rejects(renderProductionChart(values), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /database\.caMountPath must be distinct from other active mounts/);
+    return true;
+  });
+  // Without the OIDC CA the path is free, so main's renders are unchanged.
+  const { "auth.oidc.caSecretName": _, "auth.oidc.caSecretKey": __, ...withoutOidcCa } = values;
+  const api = pod(await render(withoutOidcCa), "api");
+  assert.equal(
+    api.containers[0].volumeMounts.filter(
+      ({ mountPath }) => mountPath === "/etc/openclaw/api-extra-ca",
+    ).length,
+    1,
+  );
 });
 
 test("OIDC CA may share a public trust bundle Secret with the Gateway CA", tooling, async () => {
@@ -280,6 +319,77 @@ async function tlsServer(t, certificate, handler) {
   });
   return server.address().port;
 }
+
+test(
+  "rendered Harness node CA carries the Gateway root and never the IdP root",
+  tooling,
+  async (t) => {
+    const directory = await temporaryDirectory(t);
+    const idp = await certificates(directory, "idp", "sso.example.test");
+    const gateway = await certificates(directory, "gateway", "gateway.example.test");
+    const gatewayRoot = new X509Certificate(gateway["ca.pem"]).toString();
+    const idpRoot = new X509Certificate(idp["ca.pem"]).toString();
+    const nodeEnvironment = (container, resolve) =>
+      Object.fromEntries(
+        container.env
+          .filter(({ name }) => ["NODE_EXTRA_CA_CERTS", "OCC_GATEWAY_CA_PATH"].includes(name))
+          .map(({ name, value }) => [name, value === "" ? "" : resolve(value)]),
+      );
+    const secrets = {
+      "idp-ca/roots.pem": idp["ca.pem"],
+      "gateway-ca/gateway.pem": gateway["ca.pem"],
+    };
+
+    const configured = pod(
+      await render({ ...oidcValues, ...caValues, ...externalGatewayCa }),
+      "api",
+    );
+    await mkdir(join(directory, "configured"));
+    const wiring = await mountedPod(join(directory, "configured"), configured, secrets);
+    await wiring.assemble();
+    const combined = await readFile(wiring.output, "utf8");
+    assert.ok(combined.includes(idpRoot.trim()), "the API bundle must carry the IdP root");
+    const environment = nodeEnvironment(configured.containers[0], wiring.resolve);
+    assert.equal(await readHarnessNodeCa(environment), gatewayRoot);
+    // Load-bearing: the combined API bundle alone would hand the IdP root to Harness Pods.
+    assert.ok(
+      (await readHarnessNodeCa({ NODE_EXTRA_CA_CERTS: environment.NODE_EXTRA_CA_CERTS })).includes(
+        idpRoot.trim(),
+      ),
+    );
+
+    // OIDC CA without a private Gateway CA: Harness Pods get no extra CA, as on main.
+    for (const gatewayOnly of [{}, externalGateway]) {
+      const idpOnly = pod(await render({ ...oidcValues, ...caValues, ...gatewayOnly }), "api");
+      const idpBundle = join(directory, "idp-only.pem");
+      await writeFile(idpBundle, idp["ca.pem"]);
+      const idpOnlyEnvironment = nodeEnvironment(idpOnly.containers[0], () => idpBundle);
+      assert.deepEqual(idpOnlyEnvironment, {
+        NODE_EXTRA_CA_CERTS: idpBundle,
+        OCC_GATEWAY_CA_PATH: "",
+      });
+      assert.equal(await readHarnessNodeCa(idpOnlyEnvironment), undefined);
+    }
+
+    // Without the opt-in the API's NODE_EXTRA_CA_CERTS stays the Gateway bundle (main).
+    const original = pod(
+      await render({ ...oidcValues, ...databaseCaValues, ...externalGatewayCa }),
+      "api",
+    );
+    const gatewayCaPath = join(directory, "original-gateway.pem");
+    await writeFile(gatewayCaPath, gateway["ca.pem"]);
+    assert.deepEqual(
+      nodeEnvironment(original.containers[0], () => gatewayCaPath),
+      {
+        NODE_EXTRA_CA_CERTS: gatewayCaPath,
+      },
+    );
+    assert.equal(
+      await readHarnessNodeCa(nodeEnvironment(original.containers[0], () => gatewayCaPath)),
+      gatewayRoot,
+    );
+  },
+);
 
 test(
   "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust",

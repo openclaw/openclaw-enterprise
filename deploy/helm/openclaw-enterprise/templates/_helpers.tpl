@@ -154,7 +154,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
 {{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
 {{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
-{{- if or (gt (len $oidcCa.caSecretKey) 253) (has $oidcCa.caSecretKey (list "." "..")) (not (regexMatch "^[A-Za-z0-9._-]+$" $oidcCa.caSecretKey)) -}}{{- fail "auth.oidc.caSecretKey must be a Secret key basename" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.caSecretKey" "value" $oidcCa.caSecretKey) -}}
 {{- if not .Values.database.caSecretName -}}{{- fail "auth.oidc CA configuration requires database.caSecretName and an explicit sslrootcert in the application database URL" -}}{{- end -}}
 {{- if eq $oidcCa.caSecretName .Values.database.caSecretName -}}{{- fail "auth.oidc.caSecretName must differ from the database CA Secret" -}}{{- end -}}
 {{- end -}}
@@ -371,6 +371,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
+{{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
 {{- end -}}
 {{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}

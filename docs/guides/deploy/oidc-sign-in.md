@@ -193,8 +193,9 @@ kubectl -n openclaw-system logs deployment/openclaw-enterprise-api -c assemble-a
 ```
 
 This extends public trust **process-wide in the API** for clients that use
-Node's default trust. The chart does not add IdP roots to workers, Jobs,
-or Agent Pods. It preserves the Gateway CA selected by the chart, including an
+Node's default trust. The chart does not add IdP roots to workers or Jobs, and
+dedicated Agent (Harness) Pods receive only the Gateway CA through
+`OCC_GATEWAY_CA_PATH`, or no extra CA without one. It preserves the Gateway CA selected by the chart, including an
 external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replace
 `NODE_EXTRA_CA_CERTS` separately. URL, port, hostname, certificate and token checks
 still apply. If the IdP certificate already chains to a root in the

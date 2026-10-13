@@ -55,7 +55,9 @@ The init container combines the IdP bundle with the Gateway CA, when selected, i
 bounded memory volume. The API reads it through `NODE_EXTRA_CA_CERTS`, extending
 Node's public roots process-wide for API clients using default trust, including
 token/JWKS requests. Clients with an explicit CA store keep that store. IdP roots
-are not added to workers, Jobs or Agents. An external Gateway issuer without a
+are not added to workers, Jobs or Agents: the chart also sets `OCC_GATEWAY_CA_PATH`
+to the Gateway-only bundle (empty without one), and Harness node enrollment reads
+that instead of the combined bundle. An external Gateway issuer without a
 custom CA contributes no extra roots. With no OIDC CA values, existing chart trust
 wiring is unchanged. TLS verification and OIDC URL restrictions are unchanged.
 

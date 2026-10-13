@@ -51,14 +51,10 @@ certificate. OCE requires:
   signature algorithm at RS256 and do not add an audience mapper: OCE rejects an
   additional audience.
 
-For a private CA, the chart version covered by this guide has no OIDC CA value
-or turnkey mount. Use an explicit, upgrade-safe deployment customization to mount a combined public CA
-bundle for the API, configure `NODE_EXTRA_CA_CERTS` to read it, and restart the
-Node process after trust changes. Preserve any existing Gateway CA roots in that
-bundle: the chart may already set `NODE_EXTRA_CA_CERTS` for Gateway routing, so
-replacing it with only the Keycloak CA can break Gateway trust. See
-[Gateway trust and rotation](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
-Verify the customized deployment and its trust after each upgrade.
+For a private CA, set `auth.oidc.caSecretName` and `auth.oidc.caSecretKey`; see
+[Trust a private IdP CA](oidc-sign-in.md#trust-a-private-idp-ca). The chart combines
+the Keycloak root with any selected Gateway CA for the API only. Do not set
+`NODE_EXTRA_CA_CERTS` separately.
 
 The chart's OIDC NetworkPolicy permits API egress on TCP 443. For an in-cluster
 Keycloak endpoint behind a Service with a non-443 `targetPort`, add a separate
