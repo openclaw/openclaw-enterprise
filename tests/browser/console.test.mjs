@@ -745,6 +745,46 @@ test("console keeps loaded route families visible while return reads refresh", a
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
 });
 
+test("the account menu stays open and focused while the page under it finishes loading", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Open menu", { ready: true });
+  await fixture.createAgent(namespace.id, "Open menu Agent");
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+  await page.getByText("Open menu Agent", { exact: true }).waitFor();
+  await waitForSettledView(page);
+
+  // Hold the Namespaces read so the shell renders its Loading state first and re-renders
+  // with the fresh view only after the reader has opened the account menu.
+  const namespacesPattern = "**/namespaces";
+  const namespacesHold = await holdRoute(t, page, namespacesPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => namespacesHold.release());
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await namespacesHold.waitForRelease();
+  await openShellMenu(page);
+  const settings = page.getByRole("menuitem", { name: "Settings", exact: true });
+  await settings.waitFor();
+  const openedItem = await settings.elementHandle();
+  await releaseHeldRoute(page, namespacesPattern, namespacesHold);
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+
+  assert.equal(
+    await openedItem.evaluate(
+      (node) => node.isConnected && node === globalThis.document.activeElement,
+    ),
+    true,
+    "The re-rendered shell keeps the open menu and its focus",
+  );
+  await settings.click();
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  assert.equal(await settings.isVisible(), false, "Navigating closes the menu");
+});
+
 test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
