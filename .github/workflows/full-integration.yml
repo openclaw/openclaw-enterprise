@@ -474,12 +474,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: dev-up-k3d
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   full-aggregate:
     name: Full Integration Aggregate
