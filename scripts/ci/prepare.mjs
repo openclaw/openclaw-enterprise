@@ -1398,6 +1398,7 @@ async function createK3dCluster(statePath, state, resource, args) {
         lane: state.lane,
         statePath,
         failure: summary,
+        k3dOutput: error,
       }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
       if (attempt >= k3dCreateAttempts) {
         const failure = new Error(

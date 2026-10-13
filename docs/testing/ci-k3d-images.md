@@ -43,6 +43,14 @@ cluster and retries once; a second timeout fails preparation and leaves the
 cluster to lane cleanup. The node Ready wait starts only after every owned node
 has registered (up to two minutes).
 
+A timed-out create's diagnostics also keep k3d's own output (the step it stopped
+in), each node's process list, and the load balancer's state. k3d starts the load
+balancer only after K3s reports ready, and its node entrypoint keeps a server
+running after K3s exits. A load balancer still `created` beside a running server
+whose log ends in `connection refused` API retries therefore means K3s exited.
+Node log excerpts replace those retries with one line per target and outcome,
+with first and last times, so K3s's last lines stay visible.
+
 Preparation reuses a supplied immutable workload image in the local Docker daemon
 only when `docker image inspect` records the requested digest in `RepoDigests`;
 a mutable tag or unverified image is insufficient. Missing or mismatched images
