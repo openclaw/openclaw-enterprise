@@ -19,6 +19,8 @@ test("image pulls retry only registry and network blips", () => {
   for (const stderr of [
     "Error response from daemon: toomanyrequests: You have reached your pull rate limit.",
     "Error response from daemon: received unexpected HTTP status: 503 Service Unavailable",
+    // The reason phrase alone (an HTTP proxy refusing CONNECT with 503) still retries.
+    'Error response from daemon: Get "https://registry-1.docker.io/v2/": Service Unavailable',
     'Error response from daemon: Head "https://registry-1.docker.io/v2/otel/manifests/sha256:1f2c": 502 Bad Gateway',
     "error pulling image configuration: download failed after attempts=6: read tcp 10.1.0.4:443: read: connection reset by peer",
     'Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: TLS handshake timeout',
@@ -95,11 +97,11 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
   for (const call of calls) {
     assert.equal(call.command, "podman");
     assert.deepEqual(call.args, ["pull", image]);
-    assert.equal(call.options.timeoutMs, 300_000);
+    assert.equal(call.options.timeoutMs, 120_000);
   }
   assert.deepEqual(sleeps, [5_000, 10_000]);
   assert.match(logs[0], /toomanyrequests.*attempt 2\/4/);
-  assert.match(logs[1], /timed out after 300000 ms.*attempt 3\/4/);
+  assert.match(logs[1], /timed out after 120000 ms.*attempt 3\/4/);
 });
 
 test("pullImage fails a permanent failure on the first attempt with the original error", async () => {

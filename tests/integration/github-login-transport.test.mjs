@@ -9,6 +9,7 @@ import {
   cookiePairs,
   createLoginFixture,
   expectDenied,
+  expectProviderUnavailable,
   loginOrigin as origin,
   redirectProviderFetch,
   startProviderServer,
@@ -97,7 +98,7 @@ test(
             response.end("fixture-sensitive-error");
           };
           const before = requests.length;
-          await expectDenied(await login.callback());
+          await expectProviderUnavailable(await login.callback());
           assert.equal(requests.slice(before).includes("/redirect-target"), false);
           assert.deepEqual(login.subjects, []);
           assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
@@ -126,7 +127,7 @@ test(
         });
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       assert.ok(
         elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 2_000,
@@ -151,7 +152,7 @@ test(
         response.write('{"id":');
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       // Separate per-request timers would take about 3.5 seconds here.
       assert.ok(
@@ -190,7 +191,7 @@ test(
           response.end(
             JSON.stringify({ error: code, error_description: "fixture-sensitive-error" }),
           );
-        await expectDenied(await login.callback());
+        await expectProviderUnavailable(await login.callback());
         assert.deepEqual(login.subjects, []);
         assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
         assert.deepEqual(login.operationalLogs(), [
@@ -269,7 +270,10 @@ test(
         for (const [name, reason, handler, query, overrides] of cases) {
           const login = loginFixture(overrides);
           serve = handler;
-          await expectDenied(await login.callback(query));
+          await expectDenied(
+            await login.callback(query),
+            reason === "PROVIDER_UNAVAILABLE" ? reason : undefined,
+          );
           assert.deepEqual(login.denials, reason === undefined ? [] : [[reason, "github"]], name);
           assert.deepEqual(login.unmatched, reason === undefined ? ["github"] : [], name);
         }
@@ -421,9 +425,9 @@ test(
         for (const response of held) {
           response.writeHead(503).end();
         }
-        await Promise.all((await Promise.all(pending)).map(expectDenied));
+        await Promise.all((await Promise.all(pending)).map(expectProviderUnavailable));
         serve = (_request, response) => response.writeHead(503).end();
-        await expectDenied(await login.callback(undefined, "10.0.5.99"));
+        await expectProviderUnavailable(await login.callback(undefined, "10.0.5.99"));
       },
     );
 

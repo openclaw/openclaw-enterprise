@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-01
-last_updated_session: authoring-run/0cfc470c-ba88-4a95-86e0-35123f0de703
+updated: 2026-10-09
+last_updated_session: authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -50,6 +50,14 @@ graph TD
 ### 1. Authorize and persist explicit external selection
 
 `packages/occ/src/index.ts:OpenClawController.createNamespace`
+
+`internal/occcli/cli.go:namespaceCommand` checks whether the caller supplied
+`--existing-namespace` before creating its HTTP client. An explicitly supplied
+value, including an empty string, must be a DNS-1123 label of 1 through 63
+characters. Invalid values return a local error without a request. Omitting
+the flag retains managed placement; an empty adoption flag cannot select it.
+`internal/occclient/client.go:Client.CreateNamespace` sends an admitted nonempty
+selection to the same API operation below.
 
 `POST /namespaces` accepts `{ "name": "support", "existingNamespace":
 "customer-support-prod" }`. Omitting `existingNamespace` keeps ordinary managed
@@ -172,6 +180,8 @@ complete-deletion lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 20:19: Refuse an explicitly empty CLI adoption flag before creating a client. (authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5 - c4cc1d9f23f9bebac8fd82881561cce48fb4fc6a)
 
 - 2026-10-06 18:55: A refused selection logs its reason in `worker.completed`, naming foreign markers by key only. (fix-d521)
 - 2026-10-06 18:40: Name all three tenant markers that block readoption, the stuck deletion of a failed selection over foreign markers, and the reasonless `failed` status. (dogfood-r38)

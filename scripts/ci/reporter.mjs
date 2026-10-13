@@ -61,6 +61,12 @@ function safeMeasurement(message) {
   } catch {
     return undefined;
   }
+  if (isRecord(value) && value.kind === "runtime-model-probe") {
+    return safeModelProbeMeasurement(value);
+  }
+  if (isRecord(value) && value.kind === "runtime-sigterm") {
+    return safeSigtermMeasurement(value);
+  }
   if (
     !isRecord(value) ||
     value.kind !== "kubelet-volume-refresh" ||
@@ -82,6 +88,84 @@ function safeMeasurement(message) {
     nudge: value.nudge,
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
+  };
+}
+
+const modelProbeMeasurementCases = new Set([
+  "gateway-500m-answer",
+  "gateway-500m-hang",
+  "gateway-500m-contended",
+  "gateway-1cpu-answer",
+]);
+const modelProbeMeasurementCodes = new Set([
+  "READY",
+  "MODEL_PROBE_TIMEOUT",
+  "MODEL_PROBE_CPU_STARVED",
+  "MODEL_PROBE_FAILED",
+  "AUTHENTICATION_FAILED",
+  "UNAVAILABLE",
+]);
+const modelProbeMeasurementTimes = [
+  "elapsedMs",
+  "capMs",
+  "cpuWaitMs",
+  "setupMs",
+  "probeDoneMs",
+  "readyMs",
+];
+
+// A Gateway model probe's timing (finding 936). Times are whole milliseconds
+// up to an hour, or null when the run did not reach that point.
+function safeModelProbeMeasurement(value) {
+  if (!modelProbeMeasurementCases.has(value.case)) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    case: value.case,
+    code: modelProbeMeasurementCodes.has(value.code)
+      ? value.code
+      : value.code === null
+        ? null
+        : "other",
+  };
+  for (const key of modelProbeMeasurementTimes) {
+    const time = value[key];
+    if (time !== null && !(Number.isInteger(time) && time >= -60_000 && time <= 3_600_000)) {
+      return undefined;
+    }
+    measurement[key] = time;
+  }
+  return measurement;
+}
+
+const sigtermMeasurementCases = new Set([
+  "codex-model-probe",
+  "codex-held-failure",
+  "codex-ready",
+  "gateway-model-probe",
+  "gateway-held-failure",
+  "gateway-ready",
+  "dedicated-gateway-harness-wait",
+]);
+
+// How long a runtime wrapper took to stop after SIGTERM in one startup phase, against the
+// budget the termination test allows it, in whole milliseconds up to an hour.
+function safeSigtermMeasurement(value) {
+  if (!sigtermMeasurementCases.has(value.case) || typeof value.stopped !== "boolean") {
+    return undefined;
+  }
+  for (const key of ["elapsedMs", "budgetMs"]) {
+    if (!(Number.isInteger(value[key]) && value[key] >= 0 && value[key] <= 3_600_000)) {
+      return undefined;
+    }
+  }
+  return {
+    kind: value.kind,
+    case: value.case,
+    stopped: value.stopped,
+    elapsedMs: value.elapsedMs,
+    budgetMs: value.budgetMs,
   };
 }
 
@@ -608,6 +692,33 @@ function outputTail() {
   };
 }
 
+const interruptedTestLimit = 20;
+// About this much JSON per batch (the line strings, without the envelope).
+const interruptedOutputBatchChars = 32 * 1024;
+
+// Node exits soon after an interruption and can cut what is still queued, so the
+// tail goes out in small batches, newest first: a cut loses the oldest lines and
+// at most one partial JSON line, which run-tests skips.
+function* interruptedOutput({ lines, omitted }) {
+  // Measured as JSON, since escaping can grow a line several times.
+  const sizes = lines.map((line) => JSON.stringify(line).length);
+  let end = lines.length;
+  while (end > 0) {
+    let start = end - 1;
+    let chars = sizes[start];
+    while (start > 0 && chars + sizes[start - 1] <= interruptedOutputBatchChars) {
+      start -= 1;
+      chars += sizes[start];
+    }
+    yield `${JSON.stringify({
+      type: "test:output",
+      // Every line before this batch, so run-tests can count the ones a cut lost.
+      data: { lines: lines.slice(start, end), omitted: omitted + start },
+    })}\n`;
+    end = start;
+  }
+}
+
 function location(data = {}) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
@@ -671,7 +782,46 @@ function location(data = {}) {
 export default async function* jsonLinesReporter(source) {
   const output = outputTail();
   let failed = false;
+  let outputSent = false;
+  // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
+  // declared in a loop can share a key, so each key counts its runs.
+  const running = new Map();
+  const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
+      const key = runningKey(event.data);
+      running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
+      continue;
+    }
+    if (event.type === "test:complete" && typeof event.data?.name === "string") {
+      const key = runningKey(event.data);
+      const entry = running.get(key);
+      if (entry?.count > 1) {
+        entry.count -= 1;
+      } else {
+        running.delete(key);
+      }
+      continue;
+    }
+    if (event.type === "test:interrupted") {
+      // The runner's timeout sent SIGTERM and Node exits right after this event,
+      // so send the names first and the output once, newest lines first.
+      yield `${JSON.stringify({
+        type: "test:interrupted",
+        data: {
+          running: [...running.values()].slice(-interruptedTestLimit).map(({ data }) => ({
+            name: data.name,
+            line: data.line,
+            nesting: data.nesting,
+          })),
+        },
+      })}\n`;
+      if (!outputSent) {
+        outputSent = true;
+        yield* interruptedOutput(output.finish());
+      }
+      continue;
+    }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
         output.add(event.type.slice(5), event.data.message);
@@ -716,7 +866,7 @@ export default async function* jsonLinesReporter(source) {
     })}\n`;
   }
   // Passing files send nothing extra.
-  if (failed) {
+  if (failed && !outputSent) {
     yield `${JSON.stringify({ type: "test:output", data: output.finish() })}\n`;
   }
 }

@@ -119,7 +119,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     apps: {
       _default: { enabled: false },
     },
-    plugins: {},
+    plugins: { _default: { enabled: false } },
   };
 
   const CODEX_SELECTED_PLUGIN_BASE_CONFIGURATION = {
@@ -131,7 +131,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     apps: {
       _default: { enabled: false },
     },
-    plugins: {},
+    plugins: { _default: { enabled: false } },
   };
 
   function isRecord(value: unknown): value is Record<string, unknown> {
@@ -603,13 +603,13 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
 
   function assertCodexDetailRepresentable(detail: Record<string, unknown>): void {
     detailVersion(detail);
-    if (requiredArray(detail.apps, "Codex plugin detail apps").length === 0) {
-      throw new Error("Codex plugin detail does not expose an app mapping.");
+    const apps = requiredArray(detail.apps, "Codex plugin detail apps");
+    const skills = requiredArray(detail.skills, "Codex plugin detail skills");
+    if (apps.length === 0 && skills.length === 0) {
+      throw new Error("Codex plugin detail does not expose an app mapping or skills.");
     }
     // TODO: support app templates. For now, ignore their metadata and derive
     // enabled app IDs only from detail.apps.
-    // Native Codex owns bundled skills; they do not grant app tool permissions.
-    requiredArray(detail.skills, "Codex plugin detail skills");
     for (const field of ["hooks", "mcpServers"]) {
       if (requiredArray(detail[field], "Codex plugin detail " + field).length > 0) {
         throw new Error("Codex plugin detail exposes unsupported " + field + ".");
@@ -729,6 +729,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   function codexInstallPlan(selections: unknown, pluginReadResponses: readonly unknown[]) {
     validatePolicies("codex", selections);
     const details = detailsByNativeId(pluginReadResponses);
+    const nativePluginIds = new Set<string>();
     const appEnablement = new Map<string, boolean>();
     return selectionEntries(selections).map(([pluginId, selection]) => {
       const nativeId = codexNativeIdFromPluginId(pluginId);
@@ -737,8 +738,12 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         throw new Error("Codex plugin detail did not contain the selected plugin.");
       }
       assertCodexDetailRepresentable(detail);
+      if (nativePluginIds.has(nativeId)) {
+        throw new Error("Codex plugin selections contain duplicate native plugin IDs.");
+      }
+      nativePluginIds.add(nativeId);
+      const requested = selection.enabled === true;
       for (const appId of appIds(detail)) {
-        const requested = selection.enabled === true;
         const existing = appEnablement.get(appId);
         // A shared native app cannot isolate an enabled selection from a disabled one.
         if (existing !== undefined && existing !== requested) {
@@ -887,6 +892,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     }
     const byNativeId = detailsByNativeId(pluginReadResponses);
     const failedPluginIds = failedPluginIdSet(failures);
+    const pluginEntries = new Map<string, { enabled: boolean }>();
     const appEntries = new Map<string, Record<string, unknown>>();
     const disabledAppIds = new Set<string>();
     const installs = codexInstallPlan(selections, pluginReadResponses);
@@ -897,7 +903,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         throw new Error("Codex plugin detail did not contain the selected plugin.");
       }
       assertCodexDetailRepresentable(detail);
-      if (selectionEnabledAfterFailures(pluginId, selection, failedPluginIds)) {
+      const enabled = selectionEnabledAfterFailures(pluginId, selection, failedPluginIds);
+      pluginEntries.set(nativeId, { enabled });
+      if (enabled) {
         const policy = driverPolicy(selection);
         const toolDefaults = defaults(selection);
         const toolSettings = codexAppToolSettings(selection, appIds(detail), toolStatuses);
@@ -932,6 +940,10 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       kind: "codex",
       configuration: {
         ...CODEX_SELECTED_PLUGIN_BASE_CONFIGURATION,
+        plugins: {
+          _default: { enabled: false },
+          ...Object.fromEntries(pluginEntries),
+        },
         apps: {
           _default: { enabled: false },
           ...Object.fromEntries(

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-05
-last_updated_session: authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611
+updated: 2026-10-13
+last_updated_session: fix-1276-1278
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -96,7 +96,15 @@ apply only to later deployments.
 Provisioning's `KubernetesConfigurationDriver.createExact` and `inspectExact`
 use the same verified CP namespace as ordinary Configuration CRUD. Recovery checks
 the exact identity and document there; an adopted data-plane namespace does not
-change canonical Configuration ownership.
+change canonical Configuration ownership. When a create's outcome is unknown and
+`inspectExact` still finds nothing 90 seconds after the provisioning effect began
+(database clock), the worker fences again and sends the same create under the
+same effect; earlier attempts wait without spending a retry, and a Namespace
+deletion keeps waiting meanwhile. The Driver's write deadline is 10 seconds and
+the API server's default request timeout 60 seconds, so a late original then
+fails `AlreadyExists`. The window covers the first send only: later attempts
+resend at once. A failed resend settles the effect only if `inspectExact` finds
+the exact Configuration.
 
 ### 3. Authorize the exact Namespace Configuration operation
 
@@ -111,10 +119,20 @@ are dispatched by the
 identity and checks the selected IAM Driver before touching tenant data:
 creation targets the exact Namespace-owned Configuration resource; reads,
 updates, and deletes target the exact Configuration identifier in that
-Namespace. Creation requires `kind: "agent"` and a native root-object JSON
-document; omitted or unknown kinds and malformed request shapes fail with
-`400`. Updates require the complete replacement `values` document and accept
-optional `secretBindings`; `kind`,
+Namespace. POST and PATCH accept bodies up to 6 x (1 MiB + 32 KiB): the
+Kubernetes Driver's 1 MiB of values and the envelope in six-byte JSON escapes.
+Their `onRequest` hook runs `authorizeConfigurationWrite` before the body is
+read, so a caller without the grant gets `403` before any body error; the
+transaction repeats the check. The controller's JSON body parser
+(`apps/controller/src/http/json-depth.ts:tooDeepJsonPath`, registered in
+`createFastifyApp`) then scans the raw text once and refuses a value more than
+24 levels below the body root with `400 INVALID_REQUEST` and a `TOO_DEEP`
+detail, before parsing, schema validation, the NUL/surrogate check or
+`validateConfiguration`; other bodies go to Fastify's default JSON parser.
+Every JSON route shares this parser and limit. Creation requires `kind: "agent"` and a native
+root-object JSON document; omitted or unknown kinds and malformed request
+shapes fail with `400`. Updates require the complete replacement `values`
+document and accept optional `secretBindings`; `kind`,
 `generation`, and ownership are server-owned and cannot be supplied or changed.
 OCC preserves nested values and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
@@ -195,6 +213,24 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-13 23:00: Configuration and Preset saves require references in MCP server credential headers, and read a `GIT_CONFIG_VALUE_<n>` or `GIT_CONFIG_PARAMETERS` value whose key names a git proxy as a proxy URL. (findings 1276, 1278)
+- 2026-10-13 18:00: Kubernetes credential header refusals quote the header name, not a word list; a Preset header name waiting on a variable saves on Kubernetes too. (findings 1207-1208)
+- 2026-10-13 16:00: The credential header rule also matches authentication, assertion, HMAC, JWT, license, OTP, pass, PIN and pwd words, `-v2` suffixes and `.` separators, and exempts partition, shard, sort and dedup keys; Configuration and Preset saves on every Compute refuse a header name that is not an HTTP field name, and Preset saves run the model provider settings check. (findings 1189-1191)
+- 2026-10-13 14:00: The credential header rule also matches any name ending in `key` or `keys` (not an idempotency or cache key), the words `bearer`, `credential`, `passcode`, `passphrase` and `signature`, and plurals; the Kubernetes message says "any key"; Configuration writes and Kubernetes Compute refuse a model provider `models` that is not a list, which hid its rows from the credential rules. (findings 1185-1186)
+- 2026-10-13 10:00: Kubernetes Compute refuses credential headers and non-default `request.auth` on every model provider, and the Configuration Driver requires references in the request credential slots; a stored document that predates these rules still reads and an edit replaces it, while save and deployment refuse it with the Compute message. (#2265, findings 1142-1143)
+- 2026-10-11 15:00: Kubernetes deployment admission names the caller's Configuration setting for channel, credential and dedicated OpenClaw catalog refusals; Configuration save, provisioning and Preset save run the topology-independent ones through `validateConfiguration`; Agent create and update run deployment's Agent checks. (fix-1116-1117, findings 1116-1117)
+- 2026-10-11 14:30: Every JSON request body nested more than 24 levels deep is refused with `400 TOO_DEEP` before it is parsed, instead of a `500` and hundreds of megabytes of heap on Configuration and Preset writes. (fix-1124, finding 1124)
+- 2026-10-11 13:00: Configuration save refuses a Codex approval policy the Gateway refuses and a literal `gateway.auth.password`; Kubernetes deployment admission and provisioning refuse the gateway password, channel topology and workspace-node plugin settings that preparation or the Gateway refused only after predecessors stopped. (fix-1112-1115, findings 1112-1115)
+- 2026-10-11 12:00: Configuration POST/PATCH admit every Configuration the Kubernetes Driver stores (6 x (1 MiB + 32 KiB) body) and check the create or update grant before reading the body. (fix-1118, finding 1118)
+
+- 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before revision creation. (fix-996-999, findings 996-998)
+
+- 2026-10-10 11:29: Refuse Kubernetes native listeners that pass local readiness but cannot serve Pod-IP routes before revision creation. (authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc - f8a837e33b5c03bc0c92065e979485ee06960150)
+
+- 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's text, through the shared `requireDeployableRoster`; an existing row still reads and deploys as before. (q35-roster-save, finding 874)
+- 2026-10-09 15:00: A failed Configuration delete or update compensates only while the metadata row is unchanged, so a delete or update another request committed after the lock was released is never undone and leaves no orphan ConfigMap. (fix-944-945)
+- 2026-10-09 13:00: Configuration create and delete register their compensation before the write and undo only what `inspectExact` shows they stored or removed, so a write that applied but answered an error leaves no orphan ConfigMap or metadata without one. (fix-916)
+- 2026-10-09 12:00: Provisioning resends a Configuration create still missing after its 90-second settle window, and a Configuration update's compensation is registered before the replace, so a replace that applied but answered an error is rolled back too. (fix-911)
 - 2026-10-06 15:00: Deployment admission refuses a native gateway setting Kubernetes Compute cannot deploy, naming it, instead of failing every preparation attempt. (dogfood-r36/deploy-gateway-settings)
 - 2026-10-05 16:38: Trace owned temporary-file cleanup after filesystem Configuration write or rename failure. (authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611 - 69b5c21806187125a7a20b9ca447bb15f6f3e890)
 

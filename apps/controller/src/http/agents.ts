@@ -213,7 +213,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const input = body as Omit<CreateAgentInput, "namespaceId">;
       validateWorkspaceSetup(input);
       const agent = await controller.transact(async (unit) => {
-        const created = await controller.createAgent(context.actorId, { ...input, namespaceId });
+        const created = await controller.createAgent(
+          context.actorId,
+          { ...input, namespaceId },
+          options.resolveHarness,
+        );
         await unit.audit.append(mutationEvent({ kind: "agent", id: created.id, namespaceId }));
         return clientAgent(created);
       });
@@ -292,11 +296,15 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     }) {
       const agentId = params.agentId!;
       const agent = await controller.transact(async (unit) => {
-        const updated = await controller.updateAgent(context.actorId, {
-          ...(body as Omit<UpdateAgentInput, "namespaceId" | "agentId">),
-          namespaceId,
-          agentId,
-        });
+        const updated = await controller.updateAgent(
+          context.actorId,
+          {
+            ...(body as Omit<UpdateAgentInput, "namespaceId" | "agentId">),
+            namespaceId,
+            agentId,
+          },
+          options.resolveHarness,
+        );
         await unit.audit.append(mutationEvent({ kind: "agent", id: updated.id, namespaceId }));
         return clientAgent(updated);
       });

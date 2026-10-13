@@ -319,6 +319,19 @@ test(
         ),
       "uppercase Collector image digest",
     );
+    // Kubernetes refuses to pull an image whose repository path has an uppercase letter.
+    await assert.rejects(
+      render({
+        ...loggingValues,
+        "logging.collector.image": `docker.io/Otel/opentelemetry-collector-contrib:0.159.0@sha256:${"c".repeat(64)}`,
+      }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(
+          "logging.collector.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one",
+        ),
+      "uppercase Collector repository path",
+    );
     const oidc = {
       "auth.oidc.enabled": "true",
       "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
@@ -363,7 +376,8 @@ test(
         for (const field of ["configSecretName", "envSecretName"]) {
           await assert.rejects(
             render({ ...loggingValues, ...feature, [`logging.collector.${field}`]: secret }),
-            ({ stderr }) => /logging\.collector Secrets must be dedicated/.test(stderr),
+            ({ stderr }) =>
+              stderr.includes(`logging.collector.${field} must name a dedicated Secret; ${secret}`),
             `${field}=${secret}`,
           );
         }

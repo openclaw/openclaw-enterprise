@@ -184,6 +184,10 @@ async function loadLocalInstallation(harness) {
   }
 
   const environment = { ...process.env, DOCKER_HOST: state.dockerHost };
+  // The recorded endpoint is a local Unix socket, not a TLS daemon connection.
+  delete environment.DOCKER_TLS;
+  delete environment.DOCKER_TLS_VERIFY;
+  delete environment.DOCKER_CERT_PATH;
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
   if (state.containerEngine === "podman") {
@@ -302,9 +306,13 @@ function loopbackOrigin(raw, protocol = "http:") {
 
 function run(binary, args, { env, input, timeout = 45_000 } = {}) {
   return new Promise((resolveResult, reject) => {
+    const maxErrorBytes = 8 * 1024;
     const child = spawn(binary, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], timeout });
     const output = [];
+    const errorOutput = [];
     let length = 0;
+    let errorLength = 0;
+    let errorTruncated = false;
     let settled = false;
     const fail = (message) => {
       if (!settled) {
@@ -324,15 +332,30 @@ function run(binary, args, { env, input, timeout = 45_000 } = {}) {
         output.push(chunk);
       }
     });
-    child.stderr.resume();
+    child.stderr.on("data", (chunk) => {
+      const remaining = maxErrorBytes - errorLength;
+      if (remaining > 0) {
+        const retained = chunk.subarray(0, remaining);
+        errorOutput.push(retained);
+        errorLength += retained.length;
+      }
+      errorTruncated ||= chunk.length > remaining;
+    });
     child.stdin.on("error", () => {});
     child.on("close", (code, signal) => {
       if (settled) {
         return;
       }
       if (code !== 0) {
+        const detail = Buffer.concat(errorOutput)
+          .toString("utf8")
+          .replace(/\p{Cc}+/gu, " ")
+          .trim();
+        const reason = detail
+          ? `${detail}${errorTruncated ? " [stderr truncated]" : ""}`
+          : "Check that the local stack and selected resources are available.";
         fail(
-          `${binary} did not complete successfully${signal ? ` (${signal})` : ` (exit ${code})`}. Check that the local stack and selected resources are available.`,
+          `${binary} did not complete successfully${signal ? ` (${signal})` : ` (exit ${code})`}. ${reason}`,
         );
         return;
       }

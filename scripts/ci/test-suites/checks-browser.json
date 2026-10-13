@@ -4,8 +4,9 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
-    "tests/browser/console-agent-detail.test.mjs",
     "tests/browser/console.test.mjs",
+    "tests/browser/console-agent-detail-2.test.mjs",
+    "tests/browser/console-agent-detail.test.mjs",
     "tests/browser/console-agent-logs.test.mjs",
     "tests/browser/console-agent-repositories.test.mjs",
     "tests/integration/repository-credentials-github-token.test.mjs",
@@ -19,6 +20,9 @@
     },
     {
       "path": "tests/browser/console-agent-detail.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-detail-2.test.mjs"
     },
     {
       "path": "tests/browser/console-agent-logs.test.mjs"

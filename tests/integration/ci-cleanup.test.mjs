@@ -323,6 +323,81 @@ test("cleanup retains state when a resource command fails", async (t) => {
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
 });
 
+// The Cleanup lane step and a test fixture's database drop wait for these commands, and nothing
+// else stops one that never returns before the job timeout. A hung drop (here one that ignores
+// SIGTERM) fails at its limit and keeps its resource for a later cleanup; the rest still go.
+test("cleanup stops a hung database drop at its limit and still removes the server", async (t) => {
+  const root = await fixture(t);
+  const containerLog = join(root, "container.log");
+  await writeExecutable(
+    join(root, "bin/docker"),
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> ${JSON.stringify(containerLog)}`,
+      'case "$*" in',
+      "  *psql*)",
+      "    trap '' TERM",
+      // Bounded, so a cleanup without limits cannot leave it running for long.
+      "    i=0; while [ $i -lt 100 ]; do sleep 0.2; i=$((i + 1)); done;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  const prefix = "openclaw-ci-local-hungdrop1234567890";
+  const statePath = join(root, "state.json");
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    prefix,
+    resources: [
+      {
+        id: "postgres-1",
+        kind: "compose-postgres",
+        owner: prefix,
+        name: "openclaw_ci_pg_hung_drop",
+        composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+        port: 55434,
+      },
+      {
+        id: "database-1",
+        kind: "postgres-database",
+        owner: prefix,
+        name: "openclaw_ci_hung_drop",
+        composeProject: "openclaw_ci_pg_hung_drop",
+        port: 55434,
+      },
+    ],
+  });
+
+  const started = Date.now();
+  const result = spawnSync(process.execPath, [cleanupPath, "--state", statePath], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      OCC_DOCKER_BIN: join(root, "bin/docker"),
+      OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS: "500",
+      OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "200",
+    },
+    timeout: 15_000,
+  });
+
+  assert.equal(result.error, undefined, "cleanup waited for the hung drop");
+  assert.ok(Date.now() - started < 10_000);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(
+    result.stderr,
+    /Cleanup failed for postgres-database:openclaw_ci_hung_drop:.* psql .* timed out after 500 ms/,
+  );
+  assert.match(await readFile(containerLog, "utf8"), /down --volumes --remove-orphans/);
+  const retained = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(
+    retained.resources.map(({ id }) => id),
+    ["database-1"],
+  );
+});
+
 test("cleanup rejects a k3d cluster directory outside the owned cluster prefix", async (t) => {
   const root = await fixture(t);
   const clusterName = "openclaw-k8s-owned-cluster-abcdef123456";

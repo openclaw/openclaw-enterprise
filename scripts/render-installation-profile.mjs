@@ -4,18 +4,98 @@ import dns from "node:dns/promises";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isKubernetesNamespaceName,
+  isKubernetesResourceName,
+} from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+
+import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
-const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+// Kubernetes Service names are DNS-1035 labels. The chart refuses any other
+// repositoryCredentials.serviceName.
+const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
+const kubernetesSecretKey = /^[-._A-Za-z0-9]+$/;
+function isKubernetesSecretKey(value) {
+  return (
+    value !== "." &&
+    !value.startsWith("..") &&
+    value.length <= 253 &&
+    kubernetesSecretKey.test(value)
+  );
+}
+// The rule for a Kubernetes resource name field, such as a GatewayClass or Secret name.
+const resourceNameRule = {
+  validate: isKubernetesResourceName,
+  description: "a Kubernetes resource name of at most 253 characters",
+};
+const secretKeyRule = {
+  validate: isKubernetesSecretKey,
+  description: "a Kubernetes Secret key of at most 253 characters",
+};
+// runtime.image reaches only KubernetesComputeDriver (installation.yaml images.gateway
+// and images.agent), never the chart. Compute requires only the trailing digest, so this
+// keeps the old rule: no whitespace or second @, which no runtime pulls. The chart's
+// control-plane rule would refuse working references such as an IPv6 registry host
+// ([fd00::1]:5000/runtime@sha256:...).
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
-const proxyUrl = /^https?:\/\/(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$/;
+// The chart's rule for the images it renders: the controller (which also feeds
+// prepare-bootstrap-volume) and repository credentials.
+const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
+// Kubernetes refuses an image whose repository path has an uppercase letter
+// (InvalidImageName); the chart, the image tools and Compute refuse it too. Uppercase may appear
+// only in the registry host (the first component, when a / follows it) and in the tag.
+function lowercaseImageRepository(value) {
+  if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)/.test(value)) {
+    return "repository path must be lowercase; Kubernetes refuses to pull an uppercase one. Only the registry host and the tag may use uppercase.";
+  }
+  return true;
+}
+// The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
+// The shape check alone still matches 192.0.2.999 and port 99999.
+function isLiteralIpv4ProxyUrl(value) {
+  const match =
+    /^https?:\/\/((?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}):([1-9][0-9]{0,4})$/.exec(
+      value,
+    );
+  if (!match) {
+    return false;
+  }
+  if (match[1].split(".").some((octet) => Number(octet) > 255)) {
+    return false;
+  }
+  const port = Number(match[2]);
+  return Number.isInteger(port) && port <= 65535;
+}
+// Compute and the API's Slack directory also refuse the unspecified address, which names
+// no proxy.
+function channelProxyUrl(value) {
+  if (!isLiteralIpv4ProxyUrl(value)) {
+    return false;
+  }
+  return /^https?:\/\/0\.0\.0\.0:/.test(value)
+    ? "must not use host 0.0.0.0, which names no proxy address."
+    : true;
+}
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+// Google hosted domains in the shape the API's domainPattern and the chart accept after
+// they trim and lowercase the entry. Preflight accepts only the trimmed, lowercase spelling.
+// A DNS hostname whose last label starts with a digit, or a name longer than 253
+// characters, is not one of those domains.
+const googleHostedDomain =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+// OCC's ChatGPT workspace rule (packages/occ/src/backends.ts WORKSPACE_ID). Startup
+// refuses every other spelling, including a nil UUID.
+const chatGptWorkspaceId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function fail(message) {
   process.stderr.write(`render-installation-profile: ${message}\n`);
@@ -127,7 +207,14 @@ function yamlScalar(value) {
     ) {
       return value;
     }
-    return JSON.stringify(value);
+    // JSON escapes only C0 controls. Inside a double-quoted scalar Helm's YAML parser folds a
+    // raw U+0085 into a space and refuses raw DEL, the other C1 controls, U+FFFE and U+FFFF.
+    // U+2028, U+2029 and U+FEFF are YAML line-break and byte-order characters. Escape them
+    // all so Helm reads the exact string preflight checked.
+    return JSON.stringify(value).replace(
+      /[\u007f-\u009f\u2028\u2029\ufeff\ufffe\uffff]/g,
+      (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
@@ -183,17 +270,29 @@ function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+// The bootstrap Job trims, lowercases, then requires one @ and a dotted domain.
+function administratorEmail(value) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim().toLowerCase());
+}
+
 function asString(source, path, diagnostics, { pattern, validate, description } = {}) {
   const value = source[path.at(-1)];
   if (typeof value !== "string" || value.trim().length === 0) {
     diagnostics.errors.push(`${path.join(".")} must be a nonempty string.`);
     return "";
   }
-  if (
-    (pattern !== undefined && !pattern.test(value)) ||
-    (validate !== undefined && !validate(value))
-  ) {
+  if (pattern !== undefined && !pattern.test(value)) {
     diagnostics.errors.push(`${path.join(".")} must be ${description}.`);
+    return value;
+  }
+  // A string is that field's own refusal. false keeps the shared description.
+  if (validate !== undefined) {
+    const accepted = validate(value);
+    if (typeof accepted === "string") {
+      diagnostics.errors.push(`${path.join(".")} ${accepted}`);
+    } else if (!accepted) {
+      diagnostics.errors.push(`${path.join(".")} must be ${description}.`);
+    }
   }
   return value;
 }
@@ -211,6 +310,14 @@ function stripUrlEdges(value) {
   return value.slice(start, end);
 }
 
+// Node drops an empty user info (https://@host, https://:@host, https:@host) and publishes the
+// host alone; Helm's URL parser keeps it, and the chart refuses an @ in the auth base URL. Like
+// URL parsing, this drops tabs and newlines and skips slashes or backslashes after the scheme,
+// so any @ before the host counts.
+function writtenUserinfo(value) {
+  return /^[a-z][a-z\d+.-]*:[/\\]*[^/\\?#]*@/i.test(stripUrlEdges(value).replace(/[\t\n\r]/g, ""));
+}
+
 // The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL).
 // Like the chart, this also refuses spellings URL parsing repairs: https:host, /. and /%2e,
 // and other Unicode spaces or invisible characters at either end (NBSP, U+3000, U+FEFF,
@@ -222,6 +329,17 @@ function stripUrlEdges(value) {
 // tables can be newer than Helm's, so a letter assigned since then passes here and fails in
 // the chart; no realistic host uses one. Like both, it refuses a bare ? or # (https://host?),
 // which parses to an empty query or fragment but would break the API's auth routes.
+// Sprig urlParse aborts when the written host percent-encodes an ASCII byte: a % whose first
+// hex digit is 0-7 (https://ex%61mple.com, https://example.com%2e). Node publishes the decoded
+// host instead. Escapes whose first hex digit is 8-F stay, because Helm decodes those and
+// then checks the host (https://ex%C3%A4.com). %25, a truncated %, and %GG already fail URL
+// parsing. An IPv4 host that contains % and decodes to an IPv4 address stays on ipv4HostKept.
+// The chart runs its character checks on the decoded host too. Node drops some invisible
+// characters such as U+00AD and U+200B from a host, so https://ex%C2%ADample.com parses here
+// and fails in the chart; check the decoded written host. (Node already refuses the chart's
+// compatibility characters, encoded or not.) Helm built with Go 1.24.9 (Helm 3.19.2) refuses
+// an IPv4-mapped IPv6 host (::ffff:0:0/96) in any spelling, which newer Go and Node accept
+// (Node publishes [::ffff:x:y]). Refuse it so the outcome does not depend on the Helm build.
 function httpOrigin(value) {
   const stripped = stripUrlEdges(value);
   if (
@@ -238,30 +356,132 @@ function httpOrigin(value) {
   } catch {
     return false;
   }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username.length !== 0 ||
+    url.password.length !== 0 ||
+    writtenUserinfo(value) ||
+    url.pathname !== "/" ||
+    url.search.length !== 0 ||
+    url.hash.length !== 0 ||
+    !ipv4HostKept(value, url)
+  ) {
+    return false;
+  }
+  // Same written host as ipv4HostKept: C0 and space edges, then the origin's host group.
+  const writtenHost = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
+  if (writtenHost !== undefined && /%[0-7][0-9A-Fa-f]/.test(writtenHost)) {
+    return "host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
+  }
+  if (writtenHost !== undefined && writtenHost.includes("%")) {
+    let decodedHost;
+    try {
+      decodedHost = decodeURIComponent(writtenHost);
+    } catch {
+      return false;
+    }
+    if (/[^\p{L}\p{M}\p{N}\p{P}\p{S}\u200c\u200d]/u.test(decodedHost)) {
+      return "host must not percent-encode a space or invisible character; the chart refuses it in the decoded host.";
+    }
+  }
+  if (url.hostname.startsWith("[")) {
+    const groups = ipv6Groups(url.hostname.slice(1, -1));
+    if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+      return "host must not be an IPv4-mapped IPv6 address, which Helm 3.19.2's URL parser rejects; write the IPv4 address instead.";
+    }
+  }
+  return true;
+}
+
+// The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
+// hex, shorthand, a single integer or a trailing dot publish a different host. Callers refuse
+// user info first (writtenUserinfo), so the host follows scheme:// directly.
+function ipv4HostKept(raw, url) {
+  if (isIP(url.hostname) !== 4) {
+    return true;
+  }
+  const stripped = stripUrlEdges(raw);
+  const written = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
   return (
-    (url.protocol === "http:" || url.protocol === "https:") &&
-    url.username.length === 0 &&
-    url.password.length === 0 &&
-    url.pathname === "/" &&
-    url.search.length === 0 &&
-    url.hash.length === 0
+    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
   );
 }
 
-function observabilityDestination(value) {
+// KubernetesComputeDriver.validateCodexSeccompProfile. A localhost profile is a
+// relative path: no absolute path or backslash, no empty, "." or ".." segment,
+// and no segment named unconfined in any case.
+function isCodexSeccompProfile(value) {
+  if (isAbsolute(value) || value.includes("\\")) {
+    return false;
+  }
+  return value.split("/").every((segment) => {
+    return (
+      segment.length > 0 &&
+      segment !== "." &&
+      segment !== ".." &&
+      segment.toLowerCase() !== "unconfined"
+    );
+  });
+}
+
+function parsedObservabilityUrl(value) {
   let url;
   try {
     url = new URL(value);
   } catch {
-    return false;
+    return undefined;
   }
-  return (
-    ["http:", "https:"].includes(url.protocol) &&
-    url.hostname !== "" &&
-    url.username === "" &&
-    url.password === "" &&
-    url.hash === ""
-  );
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.hostname === "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    writtenUserinfo(value) ||
+    url.hash !== ""
+  ) {
+    return undefined;
+  }
+  return url;
+}
+
+// ipv4HostKept is the chart and OCC_AUTH_BASE_URL written-host rule. Node's URL parser
+// already refuses an octet above 255, so a parsed IPv4 hostname never has one.
+function observabilityDestination(value) {
+  const url = parsedObservabilityUrl(value);
+  return url !== undefined && ipv4HostKept(value, url);
+}
+
+function validateDatabaseCaMount(values, diagnostics) {
+  if (!values.database.caSecretName) {
+    return;
+  }
+  // Profiles use the chart's bootstrap mount and private gateway CA, with no
+  // executionCluster override. Match the active database-client mounts only.
+  const reserved = new Set([
+    "/etc/openclaw/installation",
+    "/run/openclaw-worker",
+    "/var/lib/openclaw/bootstrap",
+    "/etc/openclaw/gateway-api-key",
+    "/etc/openclaw/gateway-ca",
+  ]);
+  if (values.repositoryCredentials.enabled) {
+    for (const path of [
+      "/etc/openclaw/repository-registry",
+      "/etc/openclaw/repository-ca",
+      "/var/run/secrets/kubernetes.io/serviceaccount",
+      "/run/openclaw/repository-control",
+    ]) {
+      reserved.add(path);
+    }
+  }
+  if (values.backend?.chatgpt.enabled) {
+    reserved.add("/etc/openclaw/chatgpt");
+  }
+  if (reserved.has(values.database.caMountPath)) {
+    diagnostics.errors.push(
+      "controlPlane.databaseCa.mountPath must be distinct from other active mounts in the production database clients.",
+    );
+  }
 }
 
 function optionalString(source, path, diagnostics, { pattern, validate, description } = {}) {
@@ -294,33 +514,82 @@ function asBoolean(source, path, diagnostics, fallback = false) {
   return value;
 }
 
-function optionalPositiveInteger(source, path, diagnostics) {
+function optionalPositiveInteger(source, path, diagnostics, { max } = {}) {
   const value = source[path.at(-1)];
   if (value === undefined) {
     return undefined;
   }
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    diagnostics.errors.push(`${path.join(".")} must be a positive integer when supplied.`);
+  if (!Number.isSafeInteger(value) || value < 1 || (max !== undefined && value > max)) {
+    diagnostics.errors.push(
+      max === undefined
+        ? `${path.join(".")} must be a positive integer when supplied.`
+        : `${path.join(".")} must be an integer from 1 through ${max} when supplied.`,
+    );
     return undefined;
   }
   return value;
 }
 
-function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
+function labelMap(source, path, diagnostics) {
   const value = source[path.at(-1)];
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     diagnostics.errors.push(`${path.join(".")} must be an object of Kubernetes labels.`);
     return {};
   }
-  if (nonempty && Object.keys(value).length === 0) {
+  if (Object.keys(value).length === 0) {
     diagnostics.errors.push(`${path.join(".")} must contain at least one Kubernetes label.`);
   }
   for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      diagnostics.errors.push(`${path.join(".")}.${key} must be a nonempty string.`);
+    if (typeof entry !== "string") {
+      diagnostics.errors.push(`${path.join(".")}.${key} must be a string.`);
     }
   }
   return value;
+}
+
+const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
+
+// Kubernetes label syntax: a name of at most 63 characters with an optional prefix, and a
+// value that is empty or follows the name rule. `isPrefix` decides the prefix rule.
+function labelSyntax(labels, path, diagnostics, isPrefix) {
+  for (const [key, value] of Object.entries(labels)) {
+    const parts = key.split("/");
+    const name = parts.at(-1);
+    const prefix = parts.length === 2 ? parts[0] : undefined;
+    if (
+      parts.length > 2 ||
+      name.length > 63 ||
+      labelName.exec(name)?.[0] !== name ||
+      (prefix !== undefined && !isPrefix(prefix))
+    ) {
+      diagnostics.errors.push(`${path.join(".")} keys must be Kubernetes label keys.`);
+    }
+    if (
+      typeof value === "string" &&
+      value !== "" &&
+      (value.length > 63 || labelName.exec(value)?.[0] !== value)
+    ) {
+      diagnostics.errors.push(`${path.join(".")} values must be Kubernetes label values.`);
+    }
+  }
+  return labels;
+}
+
+// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
+// controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
+// runtime selectors in Installation configuration follow it too. Kubernetes allows empty
+// label values, as in `node-role.kubernetes.io/infra: ""`.
+function nodeSelector(source, path, diagnostics) {
+  const labels = labelMap(source, path, diagnostics);
+  return labelSyntax(labels, path, diagnostics, isKubernetesResourceName);
+}
+
+// NetworkPolicy peer selectors (DNS, API clients, metrics scrapers). Compute's validatePeer
+// applies this rule to every peer at startup, and Kubernetes to every NetworkPolicy: empty
+// values are allowed and the key prefix is a DNS subdomain of at most 253 characters.
+function peerSelector(source, path, diagnostics) {
+  const labels = labelMap(source, path, diagnostics);
+  return labelSyntax(labels, path, diagnostics, isKubernetesResourceName);
 }
 
 function stringArray(
@@ -347,19 +616,50 @@ function stringArray(
   return value;
 }
 
+// parseCidr accepts only "0" or a decimal prefix with no leading zero. Number("08") is 8,
+// which would admit a prefix the API and the chart both refuse.
+function decimalPrefix(rawPrefix) {
+  if (!/^(0|[1-9][0-9]*)$/.test(rawPrefix ?? "")) {
+    return Number.NaN;
+  }
+  return Number(rawPrefix);
+}
+
 function isIpv4Cidr(value, requiredPrefix) {
   const [address, rawPrefix, extra] = value.split("/");
   if (extra !== undefined || rawPrefix === undefined || isIP(address) !== 4) {
     return false;
   }
-  if (!/^[0-9]+$/.test(rawPrefix)) {
-    return false;
-  }
-  const prefix = Number(rawPrefix);
+  const prefix = decimalPrefix(rawPrefix);
   if (!Number.isSafeInteger(prefix) || prefix < 1 || prefix > 32) {
     return false;
   }
   return requiredPrefix === undefined || prefix === requiredPrefix;
+}
+
+// Compute refuses a CIDR that covers every address in each list that grants reach (scopedCidr
+// in the Kubernetes Compute Driver), with the same words. These profile lists are IPv4-only,
+// so that range is a /0. Status proxy sources wider than one address also warn there and here.
+function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) {
+  const path = ["controlPlane", key];
+  const everyAddress = (value) => value.endsWith("/0") && isIP(value.slice(0, -2)) === 4;
+  const cidrs = stringArray(controlPlane, path, diagnostics, {
+    validate: (value) => everyAddress(value) || isIpv4Cidr(value),
+    description: "an IPv4 CIDR",
+  });
+  cidrs.forEach((value, index) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    if (everyAddress(value)) {
+      diagnostics.errors.push(`${path.join(".")}[${index}] cannot cover every address.`);
+    } else if (warnWide && isIpv4Cidr(value) && !isIpv4Cidr(value, 32)) {
+      diagnostics.warnings.push(
+        `${path.join(".")}[${index}] covers more than one address: every Pod in it can reach the Agent status port. Use the API server /32 source addresses.`,
+      );
+    }
+  });
+  return cidrs;
 }
 
 // The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
@@ -430,6 +730,13 @@ function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, dia
   }
 }
 
+// A Kubernetes Namespace name: a DNS label of at most 63 characters. The chart selects API
+// client and DNS peers by kubernetes.io/metadata.name, which only ever holds such a name.
+const namespaceRule = {
+  validate: isKubernetesNamespaceName,
+  description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
+};
+
 function clientSelectors(source, diagnostics) {
   if (!Array.isArray(source.apiClients) || source.apiClients.length === 0) {
     diagnostics.errors.push("controlPlane.apiClients must be a nonempty list.");
@@ -443,8 +750,9 @@ function clientSelectors(source, diagnostics) {
         current,
         ["controlPlane", "apiClients", String(index), "namespace"],
         diagnostics,
+        namespaceRule,
       ),
-      podLabels: labelMap(
+      podLabels: peerSelector(
         current,
         ["controlPlane", "apiClients", String(index), "podLabels"],
         diagnostics,
@@ -459,29 +767,76 @@ const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
+// Ported from the API's trusted-proxy parser (apps/controller/src/auth/client-address.ts
+// ipv6Groups and parseCidr), which the chart mirrors. Expands an address isIP accepted.
+function ipv6Groups(address) {
+  const hex = address.replace(/\d+\.\d+\.\d+\.\d+$/, (tail) => {
+    const octets = tail.split(".").map(Number);
+    return `${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  });
+  const [head, tail] = hex.split("::");
+  const left = head === "" ? [] : head.split(":");
+  const right = tail === undefined || tail === "" ? [] : tail.split(":");
+  const zeros = tail === undefined ? [] : Array(8 - left.length - right.length).fill("0");
+  return [...left, ...zeros, ...right].map((group) => parseInt(group, 16));
+}
+
+// A trusted proxy CIDR as the API and the chart accept it. The chart refuses zone IDs,
+// which isIP accepts. An IPv4-mapped address (::ffff:0:0/96) is an IPv4 address to the API,
+// so its prefix is 1 through 32. Any other IPv6 range that contains all of ::ffff:0:0/96
+// would trust every IPv4 peer, because BlockList matches IPv4 peers against it.
 function isCidr(value) {
   const [address, rawPrefix, extra] = value.split("/");
   const family = isIP(address ?? "");
-  if (extra !== undefined || family === 0 || !/^[0-9]+$/.test(rawPrefix ?? "")) {
+  if (extra !== undefined || family === 0 || address.includes("%")) {
     return false;
   }
-  const prefix = Number(rawPrefix);
-  return prefix >= 1 && prefix <= (family === 4 ? 32 : 128);
+  const prefix = decimalPrefix(rawPrefix);
+  if (!Number.isSafeInteger(prefix) || prefix < 1 || prefix > (family === 4 ? 32 : 128)) {
+    return false;
+  }
+  if (family === 4) {
+    return true;
+  }
+  const groups = ipv6Groups(address);
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return prefix <= 32;
+  }
+  const coversIpv4 =
+    prefix <= 96 &&
+    groups.slice(0, 6).every((group, index) => {
+      const shift = 16 - Math.min(16, Math.max(0, prefix - index * 16));
+      const mappedGroup = index === 5 ? 0xffff : 0;
+      return group >> shift === mappedGroup >> shift;
+    });
+  return !coversIpv4;
 }
 
 function signInProvider(source, name, diagnostics) {
   const path = ["controlPlane", name];
   const rendered = { enabled: true };
   for (const key of ["secretName", "clientIdKey", "clientSecretKey"]) {
-    const value = optionalString(source, [...path, key], diagnostics);
+    const value = optionalString(
+      source,
+      [...path, key],
+      diagnostics,
+      key === "secretName" ? resourceNameRule : secretKeyRule,
+    );
     if (value !== undefined) {
       rendered[key] = value;
     }
   }
+  // Omitted keys retain these chart defaults; a one-key override can collide too.
+  if ((rendered.clientIdKey ?? "client-id") === (rendered.clientSecretKey ?? "client-secret")) {
+    diagnostics.errors.push(
+      `controlPlane.${name} client ID and client secret must use different Secret keys.`,
+    );
+  }
   if (source.allowedDomains !== undefined) {
     rendered.allowedDomains = stringArray(source, [...path, "allowedDomains"], diagnostics, {
-      validate: (value) => dnsHostname.test(value),
-      description: "a lowercase DNS domain name such as example.com",
+      validate: (value) => googleHostedDomain.test(value),
+      description:
+        "a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example.com",
       nonempty: false,
     });
   }
@@ -635,17 +990,35 @@ function renderTrustedProxy(source, diagnostics) {
   });
   const cidrs = stringArray(source, [...path, "cidrs"], diagnostics, {
     validate: isCidr,
-    description: "an IPv4 or IPv6 CIDR with a nonzero prefix",
+    description:
+      "an IPv4 or IPv6 CIDR with a nonzero prefix, no zone ID, a prefix of 1 through 32 for an IPv4-mapped address, and not covering every IPv4 address",
   });
+  // Like the chart, which lowercases the header before its checks and before it sets
+  // OCC_AUTH_CLIENT_IP_HEADER: X-Forwarded-For is x-forwarded-for.
   const clientAddressHeader = optionalString(
     source,
     [...path, "clientAddressHeader"],
     diagnostics,
     {
-      pattern: /^[a-z0-9][a-z0-9-]{0,63}$/,
-      description: "a single lowercase HTTP header name of at most 64 characters",
+      validate: (value) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(value.toLowerCase()),
+      description: "a single HTTP header name of at most 64 characters",
     },
-  );
+  )?.toLowerCase();
+  // Same list and order as the chart's api.trustedProxy.clientAddressHeader refusal.
+  const refusedClientAddressHeaders = [
+    "x-occ-client-ip",
+    "cookie",
+    "forwarded",
+    "authorization",
+    "host",
+    "origin",
+    "x-api-key",
+  ];
+  if (refusedClientAddressHeaders.includes(clientAddressHeader)) {
+    diagnostics.errors.push(
+      `controlPlane.trustedProxy.clientAddressHeader cannot be ${clientAddressHeader}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip.`,
+    );
+  }
   if (preset === "generic" && clientAddressHeader === undefined) {
     diagnostics.errors.push(
       "controlPlane.trustedProxy.clientAddressHeader is required for the generic preset.",
@@ -678,7 +1051,28 @@ function section(source, key, diagnostics, required = true) {
   return record(value, key, diagnostics);
 }
 
+// YAML has no escape for a lone UTF-16 surrogate, so Helm cannot parse a values.yaml that
+// carries one and no consumer accepts it.
+function wellFormedText(value, path, diagnostics) {
+  if (typeof value === "string") {
+    if (!value.isWellFormed()) {
+      diagnostics.errors.push(`${path} must be well-formed Unicode text.`);
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((entry, index) => wellFormedText(entry, `${path}[${index}]`, diagnostics));
+  } else if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) {
+      const keyPath = path === "" ? key : `${path}.${key}`;
+      if (!key.isWellFormed()) {
+        diagnostics.errors.push(`${path || "input"} keys must be well-formed Unicode text.`);
+      }
+      wellFormedText(entry, keyPath, diagnostics);
+    }
+  }
+}
+
 function buildInput(rawInput, diagnostics) {
+  wellFormedText(rawInput, "", diagnostics);
   const input = record(rawInput, "input", diagnostics);
   closed(
     input,
@@ -779,7 +1173,7 @@ function buildInput(rawInput, diagnostics) {
   const databaseCa = section(controlPlane, "databaseCa", diagnostics, false);
   closed(databaseCa, "controlPlane.databaseCa", ["secretName", "key", "mountPath"], diagnostics);
   const loggingCollector = section(controlPlane, "loggingCollector", diagnostics, false);
-  closed(loggingCollector, "controlPlane.loggingCollector", ["enabled"], diagnostics);
+  closed(loggingCollector, "controlPlane.loggingCollector", ["enabled", "exporter"], diagnostics);
   const github = section(controlPlane, "github", diagnostics, false);
   closed(
     github,
@@ -846,6 +1240,148 @@ function buildInput(rawInput, diagnostics) {
   };
 }
 
+// The installation, database and auth Secrets the profile leaves at the chart defaults, and
+// the default sign-in Secret of each provider.
+const chartSecrets = {
+  installation: "occ-installation-startup",
+  database: "occ-database",
+  auth: "occ-auth",
+};
+const signInSecretDefaults = {
+  github: "occ-github-login",
+  google: "occ-google-login",
+  oidc: "occ-oidc-login",
+};
+// The chart's default Gateway name (openclaw.gatewayRouting.gatewayName): the profile
+// never sets gatewayRouting.gatewayName, so Compute's routing must use this exact name.
+function chartGatewayName(releaseName) {
+  return `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, "");
+}
+// The Secrets the chart generates for gateway routing when gatewayRouting.tlsSecretName is
+// unset, as the profile leaves it: the leaf certificate (openclaw.gatewayRouting.tlsSecretName)
+// and the root CA (openclaw.gatewayRouting.rootSecretName, named after the hashed Gateway).
+function chartGatewaySecretNames(releaseName, namespace) {
+  const gatewayName = chartGatewayName(releaseName);
+  const routeLabel = sha256Hex(`${namespace}/${gatewayName}`).slice(0, 12);
+  return {
+    tls: `${gatewayName}-tls`.slice(0, 63).replace(/-$/, ""),
+    root: `occ-gateway-${routeLabel}-root`,
+  };
+}
+// The chart's dedicated-Secret rule (openclaw.validate), in the chart's order: each Secret the
+// profile names must differ from the chart's own and generated Secrets and from every Secret
+// listed before it. cert-manager writes the generated Gateway Secrets, and Envoy Gateway accepts
+// every entry of the gateway API key Secret as a client key (findings 1044, 1046, 1048). The
+// enabled log collector's config and exporter Secrets stay at the chart defaults (finding 1054).
+// The public CA settings may share one Secret with each other, as the chart allows (finding 1059).
+const chartCollectorSecretNames = ["occ-otel-collector-config", "occ-otel-collector-exporter"];
+function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
+  const generated = chartGatewaySecretNames(releaseName, namespace);
+  const holders = new Map([
+    ...Object.entries(chartSecrets).map(([role, name]) => [
+      name,
+      `${name} is also the chart's ${role} Secret`,
+    ]),
+    [generated.tls, `the chart generates ${generated.tls} for the Gateway TLS certificate`],
+    [generated.root, `the chart generates ${generated.root} for the Gateway root CA`],
+    ...(values.logging.collector.enabled ? chartCollectorSecretNames : []).map((name) => [
+      name,
+      `the chart's log collector uses ${name}`,
+    ]),
+  ]);
+  const repository = values.repositoryCredentials;
+  const fields = [
+    ...(values.backend?.chatgpt?.enabled
+      ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
+      : []),
+    ["controlPlane.databaseCa.secretName", values.database.caSecretName, "ca"],
+    ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
+    ...Object.entries(signInSecretDefaults)
+      .filter(([name]) => values.auth[name] !== undefined)
+      .map(([name, fallback]) => [
+        `controlPlane.${name}.secretName`,
+        values.auth[name].secretName ?? fallback,
+      ]),
+    ...(repository.enabled
+      ? [
+          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
+            `repository.${key}`,
+            repository[key],
+          ]),
+          ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
+        ]
+      : []),
+  ];
+  const groups = new Map();
+  for (const [field, name, group] of fields) {
+    if (!name) {
+      continue;
+    }
+    const holder = holders.get(name);
+    if (holder === undefined) {
+      holders.set(name, `${name} is also ${field}`);
+      groups.set(name, group);
+    } else if (group === undefined || groups.get(name) !== group) {
+      diagnostics.errors.push(`${field} must name a dedicated Secret; ${holder}.`);
+    }
+  }
+}
+
+// The chart's collector egress (logging.collector.exporter): one approved exporter or proxy
+// IPv4 host as a /32, or paired in-cluster selectors, and an optional TCP port (the chart
+// defaults to 443). The chart refuses an enabled collector without one (finding 1047).
+function collectorExporter(loggingCollector, enabled, diagnostics) {
+  const path = ["controlPlane", "loggingCollector", "exporter"];
+  if (loggingCollector.exporter === undefined) {
+    if (enabled) {
+      diagnostics.errors.push(
+        `${path.join(".")} is required with enabled: true; set cidr to the one approved exporter or proxy IPv4 host as a /32, or namespaceLabels and podLabels for an in-cluster exporter.`,
+      );
+    }
+    return undefined;
+  }
+  const exporter = loggingCollector.exporter;
+  if (typeof exporter !== "object" || exporter === null || Array.isArray(exporter)) {
+    diagnostics.errors.push(`${path.join(".")} must be an object.`);
+    return undefined;
+  }
+  closed(exporter, path.join("."), ["cidr", "port", "namespaceLabels", "podLabels"], diagnostics);
+  if (!enabled) {
+    diagnostics.errors.push(
+      `${path.join(".")} requires controlPlane.loggingCollector.enabled: true.`,
+    );
+  }
+  const rendered = {};
+  const cidr = optionalString(exporter, [...path, "cidr"], diagnostics, {
+    validate: (value) => isIpv4Cidr(value, 32),
+    description: "one approved exporter or proxy IPv4 host with /32, such as 203.0.113.10/32",
+  });
+  const selectors = exporter.namespaceLabels !== undefined || exporter.podLabels !== undefined;
+  if (selectors) {
+    if (exporter.namespaceLabels === undefined || exporter.podLabels === undefined) {
+      diagnostics.errors.push(`${path.join(".")} requires both namespaceLabels and podLabels.`);
+    } else {
+      rendered.namespaceLabels = peerSelector(exporter, [...path, "namespaceLabels"], diagnostics);
+      rendered.podLabels = peerSelector(exporter, [...path, "podLabels"], diagnostics);
+    }
+  }
+  if (cidr !== undefined && selectors) {
+    diagnostics.errors.push(
+      `${path.join(".")} requires either cidr or namespaceLabels and podLabels, not both.`,
+    );
+  } else if (cidr === undefined && !selectors) {
+    diagnostics.errors.push(`${path.join(".")} requires cidr or namespaceLabels and podLabels.`);
+  }
+  if (cidr !== undefined) {
+    rendered.cidr = cidr;
+  }
+  const port = optionalPositiveInteger(exporter, [...path, "port"], diagnostics, { max: 65535 });
+  if (port !== undefined) {
+    rendered.port = port;
+  }
+  return rendered;
+}
+
 function buildRendered(profile, parsed, diagnostics) {
   const {
     controlPlane,
@@ -865,17 +1401,28 @@ function buildRendered(profile, parsed, diagnostics) {
     trustedProxy,
   } = parsed;
   const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics, {
-    validate: (value) => value.length <= 53 && helmReleaseName.test(value),
+    validate: (value) => value.length <= 53 && dnsSubdomain.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
-  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
-  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics);
+  const namespace = asString(
+    controlPlane,
+    ["controlPlane", "namespace"],
+    diagnostics,
+    namespaceRule,
+  );
+  // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
+  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
+    validate: isName,
+    description: NAME_RULE,
+  });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
-    pattern: digestImage,
+    pattern: controlPlaneDigestImage,
+    validate: lowercaseImageRepository,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
     pattern: digestImage,
+    validate: lowercaseImageRepository,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
@@ -890,12 +1437,13 @@ function buildRendered(profile, parsed, diagnostics) {
     ? renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics)
     : {};
   // Without a trusted proxy the API sees the ingress as every browser's address. Existing
-  // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails.
+  // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails
+  // (see openclaw.trustedProxy.notice in the chart for why that was re-checked).
   if (controlPlane.trustedProxy === undefined) {
     diagnostics.warnings.push(
       externalSignIn
-        ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and external sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address."
-        : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API.",
+        ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and external sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address. Behind an HTTP proxy, API calls fail with 403 until it is set."
+        : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API. Behind an HTTP proxy, API calls fail with 403 until it is set.",
     );
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {
@@ -935,7 +1483,7 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
   const envoyNamespace =
-    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics) ??
+    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
   const managedSlackProxyEnabled = asBoolean(
@@ -979,15 +1527,39 @@ function buildRendered(profile, parsed, diagnostics) {
     );
   }
 
-  // Same rule the controller applies to Installation observability.url at startup.
-  const observabilityUrl = optionalString(
-    controlPlane,
-    ["controlPlane", "observabilityUrl"],
+  // Same rule the controller applies to Installation observability.url at startup, including
+  // its refusal of any @ before the host (http://@host).
+  // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
+  // absolute HTTP(S) message from optionalString.
+  const rawObservabilityUrl = controlPlane.observabilityUrl;
+  const parsedObservability =
+    typeof rawObservabilityUrl === "string"
+      ? parsedObservabilityUrl(rawObservabilityUrl)
+      : undefined;
+  const rewrittenObservabilityIpv4 =
+    parsedObservability !== undefined && !ipv4HostKept(rawObservabilityUrl, parsedObservability);
+  const observabilityUrl = rewrittenObservabilityIpv4
+    ? undefined
+    : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
+        validate: observabilityDestination,
+        description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
+      });
+  if (rewrittenObservabilityIpv4) {
+    diagnostics.errors.push(
+      "controlPlane.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
+
+  const collectorEnabled = asBoolean(
+    loggingCollector,
+    ["controlPlane", "loggingCollector", "enabled"],
     diagnostics,
-    {
-      validate: observabilityDestination,
-      description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
-    },
+    false,
+  );
+  const collectorExporterValues = collectorExporter(
+    loggingCollector,
+    collectorEnabled,
+    diagnostics,
   );
 
   const values = {
@@ -1003,12 +1575,19 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     agentNativeAdmin,
     bootstrap: {
-      adminEmail: asString(controlPlane, ["controlPlane", "adminEmail"], diagnostics),
+      adminEmail: asString(controlPlane, ["controlPlane", "adminEmail"], diagnostics, {
+        validate: administratorEmail,
+        description: "a valid administrator email",
+      }),
       password: {
         claimName: asString(
           controlPlane,
           ["controlPlane", "bootstrapPasswordClaimName"],
           diagnostics,
+          {
+            validate: isKubernetesResourceName,
+            description: "a PVC name: a DNS subdomain of at most 253 characters",
+          },
         ),
       },
     },
@@ -1024,10 +1603,15 @@ function buildRendered(profile, parsed, diagnostics) {
               databaseCa,
               ["controlPlane", "databaseCa", "secretName"],
               diagnostics,
+              resourceNameRule,
             ),
             caKey:
-              optionalString(databaseCa, ["controlPlane", "databaseCa", "key"], diagnostics) ??
-              "ca.pem",
+              optionalString(
+                databaseCa,
+                ["controlPlane", "databaseCa", "key"],
+                diagnostics,
+                secretKeyRule,
+              ) ?? "ca.pem",
             caMountPath:
               optionalString(
                 databaseCa,
@@ -1046,7 +1630,7 @@ function buildRendered(profile, parsed, diagnostics) {
               ["channels", "directoryProxyUrl"],
               diagnostics,
               {
-                pattern: proxyUrl,
+                validate: channelProxyUrl,
                 description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
               },
             ),
@@ -1072,19 +1656,27 @@ function buildRendered(profile, parsed, diagnostics) {
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
         ? {}
-        : { nodeSelector: labelMap(controlPlane, ["controlPlane", "nodeSelector"], diagnostics) }),
+        : {
+            nodeSelector: nodeSelector(controlPlane, ["controlPlane", "nodeSelector"], diagnostics),
+          }),
     },
     dns: {
-      namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics),
-      podLabels: labelMap(dns, ["controlPlane", "dns", "podLabels"], diagnostics),
+      namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics, namespaceRule),
+      podLabels: peerSelector(dns, ["controlPlane", "dns", "podLabels"], diagnostics),
     },
     gatewayRouting: {
       enabled: true,
-      gatewayClassName: asString(controlPlane, ["controlPlane", "gatewayClassName"], diagnostics),
+      gatewayClassName: asString(
+        controlPlane,
+        ["controlPlane", "gatewayClassName"],
+        diagnostics,
+        resourceNameRule,
+      ),
       apiKeySecretName: asString(
         controlPlane,
         ["controlPlane", "gatewayApiKeySecretName"],
         diagnostics,
+        resourceNameRule,
       ),
       envoyNamespace,
     },
@@ -1093,7 +1685,7 @@ function buildRendered(profile, parsed, diagnostics) {
       ...(metrics.scraperNamespaceLabels === undefined
         ? {}
         : {
-            scraperNamespaceLabels: labelMap(
+            scraperNamespaceLabels: peerSelector(
               metrics,
               ["controlPlane", "metrics", "scraperNamespaceLabels"],
               diagnostics,
@@ -1102,7 +1694,7 @@ function buildRendered(profile, parsed, diagnostics) {
       ...(metrics.scraperPodLabels === undefined
         ? {}
         : {
-            scraperPodLabels: labelMap(
+            scraperPodLabels: peerSelector(
               metrics,
               ["controlPlane", "metrics", "scraperPodLabels"],
               diagnostics,
@@ -1111,12 +1703,8 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     logging: {
       collector: {
-        enabled: asBoolean(
-          loggingCollector,
-          ["controlPlane", "loggingCollector", "enabled"],
-          diagnostics,
-          false,
-        ),
+        enabled: collectorEnabled,
+        ...(collectorExporterValues === undefined ? {} : { exporter: collectorExporterValues }),
       },
     },
     repositoryCredentials: {
@@ -1200,21 +1788,20 @@ function buildRendered(profile, parsed, diagnostics) {
               podLabels: values.dns.podLabels,
             },
             gatewayPort: 8080,
-            gatewayTrustedProxyCidrs: stringArray(
+            gatewayTrustedProxyCidrs: sourceCidrs(
               controlPlane,
-              ["controlPlane", "gatewayTrustedProxyCidrs"],
+              "gatewayTrustedProxyCidrs",
               diagnostics,
-              { validate: isIpv4Cidr, description: "an IPv4 CIDR" },
             ),
-            pluginStatusProxySourceCidrs: stringArray(
+            pluginStatusProxySourceCidrs: sourceCidrs(
               controlPlane,
-              ["controlPlane", "pluginStatusProxySourceCidrs"],
+              "pluginStatusProxySourceCidrs",
               diagnostics,
-              { validate: isIpv4Cidr, description: "an IPv4 CIDR" },
+              { warnWide: true },
             ),
           },
           gatewayRouting: {
-            gatewayName: `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, ""),
+            gatewayName: chartGatewayName(releaseName),
             gatewayNamespace: namespace,
             envoyNamespace,
           },
@@ -1228,13 +1815,24 @@ function buildRendered(profile, parsed, diagnostics) {
               runtime,
               ["runtime", "gatewayStorageClassName"],
               diagnostics,
+              resourceNameRule,
             ),
-            nodeSelector: labelMap(runtime, ["runtime", "nodeSelector"], diagnostics),
-            gatewayNodeSelector: labelMap(runtime, ["runtime", "gatewayNodeSelector"], diagnostics),
+            nodeSelector: nodeSelector(runtime, ["runtime", "nodeSelector"], diagnostics),
+            gatewayNodeSelector: nodeSelector(
+              runtime,
+              ["runtime", "gatewayNodeSelector"],
+              diagnostics,
+            ),
             transportSecretPrefix: asString(
               runtime,
               ["runtime", "transportSecretPrefix"],
               diagnostics,
+              {
+                validate: (value) =>
+                  value.length + 13 <= 253 && dnsSubdomain.test(`${value}-${"a".repeat(12)}`),
+                description:
+                  "a prefix producing a DNS-safe Secret name of at most 253 characters with its 12-character suffix",
+              },
             ),
             ...(profile.name === "codex"
               ? {
@@ -1242,6 +1840,11 @@ function buildRendered(profile, parsed, diagnostics) {
                     runtime,
                     ["runtime", "codexSeccompProfile"],
                     diagnostics,
+                    {
+                      validate: isCodexSeccompProfile,
+                      description:
+                        "a relative localhost profile path without traversal or unconfined mode",
+                    },
                   ),
                 }
               : {}),
@@ -1266,7 +1869,7 @@ function buildRendered(profile, parsed, diagnostics) {
                 : {
                     channels: {
                       proxyUrl: asString(channels, ["channels", "runtimeProxyUrl"], diagnostics, {
-                        pattern: proxyUrl,
+                        validate: channelProxyUrl,
                         description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
                       }),
                     },
@@ -1293,12 +1896,14 @@ function buildRendered(profile, parsed, diagnostics) {
             managedServiceAccounts,
             ["codex", "managedServiceAccounts", "adminSecretName"],
             diagnostics,
+            resourceNameRule,
           ),
           key:
             optionalString(
               managedServiceAccounts,
               ["codex", "managedServiceAccounts", "adminSecretKey"],
               diagnostics,
+              secretKeyRule,
             ) ?? "admin-key",
           providerCidr: asString(
             managedServiceAccounts,
@@ -1316,6 +1921,11 @@ function buildRendered(profile, parsed, diagnostics) {
             managedServiceAccounts,
             ["codex", "managedServiceAccounts", "workspaceId"],
             diagnostics,
+            {
+              pattern: chatGptWorkspaceId,
+              description:
+                "a UUID the controller accepts for a ChatGPT workspace (version 1-8, variant 8, 9, a, or b)",
+            },
           ),
           apiKeyPath: "/etc/openclaw/chatgpt/admin-key",
           credentialTtlSeconds:
@@ -1323,6 +1933,8 @@ function buildRendered(profile, parsed, diagnostics) {
               managedServiceAccounts,
               ["codex", "managedServiceAccounts", "credentialTtlSeconds"],
               diagnostics,
+              // packages/occ validateBackendDefinitions refuses a larger lifetime.
+              { max: 2_592_000 },
             ) ?? 2_592_000,
         },
         drivers: {
@@ -1341,24 +1953,50 @@ function buildRendered(profile, parsed, diagnostics) {
     values.repositoryCredentials = {
       enabled: true,
       image: asString(repository, ["repository", "image"], diagnostics, {
-        pattern: digestImage,
+        pattern: controlPlaneDigestImage,
+        validate: lowercaseImageRepository,
         description: "an immutable image reference with a SHA-256 digest",
       }),
-      backendId: asString(repository, ["repository", "backendId"], diagnostics),
+      // Installation startup checks a GitHub Backend ID with isBackendId, then bounds it to
+      // 200 UTF-16 code units for repository bindings; the chart checks both.
+      backendId: asString(repository, ["repository", "backendId"], diagnostics, {
+        validate: (value) => isBackendId(value) && value.length <= 200,
+        description: `a Backend ID: ${NAME_RULE}, and at most 200 UTF-16 code units`,
+      }),
       registryConfigMapName: asString(
         repository,
         ["repository", "registryConfigMapName"],
         diagnostics,
+        resourceNameRule,
       ),
       serviceConfigSecretName: asString(
         repository,
         ["repository", "serviceConfigSecretName"],
         diagnostics,
+        resourceNameRule,
       ),
-      appKeySecretName: asString(repository, ["repository", "appKeySecretName"], diagnostics),
-      tlsSecretName: asString(repository, ["repository", "tlsSecretName"], diagnostics),
-      publicCaSecretName: asString(repository, ["repository", "publicCaSecretName"], diagnostics),
-      serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics),
+      appKeySecretName: asString(
+        repository,
+        ["repository", "appKeySecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
+      tlsSecretName: asString(
+        repository,
+        ["repository", "tlsSecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
+      publicCaSecretName: asString(
+        repository,
+        ["repository", "publicCaSecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
+      serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics, {
+        validate: (value) => value.length <= 63 && dns1035Label.test(value),
+        description: "a Kubernetes Service DNS-1035 label of at most 63 characters",
+      }),
       upstreamCidrs: stringArray(repository, ["repository", "upstreamCidrs"], diagnostics, {
         validate: isIpv4Cidr,
         description: "an IPv4 CIDR",
@@ -1392,6 +2030,9 @@ function buildRendered(profile, parsed, diagnostics) {
       port: 8443,
     };
   }
+
+  dedicatedSecrets(values, releaseName, namespace, diagnostics);
+  validateDatabaseCaMount(values, diagnostics);
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",

@@ -101,6 +101,8 @@ test(
     );
     assert.deepEqual(harnessIdentity.audience, ["openclaw-enterprise"]);
     const agentService = await resource("service", topology.agentServiceName, topology.placement);
+    // The Service must select the Agent's ordinary network profile as well as
+    // its exact revision, so provider-fenced workloads cannot become endpoints.
     assert.deepEqual(agentService.spec.selector, {
       "app.kubernetes.io/name": `${topology.agentServiceName}-rev-${hash(topology.revision.id)}`,
       "openclaw.dev/namespace": topology.agent.namespaceId,
@@ -120,7 +122,7 @@ test(
         "--version",
       )
     ).trim();
-    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.160.0";
+    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.163.0-alpha.2";
     assert.ok(codexVersion.includes(expectedCodexVersion));
     context.diagnostic(`dedicated: ${codexVersion}`);
     await assertUnauthorizedCodexSocket(topology);

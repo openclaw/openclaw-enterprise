@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import type { ServiceKey } from "../auth/index.ts";
 
 export interface BootstrapServiceKeyOutput {
@@ -16,6 +16,9 @@ export function bootstrapOutputPath(value: string, name: string): string {
   }
   if (!isAbsolute(value)) {
     throw new Error(`${name} must identify an absolute output path.`);
+  }
+  if (basename(value).length > 255) {
+    throw new Error(`${name} must use a basename of at most 255 characters.`);
   }
   return value;
 }

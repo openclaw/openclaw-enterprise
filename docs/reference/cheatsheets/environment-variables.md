@@ -38,7 +38,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
-- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
+- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
 - `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
 - `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
 - `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
@@ -52,7 +52,9 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
-- `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC or gateway CA; read at process startup.
+- `NODE_EXTRA_CA_CERTS` — Additional process-wide Node.js PEM trust for private OCC, Gateway or IdP CAs; read at process startup. The chart combines IdP and Gateway roots for the API; see [OIDC CA settings](../settings/oidc.md).
+- `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
+- `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
 
 ## PostgreSQL and migrations
 
@@ -108,6 +110,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
 - `OCC_DEVELOPMENT_BROWSER_PORT` — Published HTTPS browser port on host loopback; default: `8443`.
+- `OCC_DEVELOPMENT_SIGN_IN` — Unset or `keycloak`; Kubernetes-only profile without OpenShell runs a development Keycloak on host `127.0.0.1:443` and signs the administrator in through it as `alice`, with recovery-only passwords. See [Sign in through Keycloak](../../guides/deploy/local-kubernetes-development.md#sign-in-through-keycloak).
 - `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` — Compose bridge allowed to reach the development API.
 - `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR` — Single private forwarding IP; supplied automatically for rootful macOS Podman.
 - `OCC_DEVELOPMENT_CONFIGURATION_ROOT` — Absolute path to the development filesystem Configuration Driver's root.

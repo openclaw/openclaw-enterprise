@@ -1,30 +1,78 @@
 import { WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_VERSION } from "@openclaw-enterprise/contracts";
+import { keyedSettingPath } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { OpenClawConfigurationDocument, WorkspaceSetup } from "@openclaw-enterprise/contracts";
 
-/** Only native main can consume the four setup documents. Undefined means unsupported. */
-export function workspaceSetupMainAgent(
+/**
+ * The roster entry that consumes the four setup documents: the sole `agents.entries` key, which
+ * must be main in any letter case (OpenClaw normalizes Agent ids case-insensitively), or main
+ * itself when the roster is omitted. `setting` names that entry. Undefined means unsupported.
+ */
+export function workspaceSetupMainEntry(
   configuration: OpenClawConfigurationDocument,
-): Readonly<Record<string, unknown>> | undefined {
+):
+  | { readonly setting: string; readonly agent: Readonly<Record<string, unknown>> | undefined }
+  | undefined {
+  const omitted = { setting: "agents.entries.main", agent: {} };
   if (configuration.agents === undefined) {
-    return {};
+    return omitted;
   }
   const agents = asRecord(configuration.agents);
   if (agents === undefined || Object.hasOwn(agents, "list")) {
     return undefined;
   }
   if (!Object.hasOwn(agents, "entries")) {
-    return {};
+    return omitted;
   }
   const entries = asRecord(agents.entries);
-  if (
-    entries === undefined ||
-    Object.keys(entries).length !== 1 ||
-    !Object.hasOwn(entries, "main")
-  ) {
+  const keys = Object.keys(entries ?? {});
+  if (entries === undefined || keys.length !== 1 || keys[0]!.trim().toLowerCase() !== "main") {
     return undefined;
   }
-  return asRecord(entries.main);
+  return {
+    setting: keyedSettingPath("agents.entries", keys[0]!),
+    agent: asRecord(entries[keys[0]!]),
+  };
+}
+
+/** The managed durable workspace native OpenClaw reads its setup documents from. */
+export const MANAGED_WORKSPACE = "/home/node/.openclaw/workspace";
+/** The Harness working directory, which a Compute Driver may mount on the same storage. */
+export const HARNESS_WORKSPACE = "/home/node/workspace";
+
+type SettingError = (setting: string, requirement: string) => Error;
+
+/**
+ * Initial workspace files reach only the native main Agent's managed durable workspace, so the
+ * roster must be main alone (or omitted) and its workspace one of `workspaces`: the paths the
+ * Compute Driver mounts on that storage for this Agent, managed path first. Docker and
+ * Kubernetes Compute apply this rule at Agent save and in preparation, so each refusal names
+ * the same setting with the same text. Returns the workspace path.
+ */
+export function requireWorkspaceSetupConfiguration(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  workspaces: readonly string[],
+  createError: SettingError,
+): string {
+  const entry = workspaceSetupMainEntry(configuration);
+  const main = entry?.agent;
+  if (entry === undefined || main === undefined) {
+    throw createError(
+      "agents.entries",
+      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
+    );
+  }
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  const setting =
+    main.workspace !== undefined ? `${entry.setting}.workspace` : "agents.defaults.workspace";
+  const workspace = main.workspace ?? defaults?.workspace ?? MANAGED_WORKSPACE;
+  if (typeof workspace !== "string" || !workspaces.includes(workspace)) {
+    throw createError(
+      setting,
+      `must be ${workspaces.join(" or ")}, or unset, for initial workspace files`,
+    );
+  }
+  return workspace;
 }
 
 /** Shared, non-executing setup entrypoint. Drivers own private delivery and exclusive startup. */

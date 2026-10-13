@@ -67,7 +67,11 @@ function workloadPod(deployment, namespace, name, ready = true) {
       uid: `${name}-uid`,
     },
     spec: structuredClone(deployment.spec.template.spec),
-    status: { phase: "Running", conditions: [{ type: "Ready", status: ready ? "True" : "False" }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.30",
+      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+    },
   };
 }
 
@@ -142,6 +146,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     configurationGeneration: 1,
     configuration: {
       gateway: {
+        // Kubernetes renders lan for an omitted bind; this admitted document already is.
+        bind: "lan",
         trustedProxies: ["127.0.0.1/32"],
         allowRealIpFallback: true,
         auth: {
@@ -187,6 +193,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
   }
   if (nodeEnrollment !== undefined) {
     revision.configuration.gateway = {
+      bind: "lan",
       trustedProxies: ["10.42.0.0/16"],
       allowRealIpFallback: true,
       auth: {
@@ -1455,7 +1462,7 @@ test("Kubernetes preserves native configuration bytes without repository binding
 
 test("Kubernetes rejects malformed repository exec configuration before any API access", async (t) => {
   const rosterRefusal =
-    'The OpenClaw Gateway rejects agents.list, agents.entries default markers, an agents.ownership other than "explicit", a multi-Agent roster without it, and an explicit one without entries.';
+    "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.";
   const malformed = [
     ["tools null", { tools: null }, "Repository credentials require tools to be an object."],
     ["tools array", { tools: [] }, "Repository credentials require tools to be an object."],
