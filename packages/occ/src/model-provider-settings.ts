@@ -160,9 +160,10 @@ export function isHttpFieldName(name: string): boolean {
 // A header whose last hyphen-, underscore- or dot-separated word names a credential:
 // Authorization, Authentication, Proxy-Authorization, x-auth-token, cookie, x-client-secret,
 // x-credentials, x-passphrase, x-signature, x-bearer, X-JWT-Assertion, x-otp, x-pin, x-pwd and
-// the like, in the singular or the plurals listed. Vendors and gateways each pick their own credential header, so
-// a fixed list would miss the next one; matching the whole last word keeps names such as
-// x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry no credential, out.
+// the like, in the singular or the plurals listed. Vendors and gateways each pick their own
+// credential header, so a fixed list would miss the next one; matching the whole last word
+// keeps names such as x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry
+// no credential, out.
 // A trailing version word, as in x-hub-signature-256 or x-api-key-v2, is skipped.
 const CREDENTIAL_HEADER_WORD =
   /(?:^|[-_.])(?:assertions?|auths?|authentications?|authorizations?|bearers?|cookies?|credentials?|hmacs?|jwts?|licen[cs]es?|otps?|pass|passcode|passphrase|passwords?|pin|pwd|secrets?|signatures?|tokens?)(?:[-_.]v?\d+)?$/i;
