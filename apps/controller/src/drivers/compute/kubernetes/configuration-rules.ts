@@ -1,6 +1,13 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
-import { keyedSettingPath } from "@openclaw-enterprise/occ";
+import {
+  INVALID_HEADER_NAME,
+  isCredentialHeaderName,
+  isHttpFieldName,
+  keyedSettingPath,
+  PROVIDER_MODELS_LIST,
+} from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
+import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
 
 /**
  * Kubernetes Compute rules on the caller's own Configuration that preparation or the Gateway
@@ -124,9 +131,15 @@ const PROVIDER_ENVIRONMENT =
   "the Agent's Harness authentication binding owns model provider environment";
 const MODEL_CREDENTIAL_ENVIRONMENT =
   /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
-const AUTHORIZATION_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
+const CREDENTIAL_HEADER =
+  "must not set a credential header (authorization, any key, token, secret, password or cookie)";
 
-/** Providers of the model references in agents.defaults.model and agents.entries.*.model. */
+/**
+ * Providers of the model references in agents.defaults.model and agents.entries.*.model.
+ * The credential rules below walk every configured provider instead: OpenClaw also reaches
+ * providers through imageModel, pdfModel, subagents, channels.modelByChannel and `/model`
+ * switches, which an unset model allowlist leaves open to any configured provider.
+ */
 export function selectedModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
 ): Set<string> {
@@ -154,9 +167,11 @@ export function selectedModelProviders(
 /**
  * Model credentials reach the runtime only through the Agent's Harness authentication binding,
  * on every topology, so the Configuration must not carry its own: no `auth` profiles, no
- * model credential environment variables, and no authorization header on a selected model
- * provider or its models. (The provider apiKey rule depends on the Harness, so it stays in
- * Harness authentication admission.)
+ * model credential environment variables, and on any model provider or its models no
+ * credential header (in `headers` or `request.headers`) and no `request.auth` credential.
+ * Header names must be valid HTTP field names, so a lookalike cannot slip past the match.
+ * (The provider apiKey rule depends on the Harness, so it stays in Harness authentication
+ * admission, on selected providers only.)
  */
 export function requireHarnessCredentialBinding(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -175,10 +190,16 @@ export function requireHarnessCredentialBinding(
       throw createError(keyedSettingPath(parent, name), `must not be set: ${PROVIDER_ENVIRONMENT}`);
     }
   }
-  const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
-  for (const provider of selectedModelProviders(configuration)) {
-    const row = asRecord(providers[provider]);
+  for (const [provider, value] of Object.entries(
+    asRecord(asRecord(configuration.models)?.providers) ?? {},
+  )) {
+    const row = asRecord(value);
     const path = keyedSettingPath("models.providers", provider);
+    // A record of model rows would hide their headers from this walk; OpenClaw accepts only a
+    // list, and Configuration writes refuse anything else with the same message.
+    if (row?.models !== undefined && !Array.isArray(row.models)) {
+      throw createError(`${path}.models`, PROVIDER_MODELS_LIST);
+    }
     const rows: [string, unknown][] = [
       [path, row],
       ...(Array.isArray(row?.models) ? row.models : []).map((model, index): [string, unknown] => [
@@ -187,14 +208,30 @@ export function requireHarnessCredentialBinding(
       ]),
     ];
     for (const [setting, model] of rows) {
+      const request = asRecord(asRecord(model)?.request);
+      for (const [headersSetting, headers] of [
+        [`${setting}.headers`, asRecord(model)?.headers],
+        [`${setting}.request.headers`, request?.headers],
+      ] as const) {
+        for (const name of Object.keys(asRecord(headers) ?? {})) {
+          if (!isHttpFieldName(name)) {
+            throw createError(headersSetting, INVALID_HEADER_NAME);
+          }
+          if (isCredentialHeaderName(name)) {
+            throw createError(headersSetting, `${CREDENTIAL_HEADER}: ${HARNESS_BINDING}`);
+          }
+        }
+      }
+      // OpenClaw's request.auth modes authorization-bearer and header carry a credential;
+      // provider-default keeps the provider's own authentication, which the binding supplies.
+      const auth = asRecord(request?.auth);
       if (
-        Object.keys(asRecord(asRecord(model)?.headers) ?? {}).some((name) =>
-          AUTHORIZATION_HEADER.test(name),
-        )
+        request?.auth !== undefined &&
+        !(auth?.mode === "provider-default" && Object.keys(auth).length === 1)
       ) {
         throw createError(
-          `${setting}.headers`,
-          `must not set an authorization header: ${HARNESS_BINDING}`,
+          `${setting}.request.auth`,
+          `must be unset or {mode: "provider-default"}: ${HARNESS_BINDING}`,
         );
       }
     }
@@ -214,28 +251,15 @@ const HARNESS_AUTH_METHODS: Readonly<Record<KubernetesHarnessTopology, readonly 
   "Dedicated Codex": ["api_key", "codex_pat", "oauth", "credential_source"],
 };
 
-/**
- * The Agent's Harness authentication method must be one Kubernetes Compute delivers to the
- * Agent's Harness topology. The rule depends only on the Agent (its binding and execution mode)
- * and the Configuration's Harness, so Agent save, provisioning and deployment refuse it with
- * the same message. `createError` names an Agent setting, not a Configuration one.
- */
-export function requireHarnessAuthMethod(
+/** The `requireHarnessAuthMethod` rule for an Agent's topology on Kubernetes Compute. */
+export function kubernetesHarnessAuthMethods(
   topology: KubernetesHarnessTopology,
-  method: string,
-  createError: SettingError,
-): void {
-  const accepted = HARNESS_AUTH_METHODS[topology];
-  if (!accepted.includes(method)) {
-    const list =
-      accepted.length === 1
-        ? accepted[0]
-        : `${accepted.slice(0, -1).join(", ")} or ${accepted.at(-1)}`;
+): HarnessAuthMethodRule {
+  return {
+    compute: "Kubernetes Compute",
+    topology,
+    accepted: HARNESS_AUTH_METHODS[topology],
     // Codex runs only dedicated, so its execution mode is not a fix.
-    const fix = topology === "Dedicated Codex" ? "harnessAuth" : "harnessAuth or executionMode";
-    throw createError(
-      "harnessAuth.method",
-      `must be ${list} for ${topology} on Kubernetes Compute: change ${fix}`,
-    );
-  }
+    fix: topology === "Dedicated Codex" ? "harnessAuth" : "harnessAuth or executionMode",
+  };
 }

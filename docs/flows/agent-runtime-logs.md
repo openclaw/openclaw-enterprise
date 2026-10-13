@@ -1,6 +1,6 @@
 ---
 created: 2026-09-30
-updated: 2026-10-12
+updated: 2026-10-13
 last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
 ---
 
@@ -100,12 +100,10 @@ with one over an hour old or naming a gone Pod, starts a view: the controller ap
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership and the container's declaration, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
-`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. Before first start,
-zero restarts, no current or previous instance, and kubelet's exact `400`
-waiting-to-start Status matching the Pod, container and `PodInitializing` or
-`ContainerCreating` reason yield an empty page. Logs are requested first,
-so stale waiting status cannot hide output; unrelated failures keep their error
-mapping.
+`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. For a never-started
+container, kubelet's exact `400` waiting-to-start Status (`PodInitializing` or
+`ContainerCreating`) yields an empty page; logs are requested first, so stale
+status cannot hide output, and other failures keep their error mapping.
 `kubernetesRuntimeLogLine` separates kubelet's RFC3339 timestamp from each raw
 line and converts numeric offsets to UTC while retaining every fractional digit.
 Unknown or malformed offset prefixes remain untimed raw text. A cursor
@@ -115,6 +113,9 @@ byte-cut tail then emits `window_exceeded`). If every poll stalls because a line
 cut line is over about 3 seconds old, the cursor resumes from the current read.
 `window_exceeded` dates the lost interval. A carried PEM block loses its time
 boundary and stays conservatively masked. Earlier lines are dropped.
+Cursors are signed, not encrypted; their line and window hashes are keyed HMACs,
+so readers cannot test masked values. A verified `v1` cursor expires into a new
+audited view.
 For the frontier time, the cursor stores `frontierComplete`, `frontierCount`
 and the last 16 hashes. Positional de-duplication requires a complete frontier,
 its group's first line in the read (an earlier timestamp or a short uncut page),
@@ -133,9 +134,7 @@ It emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
 `SanitizedRuntimeLogRecord`. `page-budget.ts` measures serialized pages,
-signed cursors and the HTTP envelope against 512 KiB. Full candidates precede
-bounded prefix builds, which reuse admission and clocks without I/O or audits. Fit is
-checked, without maximum filling guarantees. Fetched masking/withholding persist;
+signed cursors and the HTTP envelope against 512 KiB. Oversized pages shrink to a fitting, not maximal, prefix without new I/O or audits. Fetched masking/withholding persist;
 state advances through delivered rows.
 
 Signed `pemOpen`/`pemAfterTime` describe delivered boundaries, never fetched overlap.
@@ -200,17 +199,16 @@ level after the cursor is signed, so polls resume after hidden lines; unknown-le
 lines, gaps and withheld counts stay. The console asks for `minLevel=info` unless
 **Include debug** is selected; its level chips and text filter
 (`apps/controller/src/console/agents/logs.mjs`) run only over loaded rows. The
-console caches a `403` from either route per signed-in operator/page session;
-reopening adds no audited denial, while another operator retries. Its status
+console caches a `403` per operator page session, so reopening adds no audited
+denial. Its status
 names log-text grants. Pod cards show every actual container's state and exit;
 the Pod/container picker selects its exact stream. Gateway views point to the Harness source while no Harness
 Pod is ready, or Deployment activity while none exists. The CLI rejects explicit
 zero or positive sub-second `--since` before revision selection or API client
 setup; omission keeps the unfiltered default. Its `--follow` loop re-sends the
 cursor every 2 seconds.
-`internal/occcli/agent_runtime.go:runAgentLogs` treats command-context cancellation as a
-clean follow exit.
-Without `--follow`, a canceled request remains an error. Driver errors map to
+`runAgentLogs` ends a follow cleanly on cancellation; without `--follow`, it is an
+error. Driver errors map to
 fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
 ## Debugging and Verification
@@ -223,8 +221,7 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
   namespace. `503 RUNTIME_LOGS_AUDIT_UNAVAILABLE` means no output was read.
 - `runtime-logs-content.test.mjs` verifies handlers with synthetic Driver pages;
   `occ-api-security.test.mjs` verifies authorization and cursor failures.
-  Kubernetes conformance substitutes API observations; `agent-runtime-logs-k3d-real.test.mjs`
-  reads a real cluster. Sandbox conformance and wire tests prove their declared
+  Kubernetes conformance substitutes API observations. Sandbox conformance and wire tests prove their declared
   handler/protocol boundaries, not real runtime execution.
 
 ## Related docs
@@ -238,6 +235,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13: Key cursor hashes; `v1` cursors expire. (#2274)
 
 - 2026-10-12 11:55: Advertise and select actual main and init container streams with container-bound audit views. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
 

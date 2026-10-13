@@ -23,6 +23,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import {
   createAccessTokenServiceAccount,
+  createBackendController,
   poolWithOneBackendBindingReadFault,
   backendDefinition,
   requiresPostgres,
@@ -421,7 +422,9 @@ revisionTest(
       "uncertain provider retirement must not be replayed",
     );
   },
-  { timeout: 30_000 },
+  // First in its file, so it also absorbs the file's cold start (finding 1171):
+  // about 12.5 s typically, 31.7 s once on a slow runner.
+  { timeout: 60_000 },
 );
 
 revisionTest(
@@ -3793,6 +3796,41 @@ revisionTest(
 );
 
 revisionTest(
+  "deployment status judges claim liveness by the database clock, not the controller clock",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("deployment-clock");
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { leaseDurationMs: 60_000 });
+    // Both controllers read the same durable work with clocks skewed far from PostgreSQL's.
+    const statusFrom = (instant) => {
+      const controller = createBackendController(fixture, {
+        backends: [],
+        now: () => new Date(instant),
+      });
+      return async () =>
+        (
+          await controller.getDeploymentStatus(
+            fixture.actor.id,
+            fixture.namespace.id,
+            owner.id,
+            candidate.id,
+          )
+        ).status;
+    };
+    const statusAhead = statusFrom("2999-01-01T00:00:00Z");
+    const statusBehind = statusFrom("1970-01-01T00:00:00Z");
+
+    const claim = await queue.claim();
+    assert.equal(claim.idempotencyKey, candidate.idempotencyKey);
+    // A controller clock ahead of the lease still reports the live claim.
+    assert.equal(await statusAhead(), "running");
+
+    await fixture.expireClaim(candidate, claim.claimToken);
+    // A controller clock behind the lease still reports the expired claim as waiting.
+    assert.equal(await statusBehind(), "queued");
+  },
+);
+
+revisionTest(
   "real PostgreSQL preserves the failure budget while an Agent runtime converges",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("slow-runtime");
@@ -3931,16 +3969,21 @@ revisionTest(
 
 revisionTest(
   "deployment progress names Compute's pending reason and old pending work rechecks less often",
-  async (fixture, context) => {
+  async (fixture) => {
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
-    const unpairedRevision = await fixture.revision(unpaired, 1);
+    // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
+    // and still inside the 900-second deadline.
+    const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
     const reasons = new Map([
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
     ]);
-    const delays = [];
+    const delays = new Map([
+      [unscheduledRevision.idempotencyKey, []],
+      [unpairedRevision.idempotencyKey, []],
+    ]);
     await fixture.start(
       {
         ...fixture.compute,
@@ -3956,10 +3999,10 @@ revisionTest(
         emit: (event) => {
           if (
             event.event === "worker.completed" &&
-            event.workId === unpairedRevision.idempotencyKey &&
+            delays.has(event.workId) &&
             event.outcome === "pending"
           ) {
-            delays.push(
+            delays.get(event.workId).push(
               fixture.observerPool
                 .query(
                   `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
@@ -3988,21 +4031,17 @@ revisionTest(
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
     });
-    const fresh = await delays[0];
+    const firstDelay = async (revision) => {
+      const recorded = delays.get(revision.idempotencyKey);
+      await waitFor(`a recheck of ${revision.id}`, async () => recorded.length > 0 || undefined);
+      return recorded[0];
+    };
+    const fresh = await firstDelay(unscheduledRevision);
     assert.ok(fresh > 450 && fresh <= 500, `a new deployment rechecks in 500 ms (${fresh} ms)`);
 
-    // Five minutes later, still inside the 900-second deadline, a runtime that
-    // stays unready is rechecked every 5 s, so one stuck Agent cannot take most
-    // of the serial worker (D223). Only the worker's wall clock moves.
-    const realNow = Date.now;
-    Date.now = () => realNow() + 300_000;
-    context.after(() => {
-      Date.now = realNow;
-    });
-    const seen = delays.length;
-    await waitFor("a recheck after five minutes", async () => delays.length > seen || undefined);
-    const old = await delays[seen];
-    Date.now = realNow;
+    // A runtime that stays unready for five minutes is rechecked every 5 s, so
+    // one stuck Agent cannot take most of the serial worker (D223).
+    const old = await firstDelay(unpairedRevision);
     assert.ok(old > 4_500 && old <= 5_000, `an old deployment rechecks in 5 s (${old} ms)`);
   },
 );
@@ -4308,6 +4347,312 @@ revisionTest(
       data: { timeoutMs: 1, runtimeFailure },
     });
     assert.deepEqual(status.warnings, []);
+    // A runtime that failed by itself stays for diagnosis: nothing retires it.
+    assert.equal(status.cleanup, null);
+  },
+);
+
+revisionTest(
+  "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("expired-bootstrap");
+    const stopped = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+          };
+        },
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          await fixture.compute.stopRevision(revision);
+        },
+      },
+      { convergenceTimeoutMs: 1 },
+    );
+
+    await fixture.work(candidate, "failed_permanent");
+    // The retirement obligation commits with the failure, so the bootstrap Job and its
+    // seed Secret (the OAuth token bundle) cannot outlive the failed revision.
+    const cleanupRow = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+    assert.equal((await cleanupRow()).length, 1);
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "CONVERGENCE_DEADLINE_EXCEEDED",
+      message: "Deployment convergence deadline exceeded.",
+      data: { timeoutMs: 1 },
+    });
+    assert.notEqual(status.cleanup, null);
+    await waitFor("the expired bootstrap's revision cleanup", async () => {
+      const [row] = await cleanupRow();
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    assert.ok(stopped.includes(candidate.id));
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+  },
+);
+
+revisionTest(
+  "the convergence deadline judges work age by the database clock, not the controller clock",
+  async (fixture, context) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("deadline-clock");
+    // The worker's wall clock disagrees with PostgreSQL's by five minutes, first ahead and then
+    // behind. The work's creation time is on the database clock, so its deadline must be too:
+    // otherwise skew alone retires a pending OAuth bootstrap early or holds it past the deadline.
+    const realNow = Date.now;
+    let skewMs = 300_000;
+    Date.now = () => realNow() + skewMs;
+    context.after(() => {
+      Date.now = realNow;
+    });
+    const timeoutMs = 10_000;
+    const outcomes = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            pendingReason: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+          };
+        },
+      },
+      {
+        convergenceTimeoutMs: timeoutMs,
+        emit: (event) => {
+          if (event.event === "worker.completed" && event.workId === candidate.idempotencyKey) {
+            outcomes.push(event.outcome);
+          }
+        },
+      },
+    );
+    const workRow = async () =>
+      (
+        await fixture.observerPool.query(
+          `SELECT state, EXTRACT(EPOCH FROM COALESCE(completed_at, clock_timestamp()) - created_at)
+                    * 1000 AS age_ms
+           FROM occ.controller_work WHERE idempotency_key = $1`,
+          [candidate.idempotencyKey],
+        )
+      ).rows[0];
+    const cleanupRows = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+
+    // Ahead: the controller clock already counts the work as five minutes old, yet by the
+    // database clock it is younger than the deadline, so the bootstrap keeps waiting.
+    await waitFor("a pass ahead of the database clock", async () => outcomes[0]);
+    // A starved runner that reaches the first pass past the deadline fails here, not below.
+    const young = await workRow();
+    assert.ok(Number(young.age_ms) < timeoutMs, `work is still young (${young.age_ms} ms)`);
+    assert.equal(outcomes[0], "pending");
+    assert.notEqual(young.state, "failed_permanent");
+    assert.deepEqual(await cleanupRows(), []);
+
+    // Behind: the controller clock would not reach the deadline for another five minutes, yet
+    // the work fails once PostgreSQL counts it as old, and only then.
+    skewMs = -300_000;
+    await fixture.work(candidate, "failed_permanent", 30_000);
+    Date.now = realNow;
+    const failed = await workRow();
+    assert.ok(Number(failed.age_ms) >= timeoutMs, `failed at the deadline (${failed.age_ms} ms)`);
+    assert.ok(outcomes.length > 1);
+    assert.ok(outcomes.slice(0, -1).every((outcome) => outcome === "pending"));
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.error?.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+    assert.deepEqual(status.error?.data, { timeoutMs });
+    // The deadline retires the bootstrap with the failure.
+    assert.equal((await cleanupRows()).length, 1);
+  },
+);
+
+revisionTest(
+  "a stop orders the running revision by the database clock, not the controller clock",
+  async (fixture) => {
+    // The controller clock that stamps each admission runs five minutes ahead of PostgreSQL's
+    // for one Agent and behind for the other. The stop's creation time is on the database clock,
+    // so the admission must be too. Ahead, the running revision would read as admitted after the
+    // stop, which would finish STOP_SUPERSEDED and leave the runtime running (finding 1195).
+    const stopped = [];
+    await fixture.start({
+      ...fixture.compute,
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+    });
+    for (const [label, controllerSkewMs] of [
+      ["ahead", 300_000],
+      ["behind", -300_000],
+    ]) {
+      const owner = await fixture.agent(`stop-clock-${label}`);
+      const candidate = await fixture.revision(owner, 1, { controllerSkewMs });
+      const admitted = (
+        await fixture.observerPool.query(
+          `SELECT admitted_at, EXTRACT(EPOCH FROM clock_timestamp() - admitted_at) * 1000 AS age_ms
+           FROM occ.agent_revisions WHERE id = $1`,
+          [candidate.id],
+        )
+      ).rows[0];
+      // The store stamped admission on its own clock and returned that stamp.
+      const ageMs = Number(admitted.age_ms);
+      assert.ok(ageMs >= 0 && ageMs < 60_000, `${label}: admitted ${ageMs} ms ago`);
+      assert.equal(candidate.createdAt, admitted.admitted_at.toISOString(), label);
+      await fixture.work(candidate, "succeeded");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id, label);
+
+      const stop = await fixture.requestStop(owner);
+      await fixture.work(stop, "succeeded");
+      const audit = await fixture.observerPool.query(
+        `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
+         WHERE namespace_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.lifecycle.stop'`,
+        [fixture.namespace.id, owner.id],
+      );
+      assert.deepEqual(audit.rows, [{ reason_code: "AGENT_STOPPED" }], label);
+      assert.ok(stopped.includes(candidate.id), `${label}: the running revision was stopped`);
+      const current = await fixture.currentAgent(owner);
+      assert.equal(current.desiredRuntimeState, "stopped", label);
+      assert.equal(current.activeRevisionId, undefined, label);
+    }
+  },
+);
+
+revisionTest(
+  "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
+  async (fixture) => {
+    // Three OAuth deployments see their bootstrap running, then the Kubernetes API fails on every
+    // pass until the deadline. The pass that expires sees only the outage, so the work's latest
+    // readiness evidence decides: a bootstrap last seen running is retired with the failure
+    // (finding 1165), a deployment that got past it keeps its runtime for diagnosis, and a
+    // revision published since (only its activation fails) is never retired.
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
+    const published = await fixture.admitInitialRevision("expired-activation-outage");
+    // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
+    // except that the published revision's later passes are ready and its activation fails.
+    const script = new Map([
+      [running.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [progressed.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", undefined]],
+      [published.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+    ]);
+    const passes = new Map(
+      [running, progressed, published].map(({ candidate }) => [candidate.idempotencyKey, []]),
+    );
+    const outage = () =>
+      new TransientDependencyError(
+        "kubernetes_api",
+        "unavailable",
+        "The Kubernetes API answered HTTP 503.",
+      );
+    // As in the neighbouring deadline tests, 10 s leaves a starved runner room for the scripted
+    // passes before the deadline.
+    const timeoutMs = 10_000;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          const steps = script.get(revision.id);
+          if (steps === undefined) {
+            return fixture.compute.prepareRevision(revision);
+          }
+          if (steps.length === 0) {
+            if (revision.id === published.candidate.id) {
+              return fixture.compute.prepareRevision(revision);
+            }
+            throw outage();
+          }
+          const pendingReason = steps.shift();
+          return {
+            ...(await fixture.compute.prepareRevision(revision)),
+            ready: false,
+            ...(pendingReason === undefined ? {} : { pendingReason }),
+          };
+        },
+        async activateRevision(revision, revisionContext) {
+          if (revision.id === published.candidate.id) {
+            throw outage();
+          }
+          return fixture.compute.activateRevision?.(revision, revisionContext);
+        },
+      },
+      {
+        convergenceTimeoutMs: timeoutMs,
+        emit: (event) => {
+          if (event.event === "worker.completed" && passes.has(event.workId)) {
+            passes.get(event.workId).push({ outcome: event.outcome, code: event.code });
+          }
+        },
+      },
+    );
+    const cleanupRows = async (candidate) =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+
+    for (const { candidate } of [running, progressed, published]) {
+      await fixture.work(candidate, "failed_permanent", 60_000);
+    }
+    // The scripted readiness came before the deadline (a starved runner fails here), and the
+    // outage, not the deadline, ends each deployment.
+    for (const [{ candidate }, readiness] of [
+      [running, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [progressed, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", "REVISION_INCOMPLETE"]],
+      [published, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+    ]) {
+      const seen = passes.get(candidate.idempotencyKey);
+      assert.deepEqual(
+        seen.slice(0, readiness.length),
+        readiness.map((code) => ({ outcome: "pending", code })),
+        `scripted passes of ${candidate.id} ran before the deadline`,
+      );
+      assert.ok(seen.length > readiness.length + 1, "the outage spans several passes");
+      assert.deepEqual(seen.at(-1), {
+        outcome: "permanent",
+        code: "KUBERNETES_API_UNAVAILABLE",
+      });
+    }
+    const failedStatus = await fixture.deploymentStatus(running.owner, running.candidate);
+    assert.equal(failedStatus.status, "failed");
+    assert.equal(failedStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
+    // The bootstrap last seen running goes with the failure: its Job and seed Secret (the OAuth
+    // token bundle) cannot outlive the failed revision.
+    assert.equal((await cleanupRows(running.candidate)).length, 1);
+    assert.notEqual(failedStatus.cleanup, null);
+    await waitFor("the expired bootstrap's revision cleanup", async () => {
+      const [row] = await cleanupRows(running.candidate);
+      return row?.state === "succeeded" ? row : undefined;
+    });
+    // A deployment whose bootstrap finished keeps its runtime, as at a plain deadline.
+    assert.deepEqual(await cleanupRows(progressed.candidate), []);
+    const keptStatus = await fixture.deploymentStatus(progressed.owner, progressed.candidate);
+    assert.equal(keptStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
+    assert.equal(keptStatus.cleanup, null);
+    // A published revision recorded no readiness code after its bootstrap, yet stays published
+    // and running.
+    assert.deepEqual(await cleanupRows(published.candidate), []);
+    assert.equal(
+      (await fixture.activePointer(published.owner)).rows[0].active_revision_id,
+      published.candidate.id,
+    );
   },
 );
 

@@ -6020,6 +6020,12 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     withCodexConfig(null),
     { ...withCodexConfig({}), cron: { enabled: true, triggers: { enabled: true } } },
     { ...withCodexConfig({}), cron: null },
+    {
+      ...withCodexConfig({}),
+      agents: {
+        defaults: { ...base.agents.defaults, compaction: { memoryFlush: { enabled: true } } },
+      },
+    },
     // Without the plugin entry the entrypoint leaves cron alone.
     { ...base, cron: "off" },
     {
@@ -6044,6 +6050,20 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     [withCodexConfig("on"), "plugins.entries.codex.config must be an object"],
     [{ ...withCodexConfig({}), cron: "off" }, "cron must be an object"],
     [{ ...withCodexConfig({}), cron: { triggers: true } }, "cron.triggers must be an object"],
+    [
+      {
+        ...withCodexConfig({}),
+        agents: { defaults: { ...base.agents.defaults, compaction: "off" } },
+      },
+      "agents.defaults.compaction must be an object",
+    ],
+    [
+      {
+        ...withCodexConfig({}),
+        agents: { defaults: { ...base.agents.defaults, compaction: { memoryFlush: true } } },
+      },
+      "agents.defaults.compaction.memoryFlush must be an object",
+    ],
     [{ ...base, models: "none" }, "models must be an object"],
     [{ ...base, models: { providers: [] } }, "models.providers must be an object"],
     [
@@ -6055,7 +6075,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
       "models.providers. OpenAI  must be an object",
     ],
     [
-      { ...base, models: { providers: { codex: { models: {} } } } },
+      { ...base, models: { providers: { codex: { models: [null] } } } },
       "models.providers.codex.models must be a list of objects",
     ],
     [
@@ -6079,7 +6099,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   for (const [providers, start, rule] of [
     [{ [`${" ".repeat(300)}openai`]: "stub" }, " ".repeat(8), " must be an object"],
     [
-      { [`Codex${"\u3000".repeat(400)}`]: { models: {} } },
+      { [`Codex${"\u3000".repeat(400)}`]: { models: ["gpt-5"] } },
       `Codex${"\u3000".repeat(8)}`,
       ".models must be a list of objects",
     ],
@@ -8823,6 +8843,8 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
     );
   }
   const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader =
+    "must not set a credential header (authorization, any key, token, secret, password or cookie)";
   for (const [conflicting, message] of [
     [
       { env: { ANTHROPIC_API_KEY: "fixture" } },
@@ -8838,7 +8860,7 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
     ],
     [
       { models: { providers: { anthropic: { headers: { "x-api-key": "fixture" } } } } },
-      `Configuration setting models.providers.anthropic.headers must not set an authorization header: ${binding}.`,
+      `Configuration setting models.providers.anthropic.headers ${credentialHeader}: ${binding}.`,
     ],
     [
       {
@@ -8850,7 +8872,7 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
           },
         },
       },
-      `Configuration setting models.providers.anthropic.models.0.headers must not set an authorization header: ${binding}.`,
+      `Configuration setting models.providers.anthropic.models.0.headers ${credentialHeader}: ${binding}.`,
     ],
   ]) {
     // Every topology refuses these, so Configuration save runs the same rule.
@@ -8884,6 +8906,300 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
       ),
     /compatible model provider/i,
   );
+});
+
+test("model provider credential headers and request auth are refused on every provider and path", () => {
+  // Findings 1142 and 1143: OpenClaw also merges request.headers and request.auth into provider
+  // requests, and reaches providers the primary model does not select (imageModel, pdfModel,
+  // subagents, channels.modelByChannel, /model switches). Every topology refuses them, so
+  // Configuration save, Agent save and deployment give the same message.
+  const driver = createKubernetesComputeDriver(options());
+  const harnesses = [
+    [{ id: "openclaw", version: "1.0.0", mode: "embedded" }, "openai/gpt-5"],
+    [{ id: "codex", version: "1.0.0", mode: "dedicated" }, "codex/gpt-5"],
+  ];
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const credentialHeader = `must not set a credential header (authorization, any key, token, secret, password or cookie): ${binding}`;
+  const requestAuth = `must be unset or {mode: "provider-default"}: ${binding}`;
+  const invalidName = "must use valid HTTP header names";
+  const provider = (name, settings) => ({ models: { providers: { [name]: settings } } });
+  const cases = [
+    [
+      provider("p", { request: { headers: { Authorization: "Bearer sk-literal" } } }),
+      "models.providers.p.request.headers",
+      credentialHeader,
+    ],
+    [
+      provider("p", { request: { headers: { "x-api-key": "${K}" } } }),
+      "models.providers.p.request.headers",
+      credentialHeader,
+    ],
+    [
+      provider("p", { models: [{ id: "m", request: { headers: { authorization: "x" } } }] }),
+      "models.providers.p.models.0.request.headers",
+      credentialHeader,
+    ],
+    [
+      provider("p", { request: { auth: { mode: "authorization-bearer", token: "sk-literal" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    [
+      provider("p", {
+        request: { auth: { mode: "header", headerName: "x-api-key", value: "${K}" } },
+      }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    [
+      provider("p", { request: { auth: { mode: "Authorization-Bearer", token: "x" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    [provider("p", { request: { auth: null } }), "models.providers.p.request.auth", requestAuth],
+    // Finding 1186: a models record would hide its rows' credentials from the walk above, and
+    // OpenClaw accepts only a list there.
+    ...[{ m: { id: "m", request: { headers: { authorization: "x" } } } }, null, "m"].map(
+      (models) => [
+        provider("p", { models }),
+        "models.providers.p.models",
+        "must be an array of model entries",
+      ],
+    ),
+    [
+      provider("p", { request: { auth: { mode: "provider-default", token: "${K}" } } }),
+      "models.providers.p.request.auth",
+      requestAuth,
+    ],
+    ...[
+      "Proxy-Authorization",
+      "x-goog-api-key",
+      "x-auth-token",
+      "Cookie",
+      "apikey",
+      "x-portkey-api-key",
+      "helicone-auth",
+      "ocp-apim-subscription-key",
+      "x-amz-security-token",
+      "x-client-secret",
+      "x-password",
+      "x_api_key",
+      "api_key",
+      "x-rapidapi-key",
+      "x-functions-key",
+      "x-aws-secret-access-key",
+      "x-master-key",
+      // Finding 1185: real-world credential headers whose last word is any key, or a
+      // credential, passphrase, passcode, signature or bearer word.
+      "Authorization",
+      "x-api-key",
+      "api-key",
+      "Private-Token",
+      "cf-aig-authorization",
+      "CF-Access-Client-Secret",
+      "x-litellm-api-key",
+      "x-vault-token",
+      "X-License-Key",
+      "x-access-key",
+      "X-Auth-Key",
+      "DD-APPLICATION-KEY",
+      "X-Private-Key",
+      "X-Client-Key",
+      "x-app-key",
+      "X-Service-Key",
+      "X-Account-Key",
+      "X-Admin-Key",
+      "x-key",
+      "Key",
+      "X-Signing-Key",
+      "x-portkey-virtual-key",
+      "X-Credential",
+      "X-Credentials",
+      "X-Passphrase",
+      "X-Passcode",
+      "X-Signature",
+      "X-Hub-Signature-256",
+      "X-Bearer",
+      "x-tokens",
+      "x-keys",
+      // Finding 1189: authentication, JWT, assertion, HMAC, one-time and PIN words, short
+      // password words, a license, a version suffix and dot separators. A request or routing
+      // key can be a credential, and the WebSocket key is refused like any other key.
+      "Authentication",
+      "X-Authentication",
+      "X-JWT",
+      "X-JWT-Assertion",
+      "X-Client-Assertion",
+      "X-Hmac",
+      "X-Otp",
+      "X-Pin",
+      "X-Pwd",
+      "X-Pass",
+      "X-License",
+      "X-Api-Key-V2",
+      "X-Auth-Token-V2",
+      "x-signature-v1",
+      "x.authorization",
+      "x.token",
+      "x.secret",
+      "x.cookie",
+      "X-Request-Key",
+      "X-Routing-Key",
+      "Sec-WebSocket-Key",
+      "x-authorizations",
+      "X-Bearers",
+      "X-Otps",
+      "X-Hmacs",
+      // Finding 1196: a trailing algorithm word, a digit glued to a key and the Vercel
+      // protection bypass secret.
+      "X-Signature-Ed25519",
+      "X-HMAC-SHA256",
+      "x-signature-sha256",
+      "X-Signature-SHA-256",
+      "x-hub-signature-sha256-v2",
+      "X-Signature-RS256",
+      "x-signature-blake2b",
+      "x-signature-rsa-sha256",
+      "x-api-key2",
+      "x-api-keyv2",
+      "X-Api-Key2-V3",
+      "x-vercel-protection-bypass",
+    ].map((name) => [
+      provider("p", { headers: { [name]: "${K}" } }),
+      "models.providers.p.headers",
+      credentialHeader,
+    ]),
+    ...[
+      "authorization ",
+      " x-api-key",
+      "Authorization\u200b",
+      "\u0410uthorization",
+      "x api key",
+      "",
+    ].map((name) => [
+      provider("p", { headers: { [name]: "v" } }),
+      "models.providers.p.headers",
+      invalidName,
+    ]),
+    [
+      provider("p", { request: { headers: { "authorization\t": "v" } } }),
+      "models.providers.p.request.headers",
+      invalidName,
+    ],
+  ];
+  for (const [harness, model] of harnesses) {
+    const selected = { agents: { defaults: { model } } };
+    for (const [values, path, requirement] of cases) {
+      const label = `${harness.id}: ${JSON.stringify(values)}`;
+      const message = `Configuration setting ${path} ${requirement}.`;
+      // Not selected by agents.*.model: the rule covers every configured provider.
+      const configuration = { ...selected, ...values };
+      for (const check of [
+        () => driver.validateConfiguration(configuration),
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, null),
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
+      ]) {
+        assert.throws(check, { name: "ConfigurationHarnessError", message }, label);
+      }
+    }
+  }
+  // Providers reached only through other selection keys are refused too.
+  for (const agents of [
+    { defaults: { model: "openai/gpt-5", imageModel: "anthropic/claude-x" } },
+    { defaults: { model: "openai/gpt-5", pdfModel: { primary: "anthropic/claude-x" } } },
+    { defaults: { model: "openai/gpt-5", subagents: { model: "anthropic/claude-x" } } },
+    {
+      defaults: { model: "openai/gpt-5" },
+      entries: { main: { voiceModel: "anthropic/claude-x" } },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateConfiguration({
+          agents,
+          ...provider("anthropic", { headers: { "x-api-key": "${K}" } }),
+        }),
+      {
+        name: "ConfigurationHarnessError",
+        message: `Configuration setting models.providers.anthropic.headers ${credentialHeader}.`,
+      },
+    );
+  }
+  // Transport headers without a credential, and the provider's own authentication, still save.
+  for (const values of [
+    provider("p", {
+      headers: {
+        "X-Custom-Transport": "route",
+        "x-api-key-id": "a",
+        "x-auth-mode": "b",
+        "anthropic-version": "2023-06-01",
+        "idempotency-key": "c",
+        "x-cache-key": "d",
+        "x-stainless-retry-count": "0",
+      },
+    }),
+    // Finding 1185: a key that names no credential (idempotency, cache, a key's id or name),
+    // an id after a credential word, and common transport headers.
+    ...[
+      "Content-Type",
+      "Idempotency-Key",
+      "X-Idempotency-Key",
+      "x_idempotency_key",
+      "X-Cache-Key",
+      "x-prompt-cache-key",
+      "x-api-key-id",
+      "x-api-key-name",
+      "X-Token-Id",
+      "X-Session",
+      "OpenAI-Organization",
+      "OpenAI-Project",
+      "anthropic-beta",
+      "X-Request-Id",
+      "User-Agent",
+      "X-Title",
+      "HTTP-Referer",
+      "x-stainless-lang",
+      "X-Keyword",
+      "x-cache-key-2",
+      "X-Idempotent-Key",
+      // Finding 1189: partition, shard, sort and deduplication keys, and words that only
+      // start with a credential word.
+      "X-Partition-Key",
+      "X-Shard-Key",
+      "X-Sort-Key",
+      "X-Dedup-Key",
+      "X-Deduplication-Key",
+      "x-cache-key-v2",
+      "X-Passthrough",
+      "X-Bypass",
+      "X-Pinned-Version",
+      "Public-Key-Pins",
+      "X-Licensed-To",
+      "x-api-key-version",
+      "x.trace.id",
+      // Finding 1196: an algorithm word after a word that names no credential, a cache key
+      // with a glued digit, and a bypass without the protection word.
+      "x-amz-content-sha256",
+      "X-Signature-Version",
+      "x-cache-key2",
+      "x-idempotency-key-sha256",
+      "x-ed25519",
+    ].map((name) => provider("p", { request: { headers: { [name]: "v" } } })),
+    provider("p", {
+      request: { headers: { "OpenAI-Organization": "org" }, auth: { mode: "provider-default" } },
+    }),
+    provider("p", { request: { proxy: { mode: "env-proxy" }, allowPrivateNetwork: true } }),
+    provider("p", { models: [{ id: "m", headers: { "x-tokens-per-minute": "10" } }] }),
+  ]) {
+    assert.doesNotThrow(
+      () =>
+        driver.validateConfiguration({
+          agents: { defaults: { model: "openai/gpt-5" } },
+          ...values,
+        }),
+      JSON.stringify(values),
+    );
+  }
 });
 
 test("embedded startup probes its selected provider and allows graceful Gateway shutdown", async (t) => {
@@ -8937,6 +9253,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         "unknown",
         "MODEL_PROBE_FAILED",
         { kind: "PROBE_STATUS", detail: "unknown" },
+      ],
+      // A provider 429, usage limit or exhausted quota: OpenClaw's "rate_limit" bucket.
+      [
+        "provider rate limit",
+        "rate_limit",
+        "MODEL_PROBE_FAILED",
+        { kind: "PROBE_STATUS", detail: "rate_limit" },
       ],
       // An unknown model or invalid provider settings: OpenClaw's "format" bucket.
       [
@@ -9294,6 +9617,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
+        // The log line keeps the provider's HTTP status from its error, never the text.
+        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();
@@ -14843,6 +15168,10 @@ function workspaceSetupFixture(
           ],
         };
       }
+      if (state.jobPods !== undefined && labels["openclaw.dev/namespace"] === undefined) {
+        // Job-owned pods; the termination wait (namespace-labelled selector) sees none.
+        return { items: structuredClone(state.jobPods) };
+      }
       return {
         items: state.failedInitializer
           ? [
@@ -15230,7 +15559,10 @@ for (const [reason, code] of [
     const { driver, revision, namespace, objects, records, state, context } =
       workspaceSetupFixture(false);
     const sourceKey = stageReadyOAuthSource(objects, revision, context);
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+    // A running Job is named, so the worker can retire it if the deadline passes now.
+    const running = await driver.prepareRevision(revision, context);
+    assert.equal(running.ready, false);
+    assert.equal(running.pendingReason, "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING");
     const job = [...objects.values()].find(({ kind }) => kind === "Job");
     const creations = records.filter(({ kind }) => kind === "Job").length;
     state.jobFailure = reason;
@@ -15271,6 +15603,47 @@ for (const [reason, code] of [
     );
   });
 }
+
+test("Kubernetes OAuth failure evidence lists Job pods newest first by creation time", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+  stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(({ kind }) => kind === "Job");
+  // The client returns Date timestamps. String(Date) starts with the weekday, so
+  // text order puts Sunday 23:59 before Monday 00:01, and September before October.
+  const created = {
+    "pod-week-before": new Date("2026-09-27T23:59:00Z"),
+    "pod-sunday": new Date("2026-10-04T23:59:00Z"),
+    "pod-monday": new Date("2026-10-05T00:01:00Z"),
+  };
+  state.jobPods = Object.entries(created).map(([name, creationTimestamp]) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name,
+      namespace,
+      uid: `${name}-uid`,
+      creationTimestamp,
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+      ownerReferences: [{ kind: "Job", name: job.metadata.name, uid: job.metadata.uid }],
+    },
+    spec: { containers: [{ name: "oauth-bootstrap" }] },
+    status: { phase: "Failed" },
+  }));
+  state.jobFailure = "BackoffLimitExceeded";
+  await assert.rejects(driver.prepareRevision(revision, context), (error) => {
+    assert.ok(error instanceof ComputePreparationFailedError);
+    assert.deepEqual(
+      error.evidence.pods.map(({ name }) => name),
+      ["pod-monday", "pod-sunday", "pod-week-before"],
+    );
+    return true;
+  });
+});
 
 test("Kubernetes OAuth reobserves an API-defaulted Job without changing its generation", async () => {
   const { driver, revision, objects, records, context } = workspaceSetupFixture(
@@ -18694,5 +19067,69 @@ test("embedded redeploy repairs a never-served unready Gateway while workspace s
   assert.equal(
     objects.get(gatewayKey).metadata.annotations["openclaw.dev/agent-revision-id"],
     successor.id,
+  );
+});
+
+// Finding 1144: a Sandbox Harness carries no workspace initializer, so admission and
+// preparation refuse initial workspace files for it before the workspace-path rule, which
+// would otherwise name the Sandbox-forced path the caller never wrote.
+test("Kubernetes refuses initial workspace files for a Sandbox Harness before the path rule", () => {
+  const { driver, revision, context } = workspaceSetupFixture(false);
+  const forced = {
+    ...revision.configuration,
+    agents: { ...revision.configuration.agents, defaults: { workspace: "/sandbox/data" } },
+  };
+  const sandboxed = /cannot be delivered to a Harness in a Sandbox/;
+  for (const configuration of [revision.configuration, forced]) {
+    assert.throws(
+      () => driver.validateWorkspaceSetup(revision.harness, configuration, "sandbox-provider"),
+      // Not a Configuration setting: OCC answers it as an Installation refusal (409).
+      (error) => !(error instanceof ConfigurationHarnessError) && sandboxed.test(error.message),
+    );
+  }
+  driver.validateWorkspaceSetup(revision.harness, revision.configuration);
+  assert.throws(
+    () => driver.validateWorkspaceSetup(revision.harness, forced),
+    /agents\.defaults\.workspace must be/,
+  );
+  assert.throws(
+    () =>
+      driver.workspaceSetupForRevision(
+        { ...revision, configuration: forced, sandboxDriverId: "sandbox-provider" },
+        context,
+      ),
+    sandboxed,
+  );
+  assert.equal(driver.workspaceSetupForRevision(revision, context), context.workspaceSetup);
+});
+
+// Finding 1144: a `Main` roster entry is OpenClaw's main Agent, so embedded setup writes to
+// its workspace, not to agents.defaults.workspace.
+test("Kubernetes embedded setup uses a Main roster entry's workspace", async () => {
+  const { driver, revision, objects, context } = workspaceSetupFixture(true);
+  const configured = {
+    ...revision,
+    configuration: {
+      ...revision.configuration,
+      agents: {
+        defaults: { ...revision.configuration.agents.defaults, workspace: "/srv/elsewhere" },
+        entries: { Main: { workspace: "/home/node/.openclaw/workspace" } },
+      },
+    },
+  };
+  assert.equal((await driver.prepareRevision(configured, context)).ready, false);
+  const gateway = [...objects.values()].find(
+    ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
+  );
+  const initializer = gateway.spec.template.spec.initContainers.find(
+    ({ name }) => name === "initialize-workspace",
+  );
+  assert.equal(
+    initializer.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_DIR").value,
+    "/home/node/.openclaw/workspace",
+  );
+  assert.equal(
+    containerProgram(gateway.spec.template.spec.containers[0]).includes("/srv/elsewhere"),
+    false,
   );
 });

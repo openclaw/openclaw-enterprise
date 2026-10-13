@@ -547,6 +547,14 @@ function serviceKeyNameRefusal(error: unknown): boolean {
   return error instanceof Error && error.name === "APIError" && code === "INVALID_NAME_LENGTH";
 }
 
+/** A curated auth endpoint answered 5xx: its database or audit store failed. */
+class AuthDependencyUnavailable extends Error {
+  constructor() {
+    super("Authentication dependency unavailable.");
+    this.name = "AuthDependencyUnavailable";
+  }
+}
+
 /**
  * A rejected password whose denial audit could not be written. The response is 503 (audit
  * outages fail closed), yet admission still counts it as a credential failure.
@@ -558,12 +566,14 @@ class DenialAuditUnavailable extends Error {
   }
 }
 
-// The Console reason for each GitHub allowlist refusal (RFC-0061) and for an attached identity
-// whose account is disabled. No other value reaches the redirect.
+// The Console reason for each GitHub allowlist refusal (RFC-0061), for an attached identity
+// whose account is disabled, for a provider that could not answer, and for a callback that
+// failed inside OCE (`unavailable`). No other value reaches the redirect.
 const callbackReasons: Readonly<Record<(typeof CALLBACK_DENIALS)[number], string>> = {
   MEMBERSHIP_REQUIRED: "membership",
   MEMBERSHIP_UNAVAILABLE: "membership-unavailable",
   ACCOUNT_DISABLED: "account-disabled",
+  PROVIDER_UNAVAILABLE: "provider-unavailable",
 };
 
 /** An audited callback refusal whose Console reason the callback redirect carries. */
@@ -1313,7 +1323,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         });
       }
       if (response.status >= 500) {
-        const failure = new Error("Authentication dependency unavailable.");
+        const failure = new AuthDependencyUnavailable();
         // The curated password endpoint marks a rejection whose denial audit failed; the
         // response stays 503, but the guess spends budget as in the password-only profile.
         if (path === "/oce/password" && (await deniedWithoutAudit(response))) {
@@ -1367,10 +1377,19 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           setAuthHeaders(reply, result.headers);
           reply.redirect("/console/");
         } catch (error) {
-          reply.redirect(
+          // A refusal keeps its reason. A callback that failed inside OCE (its database or
+          // audit store) is an outage, not a refusal of this identity. Every other refusal,
+          // including a provider this API does not configure, stays generic.
+          const reason =
             error instanceof CallbackRefusal
-              ? `/console/?authError=${name}&authReason=${error.consoleReason}`
-              : `/console/?authError=${name}`,
+              ? error.consoleReason
+              : error instanceof AuthDependencyUnavailable
+                ? "unavailable"
+                : undefined;
+          reply.redirect(
+            reason === undefined
+              ? `/console/?authError=${name}`
+              : `/console/?authError=${name}&authReason=${reason}`,
           );
         }
       },

@@ -1,5 +1,18 @@
 {{- /* One IPv4 host. Go's ParseCIDR rejects an octet above 255 and a leading zero. */ -}}
 {{- define "openclaw.ipv4Host32" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/32${{- end -}}
+{{- /* IPv4 CIDR with prefix 1 through 32; rejects leading-zero octets the API and profile preflight refuse. */ -}}
+{{- define "openclaw.ipv4Cidr" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/([1-9]|[12][0-9]|3[0-2])${{- end -}}
+{{- /* An octet above 255 keeps the historical invalid-address diagnostic. Leading zeros fail the strict pattern instead. */ -}}
+{{- define "openclaw.requireIpv4Cidr" -}}
+{{- $cidr := toString .cidr -}}
+{{- $label := .label -}}
+{{- if regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" $cidr -}}
+{{- range $octet := splitList "." (first (splitList "/" $cidr)) -}}
+{{- if gt (int $octet) 255 -}}{{- fail (printf "%s contains an invalid IPv4 address" $label) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch (include "openclaw.ipv4Cidr" .) $cidr) -}}{{- fail (printf "%s requires explicit IPv4 CIDRs with prefixes 1 through 32" $label) -}}{{- end -}}
+{{- end -}}
 {{- define "openclaw.validateSecretKey" -}}
 {{- if or (eq (toString .value) ".") (hasPrefix ".." (toString .value)) (gt (len (toString .value)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString .value))) -}}
 {{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
@@ -69,6 +82,7 @@
 {{- end -}}
 {{- end -}}
 {{- if not .Values.installation.secretName -}}{{- fail "installation.secretName must name the operator-created installation startup Secret" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "installation.key" "value" .Values.installation.key) -}}
 {{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
@@ -115,10 +129,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $github.egressCidrs) (kindIs "slice" $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $github.egressCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "auth.github.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.github.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- if and $google $google.enabled -}}
@@ -131,11 +142,21 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $google.egressCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.google.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "auth.google.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
+{{- $oidcCa := default dict $oidc -}}
+{{- range $key := list "caSecretName" "caSecretKey" -}}
+{{- if and (hasKey $oidcCa $key) (not (kindIs "string" (index $oidcCa $key))) -}}{{- fail (printf "auth.oidc.%s must be a string" $key) -}}{{- end -}}
+{{- end -}}
+{{- if or $oidcCa.caSecretName $oidcCa.caSecretKey -}}
+{{- if or (not (kindIs "bool" $oidcCa.enabled)) (not $oidcCa.enabled) -}}{{- fail "auth.oidc CA configuration requires auth.oidc.enabled: true" -}}{{- end -}}
+{{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
+{{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
+{{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.caSecretKey" "value" $oidcCa.caSecretKey) -}}
+{{- if not .Values.database.caSecretName -}}{{- fail "auth.oidc CA configuration requires database.caSecretName and an explicit sslrootcert in the application database URL" -}}{{- end -}}
+{{- if eq $oidcCa.caSecretName .Values.database.caSecretName -}}{{- fail "auth.oidc.caSecretName must differ from the database CA Secret" -}}{{- end -}}
 {{- end -}}
 {{- if and $oidc $oidc.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
@@ -160,10 +181,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $oidc.egressCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "auth.oidc.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
@@ -259,9 +277,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
 {{- fail "database.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. */ -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
+{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
 {{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
+{{- end -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.cluster.port))) (gt (int .Values.cluster.port) 65535) -}}
+{{- fail "cluster.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- if not .Values.api.clients -}}{{- fail "api.clients must contain exact approved client selectors" -}}{{- end -}}
 {{- range $index, $client := .Values.api.clients -}}
@@ -333,6 +354,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (eq .Values.database.caKey ".") (eq .Values.database.caKey "..") (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.database.caKey)) -}}
 {{- fail "database.caKey must be a simple basename" -}}
 {{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "database.caKey" "value" .Values.database.caKey) -}}
 {{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
 {{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
 {{- if .Values.executionCluster.enabled -}}
@@ -350,6 +372,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.backend.chatgpt.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
 {{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
+{{- end -}}
 {{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
@@ -361,6 +386,26 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
 {{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
+{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "executionCluster.kubeconfigKey" "value" $execution.kubeconfigKey) -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $execution.apiPort))) (gt (int $execution.apiPort) 65535) -}}
+{{- fail "executionCluster.apiPort must be an integer TCP port from 1 to 65535" -}}
+{{- end -}}
+{{- range $cidr := $execution.apiCidrs -}}
+{{- $value := toString $cidr -}}
+{{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/([1-9]|[12][0-9]|3[0-2])$" $value -}}
+{{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
+{{- $addr := first (splitList "/" $value) -}}
+{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
+{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
+{{- if gt (int $octet) 255 -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- end -}}
+{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
+{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
+{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- else -}}
+{{- fail "executionCluster.apiCidrs requires an explicit IPv4 or IPv6 CIDR with a nonzero prefix" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.slackProxy.enabled -}}
@@ -429,12 +474,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
 {{- range $cidr := $credentials.upstreamCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" $cidr) -}}
-{{- fail "repositoryCredentials.upstreamCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}
-{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" $cidr)) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "repositoryCredentials.upstreamCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "repositoryCredentials.upstreamCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- if and .Values.gatewayRouting.sandbox.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "gatewayRouting.sandbox requires gatewayRouting.enabled" -}}{{- end -}}
@@ -479,6 +519,27 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "gatewayRouting.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- if not $routing.envoyGatewayPodLabels -}}{{- fail "gatewayRouting.envoyGatewayPodLabels must select the Envoy Gateway control-plane Pods for xDS egress" -}}{{- end -}}
+{{- /* Null matches main: an omitted list renders no remote-node peers. NetworkPolicy ipBlock does not apply Node trusted-proxy mapped-prefix rules. */ -}}
+{{- if kindIs "slice" $routing.remoteNodeCidrs -}}
+{{- range $cidr := $routing.remoteNodeCidrs -}}
+{{- $value := toString $cidr -}}
+{{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/(?:0|[1-9]|[12][0-9]|3[0-2])$" $value -}}
+{{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/(?:0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
+{{- $addr := first (splitList "/" $value) -}}
+{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
+{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
+{{- if gt (int $octet) 255 -}}{{- fail "gatewayRouting.remoteNodeCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- end -}}
+{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
+{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
+{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "gatewayRouting.remoteNodeCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- else -}}
+{{- fail "gatewayRouting.remoteNodeCidrs requires an IPv4 or IPv6 CIDR" -}}
+{{- end -}}
+{{- end -}}
+{{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
+{{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}
+{{- end -}}
 {{- if $routing.sandbox.enabled -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
 {{- /* Dedicated Agent routes use agent-<32 hex>.<domain>, which must fit the 253-character Gateway API hostname limit. */ -}}
@@ -508,6 +569,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $signIn := index $.Values.auth $provider -}}
 {{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
 {{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled -}}{{- $roles = append $roles (list "auth.oidc.caSecretName" .Values.auth.oidc.caSecretName "ca") -}}{{- end -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
@@ -703,6 +765,12 @@ capabilities:
 {{/*
 Install and upgrade notice for api.trustedProxy. It warns rather than fails: installs whose
 API sees each client's own address (for example, behind a source-preserving NLB) are valid.
+Re-checked 2026-10-13 before making it a refusal: an HTTP proxy without a trusted proxy is
+already refused at runtime (every API call is 403 and the API logs
+authentication.forwarded-refused-warning); a TCP proxy that hides client addresses cannot be
+seen by the chart or the API; and forcing a value there leads operators to list the TCP proxy
+as trusted, which keys the address limits on one shared address, so a few failed sign-ins
+limit every user.
 */}}
 {{- define "openclaw.trustedProxy.notice" -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
@@ -715,11 +783,13 @@ WARNING: api.trustedProxy is not set. With GitHub, Google or OIDC sign-in, faile
 password sign-ins are then limited per email only, and external sign-in
 starts have no per-client limit, because every browser behind a proxy shares its
 address. Set api.trustedProxy unless the API sees each client's own address, as
-behind a Network Load Balancer that preserves source addresses.
+behind a Network Load Balancer that preserves source addresses. Behind an HTTP
+proxy, API calls fail with 403 until it is set.
 {{- else -}}
 NOTE: api.trustedProxy is not set, so failed password sign-ins are limited per
 email only. Set api.trustedProxy when a proxy fronts the API to add the
-per-client-address limit.
+per-client-address limit. Behind an HTTP proxy, API calls fail with 403 until it
+is set.
 {{- end -}}
 {{- end -}}
 {{- end -}}

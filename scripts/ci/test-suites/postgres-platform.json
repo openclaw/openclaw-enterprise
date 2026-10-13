@@ -39,7 +39,9 @@
         "the real pg client retains the Azure token callback and verified TLS after URL parsing",
         "workload authentication rejects password fallback and unverified TLS",
         "an idle pooled client error is logged instead of crashing the process",
-        "the pool survives PostgreSQL terminating an idle backend"
+        "the pool survives PostgreSQL terminating an idle backend",
+        "verify-full checks the server certificate against an IP database host",
+        "the IP host identity check leaves other connection configurations unchanged"
       ]
     },
     {
@@ -135,6 +137,7 @@
       "path": "tests/integration/postgres-agent-provisioning.test.mjs",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
+        "provisioning status judges claim liveness by the database clock, not the controller clock",
         "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",

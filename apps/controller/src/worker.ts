@@ -59,6 +59,7 @@ import {
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
   repositoryCleanupRevisionId,
+  revisionAdmittedBeforeWork,
   isRepositoryRuntimeRetirementWork,
   provisioningEffectReceipt as provisioningEffectReceiptForRecord,
   provisioningPendingEffect,
@@ -161,12 +162,19 @@ const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+  HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   "REVISION_INCOMPLETE",
   "WORKSPACE_NODE_BINDING_PENDING",
   ...Object.values(REVISION_PENDING_CODES),
 ]);
+
+// A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
+// An active revision's source is already consumed.
+function isCandidateDeployment(claim: ClaimedWork): boolean {
+  return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
+}
 
 // A refused candidate whose stop keeps failing waits on that stop, which can block the serial
 // worker for minutes (Kubernetes waits for gateway and Agent Pods to terminate). Each failed stop
@@ -955,6 +963,8 @@ export class ControllerWorker {
   private readonly stopYields = new StopYields();
   /** Whether this pass deferred its work as AGENT_STOP_YIELDED. */
   private stopYieldedThisPass = false;
+  /** Each claim's work creation instant on this process's monotonic clock; see `workAgeMs`. */
+  private readonly workOrigins = new WeakMap<ClaimedWork, number>();
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -1172,6 +1182,7 @@ export class ControllerWorker {
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         const claim = await this.queue.claim();
         if (claim !== undefined) {
+          this.workOrigins.set(claim, performance.now() - claim.ageMs);
           claimed = claim;
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
@@ -1235,6 +1246,22 @@ export class ControllerWorker {
         }
       }
     }
+  }
+
+  /**
+   * Milliseconds since the claimed work was created, by PostgreSQL's clock. The convergence
+   * deadline and age-scaled rechecks use it. `createdAt` is on the database clock, so
+   * `Date.now() - createdAt` would move the deadline by the controller's skew from it
+   * (finding 1187). The claim carries PostgreSQL's age when granted, and each renewal around
+   * an external effect refreshes it; this process's monotonic clock advances it in between.
+   * It trails the database's age by one round trip, so it never ends work early.
+   */
+  private workAgeMs(claim: ClaimedWork): number {
+    const origin = this.workOrigins.get(claim);
+    if (origin === undefined) {
+      throw new Error(`The worker has no claim time for work ${claim.idempotencyKey}.`);
+    }
+    return Math.max(0, performance.now() - origin);
   }
 
   /** Report loop progress without ever delaying the loop; see `onProgress`. */
@@ -1790,10 +1817,7 @@ export class ControllerWorker {
             delayMs:
               cause === undefined || attempts.some(({ phase }) => phase === "closing")
                 ? this.repositoryCleanupRetryMs
-                : repositoryCleanupRecheckMs(
-                    this.repositoryCleanupRetryMs,
-                    Date.now() - claim.createdAt.getTime(),
-                  ),
+                : repositoryCleanupRecheckMs(this.repositoryCleanupRetryMs, this.workAgeMs(claim)),
           },
         );
       }
@@ -1896,7 +1920,7 @@ export class ControllerWorker {
         await this.finalize(claim, namespace, denied);
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) {
+      if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
       result = await this.observe(claim, namespace);
@@ -1997,7 +2021,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if (active !== undefined && Date.parse(active.createdAt) > claim.createdAt.getTime()) {
+      if (active !== undefined && !revisionAdmittedBeforeWork(active, claim)) {
         await this.finalizeAgentStop(claim, { outcome: "success", code: "STOP_SUPERSEDED", agent });
         return;
       }
@@ -2022,7 +2046,7 @@ export class ControllerWorker {
           (revision) =>
             revision.id !== active?.id &&
             ownedByCompute(revision) &&
-            Date.parse(revision.createdAt) <= claim.createdAt.getTime(),
+            revisionAdmittedBeforeWork(revision, claim),
         ),
       ];
       if (
@@ -2114,7 +2138,7 @@ export class ControllerWorker {
    */
   private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
     return this.withClaimHeartbeat(claim, () =>
-      stopWithDrainYield(Date.now() - claim.createdAt.getTime(), this.convergenceTimeoutMs, () =>
+      stopWithDrainYield(this.workAgeMs(claim), this.convergenceTimeoutMs, () =>
         this.compute.stopRevision(revision),
       ),
     );
@@ -2122,7 +2146,7 @@ export class ControllerWorker {
 
   /** When work whose stop yielded to other Work runs again: 1 s, growing with its age to 5 s. */
   private stopYieldRecheckMs(claim: ClaimedWork): number {
-    return stopYieldRecheckMs(Date.now() - claim.createdAt.getTime());
+    return stopYieldRecheckMs(this.workAgeMs(claim));
   }
 
   /**
@@ -2520,10 +2544,7 @@ export class ControllerWorker {
         ? "permanent"
         : result.outcome;
     if (result.outcome === "success" && result.code !== "STOP_SUPERSEDED") {
-      this.metrics?.observeAgentOperation(
-        "stop",
-        Math.max(0, Date.now() - claim.createdAt.getTime()) / 1000,
-      );
+      this.metrics?.observeAgentOperation("stop", this.workAgeMs(claim) / 1000);
     }
     let stopYields: number | undefined;
     if (result.outcome === "pending" && result.code === "AGENT_STOP_YIELDED") {
@@ -3294,7 +3315,8 @@ export class ControllerWorker {
    * worker wall clock: `durationMs` is this pass, `prepareMs` sums Compute
    * preparation across passes, `readinessWaitMs` runs from the first unready
    * observation to the first ready one (or now), `activationMs` runs from this
-   * pass's ready observation to completion, and `elapsedMs` is since admission.
+   * pass's ready observation to completion, and `elapsedMs` is since admission,
+   * by the database clock (`workAgeMs`).
    */
   private deployTimingFields(claim: ClaimedWork): Readonly<Record<string, number>> {
     const timing = this.deployTimings.get(claim.idempotencyKey);
@@ -3315,7 +3337,7 @@ export class ControllerWorker {
       prepareMs: timing.prepareMs,
       readinessWaitMs,
       ...(timing.readyAt === undefined ? {} : { activationMs: now - timing.readyAt }),
-      elapsedMs: Math.max(0, now - claim.createdAt.getTime()),
+      elapsedMs: this.workAgeMs(claim),
     };
   }
 
@@ -3437,7 +3459,7 @@ export class ControllerWorker {
       // instead stops it and publishes the deadline.
       if (this.refusalWait !== undefined && REDECIDED_REFUSAL_CODES.has(this.refusalWait.refusal)) {
         this.refusalWait =
-          Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs
+          this.workAgeMs(claim) >= this.convergenceTimeoutMs
             ? { ...this.refusalWait, refusal: "CONVERGENCE_DEADLINE_EXCEEDED" }
             : undefined;
       }
@@ -3702,7 +3724,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) {
+      if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
       result = await this.observeRevision(
@@ -4199,6 +4221,16 @@ export class ControllerWorker {
     };
   }
 
+  /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
+  private async renewClaim(claim: ClaimedWork): Promise<boolean> {
+    const renewed = await this.queue.heartbeat(claim);
+    if (renewed === undefined) {
+      return false;
+    }
+    this.workOrigins.set(claim, performance.now() - renewed.ageMs);
+    return true;
+  }
+
   private async withClaimHeartbeat<T>(
     claim: ClaimedWork,
     effect: (signal: AbortSignal) => Promise<T>,
@@ -4209,7 +4241,7 @@ export class ControllerWorker {
     // Consecutive short effects can each finish before their timer fires while
     // the whole sequence outlives the lease. Renew before every external effect.
     const firstRenewal = performance.now();
-    if ((await this.queue.heartbeat(claim)) === undefined) {
+    if (!(await this.renewClaim(claim))) {
       throw new WorkClaimLostError();
     }
     this.progress();
@@ -4239,7 +4271,7 @@ export class ControllerWorker {
       () => {
         pending = pending.then(async () => {
           const renewedAt = performance.now();
-          if ((await this.queue.heartbeat(claim)) === undefined) {
+          if (!(await this.renewClaim(claim))) {
             abandon();
           } else if (!lost) {
             confirmLease(renewedAt);
@@ -4296,10 +4328,7 @@ export class ControllerWorker {
           const revision = await this.state.read((view) =>
             view.revisions.findRevision(attempt.namespaceId, attempt.agentId, attempt.revisionId),
           );
-          if (
-            revision !== undefined &&
-            Date.parse(revision.createdAt) <= claim.createdAt.getTime()
-          ) {
+          if (revision !== undefined && revisionAdmittedBeforeWork(revision, claim)) {
             await this.closeRevisionCredentials(claim, revision);
           }
         }
@@ -4331,6 +4360,31 @@ export class ControllerWorker {
     });
   }
 
+  /**
+   * Whether a candidate's deployment work last saw its OAuth bootstrap still running: of its
+   * readiness evidence, the newest is HARNESS_CREDENTIAL_BOOTSTRAP_PENDING. Transient dependency
+   * failures, retries and lost claims say nothing about the bootstrap and are skipped. A later
+   * readiness code wins, as it would for a pass that saw the deployment at the deadline: a
+   * runtime that failed by itself stays for diagnosis. A ready pass records no readiness code, so
+   * a revision published since (its activation can still fail transiently) is never retired.
+   */
+  private async bootstrapLastPending(claim: ClaimedWork): Promise<boolean> {
+    if (!isCandidateDeployment(claim)) {
+      return false;
+    }
+    const latest = await this.queue.findWorkAttempt(claim.idempotencyKey, [
+      ...REVISION_READINESS_CODES,
+    ]);
+    if (latest?.code !== "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING") {
+      return false;
+    }
+    // Only this claim publishes its candidate, so a pointer that is elsewhere now stays so.
+    const agent = await this.state.read((view) =>
+      view.agents.findAgent(claim.namespaceId, claim.agentId!),
+    );
+    return agent?.activeRevisionId !== claim.revisionId;
+  }
+
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
@@ -4355,7 +4409,7 @@ export class ControllerWorker {
       result.outcome === "pending" &&
       result.refusedCandidate === undefined &&
       !isStopYieldedCode(result.code) &&
-      Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
+      this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
     // end, and then hold the container unready until an explicit restart that
     // nothing performs: no liveness probe or controller restarts it. Waiting for
@@ -4373,13 +4427,29 @@ export class ControllerWorker {
       };
     } else if (expired && result.dependencyFailure !== undefined) {
       // The dependency was still failing at the deadline: name it, not the deadline.
-      resolved = { outcome: "permanent", code: result.code };
+      resolved = {
+        outcome: "permanent",
+        code: result.code,
+        // This pass could not see the bootstrap, so the work's latest readiness evidence
+        // stands in: a bootstrap last seen running is retired with the failure, as below
+        // (finding 1165).
+        ...((await this.bootstrapLastPending(claim))
+          ? { cleanupFailedPreparation: true as const }
+          : {}),
+      };
     } else if (expired) {
       resolved = {
         ...result,
         outcome: "permanent",
         code: "CONVERGENCE_DEADLINE_EXCEEDED",
         data: convergenceDeadlineResultData(this.convergenceTimeoutMs, runtimeFailure),
+        // No runtime exists yet to keep for diagnosis, and nothing else retires this revision:
+        // its bootstrap Job and seed Secret (the OAuth token bundle) go with the failure. Only
+        // a candidate's own deployment work can observe a bootstrap; an active revision's
+        // source is already consumed.
+        ...(result.code === "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING" && isCandidateDeployment(claim)
+          ? { cleanupFailedPreparation: true as const }
+          : {}),
       };
     } else {
       resolved = result;
@@ -4507,7 +4577,7 @@ export class ControllerWorker {
           { delayMs: refusedStopRecheckMs!, repeatEvidence: true },
         );
       } else if (resolved.outcome === "pending") {
-        const ageMs = Date.now() - claim.createdAt.getTime();
+        const ageMs = this.workAgeMs(claim);
         await queue.defer(
           claim,
           { code: resolved.code },
@@ -4904,8 +4974,7 @@ export class ControllerWorker {
     return Math.max(
       Math.min(
         REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS,
-        revisionReadinessRecheckMs(Date.now() - claim.createdAt.getTime()) *
-          2 ** Math.min(earlier, 20),
+        revisionReadinessRecheckMs(this.workAgeMs(claim)) * 2 ** Math.min(earlier, 20),
       ),
       Math.ceil(Math.max(0, stopMs) * REFUSED_CANDIDATE_STOP_DURATION_FACTOR),
     );
@@ -4998,10 +5067,7 @@ export class ControllerWorker {
     // Original admission time survives queue waits and retries. Maintenance and
     // superseded work must not count as additional successful deployments.
     if (claim.idempotencyKey === `agent_revision:${revision.id}:reconcile`) {
-      this.metrics?.observeAgentOperation(
-        "deploy",
-        Math.max(0, Date.now() - claim.createdAt.getTime()) / 1000,
-      );
+      this.metrics?.observeAgentOperation("deploy", this.workAgeMs(claim) / 1000);
     }
     this.emit({
       event: "worker.completed",
@@ -5327,8 +5393,7 @@ export class ControllerWorker {
     result: DispatchResult,
   ): Promise<void> {
     const expired =
-      result.outcome === "pending" &&
-      Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
+      result.outcome === "pending" && this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     const resolved: DispatchResult = expired
       ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
       : result;

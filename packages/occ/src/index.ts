@@ -391,6 +391,12 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export {
+  INVALID_HEADER_NAME,
+  isCredentialHeaderName,
+  isHttpFieldName,
+  PROVIDER_MODELS_LIST,
+} from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
 export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
@@ -437,6 +443,7 @@ export type {
   RepositorySessionRepository,
 } from "./ports/repository-sessions.ts";
 export {
+  PostgresCertificateRejectedError,
   PostgresPlatformState,
   PostgresPlatformStateStore,
   type PersistedNativeIAMState,
@@ -468,6 +475,7 @@ export {
   CREDENTIAL_WITHDRAWAL_TARGET,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
+  revisionAdmittedBeforeWork,
   runtimeFailureCause,
   validateRuntimeFailureEvidence,
   type DeploymentStatus,
@@ -852,6 +860,10 @@ const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_
  * sent again. A late original then meets an existing ConfigMap and fails AlreadyExists.
  */
 const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
+
+// What a Preset variable without a default renders to in a template's default values.
+const PRESET_VARIABLE_PLACEHOLDER = /\{\{ vars\.[A-Za-z_][A-Za-z0-9_]* \}\}/;
+
 /**
  * The most references a Secret read or delete examines. Each one costs authorization work,
  * so the bound keeps both the response and the IAM work small. Delete makes those decisions
@@ -1193,20 +1205,26 @@ function validateRepositoryTopology(
 }
 
 // Preparation of the first deployment applies the same rule; a Configuration setting keeps
-// the Driver's message, which names it.
+// the Driver's message, which names it. With a Sandbox Driver selected every Agent runs in its
+// Sandbox, and a Compute Driver that cannot deliver the files there says so (finding 1144).
 function validateWorkspaceSetupTopology(
   compute: ComputeDriver,
   harness: RevisionHarnessDescriptor,
   configuration: Readonly<OpenClawConfigurationDocument>,
+  sandboxDriverId: string | undefined,
 ): void {
   try {
-    compute.validateWorkspaceSetup?.(harness, configuration);
+    compute.validateWorkspaceSetup?.(harness, configuration, sandboxDriverId);
   } catch (error) {
     if (error instanceof ConfigurationHarnessError) {
       throw error;
     }
+    // Kubernetes Compute refuses any Harness in a Sandbox first; a Driver that can deliver
+    // into a Sandbox would need its own refusal text here.
     throw new ResourceStateConflictError(
-      "The selected Compute Driver cannot deliver initial workspace files to this Agent.",
+      sandboxDriverId === undefined
+        ? "The selected Compute Driver cannot deliver initial workspace files to this Agent."
+        : "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.",
     );
   }
 }
@@ -2424,7 +2442,9 @@ export class OpenClawController {
         }
         await this.authorizeProvisioningRecord(state, principalId, replay);
         const work = await state.operations.findWork(replay.workId);
-        const result = Object.freeze({ provisioning: provisioningProgress(replay, work) });
+        const result = Object.freeze({
+          provisioning: provisioningProgress(replay, work, this.clock()),
+        });
         if (auditEvent) {
           await state.audit.append(auditEvent(result));
         }
@@ -2470,6 +2490,22 @@ export class OpenClawController {
         createdAt: this.timestamp(),
       });
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
+      // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
+      // queueing work the worker's admission would refuse (finding 1145). Unlike Agent save, a
+      // Compute Driver without repository support is refused here too: deployment would be.
+      // authorizeProvisioningRecord repeats this check for the stored record, after the Harness
+      // authentication check; this copy also runs where no durable record can be stored.
+      if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
+        validateRepositoryTopology(
+          compute,
+          {
+            id: resolveConfiguredHarnessId(configurationInput.values),
+            version: "provisioning",
+            mode: executionMode,
+          },
+          this.sandboxDriver()?.id,
+        );
+      }
       const record = await state.provisioning.create({
         workId,
         namespaceId: namespace.id,
@@ -2537,7 +2573,7 @@ export class OpenClawController {
       if (work === undefined) {
         throw new DependencyUnavailableError("The provisioning work is unavailable.");
       }
-      return Object.freeze({ provisioning: provisioningProgress(record, work) });
+      return Object.freeze({ provisioning: provisioningProgress(record, work, this.clock()) });
     });
   }
 
@@ -2589,11 +2625,13 @@ export class OpenClawController {
       // authentication checks the status read skips.
       await this.authorizeProvisioningRecord(state, principalId, record);
       if (record.status === "queued" || record.status === "running") {
-        return Object.freeze({ provisioning: provisioningProgress(record, observed) });
+        return Object.freeze({
+          provisioning: provisioningProgress(record, observed, this.clock()),
+        });
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
       const work = await state.operations.findWork(record.workId);
-      return Object.freeze({ provisioning: provisioningProgress(retried, work) });
+      return Object.freeze({ provisioning: provisioningProgress(retried, work, this.clock()) });
     });
   }
 
@@ -4223,9 +4261,15 @@ export class OpenClawController {
           "The selected Configuration Driver cannot validate Preset values.",
         );
       }
+      // The model provider and Compute rules first, as on Configuration create and update, so
+      // a value they refuse gets the same message wherever it is written. A variable without a
+      // default is still a placeholder here; the Configuration it fills is checked on create.
+      validateModelProviderSettings(values, {
+        unresolved: (text) => PRESET_VARIABLE_PLACEHOLDER.test(text),
+      });
+      this.validateComputeConfiguration(values);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values);
-      this.validateComputeConfiguration(values);
     }
     return template;
   }
@@ -6816,6 +6860,9 @@ export class OpenClawController {
         compute,
         sandbox,
       );
+      // The Compute rules first, as on Configuration save, so a stored Configuration that
+      // predates a rule both refuse gets the message its next save would.
+      this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
         throw new ScopeViolationError(
@@ -6848,7 +6895,12 @@ export class OpenClawController {
       // same message instead of failing in preparation.
       const pendingSetup = await state.workspaceSetups.find(namespace.id, lockedAgent.id);
       if (pendingSetup !== undefined && !pendingSetup.completed) {
-        validateWorkspaceSetupTopology(compute, revisionHarness, admittedConfiguration);
+        validateWorkspaceSetupTopology(
+          compute,
+          revisionHarness,
+          admittedConfiguration,
+          sandbox?.id,
+        );
       }
       const pluginState =
         lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0
@@ -6918,6 +6970,8 @@ export class OpenClawController {
           }
         }
       }
+      // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
+      // The repository credential deadline above stays on this controller's clock.
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
           id: this.nextIdentifier("agent_revision"),
@@ -8495,7 +8549,17 @@ export class OpenClawController {
         );
       }
       if (asRecord(record.plan)?.initialWorkspaceFiles !== undefined) {
-        validateWorkspaceSetupTopology(compute, harness, configuration);
+        validateWorkspaceSetupTopology(compute, harness, configuration, sandbox?.id);
+      }
+      // The request checks repository bindings before queueing (provisionAgent); retry and the
+      // worker check them again until the Agent exists, when admitRepositoryCredentials does.
+      const repositoryBindings = asRecord(record.plan)?.repositoryBindings;
+      if (
+        agent === undefined &&
+        Array.isArray(repositoryBindings) &&
+        repositoryBindings.length > 0
+      ) {
+        validateRepositoryTopology(compute, harness, sandbox?.id);
       }
     }
     // Plugin policy is admission for writes (replay, retry, the worker). A status read reports
@@ -10290,7 +10354,7 @@ export class OpenClawController {
       validateRepositoryTopology(compute, harness, sandbox?.id);
     }
     if (agent.workspaceSetup) {
-      validateWorkspaceSetupTopology(compute, harness, values);
+      validateWorkspaceSetupTopology(compute, harness, values, sandbox?.id);
     }
   }
 

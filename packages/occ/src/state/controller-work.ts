@@ -79,6 +79,10 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "Workloads are ready; waiting for the Gateway to apply the workspace node.";
       break;
+    case "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING":
+      code = attempt.code;
+      message = "Waiting for harness credential initialization to finish.";
+      break;
     case "DEPENDENCY_UNAVAILABLE":
       code = attempt.code;
       message = "A dependency was unavailable. The controller will retry.";
@@ -215,6 +219,8 @@ export interface ControllerWork {
   readonly attemptCount: number;
   readonly claimToken?: string;
   readonly leaseExpiresAt?: Date;
+  /** Claim liveness judged by the State store's clock when it read this work. */
+  readonly leaseActive?: boolean;
   readonly completedAt?: Date;
   readonly reasonCode?: string;
   readonly resultData?: Readonly<Record<string, unknown>>;
@@ -226,6 +232,26 @@ export interface ClaimedWork extends ControllerWork {
   readonly state: "claimed";
   readonly claimToken: string;
   readonly leaseExpiresAt: Date;
+  /**
+   * Milliseconds since `createdAt` when the claim was granted or renewed, by the State store's
+   * clock. `createdAt` is on that clock too, so subtracting it from the controller's clock would
+   * shift the age by their skew.
+   */
+  readonly ageMs: number;
+}
+
+/**
+ * Whether a revision was admitted no later than `work` was created: the revisions a stop or
+ * deletion owns. The PostgreSQL store stamps both on its own clock, so controller clock skew
+ * cannot move a running revision past the stop (finding 1195); revisions it admitted before
+ * that fix keep the controller's stamp. Both reads are truncated to milliseconds, and a tie
+ * counts as earlier, so the stop still stops the revision.
+ */
+export function revisionAdmittedBeforeWork(
+  revision: { readonly createdAt: string },
+  work: { readonly createdAt: Date },
+): boolean {
+  return Date.parse(revision.createdAt) <= work.createdAt.getTime();
 }
 
 export interface EnqueueWork {
@@ -537,13 +563,28 @@ export function controllerWorkDeploymentStatus(
   if (work.state === "failed_permanent") {
     return "failed";
   }
-  if (work.state === "claimed") {
-    if (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime()) {
-      return "running";
-    }
-    return "queued";
+  if (controllerWorkLeaseActive(work, now)) {
+    return "running";
   }
   return "queued";
+}
+
+/**
+ * Whether claimed work still holds a live lease. Leases are granted and expired on the
+ * database clock; the controller's clock can disagree with it, so the store's own judgement
+ * wins when it read one, and `now` is only a fallback for stores without a clock.
+ */
+export function controllerWorkLeaseActive(
+  work: Readonly<ControllerWork>,
+  now: Date = new Date(),
+): boolean {
+  if (work.state !== "claimed") {
+    return false;
+  }
+  return (
+    work.leaseActive ??
+    (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime())
+  );
 }
 
 function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {

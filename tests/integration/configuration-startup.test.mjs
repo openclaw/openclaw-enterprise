@@ -358,6 +358,18 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
       /plaintext credential/,
     ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghu_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghs_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghr_notarealtoken123456"),
+      /plaintext credential/,
+    ],
   ]) {
     const configuration = structuredClone(baseline);
     mutate(configuration);

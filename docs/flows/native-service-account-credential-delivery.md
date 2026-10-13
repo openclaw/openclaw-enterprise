@@ -1,6 +1,6 @@
 ---
 created: 2026-08-24
-updated: 2026-10-12
+updated: 2026-10-13
 last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
 ---
 
@@ -38,6 +38,7 @@ graph TD
   OP --> OC
   OC -->|Complete| OB["<b>Consume source</b><br/>Erase Job, Pods, seed"]
   OC -->|Failed| OF["<b>Terminal failure</b><br/>Persist evidence and cleanup"]
+  OP -->|deadline| OF
   OF --> OG["<b>Retire failed revision</b><br/>Resume after restart"]
   OB --> J
   R["Operator provisions protected host env"] --> B
@@ -90,8 +91,7 @@ the Plugin Driver extracts native access and account metadata.
 
 Console calls
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
-without storing credentials. Catalog discovery does not prove authentication;
-startup checks authentication.
+without storing credentials. Discovery does not prove authentication.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
 `authorizeHarnessAuthSource`
@@ -203,8 +203,6 @@ isolate same-UID processes.
 attempts within one monotonic 61-second budget. Only a subprocess `ETIMEDOUT`
 schedules the second, after a one-second timer, timed out at the smaller of
 30 seconds and the remaining budget; an unexplained `SIGKILL` is nonretryable.
-With no termination handler during the delay, stopping the launcher prevents
-the second call.
 
 Embedded OpenClaw consumes the selected provider's native API key and runs one bounded native
 primary-model probe during actual gateway startup, with tools and fallback
@@ -218,8 +216,7 @@ Both runtimes capture native output and hold final failures unready with a fixed
 message. Codex publishes the existing runtime failure only after retry exhaustion or a
 nonretryable result. Readiness polling does not repeat
 provider calls; restart or deployment starts a new bounded check. Probes may
-incur usage charges and check only the primary model; see
-[probe limitations](../reference/harness-execution.md#harness-authentication).
+incur usage charges.
 
 After readiness, the [activation and recovery flow](harness-execution-topology.md#3-publish-safely-and-complete-activation-once)
 completes activation.
@@ -260,15 +257,18 @@ a missing file or changed PVC fails with reconnect required.
 For `Failed`, `oauthBootstrapFailureEvidence` captures bounded Job/Pod identities,
 fixed reasons, scheduling, and actual init/main container exits and timestamps;
 it excludes process output and credentials. Compute throws that evidence with
-the terminal preparation error. In
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`, OCC commits
-failure evidence and exact runtime-retirement work together through
+the terminal preparation error. A Job still pending at the 900 s convergence
+deadline instead fails the candidate's own deployment work with
+`CONVERGENCE_DEADLINE_EXCEEDED`. Either way,
+`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision` commits the
+failure and exact-revision retirement together through
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.enqueueRepositoryCleanup`.
-`ControllerWorker.processRepositoryCleanup` resumes `stopRevision` after restart
-and defers incomplete cleanup, including without repository credentials.
+`ControllerWorker.processRepositoryCleanup` resumes `stopRevision` after restart,
+removing the Job, Pods, and seed but keeping the PVC, and defers incomplete
+cleanup, including without repository credentials.
 The deployment status retains this evidence after cleanup and exposes cleanup's
 separate status and next attempt. Console polls unfinished cleanup even after
-failure. The failed deployment cannot create another Job without a new Deploy.
+failure.
 
 Token brokerage remains deferred. Consumed markers and source seals prevent OCE from restoring or refreshing credentials.
 

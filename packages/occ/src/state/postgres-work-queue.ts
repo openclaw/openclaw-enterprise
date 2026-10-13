@@ -83,12 +83,18 @@ interface WorkRow {
   readonly attempt_count: number;
   readonly claim_token: string | null;
   readonly lease_expires_at: Date | string | null;
+  readonly lease_active?: boolean;
+  readonly age_ms?: number;
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
   readonly result_data: Record<string, unknown> | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
+
+/** The work's age on PostgreSQL's clock, for a claim or renewal to return. */
+const CLAIM_AGE_SQL = (alias: string) =>
+  `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - ${alias}.created_at) * 1000)::double precision AS age_ms`;
 
 const MAX_BACKOFF_MS = 300_000;
 export const PENDING_WORK_PREDICATE = "state IN ('queued', 'claimed')";
@@ -231,6 +237,7 @@ function transferRepositoryCleanupSql(continuingRevision = "false"): string {
       JOIN cleanup_namespaces AS namespace ON namespace.id = source.namespace_id
       -- Credential withdrawal work (agent_target = 'credentials_withdrawn', see
       -- CREDENTIAL_WITHDRAWAL_TARGET) leaves its active revision running, so it owns no cleanup.
+      -- admitted_at and created_at are both on this database's clock (finding 1195).
       WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id
           AND source.agent_target IS NULL)
         OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
@@ -526,6 +533,7 @@ export function asWork(value: unknown): ControllerWork {
     attemptCount: row.attempt_count,
     ...(row.claim_token === null ? {} : { claimToken: row.claim_token }),
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
+    ...(typeof row.lease_active === "boolean" ? { leaseActive: row.lease_active } : {}),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
     ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
     ...(row.result_data === null ? {} : { resultData: Object.freeze({ ...row.result_data }) }),
@@ -536,10 +544,13 @@ export function asWork(value: unknown): ControllerWork {
 
 function asClaimedWork(value: unknown): ClaimedWork {
   const work = asWork(value);
+  const ageMs = asRow(value).age_ms;
   if (
     work.state !== "claimed" ||
     work.claimToken === undefined ||
-    work.leaseExpiresAt === undefined
+    work.leaseExpiresAt === undefined ||
+    typeof ageMs !== "number" ||
+    !Number.isFinite(ageMs)
   ) {
     throw new ScopeViolationError("PostgreSQL returned an invalid claimed controller work row.");
   }
@@ -548,6 +559,7 @@ function asClaimedWork(value: unknown): ClaimedWork {
     state: "claimed" as const,
     claimToken: work.claimToken,
     leaseExpiresAt: work.leaseExpiresAt,
+    ageMs,
   });
 }
 
@@ -892,6 +904,7 @@ export class PostgresWorkQueue {
                -- Excludes credential withdrawal work; see CREDENTIAL_WITHDRAWAL_TARGET.
                AND source.agent_target IS NULL
                AND revision.revision_number <= source_revision.revision_number)
+             -- admitted_at and created_at are both on this database's clock (finding 1195).
              OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
                AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
              OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
@@ -969,7 +982,7 @@ export class PostgresWorkQueue {
                updated_at = clock_timestamp()
            FROM candidate
            WHERE work.idempotency_key = candidate.idempotency_key
-           RETURNING work.*`,
+           RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
           [claimToken, this.maxAttempts, this.leaseDurationMs],
         );
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
@@ -989,14 +1002,14 @@ export class PostgresWorkQueue {
   async heartbeat(claim: WorkClaim): Promise<ClaimedWork | undefined> {
     validateClaim(claim);
     const renewed = await this.client.query(
-      `UPDATE occ.controller_work
+      `UPDATE occ.controller_work AS work
        SET lease_expires_at = clock_timestamp() + $3::double precision * interval '1 millisecond',
            updated_at = clock_timestamp()
        WHERE idempotency_key = $1
          AND state = 'claimed'
          AND claim_token = $2::uuid
          AND lease_expires_at > clock_timestamp()
-       RETURNING *`,
+       RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
       [claim.idempotencyKey, claim.claimToken, this.leaseDurationMs],
     );
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);
@@ -1046,17 +1059,27 @@ export class PostgresWorkQueue {
 
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
     const found = await this.client.query(
-      `SELECT * FROM occ.controller_work WHERE idempotency_key = $1`,
+      `SELECT *, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
+       FROM occ.controller_work WHERE idempotency_key = $1`,
       [nonempty(idempotencyKey, "Controller work idempotency key")],
     );
     return found.rows[0] === undefined ? undefined : asWork(found.rows[0]);
   }
 
-  /** The latest evidence bound to this work item, or the latest with `code` when given. */
+  /**
+   * The latest evidence bound to this work item, or the latest with `code` (one of `code`, for a
+   * list) when given.
+   */
   async findWorkAttempt(
     idempotencyKey: string,
-    code?: string,
+    code?: string | readonly string[],
   ): Promise<ControllerWorkAttempt | undefined> {
+    const codes =
+      code === undefined
+        ? null
+        : (typeof code === "string" ? [code] : [...code]).map((each) =>
+            nonempty(each, "Controller work attempt code"),
+          );
     // A revision can also have maintenance and cleanup work. Only evidence bound
     // to this exact work item can explain its progress; unbound history is unknown.
     const found = await this.client.query(
@@ -1069,13 +1092,10 @@ export class PostgresWorkQueue {
          AND event.kind = 'mutation' AND event.action = 'reconcile'
          AND event.details->>'workId' = work.idempotency_key
          AND event.occurred_at >= work.created_at
-         AND ($2::text IS NULL OR event.details->>'reasonCode' = $2::text)
+         AND ($2::text[] IS NULL OR event.details->>'reasonCode' = ANY($2::text[]))
        WHERE work.idempotency_key = $1
        ORDER BY event.occurred_at DESC, event.id DESC LIMIT 1`,
-      [
-        nonempty(idempotencyKey, "Controller work idempotency key"),
-        code === undefined ? null : nonempty(code, "Controller work attempt code"),
-      ],
+      [nonempty(idempotencyKey, "Controller work idempotency key"), codes],
     );
     const row = found.rows[0] as
       { occurred_at: Date | string; reason_code: string; refusal: string | null } | undefined;

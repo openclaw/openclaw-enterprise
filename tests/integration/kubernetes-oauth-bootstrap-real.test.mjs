@@ -399,6 +399,10 @@ test(
         spec: {
           restartPolicy: "Never",
           automountServiceAccountToken: false,
+          // The inspector runs `node` as PID 1, which ignores SIGTERM, so namespace
+          // cleanup would otherwise wait out the default 30 s grace period before
+          // local-path can remove the claim's volume.
+          terminationGracePeriodSeconds: 0,
           securityContext: {
             runAsNonRoot: true,
             runAsUser: 1000,

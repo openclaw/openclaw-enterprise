@@ -227,6 +227,18 @@
     },
     {
       "rule": "domain-to-implementation",
+      "from": "packages/occ/src/agent-provisioning.ts",
+      "to": "packages/occ/src/state/controller-work.ts",
+      "specifier": "./state/controller-work.ts",
+      "kind": "import",
+      "typeOnly": false,
+      "bindings": ["value:controllerWorkLeaseActive"],
+      "owner": "Work status projection",
+      "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State. Provisioning shares the claim lease judgement with deployment status.",
+      "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
+    },
+    {
+      "rule": "domain-to-implementation",
       "from": "packages/occ/src/index.ts",
       "to": "packages/occ/src/state/controller-work.ts",
       "specifier": "./state/controller-work.ts",

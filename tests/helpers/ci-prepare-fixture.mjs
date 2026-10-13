@@ -212,6 +212,17 @@ if (command === "docker" || command === "podman") {
       finish("2026-09-23T00:00:00Z network plugin is not ready\nTOKEN=do-not-publish-node-token\n");
     }
   }
+  // A hung create leaves the server running k3d's retry loop and the load
+  // balancer created but never started (finding 1174).
+  if (scenario.startsWith("cluster-create-hangs") &&
+      equals(args, ["top", "k3d-" + state.cluster + "-server-0"])) {
+    finish("UID PID PPID CMD\nroot 1 0 /bin/sh /bin/k3d-entrypoint.sh server\n" +
+      "root 1600 1 kubectl uncordon k3d-" + state.cluster + "-server-0\n");
+  }
+  if (scenario.startsWith("cluster-create-hangs") &&
+      equals(args, ["inspect", "--format", "{{json .State}}", "k3d-" + state.cluster + "-serverlb"])) {
+    finish(JSON.stringify({ Status: "created", Running: false, OOMKilled: false, ExitCode: 0 }));
+  }
   const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
     if (scenario === "hung-host-digests") await hang();
@@ -579,6 +590,7 @@ if (command === "k3d") {
     if (scenario === "cluster-create-hangs" || (hangOnce && !state.createHung)) {
       state.createHung = true;
       commitState();
+      process.stderr.write("\u001b[36mINFO\u001b[0m[0002] Starting node 'k3d-" + args[2] + "-server-0'\n");
       // The escaped case ignores SIGTERM and its descendant leaves the group, so
       // only SIGKILL stops k3d and nothing can close the held pipes.
       const escaped = scenario === "cluster-create-hangs-escaped";

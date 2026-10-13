@@ -102,7 +102,9 @@ principal. The key never reaches another Namespace, IAM policy, or key issuance.
 sets `OCC_SERVICE_KEY_FILE` to it and `OCC_NAMESPACE` to the Namespace. When the
 key is no longer needed, run `occ service-key revoke <key-id>` (the ID printed
 at creation) or delete its AccessBindings. Disabling the member's console
-account does not end the key, so revoke it when they leave.
+account does not end the key, so revoke it when they leave. OCE does not record
+whom a key was issued for, so start each key's `--name` with the person's name, as
+`nora-laptop` does: [Remove a person](topics/iam.md#remove-a-person) finds their keys by it.
 
 ## Choose your next task
 

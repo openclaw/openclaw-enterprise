@@ -20,6 +20,7 @@ import {
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -718,6 +719,68 @@ test(
 );
 
 test(
+  "provisioning status judges claim liveness by the database clock, not the controller clock",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId } = admitted.data.provisioning;
+    const statusPath = `/namespaces/${namespace.id}/agents/provision/${encodeURIComponent(workId)}`;
+    const apiStatus = async () => {
+      const observed = await fixture.request("GET", statusPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status;
+    };
+    // The real State read and status derivation with a controller clock skewed far from
+    // PostgreSQL's; the controller route above runs with the real clock (the composed app
+    // takes no clock option).
+    const statusAt = (instant) =>
+      fixture.state.read(async (state) => {
+        const found = await state.provisioning.findWithWork(workId);
+        assert.notEqual(found?.work, undefined, "the provisioning job must join its queue row");
+        return provisioningProgress(found.record, found.work, new Date(instant)).status;
+      });
+    const setLease = async (interval) => {
+      const updated = await fixture.pool.query(
+        `UPDATE occ.controller_work
+         SET lease_expires_at = clock_timestamp() + $2::interval
+         WHERE idempotency_key = $1 AND state = 'claimed'`,
+        [workId, interval],
+      );
+      assert.equal(updated.rowCount, 1, "test must move the exact claimed lease");
+    };
+
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    try {
+      assert.equal(await apiStatus(), "running");
+      // A controller clock ahead of the lease still reports the live claim.
+      assert.equal(await statusAt("2999-01-01T00:00:00Z"), "running");
+
+      // An expired claim is waiting for a new worker, not running.
+      await setLease("-1 second");
+      assert.equal(await apiStatus(), "queued");
+      // A controller clock behind the lease still reports the expired claim as waiting.
+      assert.equal(await statusAt("1970-01-01T00:00:00Z"), "queued");
+    } finally {
+      // Cancel under a live lease so no later worker in this database recovers the job.
+      await setLease("10 minutes");
+      const cancelled = await fixture.state.transact((unit) =>
+        unit.provisioning.cancel(claim, {
+          code: "PROVISIONING_CANCELLED",
+          message: "lease liveness test completed without worker dispatch",
+        }),
+      );
+      assert.equal(cancelled.status, "cancelled");
+    }
+  },
+);
+
+test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
@@ -881,6 +944,94 @@ test(
     );
     assert.equal(work.rowCount, 1);
     assert.equal(work.rows[0].state, "queued");
+  },
+);
+
+// Finding 1145: the request refuses repository bindings the Compute topology cannot deliver.
+// Work it already accepted is rechecked by the worker and retry until the Agent exists, so a
+// topology change after admission fails the work before it creates the Agent.
+test(
+  "a repository topology change before the worker runs fails the provisioning work before its Agent",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const initial = await createFixture(context);
+    const namespace = await initial.bootstrapNamespace();
+    const repoDriver = new GitHubRepoDriver(
+      {
+        id: "provisioning-repositories",
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: "/unused/provisioning/control.sock",
+        }),
+        drivers: { repo: "provisioning-repo" },
+      },
+      {
+        version: 1,
+        backendId: "provisioning-repositories",
+        providerInstanceId: "provisioning-github",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "project",
+            repositoryId: "789",
+            repository: "example/project",
+            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read"] }],
+          },
+        ],
+      },
+      { sessionDurationSeconds: 600 },
+    );
+    const topology = createTestKubernetesComputeDriver("provisioning-topology-change", {
+      repositoryCredentials: true,
+    });
+    const computeDriver = initial.computeDriver;
+    computeDriver.validateRepositoryCredentials =
+      topology.validateRepositoryCredentials.bind(topology);
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver: initial.configurationDriver,
+      secretDriver: initial.secretDriver,
+      repoDriver,
+    });
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = {
+      ...provisioningBody(namespace.id, secrets, {
+        repositoryAccess: {
+          defaultProfile: "git-read",
+          repositories: [{ repositoryRef: "project" }],
+        },
+      }),
+      pluginApprovers: [],
+    };
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The topology now cannot deliver repository credentials (as with a Sandbox selected).
+    computeDriver.validateRepositoryCredentials = () => {
+      throw new Error("synthetic topology refusal");
+    };
+    await fixture.startWorker();
+    const failed = await waitFor("the worker to refuse the repository topology", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.progress.error === undefined ? undefined : row;
+    });
+    await fixture.stopWorker();
+    // The status keeps the fixed text; retry answers Agent create's 409.
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.progress.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    });
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    const message =
+      "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
+    const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 409, JSON.stringify(retried.body));
+    assert.equal(retried.body.error.code, "RESOURCE_CONFLICT");
+    assert.equal(retried.body.error.message, message);
   },
 );
 

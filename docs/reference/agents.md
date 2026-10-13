@@ -67,7 +67,7 @@ This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 `error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
-- `queued`: no live claim, including after lease expiry.
+- `queued`: no live claim; PostgreSQL's clock judges lease expiry.
 - `running`: a live worker claim.
 - `succeeded`: original work activated the revision or found it already active.
 - `failed`: terminal failure or completion without activation.
@@ -77,7 +77,7 @@ allowlisted `code`, fixed `message`, and `at`; repeated deferrals record once,
 except [refused-candidate stops](agents/deployment.md#pending-deployment-progress).
 Null means no bound evidence. Maintenance and cleanup
 results are excluded. `progress.nextAttemptAt` is the earliest queued
-eligibility, not a promised start; it is null while claimed. Terminal `progress`
+eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
 Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.

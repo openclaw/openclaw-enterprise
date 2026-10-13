@@ -103,7 +103,10 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer active revision: the worker
-marks it superseded without calling Compute. Sibling Agents have independent
+marks it superseded without calling Compute. A stop or deletion owns the
+revisions admitted before it was requested. PostgreSQL stamps both times on
+its own clock, so controller clock skew cannot exempt a running revision.
+Sibling Agents have independent
 queue lanes, while revisions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
 but rejects harness bindings for Agent deployment; manual
@@ -200,7 +203,8 @@ pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from the original operation creation time. Exceeding it fails the operation with
+measured from the original operation creation time on PostgreSQL's clock, so
+controller clock skew cannot move it. Exceeding it fails the operation with
 `CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
 credential rejection fails the deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of

@@ -525,6 +525,21 @@ test(
       render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
       /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
+    for (const cidr of [
+      "not-a-cidr",
+      "10.1.1.1/33",
+      "0.0.0.0/0",
+      "12345::/64",
+      "::ffff:999.1.2.3/64",
+    ]) {
+      await assert.rejects(
+        render({ ...execution, "executionCluster.apiCidrs[0]": cidr }),
+        /executionCluster\.apiCidrs/,
+        cidr,
+      );
+    }
+    await render({ ...execution, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
+    await render({ ...execution, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
     // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
     // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
@@ -656,6 +671,11 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
   for (const port of ["0", "010", "65536", "9.5"]) {
     await assert.rejects(render({ "api.port": port }), /api\.port must be an integer TCP port/);
   }
+  // --set parses this as a float. --set-string keeps the digits, which used to pass Sprig int overflow.
+  await assert.rejects(
+    render({}, { strings: { "api.port": "99999999999999999999" } }),
+    /api\.port must be an integer TCP port/,
+  );
   const objects = await resources((await render({ "api.port": "8081" })).stdout);
   const container = objects.find(
     (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
@@ -676,6 +696,51 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
     8081,
   );
 });
+
+test(
+  "the chart refuses cluster and execution API ports NetworkPolicy cannot use",
+  tooling,
+  async () => {
+    for (const port of ["0", "010", "65536", "9.5"]) {
+      await assert.rejects(
+        render({ "cluster.port": port }),
+        /cluster\.port must be an integer TCP port/,
+      );
+    }
+    const executionValues = {
+      "executionCluster.enabled": "true",
+      "executionCluster.apiKubeconfigSecretName": "execution-api",
+      "executionCluster.workerKubeconfigSecretName": "execution-worker",
+      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    };
+    for (const port of ["0", "010", "65536", "9.5"]) {
+      await assert.rejects(
+        render({ ...executionValues, "executionCluster.apiPort": port }),
+        /executionCluster\.apiPort must be an integer TCP port/,
+      );
+    }
+    await assert.rejects(
+      render({}, { strings: { "cluster.port": "9223372036854775808" } }),
+      /cluster\.port must be an integer TCP port/,
+    );
+    await assert.rejects(
+      render(
+        { ...executionValues },
+        { strings: { "executionCluster.apiPort": "99999999999999999999" } },
+      ),
+      /executionCluster\.apiPort must be an integer TCP port/,
+    );
+    const objects = await resources(
+      (await render({ ...executionValues, "executionCluster.apiPort": "6443" })).stdout,
+    );
+    const policy = objects.find(
+      (item) =>
+        item.kind === "NetworkPolicy" &&
+        item.metadata.name === "openclaw-enterprise-execution-api-egress",
+    );
+    assert.equal(policy.spec.egress[0].ports[0].port, 6443);
+  },
+);
 
 function routeNamespaceLabel(namespace, gatewayName) {
   return createHash("sha256").update(`${namespace}/${gatewayName}`).digest("hex").slice(0, 12);
@@ -2153,6 +2218,7 @@ test(
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "0.0.0.0/0" }, /explicit IPv4 CIDRs/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "999.1.1.1/32" }, /invalid IPv4 address/],
+      [{ "repositoryCredentials.upstreamCidrs[0]": "192.168.001.10/32" }, /explicit IPv4 CIDRs/],
       ...[
         "external.example.com",
         "git.other-namespace.svc",
@@ -2877,6 +2943,27 @@ test(
   },
 );
 
+test(
+  "gatewayRouting.remoteNodeCidrs rejects invalid and every-address ranges",
+  tooling,
+  async () => {
+    for (const override of [
+      { "gatewayRouting.remoteNodeCidrs[0]": "not-a-cidr" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
+    ]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, ...override }),
+        /gatewayRouting\.remoteNodeCidrs/,
+      );
+    }
+    for (const cidr of ["10.0.0.1/32", "0.0.0.0/0", "::/64", "::ffff:10.0.0.0/120"]) {
+      await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
+    }
+  },
+);
+
 test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
   const optionalFeatures = {
     ...repositoryCredentialValues,
@@ -3246,6 +3333,11 @@ test(
         "GitHub sign-in with an invalid egress address",
         { ...githubLoginValues, "auth.github.egressCidrs[0]": "140.82.312.0/20" },
         /invalid IPv4 address/,
+      ],
+      [
+        "GitHub sign-in with a leading-zero egress octet",
+        { ...githubLoginValues, "auth.github.egressCidrs[0]": "140.82.112.08/20" },
+        /explicit IPv4 CIDRs/,
       ],
       [
         "GitHub sign-in with a /0 egress entry",
@@ -3908,12 +4000,49 @@ test(
         "invalid database CA key",
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
       ],
+      [
+        "overlong database CA key",
+        { "database.caSecretName": "occ-rds-ca", "database.caKey": "a".repeat(254) },
+        /database\.caKey must be a Kubernetes Secret key/,
+      ],
       ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
       ["reserved application database Secret key", { "database.appUrlKey": "." }],
       ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
       ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
       ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
+      [
+        "invalid installation startup Secret key",
+        { "installation.key": "bad/key" },
+        /installation\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved installation startup Secret key",
+        { "installation.key": "." },
+        /installation\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid execution kubeconfig Secret key",
+        {
+          "executionCluster.enabled": "true",
+          "executionCluster.apiKubeconfigSecretName": "execution-api",
+          "executionCluster.workerKubeconfigSecretName": "execution-worker",
+          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+          "executionCluster.kubeconfigKey": "bad/key",
+        },
+        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved execution kubeconfig Secret key",
+        {
+          "executionCluster.enabled": "true",
+          "executionCluster.apiKubeconfigSecretName": "execution-api",
+          "executionCluster.workerKubeconfigSecretName": "execution-worker",
+          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+          "executionCluster.kubeconfigKey": "..kube",
+        },
+        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
+      ],
       [
         "invalid Better Auth signing Secret key",
         { "auth.secretKey": "bad/key" },

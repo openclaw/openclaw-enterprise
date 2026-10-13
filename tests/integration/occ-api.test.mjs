@@ -5774,6 +5774,15 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
       "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
     ],
+    [
+      {
+        ...model,
+        models: {
+          providers: { openai: { request: { headers: { Authorization: "Bearer ${TOKEN}" } } } },
+        },
+      },
+      "Configuration setting models.providers.openai.request.headers must not set a credential header (authorization, any key, token, secret, password or cookie): model credentials come from the Agent's Harness authentication binding.",
+    ],
   ]) {
     const refused = await injectedRequest(
       fixture.app,
@@ -7411,6 +7420,48 @@ test("runtime auth admits SSH revisions without source permissions but retains d
     effect: "deny",
   });
   assert.equal((await controller.request("POST", `${path}/deploy`)).status, 403);
+});
+
+test("SSH Compute names a Harness authentication method other than runtime at Agent save", async () => {
+  const computeDriver = new SshComputeDriver({
+    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+    hosts: { "auth-method": { address: "127.0.0.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/index.js",
+      user: "openclaw",
+      root: "/tmp/ssh-runtime-test",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  });
+  const controller = await configuredController({ computeDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "auth-method");
+  await controller.fixture.platformState.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "model", value: "synthetic-model" },
+  });
+  assert.equal(secret.status, 201, JSON.stringify(secret.body));
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "API key Agent",
+      configurationId: configuration.id,
+      harnessAuth: { method: "api_key", source: secret.data.ref },
+    },
+  });
+  assert.equal(created.status, 400, JSON.stringify(created.body));
+  assert.equal(created.body.error.code, "INVALID_REQUEST");
+  assert.equal(
+    created.body.error.message,
+    "Agent setting harnessAuth.method must be runtime for embedded OpenClaw on SSH Compute: change harnessAuth.",
+  );
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {

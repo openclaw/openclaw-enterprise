@@ -9,7 +9,6 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   newRuntimeLogViewId,
-  runtimeLogLineHash,
   runtimeLogTimeKey,
   validRuntimeLogFrontierTime,
   type RuntimeLogCursorBinding,
@@ -17,6 +16,7 @@ import {
   type RuntimeLogCursorPosition,
 } from "./cursor.ts";
 import {
+  createRuntimeLogSanitizeMemo,
   runtimeLogGap,
   runtimeLogEvidence,
   sanitizeRuntimeLogChunk,
@@ -144,10 +144,12 @@ function validChunk(value: unknown, source: RuntimeLogSourceId): AgentRuntimeLog
   return chunk;
 }
 
-function containerPrefixHash(lines: AgentRuntimeLogChunk["lines"], count: number): string {
-  return runtimeLogLineHash(
-    JSON.stringify(lines.slice(0, count).map(({ time, raw }) => [time, raw])),
-  );
+function containerPrefixHash(
+  codec: RuntimeLogCursorCodec,
+  lines: AgentRuntimeLogChunk["lines"],
+  count: number,
+): string {
+  return codec.lineHash(JSON.stringify(lines.slice(0, count).map(({ time, raw }) => [time, raw])));
 }
 
 export interface ReadRuntimeLogPageInput {
@@ -360,7 +362,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     checkpoint.tailLines === query.tailLines &&
     checkpoint.truncated === chunk.truncated &&
     checkpoint.seen <= completeLines.length &&
-    checkpoint.hash === containerPrefixHash(completeLines, checkpoint.seen);
+    checkpoint.hash === containerPrefixHash(codec, completeLines, checkpoint.seen);
   const checkpointLost = checkpoint !== undefined && !replacedDuringRead && !checkpointValid;
   // A moving timed window resumes from delivered progress, not the pre-cut baseline.
   // A changed tail or ambiguous single-time replacement still takes a fresh snapshot.
@@ -384,7 +386,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   const dedupResume =
     sameStream && !replacedDuringRead && baseline?.lastTime != null ? baseline : undefined;
   let eligible = completeLines.map((line, index) => ({ line, index }));
-  const windowHash = containerPrefixHash(completeLines, completeLines.length);
+  const windowHash = containerPrefixHash(codec, completeLines, completeLines.length);
   const evidence = runtimeLogEvidence(completeLines);
   const untimedPrefix = completeLines.every(({ time }) => time === null);
   // A line longer than the byte limit fills the page alone; its leading time is intact.
@@ -462,9 +464,8 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       ) &&
       dedupResume.lastHashes.every(
         (hash, index) =>
-          runtimeLogLineHash(
-            group[dedupResumeCount - dedupResume.lastHashes.length + index]!.raw,
-          ) === hash,
+          codec.lineHash(group[dedupResumeCount - dedupResume.lastHashes.length + index]!.raw) ===
+          hash,
       );
     let groupIndex = 0;
     eligible = eligible.filter(({ line }) => {
@@ -481,7 +482,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       }
       // Equal text at the frontier can be a new occurrence. Consume only the
       // occurrences delivered before this poll, including repeated hashes.
-      const hash = runtimeLogLineHash(line.raw);
+      const hash = codec.lineHash(line.raw);
       const count = remaining.get(hash) ?? 0;
       if (count === 0) {
         // An incomplete tail or full cursor may have omitted earlier copies, and a
@@ -511,6 +512,8 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         (progressResume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
           ? progressResume.lastHashes.length
           : undefined));
+  // Every build sanitizes a prefix of `lines`; each line is classified and redacted once.
+  const memo = createRuntimeLogSanitizeMemo();
   return boundedRuntimeLogPage(lines.length, (end) => {
     input.signal.throwIfAborted();
     const delivered = lines.slice(0, end);
@@ -596,6 +599,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         evidence: remaining.slice(0, end).map(({ index }) => evidence.masks.get(index)),
         withheld: remaining.slice(0, end).map(({ index }) => evidence.withheld.get(index)),
       },
+      memo,
     );
     let pemAfterTime = pemPrior?.pemAfterTime ?? null;
     if (delivered.length > 0) {
@@ -671,7 +675,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       lastTime = last.time;
       for (const line of delivered) {
         if (line.time !== null && compareRuntimeLogTime(line.time, lastTime!) === 0) {
-          lastHashes.push(runtimeLogLineHash(line.raw));
+          lastHashes.push(codec.lineHash(line.raw));
           if (frontierCount !== undefined) {
             frontierCount += 1;
           }

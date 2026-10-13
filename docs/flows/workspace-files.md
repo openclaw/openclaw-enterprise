@@ -101,8 +101,11 @@ exact-Agent directory and remote helper. Delivery does not put document strings
 in container arguments or environment values. Dedicated Harness startup must
 also verify completion before execution. Unsupported workspace placement fails
 rather than writing outside managed storage. Provider-owned Sandbox startup
-cannot carry this init container, so it rejects workspace setup instead of
-dropping initialization.
+cannot carry this init container, so Agent save, provisioning and deployment
+refuse initial workspace files in a Sandbox with a `409` before staging them,
+or before deploying staged files
+([Compute admission](../reference/drivers/compute-admission.md)); preparation
+keeps the same refusal instead of dropping initialization.
 
 The runner validates identity, paths, OpenClaw `2026.9.8`, and the rendered
 template digest against Console defaults; defaults identities must match, and
@@ -212,15 +215,16 @@ Other Harnesses are replaced, restarting their Gateway.
   limiting or pairing) reports `GATEWAY_UNAUTHORIZED` at once, and activation
   fails with `AGENT_GATEWAY_UNAUTHORIZED`.
   Otherwise the ID is set at Gateway start; losing it fails.
-- The Gateway's own `/home/node/workspace` stays empty. It withholds from Codex
-  OpenClaw tools that act on it or run commands in the Gateway Pod
-  (`ls`, `read`, `write`, `edit`, `apply_patch`, `exec`, `process`,
-  `gateway_exec`, `gateway_process`, `terminal`), and `openclaw`, whose
-  configuration changes could drop this list, through `codexDynamicToolsExclude`,
-  keeping owner entries. It sets `cron.triggers.enabled: false`, because stream
-  schedules and trigger scripts run in the Gateway; timed automations still run
-  Codex turns. Codex's native tools act in the Harness; the file-transfer tools
-  reach it through the node.
+- The Gateway's own `/home/node/workspace` stays empty. Through
+  `codexDynamicToolsExclude` (keeping owner entries) Codex loses OpenClaw tools
+  acting in the Gateway Pod (`ls`, `read`, `write`, `edit`, `apply_patch`,
+  `exec`, `process`, `gateway_exec`, `gateway_process`, `terminal`, `portal`) or
+  change the Gateway with operator authority (`openclaw`, `plugins`, `gateway`
+  self-update). Stream schedules and trigger scripts run in the Gateway, so
+  `cron.triggers.enabled` is `false`; timed automations still run Codex turns.
+  The memory flush run gets Gateway-local `read` and `write`, so
+  `agents.defaults.compaction.memoryFlush.enabled` is `false`. Codex's native
+  tools act in the Harness; file-transfer reaches it through the node.
 - The Harness reaches the model itself, so the Gateway's `codex` and `openai`
   provider rows keep only their models: overrides (`request`, `headers`,
   `params`, `localService`) are dropped, and an authored transport (always for
@@ -234,11 +238,11 @@ Other Harnesses are replaced, restarting their Gateway.
   [event name](common-logging.md#7-collector-exports-only-operational-classes).
   Deployment admission rejects the shapes it cannot rewrite: a non-list
   `codexDynamicToolsExclude`, a non-object Codex plugin `config`, `cron`,
-  `cron.triggers`, `models` or `models.providers`. The deploy request fails
-  with `400 INVALID_REQUEST` naming the setting path, and no revision is
-  created. A provider row that is not an object, or whose `models` is not a
-  list of catalog entries for the Agent's configured models, is refused earlier by OCC's
-  model check, also `400 INVALID_REQUEST` and naming the setting path.
+  `cron.triggers`, `models`, `models.providers`, or a non-object on the
+  `agents.defaults.compaction.memoryFlush` path. The deploy fails with
+  `400 INVALID_REQUEST` naming the setting path, and no revision is created.
+  OCC's model check refuses earlier, with the same error, a provider row that is
+  not an object or whose `models` is not a catalog list for the Agent's models.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
   roots for previews, browsing, bootstrap and outputs. Symlinks are not followed;
   explicit policies remain authoritative.
@@ -356,6 +360,8 @@ replays it. The native client closes in the operation's cleanup path.
 
 ## Changelog
 
+- 2026-10-12 22:30: Initial workspace files in a Sandbox are refused at save with a `409`. (fix-1144-1145b - 8aa391300)
+
 - 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
 
 - 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
@@ -363,19 +369,5 @@ replays it. The native client closes in the operation's cleanup path.
 - 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
 
 - 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
-
-- 2026-10-04 00:40: Fail activation at once when the Gateway refuses its own SDK connection as unauthorized. (f351-gateway-unauthorized)
-
-- 2026-10-01 15:11: Query Gateway workspace binding state through bounded SDK calls. (authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c - 521549df)
-
-- 2026-10-01 11:27: Authorize dedicated Skill source trees and lifecycle metadata in the default node policy. (authoring-run/944b9f5c-dd07-45f4-8179-ed96b2ba3e79 - 836a88e048dc79dfb42066fd0cf868e7405a2f98)
-
-- 2026-09-30 16:29: Require RWO for new and reused Harness claims, including final deletion. (authoring-run/e062d2c6-e51f-42eb-8046-fd6ec6d6b3c4 - 4baeb8f6d21ff0d73102e0800c4e6cc0ed6a6366)
-
-- 2026-09-29 08:09: Align the documented workspace version. (authoring-run/5e3ebbae-97b8-4709-8c03-6a032657e102 - 395c735c3915135e4d5fe533041b3d2c04e995ea)
-
-- 2026-09-28 21:47: Defer enrollment checks until Gateway readiness. (authoring-run/1b67a5da-eea7-4eb4-a91f-38abd1fb5792 - 1365d9b33eec2de2452bd3142f57a1729cccd559)
-
-- 2026-09-27 05:17: Give native workspace initialization the Gateway resource budget. (01a0cf72-6985-7712-ba92-d8cc32470f24 - c0f792d5b92e2dee596711654784759d327e0817)
 
 [Agent workspace files documentation history](workspace-files/history.md) preserves the older dated entries.

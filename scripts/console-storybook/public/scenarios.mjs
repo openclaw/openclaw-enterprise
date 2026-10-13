@@ -565,6 +565,16 @@ export const scenarios = {
     description:
       "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
   },
+  recoveryOnlyProviderUnavailable: {
+    group: "Pages/Sign in",
+    name: "Recovery-only provider outage",
+    path: "/console/?authError=github&authReason=provider-unavailable",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",
@@ -2902,7 +2912,7 @@ export const scenarios = {
       "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
     steps: [
       "Read the failing oauth-bootstrap exit status beside the successful init container.",
-      "Wait for cleanup to change from pending to completed; the deployment must still show failed.",
+      "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
     ],
   },
   agentsDeploymentDenied: {
@@ -4175,6 +4185,28 @@ export const scenarios = {
     ],
     description:
       "An uncertain write blocks retry until Reload lets the reader inspect current content.",
+  },
+  workspaceMissingReadback: {
+    group: "Components/Workspace",
+    name: "Missing file after uncertain create",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      { suffix: "/AGENTS.md", method: "PUT", status: 503, once: true },
+    ],
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "# Interrupted first create" },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
   },
   deletionConfirm: {
     group: "Components/Deletion",

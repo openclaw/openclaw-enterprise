@@ -139,8 +139,8 @@ gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
 and does not satisfy the per-Agent production requirement below.
 
 Optional readiness observes a Service and Pods in the OCC namespace; a paired
-Gateway normally uses an explicit Backend `endpoint`. Timeouts and polling
-intervals must be positive safe integers. Development sets `startupDelayMs` to
+Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
+positive `timeoutMs`. Development sets `startupDelayMs` to
 30 seconds because v0.1.3-pre.2 exposes its service before the process listens.
 
 Install the OpenShell gateway separately. Required `gateway.workspaceMode`
@@ -207,7 +207,7 @@ configuration before OCC validates and freezes the revision:
 Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's outer
 boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
 Revisions admitted before #2079 lack the reviewer; deploy those Agents again
-([notice](../../guides/deploy/breaking-changes.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
+([notice](../../guides/deploy/breaking-changes-archive.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
