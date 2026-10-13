@@ -109,9 +109,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
+  // The API names the Agent's own principal and the grant it lacks; the console shows that.
   await page
     .getByRole("alert")
-    .filter({ hasText: /Deployment denied.*selected Secrets/ })
+    .filter({
+      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+    })
     .waitFor();
   assert.equal(await deploy.isEnabled(), true);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
@@ -150,7 +153,8 @@ test("draft Agent offers deployment without a generated-credential step", async 
 });
 
 test("active Agent can deploy the current saved draft as a new version", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  // The draft enables Slack, which deployment admits only with an Installation channel runtime.
+  const fixture = await createConsoleAppFixture(t, { channelRuntime: true });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent redeployment", { ready: true });
   const agent = await fixture.createAgent(
@@ -640,6 +644,77 @@ test("missing Slack credential fields require both Secret references before savi
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+});
+
+test("Credentials shows issued-account denial only while that source is selected", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Issued-account feedback", { ready: true });
+  // Seed an issued account's stored result; listing and source selection still use the real app.
+  const account = await fixture.controller.transact(async (state) => {
+    const created = await state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Saved issued account",
+    });
+    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
+      kind: "access_token",
+      secretRef: { name: "issued-account-feedback-fixture", key: "token" },
+    });
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Issued-account Agent",
+    nativeValues("issued-account-feedback", { harnessId: "codex" }),
+    {
+      executionMode: "dedicated",
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const accountsPath = `/namespaces/${namespace.id}/service-accounts`;
+  const restriction = {
+    id: "deny-issued-account-namespace-read",
+    namespaceId: namespace.id,
+    resourceKind: "namespace",
+    resourceId: namespace.id,
+    action: "read",
+    effect: "deny",
+  };
+  // Namespace access changes after Console admission. Native IAM must produce the list's 403;
+  // denied ServiceAccount reads alone would instead filter the collection to an empty 200.
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === accountsPath) {
+      fixture.policy.restrictions.push(restriction);
+    }
+  });
+  const deniedList = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === accountsPath,
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  assert.equal((await deniedList).status(), 403);
+  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+  const feedback = page.getByText(/Service accounts unavailable\. Access denied/);
+  const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
+  await feedback.waitFor();
+  assert.equal(await issuedAccount.inputValue(), account.id);
+  assert.equal(await issuedAccount.isDisabled(), true);
+
+  // Other methods remain usable without presenting the issued-account permission error.
+  const method = page.getByLabel("Authentication source", { exact: true });
+  for (const source of ["api_key", "codex_pat", "runtime"]) {
+    await method.selectOption(source);
+    assert.equal(await feedback.isVisible(), false);
+  }
+  await method.selectOption("service_account");
+  assert.equal(await feedback.isVisible(), true);
+  assert.equal(await issuedAccount.inputValue(), account.id);
+  assert.equal(await issuedAccount.isDisabled(), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 test("operator-managed console binding saves and deploys without a managed credential gate", async (t) => {

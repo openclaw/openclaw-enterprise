@@ -82,6 +82,23 @@ and verifies certificate renewal without restarting OCC.
 The ordinary [native-runtime suite](kubernetes.md#kubernetes-model-turns-and-secrets) leaves this additional routing case unselected. The earlier Docker manual-proxy proof has been removed because
 Docker does not implement automatic private Agent routes.
 
+## Native workspace identity
+
+Prepare native runtime and Envoy images, then set `OCC_TEST_RUNTIME_IMAGE` and
+`OCC_TEST_WORKSPACE_ENVOY_IMAGE` before running:
+
+```sh
+node --test tests/integration/workspace-files-native.test.mjs
+```
+
+Selecting either image without the other fails. This case runs the development
+OCC API/state fixture, production workspace composition/client, real Envoy data
+plane and pinned native Gateway. It verifies sole-roster file get/set, main and
+explicit-roster controls, native grant siblings and independent disk readback,
+with no model calls. It does not qualify Gateway API policies, a Kubernetes
+deployment, PostgreSQL or worker execution. Hosted runtime startup preparation
+supplies both images and requires the case to pass without skips.
+
 ## Native Gateway sharing
 
 Prepare `gateway-routing`, then run `native-admin-k3d-real.test.mjs`. Its embedded sharing case checks

@@ -80,6 +80,12 @@ case checks both peer-loss directions, retained token reuse, token rotation,
 replacement of a healthy gateway holding a stale token, and preservation of
 foreign-owned same-name containers and their siblings.
 
+The suite also exercises Namespace cleanup through the real Driver and engine.
+It disconnects an inert owned container and removes its network externally, then
+requires Namespace deletion to remove the container and workspace volume while
+preserving a sibling Namespace. It also checks ordinary and repeated deletion.
+This cleanup case uses the selected Node base image without building or pulling.
+
 This is Driver regression coverage without an Agent authentication binding. It
 does not pass through current OCC Agent admission or prove genuine OpenClaw,
 Codex, model calls, or the Compose control plane. The authentication support

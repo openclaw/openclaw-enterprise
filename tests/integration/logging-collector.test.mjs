@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -975,10 +975,12 @@ test(
     const agentId = `agt_${randomUUID()}`;
     const stopWorkId = `agent:${agentId}:reconcile:stopped:${randomUUID()}`;
     const deleteWorkId = `agent:${agentId}:reconcile:deleted`;
+    const provisioningWorkId = `agent-provisioning:${randomBytes(16).toString("hex")}`;
     const withdrawalWorkId = `agent_revision:rev_${randomUUID()}:reconcile:credentials_withdrawn`;
     const cases = [
       { operation: "agent.stop", workId: stopWorkId },
       { operation: "agent.delete", workId: deleteWorkId },
+      { operation: "work.reconcile", workId: provisioningWorkId },
       {
         operation: "agent_revision.credential_withdrawal",
         workId: `${withdrawalWorkId}:${randomUUID()}`,
@@ -1344,6 +1346,17 @@ test(
                 plane: "execution",
                 kubernetesStatus: 403,
               }),
+              // A dependency 503's class, message and causes stay in local logs.
+              line({
+                severity: "WARN",
+                event: "http.dependency_unavailable",
+                requestId,
+                method: "POST",
+                route: `/api/${canary}`,
+                errorClass: "DependencyUnavailableError",
+                message: `The Kubernetes Secret create failed ${canary}.`,
+                causes: [{ errorClass: "ApiException", code: 500 }],
+              }),
               // A failed audit write keeps the Agent's IDs; the error stays local.
               line({
                 severity: "WARN",
@@ -1462,6 +1475,7 @@ test(
           "event.name": "agent_runtime_credentials.cluster_denied",
           "request.id": requestId,
         }),
+        api("WARN", { "event.name": "http.dependency_unavailable", "request.id": requestId }),
         api("WARN", {
           "event.name": "native_admin.websocket_audit_failed",
           "occ.namespace.id": namespaceId,

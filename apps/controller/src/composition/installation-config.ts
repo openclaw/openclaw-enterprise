@@ -7,6 +7,7 @@ import type {
   ComputeDriver,
   ConfigurationDriver,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
   DriverImplementation,
   IAMDriver,
   Identity,
@@ -63,6 +64,7 @@ import {
   OpenShellCredentialGatewayDriver,
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
 
 import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
 
@@ -97,6 +99,7 @@ export interface InstallationStartupConfiguration {
     readonly secret: SelectedDriverConfiguration;
     readonly sandbox?: SelectedDriverConfiguration;
     readonly credential_gateway?: SelectedDriverConfiguration;
+    readonly credential_refresh?: SelectedDriverConfiguration;
     readonly plugin?: SelectedDriverConfiguration;
     readonly service_account?: { readonly id: string };
     readonly repo?: SelectedDriverConfiguration;
@@ -120,6 +123,7 @@ export interface InstallationRuntimeDrivers {
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
+  readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly pluginDriver?: PluginDriver;
   readonly repoDriver?: RepoDriver;
   readonly repositoryReceipt?: Readonly<{
@@ -281,6 +285,7 @@ function backendConfiguration(
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
   credentialGatewayId: string | undefined,
+  credentialRefreshId: string | undefined,
 ): readonly BackendDefinition[] {
   const backends = validateBackendDefinitions(value ?? []);
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
@@ -288,6 +293,9 @@ function backendConfiguration(
   }
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
     throw new Error("drivers.repo requires an owning backend entry with type github.");
+  }
+  if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
+    throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
   }
   if (
     credentialGatewayId !== undefined &&
@@ -303,6 +311,12 @@ function backendConfiguration(
       if (backend.drivers.credential_gateway !== credentialGatewayId) {
         throw new Error(
           `backend[${backend.id}].drivers.credential_gateway must match the selected drivers.credential_gateway.id.`,
+        );
+      }
+      // Refresh state lives on the gateway's provider record, so both roles share this Backend.
+      if (backend.drivers.credential_refresh !== credentialRefreshId) {
+        throw new Error(
+          `backend[${backend.id}].drivers.credential_refresh must match the selected drivers.credential_refresh.id.`,
         );
       }
       continue;
@@ -354,6 +368,7 @@ function selected(
     | "secret"
     | "sandbox"
     | "credential_gateway"
+    | "credential_refresh"
     | "plugin"
     | "repo",
   implementation: string,
@@ -463,6 +478,7 @@ export async function loadInstallationConfiguration(options: {
       "secret",
       "sandbox",
       "credential_gateway",
+      "credential_refresh",
       "plugin",
       "service_account",
       "repo",
@@ -498,11 +514,23 @@ export async function loadInstallationConfiguration(options: {
       OpenShellCredentialGatewayDriver,
     );
   }
+  let credentialRefresh: SelectedDriverConfiguration | undefined;
+  if (drivers.credential_refresh !== undefined) {
+    const selection = object(drivers.credential_refresh, "drivers.credential_refresh");
+    closed(selection, ["id", "configuration"], "drivers.credential_refresh");
+    credentialRefresh = selected(
+      selection,
+      "credential_refresh",
+      "openshell",
+      OpenShellCredentialRefreshDriver,
+    );
+  }
   const backends = backendConfiguration(
     configuration.backend,
     serviceAccount,
     repoSelection,
     credentialGateway?.id,
+    credentialRefresh?.id,
   );
   const openShellBackend = backends.find(
     (backend): backend is OpenShellBackendDefinition => backend.type === "openshell",
@@ -688,6 +716,7 @@ export async function loadInstallationConfiguration(options: {
       secret,
       ...(sandbox === undefined ? {} : { sandbox }),
       ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
+      ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(plugin === undefined ? {} : { plugin }),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
       ...(repoSelection === undefined ? {} : { repo: repoSelection }),
@@ -733,6 +762,14 @@ export async function loadInstallationConfiguration(options: {
             backend: openShell!,
           },
         );
+  const credentialRefreshDriver =
+    credentialRefresh === undefined
+      ? undefined
+      : new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
+          id: credentialRefresh.id,
+          implementation: credentialRefresh.implementation,
+          backend: openShell!,
+        });
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -822,6 +859,7 @@ export async function loadInstallationConfiguration(options: {
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+    ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),

@@ -55,7 +55,7 @@ to a running Agent requires upstream support:
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
-| `process`    | OpenShell process policy, including the configured run-as user and group.                     |
+| `process`    | OpenShell process policy; v0.1.3-pre.2 ignores its run-as user and group.                     |
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
@@ -122,6 +122,10 @@ approved mounts, and `/sandbox/.openclaw-runtime` are writable. Set an explicit
 `filesystem` block to replace the baseline when tightening the Sandbox. The
 Driver still adds its required mounts, runtime root, and `/tmp`.
 
+The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
+OpenShell ignores them: its Kubernetes driver runs every Sandbox process as the
+workload identity, default `10001:10001`.
+
 Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
@@ -161,10 +165,8 @@ The disposable profile enables OpenShell's unauthenticated development mode.
 The pinned release serves control-plane RPCs and provider-advertised Harness
 traffic on the same Gateway port. NetworkPolicies limit access to trusted OCE,
 OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
-service-only authority on that shared listener. This limitation is accepted
-only in an owned disposable development cluster. It does not block merging or
-using these development flows, but this topology must not be qualified for
-production.
+service-only authority on that shared listener. Accept this only in an owned
+disposable development cluster; never qualify this topology for production.
 
 `gateway.operatorWorkspaceResources` accepts the namespace-scoped
 ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
@@ -181,9 +183,8 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For dedicated Codex, OpenShell's `configureAgent` hook contributes the effective
-configuration before OCC validates and freezes the revision, disabling the
-inner Codex app-server sandbox:
+For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
+configuration before OCC validates and freezes the revision:
 
 ```json
 {
@@ -193,7 +194,8 @@ inner Codex app-server sandbox:
         "enabled": true,
         "config": {
           "appServer": {
-            "sandbox": "danger-full-access"
+            "sandbox": "danger-full-access",
+            "approvalsReviewer": "user"
           }
         }
       }
@@ -202,9 +204,12 @@ inner Codex app-server sandbox:
 }
 ```
 
-This avoids stacking the Codex sandbox inside OpenShell, which becomes the
-dedicated Harness's outer containment boundary. Native OpenClaw already disables
-inner isolation. Its hook sets `agents.defaults.workspace` and any
+Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's outer
+boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
+Revisions admitted before #2079 lack the reviewer; deploy those Agents again
+([notice](../../guides/deploy/breaking-changes-archive.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
+Native OpenClaw already disables inner isolation. Its hook sets
+`agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
 which the Gateway, file transfer, and node address; admission refuses a roster
 that makes another Agent the default. Native workers have separate
@@ -297,13 +302,11 @@ Compute passes the provider-fenced network profile (`provider-fenced-v1`) to the
 provider Harness template; the provider must retain it on the resulting Pod.
 It admits no Compute DNS, model, or authentication egress; OpenShell's workload
 fence governs those decisions. The policy proxy opens node connections from
-OpenShell supervisor Pods (`openshell.ai/managed-by=openshell`,
-`openshell.ai/boundary-role=supervisor`), which carry no `openclaw.dev` labels,
-so same-cluster policies grant those callers only the tenant's Agent Gateway
-Service port. The separately installed OpenShell gateway needs its own scoped
-DNS/API policies.
-Existing Sandboxes keep their template: redeploy the Agent revision to apply the
-profile. See the
+OpenShell supervisor Pods, which carry no `openclaw.dev` labels; on one cluster,
+each Agent Gateway admits only its own Sandbox's supervisor
+(`openshell.ai/sandbox-id`). The separately installed OpenShell gateway needs
+its own scoped DNS/API policies. Redeploy an existing Agent to apply the profile
+and this scoping. See the
 [network profile reference](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
 
 ## Qualification contract

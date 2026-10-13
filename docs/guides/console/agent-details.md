@@ -40,8 +40,10 @@ another version or the draft. Its milestones use the persisted record:
 | **Deployment work**     | `queued` awaits an initial or subsequent claim; `running` records a worker claim. |
 | **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
 
-A `failed` result shows the stored error and an **Open vN Logs** link to that
-version's [Logs tab](../topics/agent-logs.md), which the draft does not have.
+A `failed` result shows the stored error. Select **Open vN Logs** to open that
+version's [Logs tab](../topics/agent-logs.md) and bring the panel into view,
+even from the draft or another version. If logs are unavailable, the panel
+shows an access or availability message.
 For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
 `RUNTIME_MODEL_PROBE_TIMEOUT` and `AGENT_GATEWAY_UNAUTHORIZED` it also states
 the next step and links **Credentials** or the draft **Configuration** (for
@@ -232,7 +234,8 @@ until appropriate loaded, changed state is available.
 Each file allows up to 16 KiB of valid UTF-8 text. Concurrent saves use the last
 writer's contents. Reading requires Agent `read`, saving requires `operate`, and
 access needs an active revision with a reachable gateway. An uncertain save
-requires a successful Reload before retrying. See
+requires Reload to confirm contents or file absence before another save. A confirmed
+missing file opens an empty editor; read failures leave Save disabled. See
 [Workspace Files](../topics/workspace-files.md).
 
 ## Talk to the Agent
@@ -285,7 +288,12 @@ model credential Secret: both are kept even when Create Agent made them, and the
 console cannot list or delete them. Exact Agent
 `delete` permission is required. Accepted deletion starts asynchronous cleanup;
 the page checks it every few seconds and returns to Agents once the Agent is gone.
-**Refresh deletion status** checks it immediately.
+**Refresh deletion status** checks it immediately. **Request deletion again**
+opens a new confirmation for an already deleting Agent. Use it after fixing a
+cleanup failure that exhausted its retries; cleanup still queued or running
+continues unchanged. Another uncertain request stays blocked until a successful
+status refresh confirms that the Agent is deleting. The browser never repeats
+DELETE automatically. Existing delete permissions and retry ownership apply.
 
 An API error may show a request ID for support. **Outcome unknown** does not
 prove failure: refresh before retrying any write. An expired session clears

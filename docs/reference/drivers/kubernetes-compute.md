@@ -33,13 +33,11 @@ Detailed operator contracts:
 
 ## Existing split-layout installations
 
-An in-place upgrade from separate Gateway and Harness namespaces is not supported.
-API and worker startup preflight refuses a single-cluster installation containing
-an `oce-gateways-<hash>` storage namespace without the tenant discovery label.
-This check runs before tenant reconciliation; it does not move or delete runtime
-resources. The experimental two-cluster profile retains its separate target.
-
-Before replacing the controller images, inspect the existing storage targets:
+Releases before #925 kept each Namespace's Gateways, Gateway state and canonical
+Secrets in a separate `oce-gateways-<hash>` namespace. In a single cluster, API
+and worker startup preflight refuses such a storage namespace until it carries
+the tenant discovery label. The check changes nothing. Inspect the storage
+targets before replacing the controller images:
 
 ```sh
 kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
@@ -48,13 +46,13 @@ kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespa
 In a single cluster, a row with an empty `NAMESPACE` column is a split-layout
 tenant. The two-cluster profile's control-cluster rows are expected.
 
-If an Installation has split-layout tenants, keep its existing controller release
-and both namespaces. Preserve their Secrets, ConfigMaps, PVCs and database
-references. Do not delete the old namespace, remove its storage-role label or
-add a tenant label to bypass preflight: those changes do not move the Gateway's
-private state or update UID-bound credential references. A supported migration
-must preserve these identities and state before this release can manage that
-Installation. This release provides no such migration command.
+Adopt each tenant in place with the
+[split-layout upgrade](../../guides/deploy/split-layout-upgrade.md):
+the storage namespace becomes the tenant namespace and keeps its Secrets,
+Configurations and Gateway state, and the old namespace's claims and Agent
+Secrets move into it. Compute accepts the `oce-gateways-<hash>` name as a tenant
+namespace only while it keeps its own storage label. Do not add the tenant label
+by hand: the old namespace's claims, routes and transport Secrets would not move.
 
 ## Requirements
 
@@ -212,7 +210,8 @@ the two-cluster profile applies them separately to each physical target. The
 [installation profiles](../../guides/deploy/installation-profiles.md) explain
 the measured memory defaults. Production requires
 `images.requireImmutableDigest: true` and lowercase `@sha256:` image digests.
-Quote whole-core quantities, such as `cpu: "4"`.
+Quote quantities, such as `cpu: "4"`. Each CPU/memory request must fit its limit;
+startup refuses invalid pairs before resource creation.
 
 See [network configuration](kubernetes-compute/networking-and-isolation.md#networking)
 for DNS, gateway clients, proxy trust, and egress requirements.
@@ -329,9 +328,9 @@ model turn.
   permissions, CPU and memory limits, namespace quotas, required Secrets, and
   workload readiness, including the
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
-  label. Dedicated Codex Harness containers clear the plugin readiness marker at
-  process start, so a marker from a previous container attempt cannot make a
-  restarted runtime ready. Access-token login retries only native process
+  label. Private HTTP readiness returns `503` until native, plugin,
+  authentication, or identity gates pass. Dedicated Codex clears its plugin
+  marker at process start to reject stale readiness. Access-token login retries only native process
   timeouts, up to three 30-second attempts. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)

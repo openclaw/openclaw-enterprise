@@ -335,6 +335,8 @@ export interface CredentialSourceReadRepository {
   ): Promise<readonly Readonly<CredentialWithdrawal>[]>;
 }
 
+export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
+
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
   lockCredentialSource(
     namespaceId: string,
@@ -363,6 +365,15 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
   deleteCredentialSource(namespaceId: string, credentialSourceId: string): Promise<boolean>;
   /** True while an Agent draft, active revision, or pending deployment references the source. */
   hasReferences(namespaceId: string, credentialSourceId: string): Promise<boolean>;
+  /**
+   * What keeps the source from being deleted: `reference` while an Agent draft, active
+   * revision, or pending deployment references it, which wins over `withdrawal_work`, a
+   * withdrawal attempt or retry series still queued or running for a revision that holds it.
+   */
+  findBlockingReference(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<CredentialSourceBlockingReference | undefined>;
   /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
   requestCredentialWithdrawal(
     withdrawal: CredentialWithdrawal,
@@ -427,6 +438,22 @@ export interface ServiceAccountRepository extends ServiceAccountReadRepository {
   ): Promise<Readonly<ServiceAccount> | undefined>;
   deleteServiceAccount(namespaceId: string, serviceAccountId: string): Promise<boolean>;
   hasReferences(namespaceId: string, serviceAccountId: string): Promise<boolean>;
+  /**
+   * The Backend binding of an issued provider credential, for the audit record of a forced
+   * deletion that cannot revoke it. Credential and upstream IDs otherwise stay private.
+   */
+  findIssuedCredentialBinding(
+    namespaceId: string,
+    serviceAccountId: string,
+  ): Promise<
+    | Readonly<{
+        readonly backendId: string;
+        readonly workspaceId: string;
+        readonly externalAccountId: string;
+        readonly credentialId: string;
+      }>
+    | undefined
+  >;
 }
 
 const serviceAccountIdentifier =
@@ -807,6 +834,11 @@ export interface PlatformOperationRepository extends PlatformOperationReadReposi
     initiatingActorId: string,
     actorId: string,
   ): Promise<boolean>;
+  /**
+   * Makes the revision's queued credential withdrawal work claimable now instead of at its
+   * scheduled time. Claimed work is left alone. True when any queued work was waiting.
+   */
+  expediteCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }
 
 export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
@@ -1908,25 +1940,20 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return immutableCopy(saved);
     },
-    hasReferences: async (namespaceId, credentialSourceId) => {
+    hasReferences: async (namespaceId, credentialSourceId) =>
+      (await credentialSources.findBlockingReference(namespaceId, credentialSourceId)) !==
+      undefined,
+    findBlockingReference: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
-        return false;
+        return undefined;
       }
-      return (
-        Array.from(snapshot.agents.values()).some((agent) => {
-          const activeRevision = (
-            snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
-          ).find((revision) => revision.id === agent.activeRevisionId);
-          return (
-            agent.namespaceId === namespaceId &&
-            (harnessCredentialSourceReference(agent.harnessAuth, credentialSourceId) ||
-              harnessCredentialSourceReference(activeRevision?.harnessAuth, credentialSourceId) ||
-              agentCredentialSourceReference(agent.credentialSources, credentialSourceId) ||
-              agentCredentialSourceReference(activeRevision?.credentialSources, credentialSourceId))
-          );
-        }) ||
+      const revisionOperations = (withdrawal: boolean) =>
         snapshot.operations.some((operation) => {
-          if (operation.kind !== "agent_revision" || operation.namespaceId !== namespaceId) {
+          if (
+            operation.kind !== "agent_revision" ||
+            operation.namespaceId !== namespaceId ||
+            (operation.target === CREDENTIAL_WITHDRAWAL_TARGET) !== withdrawal
+          ) {
             return false;
           }
           const revision = Array.from(snapshot.revisions.values())
@@ -1939,8 +1966,24 @@ function repositories(
             harnessCredentialSourceReference(revision?.harnessAuth, credentialSourceId) ||
             agentCredentialSourceReference(revision?.credentialSources, credentialSourceId)
           );
-        })
-      );
+        });
+      const referenced =
+        Array.from(snapshot.agents.values()).some((agent) => {
+          const activeRevision = (
+            snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
+          ).find((revision) => revision.id === agent.activeRevisionId);
+          return (
+            agent.namespaceId === namespaceId &&
+            (harnessCredentialSourceReference(agent.harnessAuth, credentialSourceId) ||
+              harnessCredentialSourceReference(activeRevision?.harnessAuth, credentialSourceId) ||
+              agentCredentialSourceReference(agent.credentialSources, credentialSourceId) ||
+              agentCredentialSourceReference(activeRevision?.credentialSources, credentialSourceId))
+          );
+        }) || revisionOperations(false);
+      if (referenced) {
+        return "reference";
+      }
+      return revisionOperations(true) ? "withdrawal_work" : undefined;
     },
     deleteCredentialSource: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
@@ -2077,6 +2120,8 @@ function repositories(
       deleteResourceAccessBindings("service_account", serviceAccountId);
       return true;
     },
+    // Backend bindings are PostgreSQL-only, as findServiceAccountBackendBinding.
+    findIssuedCredentialBinding: async () => undefined,
   };
 
   const workspaceSetups: WorkspaceSetupRepository = {
@@ -2847,6 +2892,7 @@ function repositories(
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
       retryFailedNamespaceDeletion: async () => false,
+      expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.
       hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) =>

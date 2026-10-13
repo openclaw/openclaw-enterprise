@@ -236,7 +236,12 @@ async function privateBootstrapDirectory(context) {
   return directory;
 }
 
-export async function createProvisioningApiFixture(context, computeDriver, authentication) {
+export async function createProvisioningApiFixture(
+  context,
+  computeDriver,
+  authentication,
+  { emit = () => {} } = {},
+) {
   // Exercise real admission with Kubernetes Secrets; fixture credentials never reach Slack.
   const originalFetch = globalThis.fetch;
   context.mock.method(globalThis, "fetch", async (url, init) => {
@@ -338,7 +343,7 @@ export async function createProvisioningApiFixture(context, computeDriver, authe
       pollIntervalMs: 25,
       leaseDurationMs: 30_000,
       maxAttempts: 3,
-      emit: () => {},
+      emit,
     });
     await worker.start();
   }
@@ -476,6 +481,8 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
           ...snapshot.configuration,
           gateway: {
             ...snapshot.configuration.gateway,
+            // Compute renders the all-interfaces listener for an omitted or auto bind.
+            bind: "lan",
             trustedProxies: ["127.0.0.1/32"],
             allowRealIpFallback: true,
             auth: {
@@ -1055,6 +1062,11 @@ export async function createScopedController(context, installationId, platformNa
     "--type=json",
     "--patch",
     JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
       {
         op: "add",
         path: "/rules/-",

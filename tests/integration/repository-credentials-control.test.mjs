@@ -9,7 +9,10 @@ import {
   startRegistryCredentialServiceFixture,
 } from "../fixtures/repository-credentials/registry.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import {
+  createResourceScope,
+  createTestResourceScope,
+} from "../fixtures/repository-credentials/resources.mjs";
 import { createServer as createTlsServer, request as tlsRequest } from "node:https";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,6 +45,7 @@ import {
   createGitHubServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 // Session opens need an admission id; a fresh one per call unless the test names it.
 const control = (socketPath, method, path, value, extra = {}) =>
@@ -53,7 +57,7 @@ const control = (socketPath, method, path, value, extra = {}) =>
 // The relay consumes the real listener's response but disconnects its caller,
 // reproducing ambiguous loss after admission without replacing control behavior.
 async function dropControlResponse(t, target) {
-  const directory = await temporaryDirectory(t, "rcs-loss-");
+  const directory = await socketDirectory(t, "rcs-loss-");
   const socketPath = join(directory, "relay.sock");
   const sockets = new Set();
   let admitted;
@@ -490,7 +494,7 @@ test(
     const clock = createSystemClock();
     const tls = await createTlsMaterial(t);
     const base = await createServiceConfiguration(t);
-    const directory = await temporaryDirectory(t);
+    const directory = await socketDirectory(t, "rcs-control-");
     const target = join(directory, "control.sock");
     const config = {
       ...base,
@@ -732,7 +736,15 @@ test(
 );
 
 async function boundControlFixture(t, limits = {}, repositories = undefined) {
-  const fixture = await startRegistryCredentialServiceFixture(t, {
+  // One scope owns every cleanup of these tests. node:test stops a test's after hooks at
+  // the first failure, so a failed fixture cleanup used to skip the receipt listener and
+  // relay hooks registered after it and leave their servers holding the file open. The scope
+  // runs cleanups in reverse and keeps going past a failure. The service reports to the
+  // receipt listener while it stops, so that listener's own scope closes last.
+  const resources = createTestResourceScope(t);
+  const receiptResources = createResourceScope();
+  resources.after(() => receiptResources.close());
+  const fixture = await startRegistryCredentialServiceFixture(resources, {
     namespaceId: `ns_${randomUUID()}`,
     autoOpen: false,
     maximumDurationSeconds: 1200,
@@ -762,7 +774,7 @@ async function boundControlFixture(t, limits = {}, repositories = undefined) {
     };
   };
   const input = inputFor(bindings[0].repositoryRef);
-  const receipts = await startReceiptState(t, fixture, bindings, deadlineWallMs);
+  const receipts = await startReceiptState(receiptResources, fixture, bindings, deadlineWallMs);
   const freshId = () => `${fixture.clock.wallNow()}-${randomUUID()}`;
   const send = (value, id = freshId(), socketPath = fixture.config.gateway.controlSocket) =>
     control(
@@ -772,7 +784,7 @@ async function boundControlFixture(t, limits = {}, repositories = undefined) {
       { ...value, durableAdmission: true },
       { "x-admission-id": id },
     );
-  return { ...fixture, input, inputFor, freshId, send, receipts };
+  return { ...fixture, resources, input, inputFor, freshId, send, receipts };
 }
 
 test(
@@ -903,8 +915,8 @@ test("control refuses loose requests before acting on them", { timeout: 15000 },
   assert.equal(fixture.service.status(sessionId).state, "OPEN");
 });
 
-async function holdControlRequest(t, target) {
-  const directory = await temporaryDirectory(t, "rcs-held-");
+async function holdControlRequest(owner, target) {
+  const directory = await socketDirectory(owner, "rcs-held-");
   const socketPath = join(directory, "relay.sock");
   const sockets = new Set();
   let captured;
@@ -946,7 +958,7 @@ async function holdControlRequest(t, target) {
     relay.listen(socketPath, resolve);
   });
   await chmod(socketPath, 0o600);
-  t.after(async () => {
+  owner.after(async () => {
     for (const socket of sockets) {
       socket.destroy();
     }
@@ -961,7 +973,7 @@ test(
   async (t) => {
     const fixture = await boundControlFixture(t, { sessions: 1 });
     const { input, send, freshId, clock } = fixture;
-    const held = await holdControlRequest(t, fixture.config.gateway.controlSocket);
+    const held = await holdControlRequest(fixture.resources, fixture.config.gateway.controlSocket);
     const id = freshId();
     await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
     const delayed = send(input, id, held.socketPath);
@@ -1066,12 +1078,12 @@ test(
       }
       return transact.call(this, work);
     };
-    t.after(() => {
+    fixture.resources.after(() => {
       receipts.state.transact = transact;
       release();
     });
     const disposed = [];
-    t.after(fixture.service.observeDisposal((status) => disposed.push(status)));
+    fixture.resources.after(fixture.service.observeDisposal((status) => disposed.push(status)));
     const pending = send(input, id);
     await reached;
     await clock.advance(1000);
@@ -1135,7 +1147,7 @@ test(
 
     // The journal reserves, then fails to record the opened session.
     const transact = receipts.state.transact;
-    t.after(() => {
+    fixture.resources.after(() => {
       receipts.state.transact = transact;
     });
     let calls = 0;
@@ -1324,3 +1336,14 @@ test(
     }
   },
 );
+
+test("the control client refuses socket paths over 103 bytes before connecting", async () => {
+  const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
+  const request = { method: "GET", path: "/v1/sessions" };
+  // 104 ASCII bytes, and 61 characters that encode to 115 bytes. Neither file exists,
+  // so only the length guard can produce invalid-control-request.
+  for (const socket of [`/${"a".repeat(103)}`, `/${"\u00e9".repeat(54)}x.sock`]) {
+    assert.ok(Buffer.byteLength(socket) > 103);
+    await assert.rejects(callControl(socket, request), { message: "invalid-control-request" });
+  }
+});

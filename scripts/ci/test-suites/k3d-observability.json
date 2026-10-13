@@ -16,7 +16,7 @@
     "requiresPreparedStateForFile": true,
     "nodeBaseImage": true,
     "defaultEnv": {
-      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df",
+      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20",
       "OCC_TEST_PRODUCTION_POSTGRES_IMAGE": "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
     }
   },

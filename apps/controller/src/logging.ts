@@ -21,8 +21,15 @@ export interface OccLoggerOptions {
 
 const SAFE_STRING = /^[A-Za-z0-9][A-Za-z0-9._: /@-]{0,511}$/;
 const SAFE_PATH = /^\/[ -~]{0,1023}$/;
+// Token shapes: a bearer credential, an OpenAI, GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+// `github_pat_`) or Slack key, a private key, or an AWS access key ID.
 const SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ghp|gho|github_pat)_[A-Za-z0-9_]{12,}|\bAKIA[0-9A-Z]{16}\b/i;
+  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b/i;
+// Case-sensitive token shapes. A JWT (`eyJ` header and payload). A basic credential: a base64
+// token of 8 or more characters with a digit, `+` or `=`, or with two uppercase letters after
+// its first character, so prose ("Basic authentication", "basic OpenShell") passes.
+const CASE_SENSITIVE_TOKEN =
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.|\b(?:Basic|basic|BASIC)\s+(?=[A-Za-z0-9+/]{8})(?:[A-Za-z0-9+/]*[0-9+=]|[A-Za-z0-9+/][a-z/]*[A-Z][a-z/]*[A-Z])/;
 const ALLOWED_ATTEMPT_FIELDS = new Set([
   "authAccountId",
   "installationId",
@@ -130,14 +137,59 @@ export function createOccLogger(options: OccLoggerOptions): OccLogger {
 }
 
 function safeString(value: string): string | undefined {
-  if (!SAFE_STRING.test(value) || SECRET_VALUE.test(value)) {
+  if (!SAFE_STRING.test(value) || resemblesToken(value)) {
     return undefined;
   }
   return value;
 }
 
+// A URL with user information (`postgres://user:pa/ss@host`; a password may hold an unescaped
+// `/`), a query parameter that usually carries a credential, or a `password=` or OAuth secret
+// pair in a connection string or form body. The scheme is not matched: `://` anchors the search.
+const URL_CREDENTIAL =
+  /:\/\/[^\s/?#@:]*(?::[^\s?#@]*)?@|[?&](?:access_token|api_key|apikey|client_secret|code|id_token|key|password|refresh_token|secret|sig|signature|token|x-amz-credential|x-amz-security-token|x-amz-signature)=|(?:client_secret|passwd|password|pwd|refresh_token)=[^\s&;]/i;
+export const WITHHELD_ERROR_TEXT = "The message was withheld because it resembles a credential.";
+const LOGGED_ERROR_TEXT_CHARACTERS = 512;
+// How much of the collapsed error text is checked: the logged cut (at most 1024 code units) plus
+// a margin for a credential that straddles it. The bound caps what the patterns cost.
+const CHECKED_ERROR_TEXT_UNITS = 4 * LOGGED_ERROR_TEXT_CHARACTERS;
+
+/**
+ * Whether text resembles a credential (a bearer, basic or API token, a JWT, a private key, or a
+ * URL or connection-string secret). Its cost grows with the text, so bound long text first.
+ */
+export function resemblesCredential(text: string): boolean {
+  return resemblesToken(text) || URL_CREDENTIAL.test(text);
+}
+
+function resemblesToken(text: string): boolean {
+  return SECRET_VALUE.test(text) || CASE_SENSITIVE_TOKEN.test(text);
+}
+
+/**
+ * Error text for a local operator log: one line of at most 512 characters, or fixed text when it
+ * looks like it carries a credential. Most callers log text written by OCC code, but some messages
+ * carry upstream text (a driver package's message, OpenShell CreateSandbox detail, a runtime
+ * failure code). This is a pattern check, a second line of defense, not a sanitizer: callers must
+ * still keep provider and request text out of what they log.
+ */
+export function loggedErrorText(value: string): string | undefined {
+  // Collapsed first (a linear pass), so padding cannot push a credential past the bound.
+  const line = value
+    .replace(/[\s\p{Cc}]+/gu, " ")
+    .trim()
+    .slice(0, CHECKED_ERROR_TEXT_UNITS);
+  if (line === "") {
+    return undefined;
+  }
+  // Checked before the cut, so a credential that straddles it is withheld too.
+  return resemblesCredential(line)
+    ? WITHHELD_ERROR_TEXT
+    : [...line].slice(0, LOGGED_ERROR_TEXT_CHARACTERS).join("");
+}
+
 function safePath(value: unknown): string | undefined {
-  return typeof value === "string" && SAFE_PATH.test(value) && !SECRET_VALUE.test(value)
+  return typeof value === "string" && SAFE_PATH.test(value) && !resemblesToken(value)
     ? value
     : undefined;
 }

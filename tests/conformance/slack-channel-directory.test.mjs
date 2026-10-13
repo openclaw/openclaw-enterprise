@@ -160,6 +160,17 @@ function auth() {
   });
 }
 
+const workspace = { workspaceId: "TWORKSPACE", workspaceName: "Fixture Workspace" };
+
+// Answers auth.test with the fixture workspace and passes every other Slack
+// API request to `lookup`.
+function directoryDriver(lookup) {
+  return new SlackChannelDriver(async (url) => {
+    const request = new URL(url);
+    return request.pathname.endsWith("/auth.test") ? auth() : lookup(request);
+  });
+}
+
 test("Slack directory rejects a user token before listing names", async () => {
   let calls = 0;
   const driver = new SlackChannelDriver(async () => {
@@ -203,8 +214,7 @@ test("Slack directory searches paginated user names and qualifies results with w
 
   const page = await driver.lookupDirectory({ token, kind: "users", query: "@alice" });
   assert.deepEqual(page, {
-    workspaceId: "TWORKSPACE",
-    workspaceName: "Fixture Workspace",
+    ...workspace,
     candidates: [{ id: "UALICE", name: "alice", displayName: "Alice" }],
     complete: true,
   });
@@ -217,11 +227,7 @@ test("Slack directory searches paginated user names and qualifies results with w
 });
 
 test("Slack channel lookup includes private channels and preserves an incomplete cursor", async () => {
-  const driver = new SlackChannelDriver(async (url) => {
-    const request = new URL(url);
-    if (request.pathname.endsWith("/auth.test")) {
-      return auth();
-    }
+  const driver = directoryDriver((request) => {
     assert.equal(request.pathname, "/api/conversations.list");
     assert.equal(request.searchParams.get("types"), "public_channel,private_channel");
     assert.equal(request.searchParams.get("team_id"), "TWORKSPACE");
@@ -233,8 +239,7 @@ test("Slack channel lookup includes private channels and preserves an incomplete
   });
 
   assert.deepEqual(await driver.lookupDirectory({ token, kind: "channels" }), {
-    workspaceId: "TWORKSPACE",
-    workspaceName: "Fixture Workspace",
+    ...workspace,
     candidates: [{ id: "GPRIVATE", name: "private-room" }],
     nextCursor: "more-channels",
     complete: false,
@@ -242,25 +247,22 @@ test("Slack channel lookup includes private channels and preserves an incomplete
 });
 
 test("Slack user search finds a real name when the display name differs", async () => {
-  const driver = new SlackChannelDriver(async (url) =>
-    new URL(url).pathname.endsWith("/auth.test")
-      ? auth()
-      : Response.json({
-          ok: true,
-          members: [
-            {
-              id: "UJANE",
-              name: "jsmith",
-              profile: { display_name: "Janie", real_name: "Jane Smith" },
-            },
-          ],
-          response_metadata: { next_cursor: "" },
-        }),
+  const driver = directoryDriver(() =>
+    Response.json({
+      ok: true,
+      members: [
+        {
+          id: "UJANE",
+          name: "jsmith",
+          profile: { display_name: "Janie", real_name: "Jane Smith" },
+        },
+      ],
+      response_metadata: { next_cursor: "" },
+    }),
   );
 
   assert.deepEqual(await driver.lookupDirectory({ token, kind: "users", query: "Jane Smith" }), {
-    workspaceId: "TWORKSPACE",
-    workspaceName: "Fixture Workspace",
+    ...workspace,
     candidates: [{ id: "UJANE", name: "jsmith", displayName: "Janie" }],
     complete: true,
   });
@@ -268,11 +270,7 @@ test("Slack user search finds a real name when the display name differs", async 
 
 test("Slack search stays incomplete when the bounded page budget finds no match", async () => {
   let pages = 0;
-  const driver = new SlackChannelDriver(async (url) => {
-    const request = new URL(url);
-    if (request.pathname.endsWith("/auth.test")) {
-      return auth();
-    }
+  const driver = directoryDriver((request) => {
     pages += 1;
     assert.equal(request.searchParams.get("cursor"), pages === 1 ? null : `page-${pages - 1}`);
     return Response.json({
@@ -283,8 +281,7 @@ test("Slack search stays incomplete when the bounded page budget finds no match"
   });
 
   assert.deepEqual(await driver.lookupDirectory({ token, kind: "users", query: "missing" }), {
-    workspaceId: "TWORKSPACE",
-    workspaceName: "Fixture Workspace",
+    ...workspace,
     candidates: [],
     nextCursor: "page-3",
     complete: false,
@@ -294,12 +291,8 @@ test("Slack search stays incomplete when the bounded page budget finds no match"
 
 test("Slack resolves saved IDs directly while leaving inaccessible IDs unlabeled", async () => {
   const calls = [];
-  const driver = new SlackChannelDriver(async (url) => {
-    const request = new URL(url);
+  const driver = directoryDriver((request) => {
     calls.push(request);
-    if (request.pathname.endsWith("/auth.test")) {
-      return auth();
-    }
     assert.equal(request.pathname, "/api/conversations.info");
     if (request.searchParams.get("channel") === "CFOUND") {
       return Response.json({ ok: true, channel: { id: "CFOUND", name: "project-room" } });
@@ -310,21 +303,16 @@ test("Slack resolves saved IDs directly while leaving inaccessible IDs unlabeled
   assert.deepEqual(
     await driver.lookupDirectory({ token, kind: "channels", ids: ["CFOUND", "GMISSING"] }),
     {
-      workspaceId: "TWORKSPACE",
-      workspaceName: "Fixture Workspace",
+      ...workspace,
       candidates: [{ id: "CFOUND", name: "project-room" }],
       complete: true,
     },
   );
-  assert.equal(calls.filter((request) => request.pathname.endsWith(".info")).length, 2);
+  assert.equal(calls.length, 2);
 });
 
 test("Slack resolves a saved user ID from users.info", async () => {
-  const driver = new SlackChannelDriver(async (url) => {
-    const request = new URL(url);
-    if (request.pathname.endsWith("/auth.test")) {
-      return auth();
-    }
+  const driver = directoryDriver((request) => {
     assert.equal(request.pathname, "/api/users.info");
     assert.equal(request.searchParams.get("user"), "UALICE");
     return Response.json({
@@ -334,8 +322,7 @@ test("Slack resolves a saved user ID from users.info", async () => {
   });
 
   assert.deepEqual(await driver.lookupDirectory({ token, kind: "users", ids: ["UALICE"] }), {
-    workspaceId: "TWORKSPACE",
-    workspaceName: "Fixture Workspace",
+    ...workspace,
     candidates: [{ id: "UALICE", name: "alice", displayName: "Alice" }],
     complete: true,
   });
@@ -346,9 +333,7 @@ test("Slack directory returns safe scope and rate-limit errors without exposing 
     [Response.json({ ok: false, error: "missing_scope" }), "missing_scope"],
     [new Response(null, { status: 429 }), "rate_limited"],
   ]) {
-    const driver = new SlackChannelDriver(async (url) =>
-      new URL(url).pathname.endsWith("/auth.test") ? auth() : reply,
-    );
+    const driver = directoryDriver(() => reply);
     await assert.rejects(
       driver.lookupDirectory({ token, kind: "users" }),
       (error) =>
@@ -357,10 +342,8 @@ test("Slack directory returns safe scope and rate-limit errors without exposing 
         !error.message.includes(token),
     );
   }
-  const missingChannelScope = new SlackChannelDriver(async (url) =>
-    new URL(url).pathname.endsWith("/auth.test")
-      ? auth()
-      : Response.json({ ok: false, error: "invalid_types" }),
+  const missingChannelScope = directoryDriver(() =>
+    Response.json({ ok: false, error: "invalid_types" }),
   );
   await assert.rejects(
     missingChannelScope.lookupDirectory({ token, kind: "channels" }),

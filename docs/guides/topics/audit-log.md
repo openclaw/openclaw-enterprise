@@ -36,6 +36,10 @@ event after which the worker stops trying also carries `final: true`: a permanen
 error, or a failure with no attempts left (5 by default), including a claim that
 expired on its last attempt (`LEASE_EXPIRED`) and queued work with none left
 (`MAX_ATTEMPTS_EXHAUSTED`). A failure the worker will retry has no `final` field.
+A deployment waiting to stop a version it refused has no attempt limit: once a failed
+stop has recorded that wait, an expired claim there is retried, and its `LEASE_EXPIRED`
+event carries the `refusal` it waits to record. A controller that shuts down during a
+stop records that wait first, so no attempt is spent.
 Retrying failed work, such as an Agent or Namespace deletion, is its own audited
 action, and the same `workId` can then record more events. When Stop or Delete
 cancels an Agent's queued, running or failed provisioning work, the cancellation

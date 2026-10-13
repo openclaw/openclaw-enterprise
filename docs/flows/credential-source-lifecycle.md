@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-08
+updated: 2026-10-09
 last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
@@ -186,7 +186,8 @@ the model source. The next owner is the [OpenShell Sandbox provisioning flow](op
 
 The first transaction authorizes `delete`, requires a selected gateway (`409`),
 locks the source, and returns `409` while an Agent draft, active revision, or
-pending deployment references it, or `503` if another driver registered it. Only
+pending deployment references it, `CREDENTIAL_WITHDRAWAL_IN_PROGRESS` while only
+withdrawal work holds it, or `503` if another driver registered it. Only
 then does it move a `registering` or `ready` record to `deleting`; triggers
 prevent leaving `deleting` and returning to `registering`. Outside the
 transaction, OCC calls `removeSource`. The OpenShell Driver deletes and confirms
@@ -205,17 +206,17 @@ append fails, the record stays `deleting`. Namespace deletion returns
 `packages/occ/src/index.ts:updateCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
-One transaction locks the Namespace and source, authorizes
-`credential_source:update`, and requires a `ready` source of a type the
+One transaction authorizes `credential_source:update`, reads the Namespace,
+locks the source (not the Namespace), and requires a `ready` source of a type the
 catalog offers (`409` otherwise). It validates any
 replacement references against the catalog's Secret fields, authorizes
 `secret:operate` on each Secret it reads, and reads the values with
 `withValue`. It calls `updateSource` with Compute's placement while holding the
 source lock; the OpenShell Driver requires the OCC-owned provider and calls
 `UpdateProvider`. It then replaces the Secret references, and the handler
-appends the audit event in the same transaction. The gateway is updated before
-that transaction commits: a gateway failure rolls back the references, and a
-later failure leaves the gateway newer than OCC until the request is repeated. An `absent` or `failed` gateway
+appends the audit event in the same transaction. A failure after the gateway
+call rolls back the references but leaves the gateway newer, until the request
+is repeated, and records a `failure` audit event. An `absent` or `failed` gateway
 status returns `503`. The OpenShell Driver rejects empty values because
 `UpdateProvider` merges them into the existing provider. OpenShell gives the new
 value only to processes started after the update.
@@ -230,42 +231,43 @@ value only to processes started after the update.
 The API authorizes `agent:operate` and requires the active revision to list the
 source in `credential_sources`. For that revision, each later revision
 admitted with the source, and each earlier one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by revision
-and source, or returns the existing one. For each pending row with no withdrawal
-work outstanding, it makes the caller `requested_by` and queues
-revision-scoped work with target `credentials_withdrawn`
-(`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`). That
-work never deploys the revision and owns no repository cleanup.
+and source unless one exists. It makes the caller `requested_by` of
+each pending row and queues revision-scoped work with target `credentials_withdrawn`
+(`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`) or
+expedites outstanding work. That work never deploys the revision.
 
-The worker rechecks `agent:operate` for each pending withdrawal's own
+The worker rechecks `agent:operate` for each pending withdrawal's
 `requested_by` and calls Compute's
 `withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
-otherwise a denied requester fails it after the others are revoked. Each
+otherwise a denied requester fails it after the others are revoked, unless a
+replay reassigned it. Each
 revocation is audited for its requester in the pass that confirms it; each
-denial, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
-on the Sandbox from `harnessResource` and reads the receipt's status. Each
+denial or failure, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
+on the `harnessResource` Sandbox and reads the receipt's status. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
-`openclaw.agents.lifecycle.credentials_withdraw`. Any other state retries with
-backoff until attempts run out, leaving the row `pending`. The read
+`openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
+backoff. The read
 (`packages/occ/src/index.ts:readAgentCredentialWithdrawal`) prefers these
-revisions' exhausted rows, then `pending` ones, the active revision's first. `withdrawalInProgress` reflects outstanding work, so an exhausted
-withdrawal reads `false`; only a replay or maintenance queues another attempt.
+revisions' exhausted rows, then `pending` ones, the active revision's first. Without Compute maintenance, failing the work queues
+a bounded later series (`apps/controller/src/worker.ts:scheduleCredentialWithdrawalRecovery`). `withdrawalInProgress` reflects outstanding
+work, so `false` means only a replay or maintenance queues another attempt.
 
 Maintenance of the active revision (scheduled only when Compute or repository
-credentials declare an interval) stops preparing it once its Harness source is
+credentials set an interval) stops preparing it once its Harness source is
 withdrawn
 (`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
 any withdrawal is `pending`, the pass keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
 a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
 pending withdrawals with no work outstanding, the other revisions' too
-(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`), so one
-exhausted during a gateway outage resumes; one denied to its requester waits for a replay. `authorizeRevision` skips the
+(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied
+or refused waits for a replay. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end
 maintenance.
 
 A withdrawal that finds no Sandbox records `revoked`, yet a create OpenShell
 accepted before its worker lost the claim can land later with the source. So
-every preparation, and every pass of a Harness-withdrawn revision, first
+every preparation, and every pass of a Harness-withdrawn revision,
 rechecks `revoked` rows
 (`apps/controller/src/worker.ts:recheckRevokedCredentialSources`): the OpenShell
 Driver detaches the provider again only if `SandboxSpec.providers` lists it.
@@ -274,20 +276,18 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 - `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog
   validation, grants, registration compensation and recovery, audit, deletion,
-  Namespace gating, admission snapshots, and Secret-backed method rejection. It uses an in-process gateway double, not
-  OpenShell.
+  Namespace gating, admission snapshots, and Secret-backed method rejection,
+  with an in-process gateway double.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
   provider, profile, update, detach, and recheck RPCs against the pinned `v0.1.3-pre.2`
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
-  and worker against PostgreSQL with a Compute double: retries, replays,
-  maintenance, omitted sources, requester denials, other revisions, lost grants,
-  and late creates.
-- The real OpenShell test updates the source through the API and withdraws a
-  `bearer-token` source (its placeholder stops reaching an echo service; model
-  turns continue), then the model source (the next model
-  turn in that Codex process fails).
+  and worker against PostgreSQL with a Compute double: retries, outages, replays,
+  refusals, maintenance, denials, other revisions, lost grants, and late creates.
+- The real OpenShell test updates the source and withdraws a `bearer-token`
+  source (its placeholder stops reaching an echo service), then the model
+  source (the next model turn fails).
 - `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
   registers an `openai` source through the production API against a real
   gateway and reads its live `ready` status. See [OpenShell tests](../testing/openshell.md).
@@ -296,10 +296,10 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 - Worker reason codes `CREDENTIAL_GATEWAY_MISMATCH` and
   `HARNESS_AUTH_SOURCE_UNAVAILABLE` mean a changed selection or an unavailable
   source; `CREDENTIAL_WITHDRAWN` a withdrawn revision source, and
-  `CREDENTIAL_WITHDRAWAL_PENDING` an unconfirmed revocation. A withdrawal's `reason` on `GET` is its latest code;
-  `CREDENTIALS_WITHDRAWN` and `WITHDRAWAL_REVISION_RETIRED` complete the work,
-  and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`, and
-  `AUTHORIZATION_DENIED` fail it at once.
+  `CREDENTIAL_WITHDRAWAL_PENDING` an unconfirmed revocation. `CREDENTIALS_WITHDRAWN` and `WITHDRAWAL_REVISION_RETIRED` complete the work,
+  and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`,
+  `CREDENTIAL_WITHDRAWAL_MISCONFIGURED`, `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`,
+  and `AUTHORIZATION_DENIED` fail it at once.
 
 ## Related docs
 
@@ -315,6 +315,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-09 08:30: Replays take over withdrawal work. (fix-892-894)
+- 2026-10-09 06:00: Exhausted withdrawals retry later without Compute maintenance. (fix-887)
 - 2026-10-08 20:30: Maintenance leaves denied withdrawals for a replay. (fix-853)
 - 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)
 - 2026-10-08 16:00: Preparation rechecks revoked withdrawals against a late Sandbox create. (fix-790)

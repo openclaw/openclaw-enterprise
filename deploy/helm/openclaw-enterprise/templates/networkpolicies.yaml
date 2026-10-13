@@ -22,13 +22,13 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        {{- range .Values.api.clients }}
+        {{- range $index, $client := .Values.api.clients }}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .namespace | quote }}
+              kubernetes.io/metadata.name: {{ $client.namespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml .podLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" (printf "api.clients[%d].podLabels" $index) "value" $client.podLabels) | nindent 14 }}
         {{- end }}
       ports:
         - protocol: TCP

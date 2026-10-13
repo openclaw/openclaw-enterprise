@@ -13,7 +13,8 @@ import { validRuntimeDescription } from "../../packages/occ/src/runtime-logs/ind
 const directory = new URL("../fixtures/runtime-logs/replay/", import.meta.url);
 const update = process.env.UPDATE_RUNTIME_LOG_GOLDENS === "1";
 
-// Same split as the Kubernetes Compute Driver's `readAgentRuntimeLogs` (`timestamps: true`).
+// Historical captures below use UTC Z prefixes; production Driver coverage owns
+// numeric-offset normalization and preserves these existing replay inputs.
 const KUBELET_LINE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) (.*)$/s;
 
 async function manifest() {
@@ -121,6 +122,22 @@ async function replay(entry) {
 function serialize(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
+
+test("runtime descriptions reject invalid Driver timestamps instead of normalizing them", () => {
+  assert.throws(
+    () =>
+      validRuntimeDescription(
+        {
+          revisionId: "rev_fixture",
+          observedAt: "2026-02-30",
+          pods: [],
+          sources: [],
+        },
+        "rev_fixture",
+      ),
+    { name: "InvalidRuntimeDescriptionError" },
+  );
+});
 
 test("the replay manifest lists every fixture on disk and nothing else", async () => {
   const { count, fixtures } = await manifest();

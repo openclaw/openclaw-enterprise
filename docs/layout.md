@@ -24,7 +24,13 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 Within `internal/occcli/`, `cli.go` assembles the command tree and resource
 commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
 `agent_runtime.go` owns runtime inspection, revision selection for runtime reads,
-and log polling; `output.go` owns terminal presentation.
+and log polling. `agent_runtime_output.go` owns runtime log text, notices, and Pod
+diagnostics. `output.go` owns resource tables, structured output, and shared
+formatting helpers.
+
+Within `internal/occdev/`, `openshell_assets.go` owns local OpenShell chart and
+manifest selection, verified downloads, and source extraction. `openshell.go`
+owns their deployment, workspace resource rendering, and image import.
 
 ## Source ownership
 
@@ -57,6 +63,9 @@ behavior dependent on contracts; put implementation-specific behavior in the
 owning Driver or Backend and wire it through composition. See
 [platform architecture](design.md) for component interactions, implementation
 status, and remaining design requirements.
+
+Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
+container/Sandbox log types. `index.ts` remains their public export entrypoint.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.

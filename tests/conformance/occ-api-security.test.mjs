@@ -8,7 +8,7 @@ import {
   createRuntimeLogCursorCodec,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
@@ -293,6 +293,14 @@ test("development admission fails closed outside explicit loopback-only developm
     createFixture({ development: { trustedCidrs: ["not-a-cidr"] } }),
     /IPv4 CIDR/,
   );
+  // "08" is prefix 8, and "010" is decimal 10. Production trusted proxies refuse both.
+  for (const cidr of ["192.168.0.0/08", "10.0.0.010/32", "10.0.0.0/032"]) {
+    await assert.rejects(
+      createFixture({ development: { trustedCidrs: [cidr] } }),
+      /IPv4 CIDR/,
+      cidr,
+    );
+  }
 
   const fixture = await createFixture();
   const remote = await request(fixture.app, "/installation/bootstrap", {
@@ -683,6 +691,44 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     assert.equal(fixture.controller.pendingOperations().length, before);
   }
 
+  // Route-specific Preset defaults must still obey an explicitly smaller application limit.
+  for (const method of ["POST", "PATCH"]) {
+    const suffix = method === "PATCH" ? "/pre_00000000-0000-4000-8000-000000000001" : "";
+    const result = await request(
+      fixture.app,
+      `/namespaces/${tenantANamespaceId}/presets${suffix}`,
+      {
+        method,
+        body: {
+          name: "Bounded",
+          template: {
+            variables: { guidance: { type: "string", default: "Routine guidance. ".repeat(40) } },
+          },
+        },
+      },
+    );
+    assert.equal(result.response.status, 413);
+    assert.equal(fixture.controller.pendingOperations().length, before);
+  }
+
+  // So must the Configuration write defaults.
+  for (const method of ["POST", "PATCH"]) {
+    const suffix = method === "PATCH" ? "/cfg_00000000-0000-4000-8000-000000000001" : "";
+    const result = await request(
+      fixture.app,
+      `/namespaces/${tenantANamespaceId}/configurations${suffix}`,
+      {
+        method,
+        body: {
+          ...(method === "POST" ? { kind: "agent" } : {}),
+          values: { notes: "Routine notes. ".repeat(40) },
+        },
+      },
+    );
+    assert.equal(result.response.status, 413, method);
+    assert.equal(fixture.controller.pendingOperations().length, before);
+  }
+
   assert.equal(
     fixture.auditSink.events.filter(
       (event) => event.kind === "mutation" && event.resource.kind === "namespace",
@@ -700,9 +746,8 @@ test("NUL characters and unpaired surrogates are refused in bodies and path para
   const configurations = `/namespaces/${namespace.id}/configurations`;
   const nul = ["a NUL character", "INVALID_FORMAT"];
   const surrogate = ["an unpaired UTF-16 surrogate", "INVALID_VALUE"];
-  // A deep body inside the 64 KiB limit; its detail path keeps whole leading segments.
-  const deep = 30_000;
-  const deepPath = `/values/x${"/0".repeat((512 - "/values/x".length) >> 1)}`;
+  // A detail path too long for 512 characters keeps whole leading segments.
+  const longKey = "k".repeat(300);
   const cases = [
     ["/namespaces", '{"name":"lone \\ud800 surrogate"}', "/name", surrogate],
     ["/namespaces", '{"name":"trailing \\udc00"}', "/name", surrogate],
@@ -722,8 +767,8 @@ test("NUL characters and unpaired surrogates are refused in bodies and path para
     [configurations, `{"${"k".repeat(600)}\\u0000":1}`, `/${"k".repeat(511)}`, nul],
     [
       configurations,
-      `{"kind":"agent","values":{"x":${"[".repeat(deep)}"\\u0000"${"]".repeat(deep)}}}`,
-      deepPath,
+      `{"kind":"agent","values":{"x":{"${longKey}":{"${"m".repeat(300)}":"\\u0000"}}}}`,
+      `/values/x/${longKey}`,
       nul,
     ],
   ];
@@ -739,6 +784,15 @@ test("NUL characters and unpaired surrogates are refused in bodies and path para
     const shown = path.length <= room ? path : `${path.slice(0, room - 1)}…`;
     assert.equal(result.payload.error.message, `${before}${shown}${after}`);
   }
+  // A body nested past the depth bound is refused before its text is checked.
+  const deep = 30_000;
+  const tooDeep = await request(fixture.app, configurations, {
+    body: `{"kind":"agent","values":{"x":${"[".repeat(deep)}"\\u0000"${"]".repeat(deep)}}}`,
+  });
+  assert.equal(tooDeep.response.status, 400);
+  assert.deepEqual(tooDeep.payload.error.details, [
+    { path: `/values/x${"/0".repeat(23)}`, code: "TOO_DEEP" },
+  ]);
   // A surrogate pair is one well-formed character.
   const paired = await request(fixture.app, "/namespaces", { body: { name: "Paired \u{1F600}" } });
   assert.equal(paired.response.status, 201);
@@ -762,6 +816,128 @@ test("NUL characters and unpaired surrogates are refused in bodies and path para
     ).length,
     0,
   );
+});
+
+test("authentication routes refuse NUL characters and unpaired surrogates", async () => {
+  // The /api/auth/* routes sit outside the OCC API routes; PostgreSQL answered 5xx there.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const nul = "a NUL character";
+  const surrogate = "an unpaired UTF-16 surrogate";
+  const account = { email: "unstorable@example.test", password: "unstorable-password" };
+  const cases = [
+    [
+      "POST",
+      "/api/auth/accounts",
+      { ...account, email: "nul\u0000@example.test" },
+      "body",
+      "/email",
+      nul,
+    ],
+    ["POST", "/api/auth/accounts", { ...account, name: "Lone \ud800" }, "body", "/name", surrogate],
+    [
+      "POST",
+      "/api/auth/service-keys",
+      { servicePrincipalId: "sp\u0000", name: "key" },
+      "body",
+      "/servicePrincipalId",
+      nul,
+    ],
+    ["DELETE", "/api/auth/service-keys/key%00x", undefined, "params", "/keyId", nul],
+    ["GET", "/api/auth/accounts/user%00x", undefined, "params", "/userId", nul],
+    ["POST", "/api/auth/accounts/user%00x/enrol", undefined, "params", "/userId", nul],
+    [
+      "POST",
+      "/api/auth/accounts/user%00x/disable",
+      { expectedVersion: 1 },
+      "params",
+      "/userId",
+      nul,
+    ],
+    [
+      "POST",
+      "/api/auth/accounts/user/methods/m%00x/detach",
+      { expectedVersion: 1 },
+      "params",
+      "/methodId",
+      nul,
+    ],
+    [
+      "POST",
+      "/api/auth/recovery",
+      { userId: "user\ud800", expectedCurrentUserId: "user", expectedVersion: 1 },
+      "body",
+      "/userId",
+      surrogate,
+    ],
+  ];
+  const before = fixture.auditSink.events.length;
+  for (const [method, pathname, body, context, path, problem] of cases) {
+    const result = await request(fixture.app, pathname, {
+      method,
+      ...(body === undefined ? {} : { body }),
+    });
+    assert.equal(result.response.status, 400, `${method} ${pathname}`);
+    // The same code, message and field pointer as the OCC API routes: since #1441 the
+    // /api/auth/* error schema keeps validation details.
+    assert.deepEqual(result.payload.error, {
+      code: "INVALID_REQUEST",
+      message: `The request does not match the operation contract: ${context} ${path} contains ${problem}.`,
+      details: [{ path, code: problem === nul ? "INVALID_FORMAT" : "INVALID_VALUE" }],
+    });
+  }
+  assert.equal(fixture.auditSink.events.length, before);
+});
+
+test("account creation preserves hashed passwords through HTTP sign-in and session inspection", async (t) => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const app = fixture.createApp(fixture.administrator, {}, (options) =>
+    createFastifyApp({
+      ...options,
+      // In-memory persistence only; admission, IAM, account preparation, hashing and
+      // session handling are the real owners. Hosted PostgreSQL proves the transaction.
+      provisionAuthAccount: async (seed, event, prepared) => {
+        await fixture.auth.writePreparedAccount(prepared);
+        fixture.state.identities.push(seed.principal);
+        await fixture.auditSink.append(event);
+      },
+    }),
+  );
+  t.after(() => app.close());
+  const headers = authenticatedHeaders(fixture.app.defaultSession);
+  const email = "http-password-compatible@example.test";
+  const password = "account-password-\u0000-\ud800-\ufffd";
+  const create = (body, suppliedHeaders = headers) =>
+    app.inject({
+      method: "POST",
+      url: "/api/auth/accounts",
+      headers: suppliedHeaders,
+      payload: body,
+    });
+  assert.equal((await create({ email, password }, { origin: "http://127.0.0.1" })).statusCode, 401);
+  assert.equal(
+    (await create({ email, password }, { ...headers, origin: "https://foreign.example" }))
+      .statusCode,
+    403,
+  );
+  for (const invalidPassword of [123, "short"]) {
+    assert.equal((await create({ email, password: invalidPassword })).statusCode, 400);
+  }
+  const created = await create({ email, password });
+  assert.equal(created.statusCode, 201, created.body);
+  const signedIn = await app.inject({
+    method: "POST",
+    url: "/api/auth/sign-in/email",
+    headers: { origin: "http://127.0.0.1" },
+    payload: { email, password },
+  });
+  assert.equal(signedIn.statusCode, 200, signedIn.body);
+  const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
+  assert.ok(cookie);
+  const session = await app.inject({ url: "/api/auth/session", headers: { cookie } });
+  assert.equal(session.statusCode, 200, session.body);
+  assert.equal(session.json().data.user.id, created.json().data.id);
 });
 
 test("router failures answer the error envelope without echoing the path", async () => {
@@ -1431,7 +1607,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   for (const [label, forged, session] of [
     ["foreign principal", first.data.cursor, other.session],
     ["tampered", tamperedCursor, viewer.session],
-    ["another source", first.data.cursor.replace("v1.", "v1.e"), viewer.session],
+    ["another source", first.data.cursor.replace("v2.", "v2.e"), viewer.session],
   ]) {
     const rejected = await fixture.request(
       "GET",

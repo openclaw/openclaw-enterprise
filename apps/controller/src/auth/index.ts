@@ -162,6 +162,7 @@ import type {
   AdmittedSession,
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
+import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
 import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
 
 export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
@@ -172,6 +173,11 @@ const LOCAL_PASSWORD_MAX_LENGTH = 128;
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
+// The createServiceKey schema allows 1 to 32 characters, which Ajv counts in code points.
+// Better Auth counts UTF-16 units, so its own cap is twice that: a 32-emoji name is 64 units.
+// The schema stays the authority; storage is unbounded text.
+export const SERVICE_KEY_NAME_MAX_LENGTH = 32;
+const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
 const SAFE_COOKIE_DOMAIN =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 type ControllerPlugins = (
@@ -496,7 +502,7 @@ function setAuthHeaders(
 }
 
 function authFailure(error: unknown): { readonly status: number; readonly code: string } {
-  if (error instanceof AdmissionFailure) {
+  if (error instanceof AdmissionFailure || error instanceof RequestFailure) {
     return { status: error.status, code: error.code };
   }
   if (error instanceof APIError || (typeof error === "object" && error !== null)) {
@@ -526,6 +532,19 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
     }
   }
   return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+}
+
+/** Better Auth refused a service-key name's length; the route answers 400, not a 503. */
+export class ServiceKeyNameRefused extends Error {
+  constructor(cause: unknown) {
+    super("The service-key name was refused.", { cause });
+    this.name = "ServiceKeyNameRefused";
+  }
+}
+
+function serviceKeyNameRefusal(error: unknown): boolean {
+  const code = (error as { readonly body?: { readonly code?: unknown } } | null)?.body?.code;
+  return error instanceof Error && error.name === "APIError" && code === "INVALID_NAME_LENGTH";
 }
 
 /**
@@ -768,13 +787,16 @@ async function sendAuthEndpoint(
     reply.status(failure.status).send({
       error: {
         code: failure.code,
-        // Every caller checks the Origin before it reads any credential, so naming the refused
-        // Origin reveals nothing about the session or password; keep it that way, because the
+        // A malformed request names its offending field, as on every API route. Every caller
+        // checks the Origin before it reads any credential, so naming the refused Origin
+        // reveals nothing about the session or password; keep it that way, because the
         // endpoint's own message would misdirect a CLI user.
         message:
-          error instanceof AdmissionFailure && error.reason === "untrusted_origin"
-            ? UNTRUSTED_ORIGIN_MESSAGE
-            : failureMessage,
+          error instanceof RequestFailure
+            ? error.message
+            : error instanceof AdmissionFailure && error.reason === "untrusted_origin"
+              ? UNTRUSTED_ORIGIN_MESSAGE
+              : failureMessage,
       },
       meta: { requestId: request.id },
     });
@@ -1015,6 +1037,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         enableMetadata: true,
         enableSessionForAPIKeys: false,
         requireName: true,
+        maximumNameLength: SERVICE_KEY_NAME_MAX_UTF16_UNITS,
         rateLimit: { enabled: false },
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 },
       }),
@@ -1108,6 +1131,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       // Timing differences here are hidden by the slow lane's floor. Lookup failures
       // propagate, so an outage is 503 rather than a refusal.
       async isReserved(email) {
+        // Invalid spellings must not select a reserved account through storage normalization.
+        if (unstorableTextFailure("body", email) !== undefined) {
+          return false;
+        }
         if (humanLogin !== undefined) {
           // The recovery account is the documented way in when a provider is down, so
           // strangers spending its email can slow it but never refuse it.
@@ -1385,30 +1412,37 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         // Read from the validated input, not the credential pair, so the admission key
         // is plainly derived from the email alone.
         const email = String(input.email).trim().toLowerCase();
+        // An email with a NUL character or an unpaired surrogate is a 400, as on every API
+        // route. It is refused inside admission, so it spends budget like the bad-credential
+        // answer it replaces. The password is never stored as text and is not checked.
+        const unstorableEmail = unstorableTextFailure("body", { email: input.email });
         const deviceCookie = knownDeviceFromCookieHeader(request.headers.cookie, knownDeviceSecure);
         // The account's state is read only for an entry issued for this email, so a
         // forged or foreign cookie reads nothing; a stale entry just means no exemption.
         let deviceConstraints: readonly string[] = [];
-        const device = await verifyKnownDevice(
-          options.secret,
-          email,
-          deviceCookie,
-          Date.now(),
-          knownDeviceState,
-          (keys, read) => {
-            deviceConstraints = keys;
-            return knownDeviceReads.admit(
-              keys.map((key) => admissionKey("device", key)),
-              async () => {
-                const state = await read();
-                // A completed fresh read can establish a stale/disabled entry. Only
-                // an unavailable proof retains constraints; it never grants an exemption.
-                deviceConstraints = [];
-                return state;
-              },
-            );
-          },
-        );
+        const device =
+          unstorableEmail === undefined
+            ? await verifyKnownDevice(
+                options.secret,
+                email,
+                deviceCookie,
+                Date.now(),
+                knownDeviceState,
+                (keys, read) => {
+                  deviceConstraints = keys;
+                  return knownDeviceReads.admit(
+                    keys.map((key) => admissionKey("device", key)),
+                    async () => {
+                      const state = await read();
+                      // A completed fresh read can establish a stale/disabled entry. Only
+                      // an unavailable proof retains constraints; it never grants an exemption.
+                      deviceConstraints = [];
+                      return state;
+                    },
+                  );
+                },
+              )
+            : undefined;
         // The address lane needs a trusted proxy: without one, browsers behind the ingress
         // share its address, so only the email (or known-device) lane applies.
         const attempt = {
@@ -1421,9 +1455,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         if (humanLogin) {
           // The curated endpoint checks the password, issues the session and marks the
           // browser as a known device; only credential rejections spend budget.
-          return passwordAdmission.admit(attempt, () =>
-            runPrivateEndpoint(request, "/oce/password", body),
-          );
+          return passwordAdmission.admit(attempt, async () => {
+            // Preserve the guarded denial audit without looking up the invalid email.
+            if (unstorableEmail !== undefined) {
+              try {
+                await humanLogin.recordPasswordDenial();
+              } catch (error) {
+                throw new DenialAuditUnavailable(error);
+              }
+              throw unstorableEmail;
+            }
+            return runPrivateEndpoint(request, "/oce/password", body);
+          });
         }
         return passwordAdmission.admit(attempt, async () => {
           const audit = options.passwordSignInAudit;
@@ -1431,9 +1474,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // password reset or account recreation that commits during the sign-in then bumps
           // the state past it and revokes the entry, instead of the old password's sign-in
           // being bound to the new state. A failed read only skips the marking.
-          const accountState = await knownDeviceState(email).catch(() => undefined);
+          const accountState =
+            unstorableEmail === undefined
+              ? await knownDeviceState(email).catch(() => undefined)
+              : undefined;
           let result;
           try {
+            // Audited as a refusal, as Better Auth's own invalid-email answer was.
+            if (unstorableEmail !== undefined) {
+              throw unstorableEmail;
+            }
             result = await api.signInEmail({
               body: { ...body, rememberMe: true },
               headers: authHeaders(request.headers),
@@ -1618,18 +1668,25 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.
-      const created = await api.createApiKey({
-        body: {
-          configId: SERVICE_KEY_CONFIG,
-          userId: principal.id,
-          name,
-          ...(expiresIn === undefined ? {} : { expiresIn }),
-          metadata: {
-            installationId: options.installationId,
-            ...(principal.namespaceId === undefined ? {} : { namespaceId: principal.namespaceId }),
+      let created;
+      try {
+        created = await api.createApiKey({
+          body: {
+            configId: SERVICE_KEY_CONFIG,
+            userId: principal.id,
+            name,
+            ...(expiresIn === undefined ? {} : { expiresIn }),
+            metadata: {
+              installationId: options.installationId,
+              ...(principal.namespaceId === undefined
+                ? {}
+                : { namespaceId: principal.namespaceId }),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
+      }
       return { ...serviceKeyDetails(created, options.installationId)!, key: created.key };
     },
     async getServiceKey(id) {
