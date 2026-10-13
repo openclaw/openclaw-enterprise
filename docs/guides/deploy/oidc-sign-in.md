@@ -155,10 +155,11 @@ kubectl -n openclaw-system create secret generic occ-oidc-ca-v1 \
 ```
 
 First select the database's existing approved CA roots through
-`database.caSecretName`. The application database URL must use
+`database.caSecretName`. The application database URL must name the database by
+DNS hostname, not an IP address, and use
 `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem` (adjust the path
 to `database.caMountPath` and `database.caKey`). A mounted CA without this URL
-selection is refused before the API starts. See the
+selection, or an IP database host, is refused before the API starts. See the
 [database trust prerequisite](../../reference/settings/oidc.md) for accepted configuration.
 
 Add these values alongside the enabled OIDC configuration:
@@ -177,7 +178,9 @@ pause automatic restarts, and drain admitted requests. Retain one serving contro
 After the upgrade, verify recovery sign-in, IdP sign-in and Gateway access through
 restricted access before reopening ingress; keep ingress closed on failure.
 
-Set both values or neither. Clear both when disabling OIDC. The API's
+Set both values or neither. Clear both when disabling OIDC. The IdP CA Secret may
+be the public trust bundle Secret named by `gatewayRouting.caSecretName` (with its
+own key), never a credential Secret or `database.caSecretName`. The API's
 `assemble-api-ca` init container validates this bundle and any selected Gateway
 CA bundle, then combines them. Each input must contain only PEM CA certificates
 and be no larger than 1 MiB. A missing Secret or key prevents startup; empty,
@@ -194,7 +197,10 @@ Node's default trust. The chart does not add IdP roots to workers, Jobs,
 or Agent Pods. It preserves the Gateway CA selected by the chart, including an
 external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replace
 `NODE_EXTRA_CA_CERTS` separately. URL, port, hostname, certificate and token checks
-still apply. See the [trust contract](../../reference/settings/oidc.md).
+still apply. If the IdP certificate already chains to a root in the
+`gatewayRouting.caSecretName` bundle, the API trusts it without these values, but that
+bundle also reaches workers and database clients; use these values to keep IdP trust
+API-only with isolated database trust. See the [trust contract](../../reference/settings/oidc.md).
 
 For rotation, use the same
 [stopped-maintenance sequence](production-installation.md#enable-github-browser-sign-in)

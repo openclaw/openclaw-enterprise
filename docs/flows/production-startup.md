@@ -1,6 +1,6 @@
 ---
 created: 2026-08-25
-updated: "2026-10-11"
+updated: "2026-10-13"
 last_updated_session: "authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93"
 ---
 
@@ -160,14 +160,11 @@ the Job. Helm failure does not imply database-hook rollback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-With [OIDC CA settings](../reference/settings/oidc.md), `deploy/helm/openclaw-enterprise/templates/deployments.yaml:1`
-runs `deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs:1` first, combining
-validated IdP/Gateway certificates. Invalid input blocks startup. Node loads the
-read-only result through `NODE_EXTRA_CA_CERTS` for default-trust API clients.
-`deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs:1` preloads before
-the server, requiring the actual PostgreSQL parser to select the mounted database
-CA with verified TLS. Failure exits without logging credentials. Pod replacement
-reloads IdP trust; workers receive no IdP roots.
+With [OIDC CA settings](../reference/settings/oidc.md), the API init container
+`deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs` validates and combines
+IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
+`deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
+database TLS not pinned to the database CA.
 
 After initialization, separate API/worker Deployments start. Before readiness,
 the API validates production listener settings, Better Auth, database access,
@@ -330,10 +327,7 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
-- 2026-10-08 23:16: Enforce independent database trust before API startup. (authoring-run/8c751025-b9a7-44f2-8342-d1eeb0832186 - b69b6ffc63398fac12d1a028198c3452878aa013)
-
-- 2026-10-08 22:12: Trace private IdP CA assembly and startup refusal. (authoring-run/c63bb502-5d8d-4ab7-807a-9ca22d609986 - 52a54734de41cc62fd57b2fb3081a979057a0059)
-
+- 2026-10-13: Trace OIDC CA assembly and the database trust preload.
 - 2026-10-11 18:29: Validate database URL Secret keys. (authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93 - 19304cadb9a8b8c6473a22b183055ff7b5852e02)
 
 - 2026-10-10 08:22: Retain Namespace and bootstrap guidance with peer-map validation. (authoring-run/3cecc2d2-5f5c-4ce3-9901-928542c3d370 - ac237c12f504fd8f49a5e66c05a8d3865b13444e)

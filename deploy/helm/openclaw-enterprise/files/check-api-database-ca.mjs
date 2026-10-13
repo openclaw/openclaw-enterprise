@@ -1,6 +1,7 @@
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 
 // Loaded before the API entrypoint, in its own process and credential environment.
@@ -32,19 +33,25 @@ try {
   // Workload identity uses the same parser and preserves ssl.ca when adding its token.
   const require = createRequire(resolve("packages/occ/package.json"));
   const { Client } = require("pg");
-  const { ssl } = new Client({ connectionString: databaseUrl }).connectionParameters;
+  const { host, ssl } = new Client({ connectionString: databaseUrl }).connectionParameters;
   if (
     !ssl ||
     ssl.ca !== ca ||
     ssl.rejectUnauthorized === false ||
-    ssl.checkServerIdentity !== undefined
+    ssl.checkServerIdentity !== undefined ||
+    // pg sets the TLS servername only for DNS hosts. For an IP literal Node then checks
+    // the certificate against "localhost", so verify-full would not verify the host.
+    // A Unix socket path has no certificate identity either.
+    typeof host !== "string" ||
+    isIP(host.replace(/^\[(.*)\]$/, "$1")) !== 0 ||
+    host.startsWith("/")
   ) {
     throw new Error();
   }
 } catch {
   // URL, parser and filesystem exceptions can contain credentials. Never print them.
   process.stderr.write(
-    "OIDC CA trust requires OCC_DATABASE_URL with sslmode=verify-full and sslrootcert selecting the mounted database CA; duplicate parameters and nested connection strings are unsupported.\n",
+    "OIDC CA trust requires OCC_DATABASE_URL with a DNS hostname (not an IP address), sslmode=verify-full and sslrootcert selecting the mounted database CA; duplicate parameters and nested connection strings are unsupported.\n",
   );
   process.exit(1);
 }

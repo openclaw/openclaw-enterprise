@@ -560,6 +560,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $signIn := index $.Values.auth $provider -}}
 {{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
 {{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled -}}{{- $roles = append $roles (list "auth.oidc.caSecretName" .Values.auth.oidc.caSecretName "ca") -}}{{- end -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}

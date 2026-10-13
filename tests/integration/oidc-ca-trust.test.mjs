@@ -110,6 +110,9 @@ test("OIDC CA chart refuses partial, malformed and disabled configuration", tool
     { ...caValues, "auth.oidc.caSecretName": "occ-oidc-login" },
     { ...caValues, "database.caSecretName": "" },
     { ...caValues, "database.caSecretName": "idp-ca" },
+    // A public CA Secret must not double as a credential Secret another component mounts.
+    { ...caValues, "auth.oidc.caSecretName": "occ-database" },
+    { ...caValues, "auth.oidc.caSecretName": "occ-auth" },
     { "auth.oidc.caSecretName": "idp-ca" },
     { "auth.oidc.caSecretKey": "roots.pem" },
     ...["true", "42", "Bad_Name", "../ca", "bad..name", "a".repeat(254)].map((value) => ({
@@ -143,6 +146,23 @@ test("OIDC CA chart refuses partial, malformed and disabled configuration", tool
       },
     );
   }
+});
+
+test("OIDC CA may share a public trust bundle Secret with the Gateway CA", tooling, async () => {
+  const shared = { ...externalGatewayCa, "gatewayRouting.caSecretName": "site-ca" };
+  const api = pod(
+    await render({ ...oidcValues, ...shared, ...caValues, "auth.oidc.caSecretName": "site-ca" }),
+    "api",
+  );
+  assert.deepEqual(
+    api.volumes
+      .filter(({ name }) => ["oidc-ca", "gateway-ca"].includes(name))
+      .map(({ secret }) => secret),
+    [
+      { secretName: "site-ca", items: [{ key: "roots.pem", path: "ca.crt" }] },
+      { secretName: "site-ca", items: [{ key: "gateway.pem", path: "ca.crt" }] },
+    ],
+  );
 });
 
 async function temporaryDirectory(t) {
@@ -420,19 +440,21 @@ test(
       socket.once("close", () => sockets.delete(socket));
     });
     server.on("tlsClientError", () => {});
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // Listen and connect through the same "localhost" lookup: the certificate names
+    // DNS:localhost, and the guard refuses IP literal database hosts.
+    await new Promise((resolve) => server.listen(0, "localhost", resolve));
     t.after(async () => {
       for (const socket of sockets) {
         socket.destroy();
       }
       await new Promise((resolve) => server.close(resolve));
     });
-    const connection = (search, password = "synthetic-secret") =>
+    const connection = (search, password = "synthetic-secret", host = "localhost") =>
       syntheticCredentialUrl({
         protocol: "postgresql",
         username: "synthetic-user",
         password,
-        host: "127.0.0.1",
+        host,
         port: server.address().port,
         pathname: "/synthetic",
         search: `?sslnegotiation=direct&${search}`,
@@ -496,6 +518,51 @@ test(
       await refused(connection(query));
     }
     await refused("malformed synthetic-user synthetic-secret %");
+    // pg sends no TLS servername for an IP host, so Node checks the certificate against
+    // "localhost": a CA-signed DNS:localhost leaf would pass verify-full for any IP. The
+    // guard refuses IP hosts, including a host parameter override and a Unix socket.
+    let ipHandshakes = 0;
+    const ipServer = createTlsServer(
+      { key: database["leaf.key"], cert: database["leaf.pem"] },
+      (socket) => {
+        ipHandshakes++;
+        socket.once("data", () => socket.destroy());
+      },
+    );
+    ipServer.on("tlsClientError", () => {});
+    await new Promise((resolve) => ipServer.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      ipServer.closeAllConnections?.();
+      await new Promise((resolve) => ipServer.close(resolve));
+    });
+    const ipConnection = (search) =>
+      syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "synthetic-user",
+        password: "synthetic-secret",
+        host: "127.0.0.1",
+        port: ipServer.address().port,
+        pathname: "/synthetic",
+        search: `?sslnegotiation=direct&${search}`,
+      });
+    for (const url of [
+      ipConnection(selected),
+      connection(selected, undefined, "[::1]"),
+      connection(`${selected}&host=127.0.0.1`),
+      connection(`${selected}&host=${encodeURIComponent("/var/run/postgresql")}`),
+    ]) {
+      await refused(url);
+    }
+    assert.equal(ipHandshakes, 0, "an IP database host must not reach a TLS handshake");
+    // Without the guard the pinned client accepts that substitution: the same URL
+    // completes a verified handshake with the DNS:localhost certificate.
+    const unguarded = await execute(
+      process.execPath,
+      ["tests/fixtures/oidc-ca-postgres-consumer.mjs"],
+      { env: { OCC_DATABASE_URL: ipConnection(selected) }, timeout: 10000 },
+    );
+    assert.match(unguarded.stdout, /^entrypoint\n/);
+    assert.equal(ipHandshakes, 1, "the unguarded client trusts an IP host as localhost");
     for (const material of [
       "",
       "not a certificate",

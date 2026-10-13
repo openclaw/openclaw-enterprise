@@ -23,24 +23,29 @@ with OIDC, or an HTTP base URL.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both
-or neither, and only while OIDC is enabled. The CA Secret must differ from the
-OIDC client credential Secret. Helm rejects invalid names, keys and partial
+or neither, and only while OIDC is enabled. The CA Secret must not be a credential
+Secret the chart reads or `database.caSecretName`; it may share a public trust bundle
+Secret with `gatewayRouting.caSecretName` or `repositoryCredentials.publicCaSecretName`.
+Helm rejects invalid names, keys, shared credential Secrets and partial
 configuration. Required Secret projection and the `assemble-api-ca` init container
 gate API startup. Each input must contain only parseable PEM CA certificates, at
 most 1 MiB, without private keys or leaf certificates. This also applies to a
 selected Gateway CA bundle when OIDC CA trust is configured.
 
 This opt-in also requires a separately selected `database.caSecretName`, distinct
-from the IdP CA Secret. The application URL must use `sslmode=verify-full` and
+from the IdP CA Secret. The application URL must name the database by DNS hostname
+and use `sslmode=verify-full` and
 `sslrootcert=<database.caMountPath>/<database.caKey>`; mounting the Secret alone
-is insufficient. Preserve the database's approved roots in that certificate-only
+is insufficient. IP literal and Unix socket hosts are refused: the PostgreSQL client
+sends no TLS server name for an IP host, so Node would check the certificate against
+`localhost` instead of the address. Preserve the database's approved roots in that certificate-only
 PEM bundle (at most 1 MiB), including public roots if needed. Do not add IdP roots
 unless they were independently approved for the database.
 
 Before loading the server, the API checks its actual `OCC_DATABASE_URL` with the
 installed PostgreSQL client parser and refuses absent, unreadable, empty or invalid
-CA material, ineffective TLS settings, duplicate URL parameters and nested
-connection strings. Errors omit the URL and credentials. Password and workload-identity
+CA material, ineffective TLS settings, IP or socket hosts (including a `host`
+parameter), duplicate URL parameters and nested connection strings. Errors omit the URL and credentials. Password and workload-identity
 pools retain this explicit CA; database TLS does not inherit the added IdP roots or
 Node's default roots. This checks local configuration at each API process start,
 not database reachability.
