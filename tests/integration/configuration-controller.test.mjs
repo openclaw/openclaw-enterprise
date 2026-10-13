@@ -2720,6 +2720,29 @@ test("Configuration and Preset saves read a git config value as a proxy when its
       },
     },
     mcp: { servers: { docs: { command: "docs-mcp", env } } },
+    // Each Agent's sandbox runs with the defaults' environment and its own, not another Agent's.
+    agents: {
+      ownership: "explicit",
+      entries: {
+        a: {
+          sandbox: {
+            docker: {
+              env: { GIT_CONFIG_KEY_0: "http.proxy", GIT_CONFIG_VALUE_0: "http://proxy:3128" },
+            },
+          },
+        },
+        b: {
+          sandbox: {
+            docker: {
+              env: {
+                GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
+                GIT_CONFIG_VALUE_0: "git@github.com:",
+              },
+            },
+          },
+        },
+      },
+    },
   };
   const created = await request(context.app, "POST", configurations, {
     body: { kind: "agent", values: accepted },

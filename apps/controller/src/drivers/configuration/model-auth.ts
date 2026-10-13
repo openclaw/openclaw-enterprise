@@ -547,16 +547,18 @@ export function validateModelCredentialReferences(
     // A `GIT_CONFIG_VALUE_<n>` whose `GIT_CONFIG_KEY_<n>` names a proxy is a proxy too, read
     // without a scheme as http: git and curl send its userinfo as Proxy-Authorization (finding
     // 1276). Keys pair across the maps OpenClaw merges into one environment: `env`, `env.vars` and
-    // every skill's (the Gateway's process), and the Docker sandbox's defaults and every Agent's.
+    // every skill's (the Gateway's process), and the Docker sandbox defaults' with each Agent's.
     // On a Preset save, a key or name that waits on a variable is matched as the text around it
     // (`namesGitProxy`), and a name that waits on one pairs with every index; so does a key's
     // `${VAR}` reference, which may render any text.
-    const merged = (prefix: SettingPath): string =>
+    const merged = (prefix: SettingPath): "process" | "defaults" | "agent" | undefined =>
       prefix[0] === "env" || prefix[0] === "skills"
         ? "process"
         : prefix[0] === "agents" && prefix.includes("docker")
-          ? "sandbox"
-          : prefix.join("\0");
+          ? prefix[1] === "defaults"
+            ? "defaults"
+            : "agent"
+          : undefined;
     const slots = environments.map(([prefix, settings]) =>
       Object.entries(settings ?? {}).map(([name, value]) => {
         const literal = options.unresolved?.([...prefix, name], true)?.join("");
@@ -580,10 +582,9 @@ export function validateModelCredentialReferences(
         };
       }),
     );
-    const proxyKeys = new Map<string, Set<string | undefined>>();
-    for (const [position, [prefix]] of environments.entries()) {
-      const keys = proxyKeys.get(merged(prefix)) ?? new Set();
-      proxyKeys.set(merged(prefix), keys);
+    // The indices of each map's keys that name a proxy (`undefined` for any index).
+    const proxyKeys = environments.map(([prefix], position) => {
+      const keys = new Set<string | undefined>();
       for (const { name, value, index, key } of slots[position] ?? []) {
         if (!key || typeof value !== "string") {
           continue;
@@ -597,9 +598,28 @@ export function validateModelCredentialReferences(
           keys.add(index);
         }
       }
-    }
+      return keys;
+    });
+    const union = (...groups: string[]) =>
+      new Set(
+        environments.flatMap(([prefix], position) =>
+          groups.includes(merged(prefix) ?? "") ? [...(proxyKeys[position] ?? [])] : [],
+        ),
+      );
+    const gateway = union("process");
+    const defaults = union("defaults");
+    const sandbox = union("defaults", "agent");
     for (const [position, [prefix]] of environments.entries()) {
-      const keys = proxyKeys.get(merged(prefix)) ?? new Set();
+      const own = proxyKeys[position] ?? new Set();
+      const group = merged(prefix);
+      const paired =
+        group === "process"
+          ? [gateway]
+          : group === "defaults"
+            ? [sandbox]
+            : group === "agent"
+              ? [defaults, own]
+              : [own];
       for (const { name, value, proxy, index, gitValue, parameters } of slots[position] ?? []) {
         const path = [...prefix, name];
         refuseEnvironmentUserinfo(
@@ -607,7 +627,10 @@ export function validateModelCredentialReferences(
           value,
           proxy ||
             (gitValue &&
-              (keys.has(undefined) || (index === undefined ? keys.size > 0 : keys.has(index)))),
+              paired.some(
+                (keys) =>
+                  keys.has(undefined) || (index === undefined ? keys.size > 0 : keys.has(index)),
+              )),
         );
         // `git -c` pairs: each value whose key names a proxy.
         if (parameters && typeof value === "string") {
