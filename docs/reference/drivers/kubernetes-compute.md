@@ -6,7 +6,7 @@ gateway for each deployed Agent. Dedicated Gateways and Harnesses use separate
 Pods, identities and volumes within that namespace; embedded OpenClaw combines
 them in one Pod.
 The experimental `executionCluster` configuration selects a second Kubernetes
-API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/two-cluster-local.md)
+API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
 before using it; cloud deployment and complete runtime acceptance remain pending.
 
 New managed tenant namespaces are named `oce-` plus the first 15 hexadecimal

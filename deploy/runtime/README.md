@@ -203,7 +203,7 @@ docker run --rm openclaw-enterprise-runtime:quickstart \
 
 Then run the runtime startup smoke from the repository root with host Node.js
 24+. The image test environment and Docker fixture requirements are documented in
-[Image and Helm tests](../../docs/testing/images.md#runtime-image-startup-test-environment):
+[Image and Helm tests](../../docs/testing/docker.md#runtime-image-startup-test-environment):
 
 ```bash
 node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env

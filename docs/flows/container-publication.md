@@ -214,7 +214,7 @@ owns package-write access and coordination.
 - Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
-- Run the [registry integration](../testing/images.md#container-publication-registry-proof)
+- Run the [registry integration](../testing/docker.md#container-publication-registry-proof)
   to check real Skopeo alias replacement against a disposable local registry.
   This does not prove GHCR access.
 - Run `actionlint .github/workflows/container-publish.yml` for workflow syntax.
@@ -233,7 +233,7 @@ owns package-write access and coordination.
 - [Publication and recovery instructions](../../.github/containers.md)
 - [Chart publication and pull](../../.github/chart-publication.md)
 - [Package bootstrap flow](container-package-bootstrap.md)
-- [Image startup checks](../testing/images.md)
+- [Image startup checks](../testing/docker.md#images-and-helm)
 
 ## Manual Notes
 

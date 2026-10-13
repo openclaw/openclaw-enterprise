@@ -164,5 +164,5 @@ remembers the Agent name; use a new name for the next run.
 - **OpenShell rejects the default Harness:** rerun with `--harness codex` and a
   new Agent name. Embedded OpenClaw remains unsupported with OpenShell.
   Contributors reproducing the Compose-plus-k3d path can use the
-  [OpenShell first-Agent handoff](../testing/openshell-first-agent.md) for exact
+  [OpenShell first-Agent handoff](../testing/openshell.md#first-agent-proof) for exact
   setup and recovery checks.

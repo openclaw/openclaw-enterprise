@@ -83,7 +83,7 @@ else
 fi
 ```
 
-Before installation, [check each digest](../../testing/images.md#check-published-images)
+Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
 them.
 
@@ -176,7 +176,7 @@ unlike the `codex` profile's default hosted PAT-backed discovery.
 
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
-[Verify installation image selections](../../testing/images.md#verify-installation-image-selections).
+[Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
 
 ### Shared bootstrap PVC and configuration checks
 
