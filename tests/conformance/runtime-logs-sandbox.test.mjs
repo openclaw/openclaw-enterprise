@@ -185,8 +185,9 @@ function sandboxApp() {
 
 async function sandboxFixture({ client, sandboxName } = {}) {
   const gateway = logOnlyGatewayClient();
-  const fixture = await sandboxApp();
+  // Set before the first build, so even a read while the app starts reaches this test.
   current = { client: client ?? gateway.client, sandboxName };
+  const fixture = await sandboxApp();
   const auditFrom = fixture.auditSink.events.length;
   const target = await fixture.deployAgent("sandbox-logs");
   return {
