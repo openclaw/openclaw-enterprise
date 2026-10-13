@@ -4,7 +4,8 @@ OpenClaw Enterprise (OCE) is pre-alpha and has no stable release, so a newer
 main can refuse or break an Installation that an older build created. Each
 change like that gets an entry here: what breaks, who is affected, how to tell,
 and the steps. Before an upgrade, read every entry dated after the source commit
-you run now, here and in the [earlier notices](breaking-changes-archive.md),
+you run now, here, in the [earlier notices](breaking-changes-archive.md) and in the
+[notices before 2026-10-10](breaking-changes-before-2026-10-10.md),
 then follow the [upgrade checklist](upgrade-checklist.md) and
 [production image upgrades](production-upgrade.md).
 
