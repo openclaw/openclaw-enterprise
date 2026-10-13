@@ -39,9 +39,10 @@ const defaultCodexPreset = JSON.parse(
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 
-// Cases moved unchanged from console-agents.test.mjs: provisioning retries, model selection,
-// creation conflicts and duplicate-write guards. The file was split so the two parts run side by
-// side in the Console Browser 2 lane.
+// Cases moved unchanged from the first console-agents test file: provisioning retries, model
+// selection, creation conflicts and duplicate-write guards. The file was split so the two parts run
+// side by side in the Console Browser 2 lane. Name sibling test files only by suffix: CI Impact
+// runs full CI for a test file that another file names.
 
 test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);

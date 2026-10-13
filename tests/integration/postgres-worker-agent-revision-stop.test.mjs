@@ -23,9 +23,9 @@ import {
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Agent stop and its Gateway drain, Agent deletion and Namespace teardown, moved unchanged from
-// postgres-worker-agent-revision-teardown.test.mjs, which keeps the repository session cases, so
-// the two run side by side in the PostgreSQL Application lane. Deployment and dispatch cases, and
-// the persisted deploy, stop and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
+// the -teardown sibling, which keeps the repository session cases, so the two run side by side in
+// the PostgreSQL Application lane. Deployment and dispatch cases, and the persisted deploy, stop
+// and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
