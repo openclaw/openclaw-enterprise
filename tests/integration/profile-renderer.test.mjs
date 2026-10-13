@@ -1452,6 +1452,69 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
   }
 });
 
+// Node accepts both and writes a deployable file; the chart then refuses it.
+test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible characters", () => {
+  const refusals = [
+    [
+      "host must not be an IPv4-mapped IPv6 address; the chart's URL parser rejects it. Write the IPv4 address instead.",
+      ["https://[::ffff:192.0.2.1]", "https://[::FFFF:c000:201]:8443", "https://[::ffff:0:0]"],
+    ],
+    [
+      "host must not percent-encode a space or invisible character; the chart refuses it in the decoded host.",
+      [
+        "https://ex%C2%ADample.com",
+        "https://ex%E2%80%8Bample.com:8443",
+        "https://ex%ef%bb%bfample.com",
+      ],
+    ],
+  ];
+  for (const [refusal, urls] of refusals) {
+    for (const authBaseUrl of urls) {
+      const error = renderError(() => render("openclaw", externalSignInInput({ authBaseUrl })));
+      assert.equal(existsSync(join(error.profileRendererDirectory, "values.yaml")), false);
+      const preflight = JSON.parse(
+        readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
+      );
+      assert.deepEqual(
+        preflight.errors.filter((message) => message.includes("authBaseUrl")),
+        [`controlPlane.authBaseUrl ${refusal}`],
+        authBaseUrl,
+      );
+    }
+  }
+  for (const authBaseUrl of ["https://[::192.0.2.1]", "https://[::ffff:1:2:3]:8443"]) {
+    const output = render("openclaw", externalSignInInput({ authBaseUrl }));
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+  }
+});
+
+// The chart lowercases the header before its checks and before OCC_AUTH_CLIENT_IP_HEADER.
+test("trusted proxy client address headers render lowercase", () => {
+  const trustedProxy = (preset, clientAddressHeader) =>
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        trustedProxy: { preset, cidrs: ["10.42.0.0/16"], clientAddressHeader },
+      },
+    });
+  for (const [preset, header] of [
+    ["generic", "X-Real-IP"],
+    ["ingress-nginx", "X-Forwarded-For"],
+  ]) {
+    const output = render("openclaw", trustedProxy(preset, header));
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.equal(
+      loadYaml(output.values).api.trustedProxy.clientAddressHeader,
+      header.toLowerCase(),
+    );
+  }
+  assertPreflightFailure(
+    "openclaw",
+    trustedProxy("generic", "Cookie"),
+    /controlPlane\.trustedProxy\.clientAddressHeader cannot be cookie;/,
+  );
+});
+
 // The API lowercases both domains at startup, and the chart accepts only lowercase.
 test("native admin domains render lowercase for the chart", () => {
   const output = render(
@@ -2028,6 +2091,12 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
     "openclaw",
     baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
     message,
+  );
+  // Compute refuses an unspecified runtime proxy host, which reaches the gateway Pod itself.
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({ channels: { runtimeProxyUrl: "http://0.0.0.0:3128" } }),
+    /channels\.runtimeProxyUrl must not use host 0\.0\.0\.0, which reaches the gateway Pod itself, not a proxy\./,
   );
   const accepted = render(
     "openclaw",

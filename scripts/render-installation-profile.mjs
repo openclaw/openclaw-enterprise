@@ -38,10 +38,14 @@ const secretKeyRule = {
   validate: isKubernetesSecretKey,
   description: "a Kubernetes Secret key of at most 253 characters",
 };
-// The chart's rule for every images.* value, including the controller (which
-// also feeds prepare-bootstrap-volume), and for repository credentials.
-// runtime.image uses it too: Helm applies the same pattern to images.gateway
-// and images.agent.
+// runtime.image reaches only KubernetesComputeDriver (installation.yaml images.gateway
+// and images.agent), never the chart. Compute requires only the trailing digest, so this
+// keeps the old rule: no whitespace or second @, which no runtime pulls. The chart's
+// control-plane rule would refuse working references such as an IPv6 registry host
+// ([fd00::1]:5000/runtime@sha256:...).
+const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
+// The chart's rule for the images it renders: the controller (which also feeds
+// prepare-bootstrap-volume) and repository credentials.
 const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
@@ -302,6 +306,11 @@ function stripUrlEdges(value) {
 // host instead. Escapes whose first hex digit is 8-F stay, because Helm decodes those and
 // then checks the host (https://ex%C3%A4.com). %25, a truncated %, and %GG already fail URL
 // parsing. An IPv4 host that contains % and decodes to an IPv4 address stays on ipv4HostKept.
+// The chart runs its character checks on the decoded host too. Node drops some invisible
+// characters such as U+00AD and U+200B from a host, so https://ex%C2%ADample.com parses here
+// and fails in the chart; check the decoded written host. (Node already refuses the chart's
+// compatibility characters, encoded or not.) Go's URL parser also refuses an IPv4-mapped IPv6
+// host (::ffff:0:0/96) in any spelling, which Node accepts and publishes as [::ffff:x:y].
 function httpOrigin(value) {
   const stripped = stripUrlEdges(value);
   if (
@@ -333,6 +342,23 @@ function httpOrigin(value) {
   const writtenHost = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
   if (writtenHost !== undefined && /%[0-7][0-9A-Fa-f]/.test(writtenHost)) {
     return "host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
+  }
+  if (writtenHost !== undefined && writtenHost.includes("%")) {
+    let decodedHost;
+    try {
+      decodedHost = decodeURIComponent(writtenHost);
+    } catch {
+      return false;
+    }
+    if (/[^\p{L}\p{M}\p{N}\p{P}\p{S}\u200c\u200d]/u.test(decodedHost)) {
+      return "host must not percent-encode a space or invisible character; the chart refuses it in the decoded host.";
+    }
+  }
+  if (url.hostname.startsWith("[")) {
+    const groups = ipv6Groups(url.hostname.slice(1, -1));
+    if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+      return "host must not be an IPv4-mapped IPv6 address; the chart's URL parser rejects it. Write the IPv4 address instead.";
+    }
   }
   return true;
 }
@@ -925,15 +951,17 @@ function renderTrustedProxy(source, diagnostics) {
     description:
       "an IPv4 or IPv6 CIDR with a nonzero prefix, no zone ID, a prefix of 1 through 32 for an IPv4-mapped address, and not covering every IPv4 address",
   });
+  // Like the chart, which lowercases the header before its checks and before it sets
+  // OCC_AUTH_CLIENT_IP_HEADER: X-Forwarded-For is x-forwarded-for.
   const clientAddressHeader = optionalString(
     source,
     [...path, "clientAddressHeader"],
     diagnostics,
     {
-      pattern: /^[a-z0-9][a-z0-9-]{0,63}$/,
-      description: "a single lowercase HTTP header name of at most 64 characters",
+      validate: (value) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(value.toLowerCase()),
+      description: "a single HTTP header name of at most 64 characters",
     },
-  );
+  )?.toLowerCase();
   // Same list and order as the chart's api.trustedProxy.clientAddressHeader refusal.
   const refusedClientAddressHeaders = [
     "x-occ-client-ip",
@@ -1350,7 +1378,7 @@ function buildRendered(profile, parsed, diagnostics) {
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
-    pattern: controlPlaneDigestImage,
+    pattern: digestImage,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
@@ -1785,7 +1813,11 @@ function buildRendered(profile, parsed, diagnostics) {
                 : {
                     channels: {
                       proxyUrl: asString(channels, ["channels", "runtimeProxyUrl"], diagnostics, {
-                        validate: isLiteralIpv4ProxyUrl,
+                        // Compute refuses 0.0.0.0, which reaches the gateway Pod itself.
+                        validate: (value) =>
+                          isLiteralIpv4ProxyUrl(value) && /^https?:\/\/0\.0\.0\.0:/.test(value)
+                            ? "must not use host 0.0.0.0, which reaches the gateway Pod itself, not a proxy."
+                            : isLiteralIpv4ProxyUrl(value),
                         description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
                       }),
                     },

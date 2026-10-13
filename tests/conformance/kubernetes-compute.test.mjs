@@ -4874,6 +4874,34 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
       },
     );
   }
+  // An unspecified host reaches the gateway Pod itself, and an IPv4-mapped host leaves as
+  // IPv4 traffic that the IPv6 egress ipBlock never matches.
+  for (const proxyUrl of [
+    "http://0.0.0.0:3128",
+    "http://[::]:3128",
+    "http://[0:0:0:0:0:0:0:0]:3128",
+    "https://[::ffff:10.42.0.15]:8443",
+    "https://[::FFFF:0A2A:000F]:8443",
+    "https://[0:0:0:0:0:ffff:10.42.0.15]:8443",
+    "https://[::ffff:0:0]:8443",
+  ]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
+      {
+        message:
+          "Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.",
+      },
+      proxyUrl,
+    );
+  }
+  for (const proxyUrl of ["https://[::ffff:1:2:3]:8443", "https://[::1]:8443"]) {
+    assert.doesNotThrow(
+      () =>
+        createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
+      proxyUrl,
+    );
+  }
   for (const channels of [
     {
       proxyUrl: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",

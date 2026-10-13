@@ -17,33 +17,20 @@ real Installation.
 **What breaks.** Startup refuses a channel proxy IPv4 host that is not four
 decimal octets from 0 to 255 with no leading zeros. Shorthand, a single
 integer, hex, and leading zeros used to allow egress to a different address.
+Startup also refuses an unspecified host (`0.0.0.0`, `[::]`) and an IPv4-mapped
+IPv6 host (`[::ffff:10.42.0.15]`), whose egress never reached a proxy; profile
+preflight refuses `0.0.0.0` in `channels.runtimeProxyUrl`.
 
 **Who is affected.** Installations whose `channels.proxyUrl` uses one of those
-spellings. Canonical decimals, IPv6 literals, and a managed Service proxy URL
+spellings. Canonical decimals, other IPv6 literals, and a managed Service proxy URL
 still start.
 
 **How to tell.** Startup fails with
 `Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
+or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.`
 
-**Steps.** Write the host as four decimal octets (`127.0.0.1` for
-`0177.0.0.1`) and restart.
-
-## 2026-10-13: runtime images follow the control-plane image rule
-
-**What breaks.** Profile preflight refuses a `runtime.image` that does not start
-with a letter or digit, or that contains a character other than letters, digits,
-`.`, `_`, `:`, `/`, or `-`, before `@sha256:` and 64 lowercase hexadecimal
-characters. Helm already refuses that reference on `images.gateway` and
-`images.agent`.
-
-**Who is affected.** Profiles whose runtime reference uses another character,
-such as `+`. An ordinary registry reference with a lowercase SHA-256 digest
-still renders.
-
-**How to tell.** Preflight reports `runtime.image must be an immutable image
-reference with a SHA-256 digest` and writes no deployment files.
-
-**Steps.** Use the runtime image's registry reference with its digest.
+**Steps.** Write the proxy's own address, as four decimal octets for IPv4
+(`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and restart.
 
 ## 2026-10-13: IP database hosts are verified against the certificate
 
