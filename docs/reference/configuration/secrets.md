@@ -84,7 +84,26 @@ voice blocks) and Talk provider `apiKey`s, `tools.web.fetch.headers`,
 `diagnostics.otel.headers`, `gateway.remote.edgeAuth`,
 `skills.entries.<id>.apiKey` and `cron.webhookToken`. Headers follow the model
 provider's credential name rule, and a name that is not an HTTP field name is
-refused. A stored document that predates one of these rules still reads, so its
+refused.
+
+The other slots OpenClaw marks sensitive need one too (`${NAME}` works in every
+slot, a SecretRef where OpenClaw takes one):
+`gateway.auth.token`, `gateway.remote.token` and `.password`,
+`gateway.controlUi.github.token`, `hooks.token`, `hooks.gmail.pushToken`, sandbox
+SSH `identityData`, `certificateData` and `knownHostsData` (under
+`agents.defaults` and `agents.entries.<id>`), and
+`storage.locations.<name>.encryption.passphrase`. Under `channels.<id>` and
+`plugins.entries.<id>.config`, a string whose key OpenClaw treats as secret needs
+one: a key ending in `token`, or naming a password, secret, API key, encryption
+or private key, or service account, such as `botToken` or `webSearch.apiKey`. A
+key naming where a credential is read from (ending in `File`, `Path`, `Dir` or
+`Env`) is not secret. Fields bundled manifests mark sensitive count too
+(`telnyx.publicKey`, Synology Chat `incomingUrl` and `webhookUrl`), and a
+`headers` map there follows the header rule. Environment maps keep their own
+rules, and a hook mapping's `sessionKey`, a routing key, stays as written. A
+literal `gateway.auth.password` is refused on Configuration and Preset saves.
+
+A stored document that predates one of these rules still reads, so its
 operator can replace it.
 
 OpenClaw owns SecretRef syntax, provider configuration, and validation. OCC,

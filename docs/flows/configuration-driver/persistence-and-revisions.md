@@ -27,7 +27,11 @@ authentication binding, and model selections or provider `apiKey`s off the
 primary model's provider. A stored row that predates a rule still reads and an
 edit can replace it: a bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
-deployment against all of them. The Driver owns backing document
+deployment against all of them. Those include a `${NAME}` reference or SecretRef
+in every slot OpenClaw marks sensitive, channel and plugin secrets included
+([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+[the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
+which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
