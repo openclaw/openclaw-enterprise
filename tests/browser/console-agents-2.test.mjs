@@ -69,9 +69,9 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   // Each accepted request fails in the worker: first a taken name (permanent), then an
   // unavailable dependency (transient). Its retry is then rejected after the job created
   // the Agent, which only the job's retry can finish, and the next retry is refused
-  // because the Agent's lifecycle changed. The third job is cancelled by deleting the Agent it
-  // created (permanent; the Agent is gone, so the name is free again). The fourth job's status is first unreadable, then it
-  // has succeeded.
+  // because the Agent's lifecycle changed. The third job is cancelled by deleting the Agent
+  // it created (permanent; the Agent is gone, so the name is free again). The fourth job's
+  // status is first unreadable, then it has succeeded.
   // Each job that gets far enough creates its own Agent.
   const agentIds = [2, 3, 4].map((job) => `agt_00000000-0000-4000-8000-00000000c0d${job}`);
   const failures = [
@@ -548,8 +548,17 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision cancelled", { ready: true });
-  // The Agent the cancelled job created and kept: stopped, with no versions.
+  // The Agent a cancelled job created and kept: stopped, with no versions.
   const kept = await fixture.createAgent(namespace.id, "Kept Agent", nativeValues("v1"));
+  const stop = await fixture.request("POST", `/namespaces/${namespace.id}/agents/${kept.id}/stop`);
+  assert.equal(stop.status, 202, JSON.stringify(stop.body));
+  // An Agent whose job was cancelled by deleting it: still deleting, its name not yet free.
+  const removed = await fixture.createAgent(namespace.id, "Removed Agent", nativeValues("v1"));
+  const deletion = await fixture.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/${removed.id}`,
+  );
+  assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
@@ -571,7 +580,7 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
           provisioning: {
             workId: "work_cancelled",
             status: "queued",
-            phase: "accepted",
+            phase: "admitted",
             attemptCount: 0,
             updatedAt,
             url,
@@ -581,6 +590,8 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
       }),
     }),
   );
+  // Each submit returns the same cancelled job; the cases change which Agent it names and why.
+  let cancelled = { agentId: kept.id, by: "stopped" };
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_cancelled`, (route) =>
     route.fulfill({
       status: 200,
@@ -593,10 +604,10 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
           attemptCount: 1,
           updatedAt,
           url,
-          agentId: kept.id,
+          agentId: cancelled.agentId,
           error: {
             code: "PROVISIONING_CANCELLED",
-            message: "Provisioning was cancelled because the Agent was stopped.",
+            message: `Provisioning was cancelled because the Agent was ${cancelled.by}.`,
           },
         },
         meta,
@@ -611,7 +622,9 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  const create = page.getByRole("button", { name: "Create Agent" });
+  const open = page.getByRole("link", { name: "Open Agent", exact: true });
+  await create.click();
   await page
     .getByText(
       "Provisioning was cancelled because the Agent was stopped. Open this Agent and deploy a version when you want it running.",
@@ -624,13 +637,44 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
     await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
     false,
   );
-  const open = page.getByRole("link", { name: "Open Agent", exact: true });
-  assert.equal(
-    await open.getAttribute("href"),
-    `/console/agents/${kept.id}?namespace=${namespace.id}`,
+  const keptHref = `/console/agents/${kept.id}?namespace=${namespace.id}`;
+  assert.equal(await open.getAttribute("href"), keptHref);
+
+  // When the Agent cannot be read, the page cannot tell a Stop from a deletion: it offers both.
+  const agentUrl = `**/namespaces/${namespace.id}/agents/${kept.id}`;
+  await page.route(agentUrl, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "A dependency is unavailable." },
+        meta,
+      }),
+    }),
   );
+  await create.click();
+  await page
+    .getByText(
+      "Provisioning was cancelled because the Agent was stopped. If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.",
+    )
+    .waitFor();
+  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  assert.equal(await open.getAttribute("href"), keptHref);
+  await page.unroute(agentUrl);
+
+  // A deleted Agent is not kept: the page says so and offers a new request, with no link.
+  cancelled = { agentId: removed.id, by: "deleted" };
+  await create.click();
+  await page
+    .getByText(
+      "Provisioning was cancelled because the Agent was deleted. Select Create Agent to submit a new request.",
+    )
+    .waitFor();
+  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  assert.equal(await open.count(), 0);
+
   // The kept Agent's page has nothing failed to show: it simply has no deployment yet.
-  await open.click();
+  await page.goto(new URL(keptHref, fixture.origin).href);
   await page.getByRole("heading", { name: "Kept Agent" }).waitFor();
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("No readable deployments.", { exact: true }).waitFor();

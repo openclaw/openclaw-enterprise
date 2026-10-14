@@ -165,7 +165,7 @@ See the [provisioning flow](../../flows/agent-provisioning.md) for the API seque
 
 A failed or stopped first deployment, or a Stop before it
 (`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
-retry. Open that Agent and deploy; after another failure, correct its cause first.
+retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.
