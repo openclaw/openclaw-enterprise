@@ -148,12 +148,12 @@ const OAUTH2_CONFIG = Object.freeze([
 ]);
 
 /**
- * A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. A decimal or `0x` last
- * label (`0xa000005`, `0x7f.0x1`, `example.123`) is an IPv4 address to the URL parser and to
- * `inet_aton`-style resolvers, so it is refused too (finding 1360).
+ * A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. A host whose last label
+ * is a decimal or `0x` number (`10.0.0.5`, `0xa000005`, `0x7f.0x1`, `example.123`) is an IPv4
+ * address to the URL parser and to `inet_aton`-style resolvers, so it is refused (finding 1360).
  */
 function exactDnsName(host: string): boolean {
-  return HOST.test(host) && !/^[0-9.]+$/.test(host) && !numericLastLabel(host);
+  return HOST.test(host) && !numericLastLabel(host);
 }
 
 /**

@@ -37,18 +37,20 @@ namespace (`openshell-gateway.openshell-system.svc`,
 `openshell-gateway-0.openshell-gateway-peer`). OCC now stores `token_url` in
 normalized form (`https://Login.Example.test:443/token` becomes
 `https://login.example.test/token`). A `bearer-token` or OAuth2 `host` ending in a
-numeric or `0x` label (`0x7f.0x1`, `example.123`) is refused as an IP address.
+numeric or `0x` label (`0x7f.0x1`, `example.123`) is refused like an IP address.
 
 **Who is affected.** Installations with OAuth2 credential sources whose issuer
 is addressed by IP address, a `localhost` name, a single-label name, a Pod DNS
-name, or a name in the OpenShell gateway's namespace.
+name, or a name in the OpenShell gateway's namespace, and new `bearer-token` or
+OAuth2 sources whose `host` ends in a numeric or `0x` label.
 
 **How to tell.** Creation returns `400` for `/config/token_url` with `... token_url
 host must be a DNS name with at least two labels, not an IP address or a
 localhost or localdomain name.` or `... token_url host must not be a Kubernetes
 Pod name or a name in the OpenShell gateway's namespace.` A deployment that binds such a source fails with the same
 message, or with `... token_url port must be 1 to 65535.` for a stored port `0`. `GET` on the source shows
-its stored `config.token_url`.
+its stored `config.token_url`. Creation with such a `host` returns `400` for
+`/config/host` with `... host must be an exact DNS name.`; stored sources still attach.
 
 **Steps.** _untested_ against a live Installation:
 

@@ -465,6 +465,7 @@ test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", asyn
   for (const [type, secretField] of [
     ["bearer-token", "token"],
     ["oauth2-client-credentials", "client_secret"],
+    ["oauth2-refresh-token", "refresh_token"],
   ]) {
     for (const host of refused) {
       const response = await f.request("POST", f.path, {
@@ -716,6 +717,9 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://a.b.127-0-0-1.default.pod/token",
     "https://x.0--1.default.pod.cluster.local/token",
     "https://x.169-254-169-254.idp.pod.k8s.example.internal/token",
+    // Any `pod` label after the second is refused, so a public name of that shape is too
+    // (deliberately fail-closed).
+    "https://login.idp.pod.example.com/token",
   ];
   // Issuers in other namespaces, including the test and development Keycloaks, keep working.
   const accepted = [
