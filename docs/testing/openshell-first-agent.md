@@ -95,7 +95,7 @@ contents:
 Choose a new Agent name for an independent provisioning proof:
 
 ```bash
-node scripts/first-agent.mjs resume-agent-1 --harness codex
+node scripts/first-agent.mjs resume-agent-1 --harness codex --control-ui
 ```
 
 Success requires the command to print `Model response verified:`. A ready
@@ -103,11 +103,13 @@ Sandbox, active revision, or HTTP response without that marker is not a complete
 model proof. Run another new name to check repeatability:
 
 ```bash
-node scripts/first-agent.mjs resume-agent-2 --harness codex
+node scripts/first-agent.mjs resume-agent-2 --harness codex --control-ui
 ```
 
-The starter intentionally disables tools and the OpenClaw Control UI. Its
-printed URL opens the OCE Agent console, not an OpenClaw dashboard.
+The starter keeps tools disabled. In this Compose/OpenShell profile,
+`--control-ui` saves the exact allowed origin and prints both the OCE Agent
+console and OpenClaw Control UI URLs. Trust the browser CA path printed by
+startup before opening either HTTPS URL.
 
 ## Inspect without exposing credentials
 
@@ -153,7 +155,7 @@ workspace-node setup code can appear in process arguments before it expires.
 | Gateway logs `remote model catalog refresh failed` or `Codex catalog hydration failed`           | Continue to the explicit model request.                                                  | These warnings did not block the pinned-model proof. Treat them as causal only if the real request also fails.                                                                                             |
 | Supervisor denies `ab.chatgpt.com`                                                               | Verify `api.openai.com` is allowed and the model turn succeeds.                          | This telemetry endpoint is outside the provider policy and its denial was nonfatal. Do not broaden policy solely to silence it.                                                                            |
 | The `agent-*` Service has an inactive selector                                                   | Inspect the OpenShell-advertised endpoint and dedicated Gateway `APP_SERVER_URL`.        | This is expected for a provider-owned Harness endpoint. Activating the direct Service would bypass the selected OpenShell transport.                                                                       |
-| No OpenClaw dashboard URL is printed                                                             | Inspect the first-Agent configuration.                                                   | `controlUi.enabled` is deliberately false. The OCE console URL is the supported output of this starter.                                                                                                    |
+| No OpenClaw Control UI URL is printed                                                            | Confirm the Agent used a new name and the command included `--control-ui`.               | The option is supported only by the Compose-control-plane OpenShell profile. Recreate Local setup if startup did not print the browser console and CA paths.                                               |
 
 For a model authentication failure, confirm that the selected key can use the
 configured model. Replace an invalid key without printing it:

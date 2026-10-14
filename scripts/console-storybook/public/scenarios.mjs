@@ -2528,6 +2528,21 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  longVersionHistory: {
+    group: "Pages/Agent detail",
+    name: "Long version history",
+    path: draft,
+    deployed: true,
+    revisionHistory: 8,
+    revisionPageSize: 3,
+    description:
+      "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
+    steps: [
+      "Check that v8, v7, and v6 are listed with Show older versions below them.",
+      "Select Show older versions until v1 is listed and the button is gone.",
+    ],
+    gap: "The fixture uses three versions per page; the API default is 50.",
+  },
   draftAutomaticCredentials: {
     group: "Pages/Agent detail",
     name: "First deployment creates credentials",
@@ -3041,6 +3056,17 @@ export const scenarios = {
     candidateSelected: true,
     description:
       "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
+  },
+  deploymentSuperseded: {
+    group: "Pages/Agent detail",
+    name: "Deployment superseded by a newer version",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSuperseded: true,
+    description:
+      "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
+    gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
   },
   deploymentSucceeded: {
     group: "Pages/Agent detail",

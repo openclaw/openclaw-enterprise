@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-10-13"
-last_updated_session: fix-1196-1197
+updated: 2026-10-14
+last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
 ---
 
 # Repository credential service flow
@@ -112,6 +112,14 @@ with that admission, and the next open or recovery fences it; past the admission
 window a sweep retries it and forgets it once the fence commits, so it stops
 counting toward capacity. Known nondelivery closes the session.
 Reconciliation cannot recover a bearer, change its binding or replay provider work.
+
+The receipt and operator control clients reject private-socket replies over
+16,384 bytes before destroying the response.
+[`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/credentials/receipt-client.ts)
+reports `RECEIPT_UNAVAILABLE`;
+[`callControl`](../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts)
+retains the admission ID in `control-request-failed` and also closes the request.
+Neither waits for the oversized response to end.
 
 Factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/credentials/custody.ts:disposeAllRenewal`.
@@ -351,6 +359,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 12:23: Document prompt rejection of oversized private-socket replies. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 
 - 2026-10-13 07:40: Past its window, a sweep fences a refused admission's reservation again and forgets it once the fence commits. (fix-1196-1197)
 

@@ -26,7 +26,11 @@ const keycloakUser = "tools-user";
  * is the only trust anchor for the issuer, so a client that reaches it has been configured to
  * trust a private CA rather than falling back to public roots.
  */
-export async function issueServingCertificate(directory, host) {
+export async function issueServingCertificate(
+  directory,
+  host,
+  { alternateHosts = [], caName = "OCE disposable issuer CA" } = {},
+) {
   const path = (name) => join(directory, name);
   await writeFile(
     path("server.ext"),
@@ -34,7 +38,7 @@ export async function issueServingCertificate(directory, host) {
       "basicConstraints=critical,CA:FALSE",
       "keyUsage=critical,digitalSignature,keyEncipherment",
       "extendedKeyUsage=serverAuth",
-      `subjectAltName=DNS:${host}`,
+      `subjectAltName=${[host, ...alternateHosts].map((name) => `DNS:${name}`).join(",")}`,
       "",
     ].join("\n"),
   );
@@ -51,7 +55,7 @@ export async function issueServingCertificate(directory, host) {
     "-days",
     "2",
     "-subj",
-    "/CN=OCE disposable issuer CA",
+    `/CN=${caName}`,
     "-addext",
     "basicConstraints=critical,CA:TRUE",
     "-addext",

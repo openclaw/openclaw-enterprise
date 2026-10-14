@@ -1,9 +1,14 @@
-import { normalizeOpenAiBaseUrl } from "../../openai-endpoint.ts";
+import {
+  normalizeOpenAiBaseUrl,
+  openAiBaseUrlRewritesIpv4,
+  openAiBaseUrlSpellingMessage,
+} from "../../openai-endpoint.ts";
 import { compareResourceQuantities } from "./resource-quantities.ts";
 import {
   asRecord,
   isNonEmptyString,
   numericErrorStatus,
+  readCappedBody,
   sha256Hex,
   splitModelRef,
 } from "@openclaw-enterprise/utils";
@@ -21,7 +26,9 @@ import type {
   DiscoveryV1Api,
   KubernetesObject,
   KubernetesObjectApi,
+  ConfigurationOptions,
   NetworkingV1Api,
+  ResponseContext,
   VersionApi,
   V1ConfigMap,
   V1EnvVar,
@@ -108,8 +115,10 @@ import {
   configurationSettingMessage,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  imageReferenceProblem,
   keyedSettingPath,
   requireOpenClawRoster,
+  resolveConfiguredHarnessId,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsForbiddenByClusterError,
@@ -121,6 +130,7 @@ import {
 import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
+  nonRedirectingHttpLibrary,
 } from "../../kubernetes/client.ts";
 import {
   HARNESS_WORKSPACE,
@@ -143,9 +153,10 @@ import {
   requireChannelTopology,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
+  providerWaitsOnVariable,
   requireHarnessCredentialBinding,
+  requireSelectedModelProvider,
   requireWorkspaceNodePlugins,
-  selectedModelProviders,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -1148,6 +1159,83 @@ const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
 const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
+
+class RuntimeStatusOversized extends Error {}
+class RuntimeStatusRedirected extends Error {}
+
+/**
+ * undici's refusal of an interim answer the request never asked for: a `100 Continue`
+ * ("bad response") or a `101` without an upgrade request ("bad upgrade"). The peer chose that
+ * answer, so unlike a dropped or reset connection, a retry gets the same one (finding 1355).
+ * The texts are undici's (`lib/dispatcher/client-h1.js` `onHeadersComplete`, undici 8.11.2):
+ * recheck them when undici changes, or these answers fall back to the generic retry.
+ */
+function unsolicitedInterimResponse(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (
+      (current as { readonly code?: unknown }).code === "UND_ERR_SOCKET" &&
+      (current.message === "bad response" || current.message === "bad upgrade")
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
+ * Reads a Pod proxy response up to the status limit instead of buffering all of it.
+ * Error bodies are capped too: the client reads them unbounded for its exception.
+ */
+async function limitRuntimeStatusBody(response: ResponseContext): Promise<ResponseContext> {
+  const stream = response.body.stream();
+  if (response.httpStatusCode >= 300 && response.httpStatusCode <= 399) {
+    // The status is already decisive; do not wait for an untrusted redirect body.
+    try {
+      if (stream !== null) {
+        void stream.cancel().catch(() => {});
+      }
+    } catch {
+      // A cancellation failure must not make this redirect retryable.
+    }
+    throw new RuntimeStatusRedirected();
+  }
+  if (stream !== null) {
+    let bytes = await readCappedBody(stream, MAX_RUNTIME_STATUS_RESPONSE_BYTES);
+    if (bytes === undefined) {
+      // An error answer is judged by its status code (404/503 read as not serving), not its body.
+      if (response.httpStatusCode < 200 || response.httpStatusCode > 299) {
+        bytes = Buffer.alloc(0);
+      } else {
+        throw new RuntimeStatusOversized();
+      }
+    }
+    response.body = {
+      text: async () => new TextDecoder().decode(bytes),
+      binary: async () => bytes,
+      stream: () => null,
+    };
+  }
+  return response;
+}
+
+let runtimeStatusRequestOptions: Promise<ConfigurationOptions> | undefined;
+
+function runtimeStatusOptions(): Promise<ConfigurationOptions> {
+  runtimeStatusRequestOptions ??= import("@kubernetes/client-node").then((sdk) => ({
+    // The shared clients already refuse redirects; the Pod-written read does not rely on that.
+    httpApi: nonRedirectingHttpLibrary(sdk),
+    middleware: [
+      {
+        pre: (request) => new sdk.Observable(Promise.resolve(request)),
+        post: (response) => new sdk.Observable(limitRuntimeStatusBody(response)),
+      },
+    ],
+    middlewareMergeStrategy: "append",
+  }));
+  return runtimeStatusRequestOptions;
+}
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
@@ -1868,20 +1956,17 @@ function channelProxy(
   }
   // The URL parser rewrites octal, shorthand, integer, and hex IPv4 hosts.
   // Egress must name the host that was written, so only four decimal octets
-  // with no leading zeros are accepted. IPv6 is unchanged. Leading C0
-  // controls and spaces are not part of that host; new URL strips them.
+  // from 0 to 255 with no leading zeros are accepted. isIP accepts only that spelling and
+  // the parser always serializes an IPv4 host that way, so a written host
+  // equal to the parsed one is already four such octets. IPv6 is unchanged.
+  // Leading C0 controls and spaces are not part of that host; new URL strips them.
   if (isIP(address) === 4) {
     let hostSource = raw;
     while (hostSource.charCodeAt(0) <= 0x20) {
       hostSource = hostSource.slice(1);
     }
     const writtenHost = /^https?:\/\/([^:/?#\\]+)/i.exec(hostSource)?.[1];
-    if (
-      writtenHost === undefined ||
-      writtenHost !== parsed.hostname ||
-      !/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(writtenHost) ||
-      writtenHost.split(".").some((octet) => Number(octet) > 255)
-    ) {
+    if (writtenHost === undefined || writtenHost !== parsed.hostname) {
       throw new ConfigurationFailure(
         "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
       );
@@ -2154,6 +2239,224 @@ function harnessModels(configuration: OpenClawConfigurationDocument): readonly s
     throw new ConfigurationFailure("Harness authentication requires explicit model references.");
   }
   return [...new Set(models as string[])];
+}
+
+// Every provider is checked, selected or not: a bare model name or a `/model` switch can still
+// reach one (finding 1291), as the credential header rule assumes. Dedicated Codex makes no
+// model request from its Gateway, so it refuses every apiKey; OpenClaw accepts one only on the
+// binding's provider, referencing the binding's environment. On a Preset save, a provider key
+// that waits on an unfilled variable is checked once filled, and so is an apiKey whose value or
+// `secrets` source does: only the rules that hold whatever fills it run here.
+function requireProviderApiKeys(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  openclaw: boolean,
+  authentication: { readonly providerId: string; readonly environmentName: string },
+  referencesOnly = false,
+  options?: ConfigurationValidationOptions,
+): void {
+  const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
+  for (const [provider, value] of Object.entries(providers)) {
+    const config = asRecord(value);
+    if (
+      config?.apiKey === undefined ||
+      (referencesOnly && config.apiKey !== null && !isCredentialReference(config.apiKey)) ||
+      options?.unresolved?.(["models", "providers", provider], true) !== undefined
+    ) {
+      continue;
+    }
+    const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
+    if (!openclaw) {
+      throw callerSettingError(
+        setting,
+        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+      );
+    }
+    if (provider !== authentication.providerId) {
+      throw callerSettingError(
+        setting,
+        `must be unset: the Agent's Harness authentication binding serves only ${authentication.providerId} models`,
+      );
+    }
+    if (config.apiKey === `\${${authentication.environmentName}}`) {
+      continue;
+    }
+    const ref = asRecord(config.apiKey);
+    const secrets = asRecord(configuration.secrets);
+    const sources = asRecord(secrets?.providers);
+    // A string apiKey here is `${NAME}`, which holds no variable; a SecretRef, its secrets source
+    // and the default env alias may wait on one (a source key that does may become ref.provider).
+    if (
+      waitsOnVariable(ref, ["models", "providers", provider, "apiKey"], options) ||
+      waitsOnVariable(asRecord(secrets?.defaults)?.env, ["secrets", "defaults", "env"], options) ||
+      Object.keys(sources ?? {}).some(
+        (name) =>
+          options?.unresolved?.(["secrets", "providers", name], true) !== undefined ||
+          (name === ref?.provider &&
+            waitsOnVariable(sources?.[name], ["secrets", "providers", name], options)),
+      )
+    ) {
+      continue;
+    }
+    const source =
+      typeof ref?.provider === "string" ? asRecord(sources?.[ref.provider]) : undefined;
+    // OpenClaw reads an env ref on its default env provider alias (secrets.defaults.env, else
+    // "default") from the process environment, unless that name is configured as an env provider
+    // (isBuiltInDefaultSecretProviderRef), so such a ref needs no secrets.providers entry.
+    const defaultEnv = asRecord(secrets?.defaults)?.env;
+    const builtInEnv =
+      source?.source !== "env" &&
+      ref?.provider ===
+        (typeof defaultEnv === "string" && defaultEnv.trim() !== ""
+          ? defaultEnv.trim()
+          : "default");
+    if (
+      !ref ||
+      Object.keys(ref).length !== 3 ||
+      ref.source !== "env" ||
+      ref.id !== authentication.environmentName ||
+      !(
+        builtInEnv ||
+        (source?.source === "env" &&
+          (source.allowlist === undefined ||
+            (Array.isArray(source.allowlist) &&
+              source.allowlist.includes(authentication.environmentName))))
+      )
+    ) {
+      throw callerSettingError(
+        setting,
+        `must be \${${authentication.environmentName}} or an env SecretRef to ${authentication.environmentName}, which the Agent's Harness authentication binding supplies`,
+      );
+    }
+  }
+}
+
+// Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
+// which sits at `path` in the Configuration document.
+function waitsOnVariable(
+  value: unknown,
+  path: readonly (string | number)[],
+  options: ConfigurationValidationOptions | undefined,
+): boolean {
+  const unresolved = options?.unresolved;
+  if (unresolved === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return unresolved(path) !== undefined;
+  }
+  const entries = Array.isArray(value)
+    ? [...value.entries()]
+    : Object.entries(asRecord(value) ?? {});
+  return entries.some(
+    ([key, child]) =>
+      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
+      waitsOnVariable(child, [...path, key], options),
+  );
+}
+
+// A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
+// (model-auth.ts); it refuses anything else but null as an inline credential, with its own message.
+function isCredentialReference(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);
+  }
+  const reference = asRecord(value);
+  return (
+    reference !== undefined &&
+    Object.keys(reference).length === 3 &&
+    [reference.source, reference.provider, reference.id].every(isNonEmptyString)
+  );
+}
+
+/**
+ * The Configuration without the fallbacks and `models` policy keys whose provider waits on an
+ * unfilled Preset variable, which the Harness resolution would refuse as another provider
+ * (switching every rule off); the rules check the rest and the launch checks them once filled.
+ * An agents.entries model whose own provider does is dropped too: the entry must select the
+ * defaults' primary once filled, so it resolves as the defaults do.
+ */
+function withoutVariableProviders(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options: ConfigurationValidationOptions | undefined,
+): Readonly<OpenClawConfigurationDocument> {
+  if (options?.unresolved === undefined) {
+    return configuration;
+  }
+  const copy = structuredClone(configuration) as OpenClawConfigurationDocument;
+  const agents = asRecord(copy.agents);
+  const scopes: [readonly string[], Record<string, unknown> | undefined][] = [
+    [["agents", "defaults"], asRecord(agents?.defaults)],
+    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
+      ([id, entry]): [readonly string[], Record<string, unknown> | undefined] => [
+        ["agents", "entries", id],
+        asRecord(entry),
+      ],
+    ),
+  ];
+  for (const [at, scope] of scopes) {
+    if (
+      at[1] === "entries" &&
+      scope !== undefined &&
+      (providerWaitsOnVariable(options, [...at, "model"]) ||
+        providerWaitsOnVariable(options, [...at, "model", "primary"]))
+    ) {
+      delete scope.model;
+    }
+    const model = asRecord(scope?.model);
+    if (model !== undefined && Array.isArray(model.fallbacks)) {
+      model.fallbacks = model.fallbacks.filter(
+        (_: unknown, index: number) =>
+          !providerWaitsOnVariable(options, [...at, "model", "fallbacks", index]),
+      );
+    }
+    const policies = asRecord(scope?.models);
+    if (scope !== undefined && policies !== undefined) {
+      scope.models = Object.fromEntries(
+        Object.entries(policies).filter(
+          ([key]) => !providerWaitsOnVariable(options, [...at, "models", key], true),
+        ),
+      );
+    }
+  }
+  return copy;
+}
+
+/**
+ * The model provider rules of finding 1291 depend only on the Configuration: the provider is
+ * its primary model's (harnessModelAuthentication), and the Harness, Dedicated Codex or
+ * OpenClaw, is the one its model policy selects. Every deployment applies them, so Configuration
+ * save does too (finding 1299). A draft whose model policy selects no Harness (or no model), or
+ * whose primary provider Kubernetes Compute does not support, is left to deployment, which
+ * refuses it first; OCC's requireFallbackProviders still names a fallback on another provider.
+ * Preset defaults (`options.unresolved`) get the same rules (finding 1305): a primary provider
+ * that waits on a variable names no supported provider yet, so the Configuration a launch
+ * creates is checked instead, and so is any other setting whose provider waits on one.
+ */
+function requireConfiguredModelProviders(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  let harnessId: string;
+  let authentication: ReturnType<typeof harnessModelAuthentication>;
+  try {
+    const resolvable = withoutVariableProviders(configuration, options);
+    harnessId = resolveConfiguredHarnessId(resolvable);
+    authentication = harnessModelAuthentication(resolvable);
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
+      return;
+    }
+    throw error;
+  }
+  requireSelectedModelProvider(
+    configuration,
+    authentication.providerId,
+    harnessId === "codex",
+    callerSettingError,
+    options,
+  );
+  // An inline key is left to the Configuration Driver, whose message says to use a Secret.
+  requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true, options);
 }
 
 // The error contract caps the message a ConfigurationHarnessError becomes.
@@ -2792,12 +3095,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
           `${description} image must use an immutable SHA-256 digest.`,
         );
       }
-      // Kubernetes refuses to pull an image whose repository path has an uppercase letter
-      // (InvalidImageName). Only the registry host (the first component, when a / follows it)
-      // and the tag may use uppercase, as in profile preflight and the chart.
-      if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*(?:@|$))/.test(image)) {
+      // Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as
+      // an uppercase repository path; profile preflight, the chart and the image tools apply the
+      // same rule. Only the registry host and the tag may use uppercase.
+      const problem = imageReferenceProblem(image);
+      if (problem === "uppercase-repository") {
         throw new ConfigurationFailure(
           `${description} image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.`,
+        );
+      }
+      if (problem !== undefined) {
+        throw new ConfigurationFailure(
+          `${description} image must be a container image reference Kubernetes can pull.`,
         );
       }
     }
@@ -2945,10 +3254,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       if (
         options.runtime.codexModelBaseUrl !== undefined &&
-        normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl) === undefined
+        (normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl) === undefined ||
+          openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl))
       ) {
         throw new ConfigurationFailure(
-          "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.",
+          openAiBaseUrlSpellingMessage("Codex model endpoint", options.runtime.codexModelBaseUrl) ??
+            (openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl)
+              ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
+              : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
         );
       }
       if (options.runtime.codexSeccompProfile !== undefined) {
@@ -3427,7 +3740,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Only dedicated execution serves main, so that rule stays here, at deployment.
     requireOpenClawRoster(configuration);
     // The same rules as Configuration save, with its messages, for a row stored before them.
-    this.validateConfiguration(configuration);
+    this.validateConfigurationContent(configuration);
     if (native || codex) {
       requireDedicatedMainAgentDefault(
         configuration,
@@ -3492,6 +3805,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
         : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
     });
     const authentication = harnessModelAuthentication(configuration);
+    // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
+    // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
+    // Codex qualifies model policy selectors, so it refuses every bare one, a little more than
+    // the projection fails on, and refuses media and voice models (finding 1306). Whether that
+    // provider suits the topology is the rule below.
+    requireSelectedModelProvider(
+      configuration,
+      authentication.providerId,
+      codex,
+      callerSettingError,
+    );
     const prefixes = embedded
       ? [`${authentication.providerId}/`]
       : native
@@ -3534,43 +3858,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
-    const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
-    for (const provider of selectedModelProviders(configuration)) {
-      const config = asRecord(providers[provider]);
-      if (config?.apiKey === undefined) {
-        continue;
-      }
-      const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
-      if (!openclaw) {
-        throw callerSettingError(
-          setting,
-          "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-        );
-      }
-      if (config.apiKey === `\${${authentication.environmentName}}`) {
-        continue;
-      }
-      const ref = asRecord(config.apiKey);
-      const source =
-        typeof ref?.provider === "string"
-          ? asRecord(asRecord(asRecord(configuration.secrets)?.providers)?.[ref.provider])
-          : undefined;
-      if (
-        !ref ||
-        Object.keys(ref).length !== 3 ||
-        ref.source !== "env" ||
-        ref.id !== authentication.environmentName ||
-        source?.source !== "env" ||
-        (source.allowlist !== undefined &&
-          (!Array.isArray(source.allowlist) ||
-            !source.allowlist.includes(authentication.environmentName)))
-      ) {
-        throw callerSettingError(
-          setting,
-          `must be \${${authentication.environmentName}} or an env SecretRef to ${authentication.environmentName}, which the Agent's Harness authentication binding supplies`,
-        );
-      }
-    }
+    requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
     }
@@ -3596,9 +3884,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
-   * and model credentials only through the Harness authentication binding.
+   * model credentials only through the Harness authentication binding, and model selections
+   * and provider apiKeys on the primary model's provider.
    */
   validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    this.validateConfigurationContent(configuration, options);
+    requireConfiguredModelProviders(configuration, options);
+  }
+
+  // validateHarnessAuth runs these first and the model provider rules in its own order.
+  private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
@@ -5633,20 +5931,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   requirements,
                 }),
               );
-        let providerGatewayReady = true;
         if (
           providerEndpoint !== undefined &&
           (existingGateway === undefined || existingGatewayRevisionId === revision.id)
         ) {
           await reconcileGatewayDeployment({}, providerEndpoint);
-          providerGatewayReady = await this.gatewayReady(
-            gatewayOwnership,
-            gatewayName,
-            gatewayNamespace,
-            revision.id,
-          );
+          if (
+            !(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace, revision.id))
+          ) {
+            // The setup observer uses this Gateway. Do not turn its expected
+            // provider-endpoint rollout into a failed enrollment attempt.
+            return incomplete();
+          }
         }
-        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
+        if (
+          !(await this.providerHarnessReady(revision, namespace, requirements.labels)) ||
+          !(await this.workspaceNodeReady(revision, namespace))
+        ) {
           return incomplete();
         }
         if (credentialContext !== undefined) {
@@ -5696,11 +5997,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           if (harness.state !== "serving") {
             return incomplete();
           }
-        }
-        // A failed Harness may keep its Gateway unready. Read that failure
-        // first, but wait for the Gateway before observing node enrollment.
-        if (!providerGatewayReady || !(await this.workspaceNodeReady(revision, namespace))) {
-          return incomplete();
         }
         return ready();
       }
@@ -8584,22 +8880,56 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const clients = await this.clients(namespace.plane);
     // 404/503 mean the status port is not serving yet: an answer, not an outage to retry.
     const notServing = Symbol("not serving");
+    const oversized = Symbol("oversized");
+    const redirected = Symbol("redirected");
+    const interim = Symbol("interim");
+    const options = await runtimeStatusOptions();
     const raw = await this.request(async () => {
       try {
-        return await clients.core.connectGetNamespacedPodProxyWithPath({
-          name: `${podName}:${PLUGIN_RUNTIME_STATUS_PORT}`,
-          namespace: namespace.name,
-          path: path.slice(1),
-        });
+        return await clients.core.connectGetNamespacedPodProxyWithPath(
+          {
+            name: `${podName}:${PLUGIN_RUNTIME_STATUS_PORT}`,
+            namespace: namespace.name,
+            path: path.slice(1),
+          },
+          options,
+        );
       } catch (error) {
+        // An oversized 2xx is not retried: the next read would be just as large.
+        if (error instanceof RuntimeStatusOversized) {
+          return oversized;
+        }
+        if (error instanceof RuntimeStatusRedirected) {
+          return redirected;
+        }
+        if (unsolicitedInterimResponse(error)) {
+          return interim;
+        }
         if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
           return notServing;
+        }
+        // The client never follows a redirect (finding 1347). Any 3xx here was written by the
+        // Pod: the status is unreadable, and a retry would get the same answer.
+        const status = numericErrorStatus(error);
+        if (status !== undefined && status >= 300 && status <= 399) {
+          return redirected;
         }
         throw error;
       }
     });
     if (raw === notServing) {
       return undefined;
+    }
+    if (raw === oversized) {
+      throw new DependencyUnavailableError("Runtime status returned oversized data.");
+    }
+    if (raw === redirected) {
+      throw new DependencyUnavailableError("Runtime status answered with a redirect.");
+    }
+    if (raw === interim) {
+      throw new DependencyUnavailableError(
+        "Runtime status answered with an unrequested 1xx status.",
+      );
     }
     const parsed = this.boundedRuntimeStatusResponse(raw);
     const latestPods = (await this.revisionPods(revision, namespace, container)).filter(
@@ -11504,9 +11834,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (openaiBaseUrl !== undefined) {
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);
-      if (normalized === undefined) {
+      if (normalized === undefined || openAiBaseUrlRewritesIpv4(openaiBaseUrl)) {
         throw new ConfigurationFailure(
-          "Codex model endpoint requires a valid HTTPS /v1 URL with a nonzero port and no hostname wildcards.",
+          openAiBaseUrlSpellingMessage("Codex model endpoint", openaiBaseUrl) ??
+            (openAiBaseUrlRewritesIpv4(openaiBaseUrl)
+              ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
+              : "Codex model endpoint requires a valid HTTPS /v1 URL with a nonzero port and no hostname wildcards."),
         );
       }
       openaiBaseUrl = normalized;

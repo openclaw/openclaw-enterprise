@@ -9,11 +9,12 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-The suite calls `scripts/dev-up` for Compose OCC and Kubernetes OCC, both with
-Kubernetes compute and Sandbox Driver `none`. Each installation runs two presets
-sequentially, selecting their Plugin Drivers and stopping prior agents before
-switching. Clusters, Compose projects, ports, and private state directories are
-unique; existing clusters and the default kubeconfig remain unchanged.
+The suite calls `scripts/dev-up` for Compose OCC + Kubernetes compute and
+Kubernetes OCC + Kubernetes compute. Both use Sandbox Driver `none`. Each
+installation runs its two presets sequentially, selecting the appropriate Plugin
+Driver and stopping the prior agents before switching. It creates unique clusters,
+Compose projects, ports, and private state directories. It does not select an
+existing cluster or change the default kubeconfig.
 
 ## Parallel scenarios on shared setup
 
@@ -26,9 +27,10 @@ default. Each owns a fresh Agent, configuration, credentials, and workspace:
 - `calendar`: Codex Calendar reads and approval-policy transitions.
 - `git-read`: Codex read-only push denial and credential disposal.
 
-Scenario steps stay sequential. Calendar and Git use separate Agents because chat
-sessions share an Agent's policy, deployment, and workspace. Only one browser
-scenario runs at a time, preventing Compose TLS relay target changes during a test.
+The steps inside each scenario stay sequential. Separate chat sessions on one
+Agent would still share its policy, deployment, and workspace. Calendar and Git
+therefore use different Agents. There is one browser scenario at a time, so the
+Compose TLS relay cannot switch targets during another browser test.
 
 After those workers finish and stop their Agents, the Codex `slack` scenario
 runs on its own Agent. Slack setup can restart shared services; its Socket Mode
@@ -69,8 +71,10 @@ A selected check with missing credentials fails rather than becoming a skip.
 
 ## Coverage and applicability
 
-[`qa-matrix-real.test.mjs`](../../tests/integration/qa-matrix-real.test.mjs) runs
-installation setup once, then the remaining stages for each applicable preset cell.
+The named stages below are implemented in
+[`qa-matrix-real.test.mjs`](../../tests/integration/qa-matrix-real.test.mjs).
+Installation setup runs once before its two preset cells; the remaining stages
+run for each applicable cell.
 
 | Scenario                                                                           | Compose OpenClaw | Compose Codex | Kubernetes OpenClaw | Kubernetes Codex |
 | ---------------------------------------------------------------------------------- | ---------------- | ------------- | ------------------- | ---------------- |
@@ -122,19 +126,20 @@ Set these values in a private environment file. Credential paths must name
 regular files with no group/other permissions. Do not put secret values in command
 arguments or commit the environment file.
 
-| Variable                                                               | Required value                                                                                                                                 |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OCC_TEST_QA_OPENAI_KEY_FILE`                                          | Authorized OpenClaw model API key file.                                                                                                        |
-| `OCC_TEST_QA_CODEX_TOKEN_FILE`                                         | Authorized Codex service-account PAT file, admitted as `codex_pat`.                                                                            |
-| `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`                  | Optional authorized model overrides; both default to `gpt-6-luna` when unset or empty.                                                         |
-| `OCC_TEST_QA_REPOSITORY_AUTHORIZED`                                    | `1`, authorizing disposable branches and PRs in the registry repository.                                                                       |
-| `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`                               | Private directory containing `registry.json`, `private-key.pem`, and `upstream-cidrs.json`, as described below.                                |
-| `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE`                               | Independent GitHub observer/cleanup credential. Alternatively select an absolute managed gh wrapper with `OCC_TEST_QA_GITHUB_OBSERVER_BINARY`. |
-| `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`                                    | Exact native transcript name of an available harmless Calendar read tool.                                                                      |
-| `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`                                | Pattern establishing a genuine successful Calendar read.                                                                                       |
-| `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE` | Approved Socket Mode app and gateway bot token files.                                                                                          |
-| `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`                                  | Distinct approved sender token file with channel and thread read access.                                                                       |
-| `OCC_TEST_QA_SLACK_CHANNEL_ID`                                         | Authorized channel joined by both bots.                                                                                                        |
+| Variable                                                               | Required value                                                                                                                                                                                                                                                       |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_TEST_QA_OPENAI_KEY_FILE`                                          | Authorized OpenClaw model API key file.                                                                                                                                                                                                                              |
+| `OCC_TEST_QA_CODEX_TOKEN_FILE`                                         | Authorized Codex service-account PAT file, admitted as `codex_pat`.                                                                                                                                                                                                  |
+| `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`                  | Optional authorized model overrides; both default to `gpt-6-luna` when unset or empty.                                                                                                                                                                               |
+| `OCC_TEST_QA_REPOSITORY_AUTHORIZED`                                    | `1`, authorizing disposable branches and PRs in the registry repository.                                                                                                                                                                                             |
+| `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`                               | Private directory containing `registry.json`, `private-key.pem`, and `upstream-cidrs.json`, as described below.                                                                                                                                                      |
+| `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE`                               | Independent GitHub observer/cleanup credential for the default fixture. Alternatively select an absolute managed gh wrapper with `OCC_TEST_QA_GITHUB_OBSERVER_BINARY`, or use `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY` for the isolated GitHub App fixture. |
+| `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY`                      | Private directory with `registry.json` and `private-key.pem`; isolated fixture only. The runner mints short-lived observer installation tokens from the same GitHub App identity that owns the isolated repository fixture.                                          |
+| `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`                                    | Exact native transcript name of an available harmless Calendar read tool.                                                                                                                                                                                            |
+| `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`                                | Pattern establishing a genuine successful Calendar read.                                                                                                                                                                                                             |
+| `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE` | Approved Socket Mode app and gateway bot token files.                                                                                                                                                                                                                |
+| `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`                                  | Distinct approved sender token file with channel and thread read access.                                                                                                                                                                                             |
+| `OCC_TEST_QA_SLACK_CHANNEL_ID`                                         | Authorized channel joined by both bots.                                                                                                                                                                                                                              |
 
 The repository input uses the [development repository registry](../guides/deploy/local-repository-credentials.md)
 with exactly one authorized repository, the `${OCC_INITIAL_NAMESPACE_ID}` placeholder,
@@ -215,8 +220,7 @@ The dispatch input `qa_repository_fixture` selects the repository credential
 fixture. Keep the default `default` value to use the existing
 `REPOSITORY_OBSERVER_TOKEN`, `REPOSITORY_REGISTRY_JSON`, and
 `REPOSITORY_APP_KEY` secrets. Select `isolated` to use a separate repository
-fixture. Configure `QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN`,
-`QA_ISOLATED_REPOSITORY_REGISTRY_JSON`, and
+fixture. Configure `QA_ISOLATED_REPOSITORY_REGISTRY_JSON` and
 `QA_ISOLATED_REPOSITORY_APP_KEY` as environment secrets in the protected
 `integration-qa` environment, never as repository-level secrets. Configure
 `QA_ISOLATED_REPOSITORY_FULL_NAME` as an `integration-qa` environment variable
@@ -225,11 +229,15 @@ name the one approved isolated fixture repository as lowercase
 `owner/repository`. The isolated path checks the registry's repository target
 before materializing credential files: the registry must contain exactly one
 repository, that repository must match `QA_ISOLATED_REPOSITORY_FULL_NAME`, and
-it must not be the workflow repository. The isolated path still shares the
-approved model, Codex, Slack, Calendar, and upstream CIDR settings from
-`integration-qa`. If any isolated repository secret or target is missing or
-mismatched, credential materialization fails; the workflow does not fall back to
-the default repository secrets.
+it must not be the workflow repository. The runner uses the isolated App key
+to mint a separate repository-scoped observer installation token on demand. This
+is a separate token from the broker tokens, but it comes from the same GitHub App
+identity that owns the isolated repository fixture. The workflow does not require
+a static `QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN` secret, and that secret should
+not be created. The isolated path still shares the approved model, Codex, Slack,
+Calendar, and upstream CIDR settings from `integration-qa`. If any isolated repository secret
+or target is missing or mismatched, credential materialization fails; the
+workflow does not fall back to the default repository secrets.
 
 Replay through the credentialed runner with the same environment:
 
@@ -262,7 +270,9 @@ above. See [fixture and scenario conventions](fixtures-and-scenarios.md).
   within the worker. Installation-wide changes belong before or after the
   joined worker group, never inside a parallel scenario.
 - Register cleanup with the fixture, preserve uncertain credential-disposal
-  recovery, and record only nonsecret evidence.
+  recovery, and record only nonsecret evidence. GitHub App observer tokens are
+  short-lived and expire at GitHub; the runner does not revoke each minted
+  observer token during normal cleanup.
 - For new required inputs, update
   [`qa-matrix.json`](../../scripts/ci/test-suites/qa-matrix.json), the protected
   workflow credential setup when needed, and this page's prerequisites.
@@ -295,11 +305,9 @@ the Blacksmith kernel cannot enforce its sandbox filesystem policy. Its result
 artifact is `qa-advisory-openshell`. The [CI rules above](#ci-evidence-and-recovery)
 cover trusted execution and advisory status.
 
-The [lane manifest](../../scripts/ci/test-suites/openshell.json) selects five
-real-runtime scenarios: installation with each control-plane mode, sandbox
-policy and credential enforcement, and first-Agent deployment and reuse with
-each mode. One job runs all four files, rejecting skips and cleaning up its
-owned clusters and databases. It builds runtime images from the tested revision
-and covers credential projection. The `integration-qa-pr` environment
-supplies `CODEX_ACCESS_TOKEN` and `OCC_TEST_OPENAI_MODEL`; the existing protected
-manual OpenShell environment remains available for targeted dispatch.
+The [lane manifest](../../scripts/ci/test-suites/openshell.json) runs five
+real-runtime scenarios in four files: both installation modes, sandbox policy
+and credential enforcement, and first-Agent deployment/reuse in both modes.
+The job rejects skips, cleans up its clusters and databases, and builds runtime
+images from the tested revision. `integration-qa-pr` supplies `CODEX_ACCESS_TOKEN`
+and `OCC_TEST_OPENAI_MODEL`. Protected manual dispatch remains available.

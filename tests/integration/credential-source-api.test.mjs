@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   createOpenShellBackend,
   openShellProviderName,
+  openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
@@ -15,7 +16,10 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 // Gateway storage and Compute placement are test doubles. Requests use the real
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
-async function fixture(t, { toolSources = false } = {}) {
+async function fixture(
+  t,
+  { toolSources = false, gateway = { endpoint: "http://127.0.0.1:1" } } = {},
+) {
   const providers = new Map();
   const profiles = new Map();
   const mutations = [];
@@ -61,7 +65,7 @@ async function fixture(t, { toolSources = false } = {}) {
     {
       id: "openshell-test",
       type: "openshell",
-      configuration: { endpoint: "http://127.0.0.1:1" },
+      configuration: gateway,
       drivers: {
         credential_gateway: "openshell-credentials",
         sandbox: "openshell-sandbox",
@@ -326,12 +330,24 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     ["https://models.example.test/v1", "models.example.test", 443, "/v1/**"],
     ["https://MODELS.example.test:443/api/./v1/", "models.example.test", 443, "/api/v1/**"],
     ["https://bücher.example.test:8443/api/v1/", "xn--bcher-kva.example.test", 8443, "/api/v1/**"],
-    ["https://192.0.2.1/v1", "192.0.2.1", 443, "/v1/**"],
     ["https://API.OpenAI.com:443/v1/", "api.openai.com", 443, "/v1/**"],
+    // Spellings the URL parser rewrites: the source stores and returns the rewritten URL.
+    ["HTTPS://models.example.test/v1", "models.example.test", 443, "/v1/**"],
+    ["https://models.example.test:00443/v1", "models.example.test", 443, "/v1/**"],
+    ["https://ｍｏｄｅｌｓ.example.test/v1", "models.example.test", 443, "/v1/**"],
+    ["https:\\\\models.example.test/v1", "models.example.test", 443, "/v1/**"],
   ];
   for (const [base_url, host, port, path] of cases) {
     const created = await f.create("concrete endpoint", { base_url });
     assert.equal(created.status, 201, JSON.stringify(created.body));
+    // The stored endpoint is the one the profile uses, not the written spelling (finding 1292).
+    const stored = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
+    assert.deepEqual(created.data.config, { base_url: stored }, base_url);
+    assert.deepEqual(
+      (await f.request("GET", f.path + "/" + created.data.id)).data.config,
+      { base_url: stored },
+      base_url,
+    );
     // Assert the profile produced through HTTP/OCC, not a copied normalizer.
     const profile = [...f.profiles.values()][0];
     assert.deepEqual(profile.endpoints, [{ host, port, protocol: "rest", path }]);
@@ -345,6 +361,539 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     assert.equal(f.profiles.size, 0);
     assert.equal(f.providers.size, 0);
   }
+});
+
+test("credential source endpoints refuse spellings the URL parser would rewrite", async (t) => {
+  const f = await fixture(t);
+  // Each parses as https://models.example.test/v1, so it used to be stored as written while the
+  // profile used another URL (finding 1292). The shared baseUrl rules refuse these spellings.
+  for (const [base_url, message] of [
+    ["https://@models.example.test/v1", /must not contain user info or an @ before the host/],
+    ["https://:@models.example.test/v1", /must not contain user info or an @ before the host/],
+    ["https:models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
+    ["https:/models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
+    ["https:///models.example.test/v1", /requires HTTPS/],
+    ["  https://models.example.test/v1  ", /must not contain spaces or control characters/],
+    ["https://models.example.test\t/v1", /must not contain spaces or control characters/],
+    ["https://models.exam\nple.test/v1", /must not contain spaces or control characters/],
+    // The API schema already refuses a NUL in any string (INVALID_FORMAT).
+  ]) {
+    const response = await f.create("rewritten", { base_url });
+    assert.equal(response.status, 400, JSON.stringify(base_url));
+    assert.deepEqual(response.body.error.details, [
+      { path: "/config/base_url", code: "INVALID_VALUE" },
+    ]);
+    assert.match(response.body.error.message, message, JSON.stringify(base_url));
+    assert.deepEqual((await f.request("GET", f.path)).data, [], JSON.stringify(base_url));
+  }
+  assert.deepEqual(f.mutations, []);
+});
+
+test("credential source endpoints require an exact DNS host name", async (t) => {
+  const f = await fixture(t);
+  // The bearer-token host rule: IP addresses in any spelling the URL parser accepts, and labels
+  // with `_` or an edge `-`, widened the member's Sandbox egress (finding 1293).
+  for (const host of [
+    "127.0.0.1",
+    "10.0.0.1",
+    "192.0.2.1",
+    "169.254.169.254",
+    "0x7f000001",
+    "2130706433",
+    "127.1",
+    "models_internal.example.test",
+    "-models.example.test",
+    "models-.example.test",
+  ]) {
+    const response = await f.create("ip", { base_url: `https://${host}/v1` });
+    assert.equal(response.status, 400, host);
+    assert.deepEqual(response.body.error.details, [
+      { path: "/config/base_url", code: "INVALID_VALUE" },
+    ]);
+    assert.equal(
+      response.body.error.message,
+      "The openai base_url host must be an exact DNS name.",
+      host,
+    );
+  }
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
+  assert.deepEqual(f.mutations, []);
+  // A source stored before the rule, with its provider, cannot be attached to a new revision.
+  const healthy = await f.create("healthy");
+  assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
+  const existing = [...f.providers.values()][0];
+  const stored = await f.seedInvalid("openai", "https://169.254.169.254/v1");
+  const name = openShellProviderName(stored.id);
+  f.providers.set(existing.workspace + "/" + name, {
+    ...existing,
+    name,
+    type: name,
+    labels: { ...existing.labels, "openclaw.dev/credential-source-id": stored.id },
+  });
+  await assert.rejects(
+    f.driver.attachForRevision({
+      namespace: { ...f.namespace, name: existing.workspace },
+      sources: [stored],
+      revision: { harness: { id: "codex", mode: "dedicated" } },
+      signal: AbortSignal.timeout(5000),
+    }),
+    /DNS host name.*IP addresses/,
+  );
+});
+
+test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", async (t) => {
+  const f = await fixture(t, { toolSources: true });
+  const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
+  const oauth = {
+    env_var: "TOOL_TOKEN",
+    token_url: "https://issuer.example.test/token",
+    client_id: "occ",
+  };
+  // The URL parser and inet_aton-style resolvers (glibc's, the Sandbox proxy's) read a host whose
+  // last label is a decimal or 0x number as an IPv4 address (finding 1360).
+  const refused = [
+    "0xa000005",
+    "0xa.0.0.5",
+    "10.0x0.0.5",
+    "0x7f.0x1",
+    "0xa9.0xfe.0xa9.0xfe",
+    "example.123",
+    "example.0x",
+    "api.example.0x10",
+  ];
+  const accepted = ["api.example.com", "a1.example.com", "0xdead.example.com", "123.example.com"];
+  for (const [type, secretField] of [
+    ["bearer-token", "token"],
+    ["oauth2-client-credentials", "client_secret"],
+    ["oauth2-refresh-token", "refresh_token"],
+  ]) {
+    for (const host of refused) {
+      const response = await f.request("POST", f.path, {
+        body: {
+          name: "numeric-host",
+          type,
+          config: { ...(type === "bearer-token" ? { env_var: "TOOL_TOKEN" } : oauth), host },
+          secrets: { [secretField]: secret.ref },
+        },
+      });
+      assert.equal(response.status, 400, host + " " + JSON.stringify(response.body));
+      assert.deepEqual(
+        response.body.error.details,
+        [{ path: "/config/host", code: "INVALID_VALUE" }],
+        host,
+      );
+      assert.equal(
+        response.body.error.message,
+        `The ${type} host must be an exact DNS name.`,
+        host,
+      );
+    }
+    for (const host of accepted) {
+      assert.doesNotThrow(
+        () =>
+          f.driver.validateSourceConfig({
+            type,
+            config: { ...(type === "bearer-token" ? { env_var: "TOOL_TOKEN" } : oauth), host },
+          }),
+        host,
+      );
+    }
+  }
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
+  assert.equal(
+    f.secretDriver.calls.some(({ operation }) => operation === "withValue"),
+    false,
+  );
+  assert.deepEqual(f.mutations, []);
+});
+
+test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or localhost names", async (t) => {
+  const f = await fixture(t, { toolSources: true });
+  const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
+  const config = { host: "tools.example.test", env_var: "TOOL_TOKEN", client_id: "occ" };
+  // The OpenShell gateway, not the Sandbox, posts the issuer material to token_url, so the
+  // protected host's rule applies to its parsed hostname, plus localhost (finding 1348).
+  const refused = [
+    "https://10.0.0.5/token",
+    "https://127.0.0.1:8443/token",
+    "https://169.254.169.254/latest",
+    "https://0x7f000001/token",
+    "https://2130706433/token",
+    "https://127.1/token",
+    "https://0177.0.0.1/token",
+    "https://[::1]:8443/token",
+    "https://[::ffff:127.0.0.1]/token",
+    "https://localhost/token",
+    "https://LOCALHOST:8443/token",
+    "https://issuer.localhost/token",
+    // The gateway resolves names through its Pod's /etc/hosts, where the kubelet and
+    // container runtimes map these to loopback, link-local or multicast addresses, and the
+    // Pod's own single-label hostname to the Pod itself (finding 1354).
+    "https://ip6-localhost/token",
+    "https://ip6-loopback:8443/token",
+    "https://IP6-LOOPBACK/token",
+    "https://ip6-localnet/token",
+    "https://ip6-allnodes/token",
+    "https://localhost4/token",
+    "https://localhost6/token",
+    "https://localhost.localdomain/token",
+    "https://LOCALHOST.LOCALDOMAIN:8443/token",
+    "https://localhost4.localdomain4/token",
+    "https://localhost6.localdomain6/token",
+    "https://keycloak/token",
+    "https://openshell-gateway-0:8443/token",
+  ];
+  // In-cluster issuers have DNS names, which the protected host accepts too.
+  const accepted = [
+    "https://login.example.test/oauth2/token",
+    "https://localhost.example/token",
+    "https://localdomain.example/token",
+    "https://keycloak.idp/token",
+    "https://kubernetes.default.svc/token",
+    "https://keycloak.idp.svc.cluster.local:8443/realms/occ/protocol/openid-connect/token",
+  ];
+  for (const [type, secretField] of [
+    ["oauth2-client-credentials", "client_secret"],
+    ["oauth2-refresh-token", "refresh_token"],
+  ]) {
+    for (const token_url of refused) {
+      const response = await f.request("POST", f.path, {
+        body: {
+          name: "issuer",
+          type,
+          config: { ...config, token_url },
+          secrets: { [secretField]: secret.ref },
+        },
+      });
+      assert.equal(response.status, 400, token_url + " " + JSON.stringify(response.body));
+      assert.deepEqual(
+        response.body.error.details,
+        [{ path: "/config/token_url", code: "INVALID_VALUE" }],
+        token_url,
+      );
+      assert.equal(
+        response.body.error.message,
+        `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost or localdomain name.`,
+        token_url,
+      );
+    }
+    const port = await f.request("POST", f.path, {
+      body: {
+        name: "issuer",
+        type,
+        config: { ...config, token_url: "https://login.example.test:0/token" },
+        secrets: { [secretField]: secret.ref },
+      },
+    });
+    assert.equal(port.status, 400, JSON.stringify(port.body));
+    assert.equal(port.body.error.message, `The ${type} token_url port must be 1 to 65535.`);
+    for (const token_url of accepted) {
+      assert.doesNotThrow(
+        () => f.driver.validateSourceConfig({ type, config: { ...config, token_url } }),
+        token_url,
+      );
+    }
+  }
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
+  assert.equal(
+    f.secretDriver.calls.some(({ operation }) => operation === "withValue"),
+    false,
+  );
+  assert.deepEqual(f.mutations, []);
+  // A source stored before the rule, with its provider, cannot be attached to a new revision,
+  // and its profile is not rewritten.
+  for (const [token_url, refusal] of [
+    ["https://169.254.169.254/token", /token_url host must be a DNS name with at least two labels/],
+    ["https://ip6-localhost/token", /token_url host must be a DNS name with at least two labels/],
+    ["https://localhost.localdomain/token", /token_url host must be a DNS name/],
+    ["https://login.example.test:0/token", /token_url port must be 1 to 65535\.$/],
+  ]) {
+    const stored = {
+      id: "cs_" + randomUUID(),
+      namespaceId: f.namespace.id,
+      name: "stored-issuer",
+      type: "oauth2-client-credentials",
+      config: { ...config, token_url },
+      secrets: { client_secret: secret.ref },
+      driverId: f.driver.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const workspace = openShellWorkspaceName(f.namespace);
+    const name = openShellProviderName(stored.id);
+    f.providers.set(workspace + "/" + name, {
+      workspace,
+      name,
+      type: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/credential-source-id": stored.id,
+        "openclaw.dev/namespace-id": f.namespace.id,
+      },
+      credentials: {},
+    });
+    await assert.rejects(
+      f.driver.attachForRevision({
+        namespace: f.namespace,
+        sources: [stored],
+        revision: { harness: { id: "codex", mode: "dedicated" } },
+        signal: AbortSignal.timeout(5000),
+      }),
+      (error) => {
+        assert.equal(error.name, "ScopeViolationError", token_url);
+        assert.match(error.message, /^The oauth2-client-credentials /, token_url);
+        assert.match(error.message, refusal, token_url);
+        return true;
+      },
+    );
+  }
+  assert.equal(f.profiles.size, 0);
+});
+
+test("the OpenShell Backend names its gateway's namespace only from Service-shaped hosts", () => {
+  const placement = (configuration, namespace) =>
+    createOpenShellBackend({
+      id: "openshell",
+      type: "openshell",
+      configuration,
+      drivers: { sandbox: "s", credential_gateway: "c" },
+    }).client.placement(namespace);
+  const named = { service: "openshell-gateway", namespace: "openshell-system" };
+  for (const configuration of [
+    { endpoint: "https://openshell-gateway.openshell-system.svc:8080" },
+    { endpoint: "http://openshell-gateway.openshell-system.svc.cluster.local:8080" },
+    { endpoint: "openshell-gateway.openshell-system.svc.example.internal:8080" },
+    { endpoint: "https://openshell-gateway-0.openshell-gateway-peer.openshell-system.svc:8080" },
+    { serviceName: "openshell-gateway.openshell-system" },
+    { serviceName: "openshell-gateway.openshell-system.svc.cluster.local" },
+    { serviceName: "openshell-gateway-0.openshell-gateway-peer.openshell-system.svc" },
+  ]) {
+    assert.deepEqual(placement(configuration, "oce-0123456789abcde"), named, configuration);
+  }
+  // A bare Service name resolves in each tenant namespace, so only a tenant names it.
+  assert.equal(placement({ serviceName: "openshell-gateway" }), undefined);
+  assert.deepEqual(placement({ serviceName: "openshell-gateway" }, "oce-0123456789abcde"), {
+    service: "openshell-gateway",
+    namespace: "oce-0123456789abcde",
+  });
+  for (const endpoint of [
+    "http://127.0.0.1:1",
+    "http://[::1]:8080",
+    "http://k3d-occ-dev-server-0:30080",
+    "https://openshell.example.com",
+    "openshell-gateway.openshell-system:8080",
+  ]) {
+    assert.equal(placement({ endpoint }, "oce-0123456789abcde"), undefined, endpoint);
+  }
+});
+
+test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace or a Pod", async (t) => {
+  const config = { host: "tools.example.test", env_var: "TOOL_TOKEN", client_id: "occ" };
+  // The gateway Pod's /etc/hosts and its cluster DNS search list resolve these to the gateway's
+  // own Pod or Service, which no egress NetworkPolicy polices (finding 1356).
+  const gatewayOwn = [
+    "https://openshell-gateway-0.openshell-gateway-peer.openshell-system.svc.cluster.local:8080/token",
+    "https://openshell-gateway-0.openshell-gateway-peer.openshell-system.svc/token",
+    "https://openshell-gateway-0.openshell-gateway-peer.openshell-system/token",
+    "https://openshell-gateway-0.openshell-gateway-peer/token",
+    "https://openshell-gateway-peer.openshell-system.svc.cluster.local/token",
+    "https://openshell-gateway.openshell-system.svc/token",
+    "https://openshell-gateway.openshell-system/token",
+    "https://openshell-gateway-0.openshell-gateway/token",
+    "https://keycloak.openshell-system.svc.example.internal/token",
+    "https://10-42-0-5.openshell-system.pod.cluster.local/token",
+  ];
+  // CoreDNS's default `pods insecure` answers a Pod name with its written address, in any
+  // namespace, so these name an address (here loopback) and are refused without a gateway.
+  const podNames = [
+    "https://127-0-0-1.default.pod.cluster.local/token",
+    "https://10-42-0-5.idp.pod/token",
+    // CoreDNS also answers one or two leading labels (an endpoint, or a port and protocol)
+    // before a Pod name and ignores them; the search list completes the short forms, and
+    // any cluster domain may follow (finding 1359).
+    "https://x.127-0-0-1.default.pod.cluster.local/token",
+    "https://a.b.127-0-0-1.default.pod.cluster.local/token",
+    "https://x.127-0-0-1.default.pod/token",
+    "https://a.b.127-0-0-1.default.pod/token",
+    "https://x.0--1.default.pod.cluster.local/token",
+    "https://x.169-254-169-254.idp.pod.k8s.example.internal/token",
+    // Any `pod` label after the second is refused, so a public name of that shape is too
+    // (deliberately fail-closed).
+    "https://login.idp.pod.example.com/token",
+  ];
+  // Issuers in other namespaces, including the test and development Keycloaks, keep working.
+  const accepted = [
+    "https://keycloak.idp.svc.cluster.local:8443/realms/occ/protocol/openid-connect/token",
+    "https://keycloak.oce-keycloak-0a1b2c3d.svc.cluster.local:8443/realms/occ/token",
+    "https://keycloak.occ-development-keycloak.svc.cluster.local/token",
+    "https://keycloak.idp/token",
+    "https://kubernetes.default.svc/token",
+    "https://openshell-system.example/token",
+    "https://login.openshell-gateway.example/token",
+    "https://login.example.test/oauth2/token",
+    "https://example.com/token",
+    "https://pod.example.com/token",
+    "https://login.pod.example.com/token",
+    "https://keycloak.pod.svc.cluster.local/token",
+  ];
+  const message = (type) =>
+    `The ${type} token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.`;
+  for (const gateway of [
+    { endpoint: "https://openshell-gateway.openshell-system.svc:8080" },
+    { serviceName: "openshell-gateway.openshell-system" },
+  ]) {
+    const f = await fixture(t, { toolSources: true, gateway });
+    const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
+    for (const [type, secretField] of [
+      ["oauth2-client-credentials", "client_secret"],
+      ["oauth2-refresh-token", "refresh_token"],
+    ]) {
+      for (const token_url of [...gatewayOwn, ...podNames]) {
+        const response = await f.request("POST", f.path, {
+          body: {
+            name: "issuer",
+            type,
+            config: { ...config, token_url },
+            secrets: { [secretField]: secret.ref },
+          },
+        });
+        assert.equal(response.status, 400, token_url + " " + JSON.stringify(response.body));
+        assert.deepEqual(
+          response.body.error.details,
+          [{ path: "/config/token_url", code: "INVALID_VALUE" }],
+          token_url,
+        );
+        assert.equal(response.body.error.message, message(type), token_url);
+      }
+      for (const token_url of accepted) {
+        assert.doesNotThrow(
+          () => f.driver.validateSourceConfig({ type, config: { ...config, token_url } }),
+          token_url,
+        );
+      }
+    }
+    assert.deepEqual((await f.request("GET", f.path)).data, []);
+    assert.equal(
+      f.secretDriver.calls.some(({ operation }) => operation === "withValue"),
+      false,
+    );
+    assert.deepEqual(f.mutations, []);
+  }
+
+  // Without a named gateway namespace only Pod names are refused at save.
+  const unnamed = await fixture(t, { toolSources: true });
+  for (const token_url of podNames) {
+    assert.throws(
+      () =>
+        unnamed.driver.validateSourceConfig({
+          type: "oauth2-client-credentials",
+          config: { ...config, token_url },
+        }),
+      { name: "CredentialSourceConfigError", message: message("oauth2-client-credentials") },
+      token_url,
+    );
+  }
+
+  // A gateway in each tenant namespace is known at registration and attach, which carry it.
+  const f = await fixture(t, { toolSources: true, gateway: { serviceName: "openshell-gateway" } });
+  const tenant = f.namespace.name;
+  const tenantOwn = [
+    `https://openshell-gateway-0.openshell-gateway-peer.${tenant}.svc.cluster.local/token`,
+    `https://openshell-gateway.${tenant}.svc/token`,
+    "https://openshell-gateway-0.openshell-gateway-peer/token",
+  ];
+  const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
+  for (const [index, token_url] of tenantOwn.entries()) {
+    assert.doesNotThrow(() =>
+      f.driver.validateSourceConfig({
+        type: "oauth2-client-credentials",
+        config: { ...config, token_url },
+      }),
+    );
+    const response = await f.request("POST", f.path, {
+      body: {
+        // A refused registration leaves its record deleting, so each attempt takes a new name.
+        name: `issuer-${index}`,
+        type: "oauth2-client-credentials",
+        config: { ...config, token_url },
+        secrets: { client_secret: secret.ref },
+      },
+    });
+    // The profile check's ScopeViolationError, which the API reports without detail.
+    assert.equal(response.status, 404, token_url + " " + JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "NOT_FOUND", token_url);
+  }
+  // Refused before the profile or provider is written, so no refresh is configured either.
+  assert.deepEqual(
+    f.mutations.filter((mutation) => mutation === "importProfile" || mutation === "createProvider"),
+    [],
+  );
+  assert.equal(f.profiles.size, 0);
+  assert.equal(f.providers.size, 0);
+  // A source stored before the rule, with its provider, cannot be attached to a new revision.
+  for (const token_url of [...tenantOwn, ...podNames]) {
+    const stored = {
+      id: "cs_" + randomUUID(),
+      namespaceId: f.namespace.id,
+      name: "stored-issuer",
+      type: "oauth2-client-credentials",
+      config: { ...config, token_url },
+      secrets: { client_secret: secret.ref },
+      driverId: f.driver.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const workspace = openShellWorkspaceName(f.namespace);
+    const name = openShellProviderName(stored.id);
+    f.providers.set(workspace + "/" + name, {
+      workspace,
+      name,
+      type: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/credential-source-id": stored.id,
+        "openclaw.dev/namespace-id": f.namespace.id,
+      },
+      credentials: {},
+    });
+    await assert.rejects(
+      f.driver.attachForRevision({
+        namespace: f.namespace,
+        sources: [stored],
+        revision: { harness: { id: "codex", mode: "dedicated" } },
+        signal: AbortSignal.timeout(5000),
+      }),
+      { name: "ScopeViolationError", message: message("oauth2-client-credentials") },
+      token_url,
+    );
+  }
+  assert.equal(f.profiles.size, 0);
+});
+
+test("OAuth2 token_url is stored as parsed", async (t) => {
+  const f = await fixture(t, { toolSources: true });
+  const config = { host: "tools.example.test", env_var: "TOOL_TOKEN", client_id: "occ" };
+  for (const [written, stored] of [
+    ["https://Login.Example.test:443/oauth2/token", "https://login.example.test/oauth2/token"],
+    ["https://login.example.test", "https://login.example.test/"],
+    ["https://login.example.test/a/../token", "https://login.example.test/token"],
+  ]) {
+    assert.deepEqual(
+      f.driver.validateSourceConfig({
+        type: "oauth2-client-credentials",
+        config: { ...config, token_url: written },
+      }),
+      { ...config, token_url: stored },
+      written,
+    );
+  }
+  assert.equal(
+    f.driver.validateSourceConfig({
+      type: "oauth2-client-credentials",
+      config: { ...config, token_url: "https://login.example.test/oauth2/token" },
+    }),
+    undefined,
+  );
 });
 
 test("offered OpenShell source values return field-specific HTTP 400 before effects", async (t) => {

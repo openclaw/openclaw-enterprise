@@ -37,11 +37,11 @@ async function startDevelopment(environment) {
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch (error) {
-    // Keep enough context to include the startup error before rollback logs.
+    // Image-build progress can fill the reporter's budget before the actual startup error.
     const secrets = failureSecrets([environment]);
     const tail = String(error.stderr ?? error.message)
       .split("\n")
-      .slice(-80)
+      .slice(-12)
       .map((line) => redactLogLine(line, secrets, 800))
       .join("\n");
     // Node's direct test reporter would print the raw subprocess output from a cause.

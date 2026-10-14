@@ -1,6 +1,7 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 
+import { rewriteModelSelections } from "./kubernetes/configuration-rules.ts";
 import type { CodexModelEndpoint } from "./plugin-runtime.ts";
 
 /** Compile the admitted selection into stock OpenClaw's explicit native-provider syntax. */
@@ -37,41 +38,23 @@ export function codexGatewayModelConfiguration(
     references.set(reference, id);
     return `codex/${endpoint.modelProvider}/${id}`;
   };
-  const select = (reference: string): string => {
-    // Subagent aliases remain native aliases, even when named like the source provider.
+  // Every setting the Harness model rule checks (requireSelectedModelProvider): the primary,
+  // subagent, image, PDF, heartbeat, compaction and other model selections, hook and channel
+  // models, and policy selectors (`models` keys and `modelPolicy.allow` entries). Rewriting all
+  // of them before the source provider block is dropped leaves no selection on it. Media and
+  // voice models are not chat models: admission refuses them on Dedicated Codex, and the
+  // projection leaves them as written, never adding them to the chat catalog.
+  rewriteModelSelections(document, (reference, policy) => {
+    if (policy) {
+      return qualify(reference);
+    }
+    // Bare selections remain native aliases, even when named like the source provider.
     if (!reference.includes("/")) {
       return reference;
     }
     selections.add(reference);
     return qualify(reference);
-  };
-  for (const settings of [defaults, ...entries]) {
-    if (settings === undefined) {
-      continue;
-    }
-    for (const scope of [settings, asRecord(settings.subagents)]) {
-      if (scope === undefined) {
-        continue;
-      }
-      if (typeof scope.model === "string") {
-        scope.model = select(scope.model);
-      } else {
-        const selection = asRecord(scope.model);
-        if (typeof selection?.primary === "string") {
-          selection.primary = select(selection.primary);
-        }
-        if (Array.isArray(selection?.fallbacks)) {
-          selection.fallbacks = selection.fallbacks.map((reference) => select(reference));
-        }
-      }
-    }
-    const policies = asRecord(settings.models);
-    if (policies !== undefined) {
-      settings.models = Object.fromEntries(
-        Object.entries(policies).map(([reference, policy]) => [qualify(reference), policy]),
-      );
-    }
-  }
+  });
   const models = asRecord(document.models) ?? {};
   const providers = asRecord(models.providers) ?? {};
   const source = asRecord(providers[sourceProvider]) ?? {};

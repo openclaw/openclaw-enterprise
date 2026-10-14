@@ -702,3 +702,138 @@ test("Agent detail keeps an embedded Agent's failed redeploy separate from servi
     .waitFor();
   assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
 });
+
+// The controller ends an older version's deployment work with REVISION_SUPERSEDED when a newer
+// version took over first. The API records that as failed, but the Agent serves the newer version,
+// so the console shows it as neutral (finding 1353). A reader who cannot read the newer version
+// learns nothing about it beyond what the Current version card already shows.
+test("Agent detail and list show a superseded deployment as neutral, not failed", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Superseded deploy", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Superseded Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const newer = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  denyRevisionRead(fixture, namespace, newer.revision);
+  const { page } = await newPage(t, fixture);
+  let error = {
+    code: "REVISION_SUPERSEDED",
+    message: "Deployment was superseded by a newer revision.",
+  };
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, first.revision.id, "failed", error),
+      }),
+  );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}/diagnostics`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            revisionId: first.revision.id,
+            observedAt: "2026-10-14T16:00:01.000Z",
+            checks: [
+              {
+                component: "gateway",
+                check: "connectivity",
+                state: "unknown",
+                checkedAt: "2026-10-14T16:00:00.000Z",
+                code: "UNAVAILABLE",
+              },
+            ],
+          },
+          meta: { requestId: "req_test_superseded_diagnostics" },
+        }),
+      }),
+  );
+
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.getByRole("row").filter({ hasText: "Superseded Agent" });
+  await row.getByRole("link", { name: "v1 · superseded" }).waitFor();
+  await row.getByText("Superseded by a newer version.", { exact: true }).waitFor();
+  assert.equal(await row.getByText(/failed|Deployment was superseded/).count(), 0);
+
+  const url = detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration");
+  await page.goto(url.href);
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
+  await summary.getByText("Superseded by a newer version.", { exact: true }).waitFor();
+  await summary.getByText("Not verified", { exact: true }).waitFor();
+  const activity = page.locator(".deployment-status");
+  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
+  await activity
+    .getByText(
+      "Superseded by a newer version before this one became current (REVISION_SUPERSEDED). This version did not fail; no action is needed.",
+    )
+    .waitFor();
+  assert.equal(await activity.locator(".deployment-step-superseded").count(), 2);
+  await activity
+    .getByText("Deployment work stopped because a newer version superseded this one.", {
+      exact: true,
+    })
+    .waitFor();
+  await activity
+    .getByText("Not needed: this version did not become current.", { exact: true })
+    .waitFor();
+  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
+  assert.equal(await activity.getByRole("alert").count(), 0);
+  const record = page.locator(".version-deployment-record");
+  await record.getByText("Recorded outcome: superseded", { exact: true }).waitFor();
+  await record
+    .getByText(
+      /^Superseded by a newer version before this one became current \(REVISION_SUPERSEDED\)/,
+    )
+    .waitFor();
+  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
+  // Nothing names the newer version, which this reader cannot read.
+  const outcome = page.locator(
+    ".agent-current-summary, .deployment-status, .version-deployment-record, .agent-status-line",
+  );
+  assert.equal(await outcome.getByText(/\bv2\b|failed|Live serving is unverified/i).count(), 0);
+  // Diagnostics do not ask the reader to resolve a superseded record first.
+  const observations = page.locator(".version-diagnostics");
+  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+  await observations.getByText(/Check this version's recorded outcome and its Logs tab/).waitFor();
+  assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
+
+  // A real failure on the same record still renders as failed.
+  error = authenticationFailure;
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+  await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
+  await activity
+    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
+    .waitFor();
+  assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
+  assert.equal(await activity.locator(".deployment-step-superseded").count(), 0);
+  await page
+    .locator(".agent-status-line")
+    .getByText(
+      /^v1 deployment is recorded as failed\. rev_.* is selected\. Live serving is unverified\.$/,
+    )
+    .waitFor();
+
+  // The repository credential worker ends superseded work with its own code: neutral too.
+  error = {
+    code: "REPOSITORY_REVISION_SUPERSEDED",
+    message: "Deployment was superseded by a newer revision.",
+  };
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
+  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
+  await activity
+    .getByText(
+      "Superseded by a newer version before this one became current (REPOSITORY_REVISION_SUPERSEDED). This version did not fail; no action is needed.",
+    )
+    .waitFor();
+  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
+  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
+});

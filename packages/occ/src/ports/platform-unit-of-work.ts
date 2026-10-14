@@ -39,6 +39,7 @@ export function bindPlatformUnitOfWork(
     presets: bindRepository(repositories.presets, lifetime, [
       "findPreset",
       "listPresets",
+      "listPresetSummaries",
       "createPreset",
       "lockPreset",
       "updatePreset",
@@ -93,6 +94,7 @@ export function bindPlatformUnitOfWork(
       "listAgentsForBrowsing",
       "findAgent",
       "listAgents",
+      "listAgentReferences",
       "createAgent",
       "lockAgent",
       "updateConfiguration",
@@ -106,6 +108,8 @@ export function bindPlatformUnitOfWork(
       "listRevisionsForBrowsing",
       "findRevision",
       "listRevisions",
+      "listRevisionMetadata",
+      "pageRevisionSummaries",
       "createRevision",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [

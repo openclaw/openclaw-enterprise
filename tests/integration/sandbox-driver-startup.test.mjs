@@ -2206,7 +2206,7 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
       {
         backend: {
           drivers: { credential_gateway: "credential-gateway-openshell" },
-          client: { clientForNamespace: () => client },
+          client: { clientForNamespace: () => client, placement: () => undefined },
         },
       },
     );
@@ -3017,6 +3017,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["gateway.example.test:65535", true],
     ["gateway.example.test:080", true],
     ["127.0.0.1:8080", true],
+    ["192.168.1.1:8080", true],
+    ["http://192.168.1.1:8080", true],
     ["[::1]:8080", true],
     ["gateway.example.test:0", false],
     ["gateway.example.test:00", false],
@@ -3066,6 +3068,25 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     if (failing.length > 0) {
       assert.equal(admitted, false, `${endpoint}: ${failing.join(", ")} throws`);
     }
+  }
+  for (const endpoint of [
+    "http://192.168.1:8080",
+    "192.168.1:8080",
+    "2130706433:8080",
+    "http://0177.0.0.1:8080",
+    "http://127.1:8080",
+  ]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    await assert.rejects(
+      loadInstallationFile(t, configuration),
+      /configuration\.endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
+      endpoint,
+    );
+    const failing = Object.entries(consumers)
+      .filter(([, parse]) => throws(parse, endpoint))
+      .map(([name]) => name);
+    assert.deepEqual(failing.sort(), ["grpc", "service"], endpoint);
   }
 });
 

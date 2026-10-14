@@ -10,12 +10,13 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-model.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage() {
-  return `Usage: node scripts/first-agent.mjs <name> [--harness openclaw|codex] [--prompt <text>] [--replace-key]
+  return `Usage: node scripts/first-agent.mjs <name> [--harness openclaw|codex] [--control-ui] [--prompt <text>] [--replace-key]
 
 Create and deploy an Agent in the local Kubernetes installation started by
 ./bin/occ dev up, then ask the actual model to return a random value.
@@ -23,6 +24,7 @@ The Agent stays running after this command exits. Reuse the same name to send
 another prompt or verify it again.
 
   --harness <id>  Use embedded OpenClaw (default) or dedicated Codex.
+  --control-ui    Enable durable native Control UI access through OCC.
   --prompt <text>  Ask the Agent an additional question and print its response.
   --replace-key    Replace this Agent's saved model key and deploy a new revision.
 
@@ -38,11 +40,19 @@ function parseArguments(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     return undefined;
   }
-  const result = { name: undefined, harness: "openclaw", prompt: undefined, replaceKey: false };
+  const result = {
+    name: undefined,
+    harness: "openclaw",
+    controlUi: false,
+    prompt: undefined,
+    replaceKey: false,
+  };
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
     if (value === "--replace-key" && !result.replaceKey) {
       result.replaceKey = true;
+    } else if (value === "--control-ui" && !result.controlUi) {
+      result.controlUi = true;
     } else if (value === "--harness" && argv[index + 1]) {
       result.harness = argv[++index];
     } else if (value === "--prompt" && result.prompt === undefined && argv[index + 1]) {
@@ -103,7 +113,7 @@ function parseJson(value, description) {
   }
 }
 
-async function loadLocalInstallation(harness) {
+async function loadLocalInstallation(harness, controlUi) {
   const selected = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const directory = selected
     ? isAbsolute(selected)
@@ -156,6 +166,40 @@ async function loadLocalInstallation(harness) {
   if (state.sandboxDriver === "openshell" && harness !== "codex") {
     throw new Error(
       "The OpenShell first-Agent workflow requires --harness codex so its authenticated app server runs in dedicated mode.",
+    );
+  }
+  let nativeAdmin;
+  if (state.browserOrigin !== undefined || state.nativeAdminDomain !== undefined) {
+    let browserOrigin;
+    try {
+      browserOrigin = new URL(state.browserOrigin);
+    } catch {
+      throw new Error("The recorded Local Setup browser origin is invalid.");
+    }
+    const cookieDomain = `${state.cluster}.oce.localhost`;
+    const expectedBrowserHost = `console.${cookieDomain}`;
+    const expectedNativeAdminDomain = `agents.${cookieDomain}`;
+    if (
+      state.deploymentMode === "k3d" ||
+      state.sandboxDriver !== "openshell" ||
+      browserOrigin.protocol !== "https:" ||
+      browserOrigin.hostname !== expectedBrowserHost ||
+      !browserOrigin.port ||
+      browserOrigin.pathname !== "/" ||
+      browserOrigin.username ||
+      browserOrigin.password ||
+      browserOrigin.search ||
+      browserOrigin.hash ||
+      state.browserOrigin !== browserOrigin.origin ||
+      state.nativeAdminDomain !== expectedNativeAdminDomain
+    ) {
+      throw new Error("The recorded Local Setup native admin endpoint is invalid.");
+    }
+    nativeAdmin = { browserOrigin: browserOrigin.origin, domain: state.nativeAdminDomain };
+  }
+  if (controlUi && nativeAdmin === undefined) {
+    throw new Error(
+      "Local Setup did not enable its durable native admin endpoint. Use the Compose control plane with Kubernetes Compute and the OpenShell Sandbox Driver, then start a new Agent name.",
     );
   }
   if (state.deploymentMode !== "k3d") {
@@ -283,7 +327,15 @@ async function loadLocalInstallation(harness) {
       input: sql,
     });
   };
-  return { directory, key, origin, kubectl, database, sandboxDriver: state.sandboxDriver };
+  return {
+    directory,
+    key,
+    origin,
+    kubectl,
+    database,
+    sandboxDriver: state.sandboxDriver,
+    nativeAdmin,
+  };
 }
 
 function loopbackOrigin(raw, protocol = "http:") {
@@ -469,7 +521,7 @@ async function modelKey(authMethod) {
   return value;
 }
 
-function nativeConfiguration(model, harness) {
+function nativeConfiguration(model, harness, nativeAdminOrigin) {
   const selected = `${harness === "codex" ? "codex" : "openai"}/${model}`;
   const provider =
     harness === "codex"
@@ -494,8 +546,23 @@ function nativeConfiguration(model, harness) {
       gateway: {
         mode: "local",
         bind: "lan",
-        controlUi: { enabled: false },
+        ...(nativeAdminOrigin === undefined ? {} : { publicOrigin: nativeAdminOrigin }),
+        controlUi:
+          nativeAdminOrigin === undefined
+            ? { enabled: false }
+            : { enabled: true, allowedOrigins: [nativeAdminOrigin] },
         auth: {
+          ...(nativeAdminOrigin === undefined
+            ? {}
+            : {
+                mode: "trusted-proxy",
+                trustedProxy: {
+                  userHeader: "x-occ-identity",
+                  allowUsers: ["occ-workspace-files"],
+                  deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+                },
+                identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              }),
           password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
         },
         http: { endpoints: { chatCompletions: { enabled: true } } },
@@ -575,7 +642,6 @@ function assertManagedConfiguration(configuration, record, expected) {
     configuration.namespaceId !== record.namespaceId ||
     configuration.kind !== expected.kind ||
     configuration.generation !== (record.configurationGeneration ?? 1) ||
-    configuration.generation !== 1 ||
     !isDeepStrictEqual(configuration.values, expected.values) ||
     Object.keys(configuration.secretBindings ?? {}).length
   ) {
@@ -750,7 +816,7 @@ function progress(message) {
 async function main(options) {
   let local;
   try {
-    local = await loadLocalInstallation(options.harness);
+    local = await loadLocalInstallation(options.harness, options.controlUi);
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
@@ -792,10 +858,11 @@ async function main(options) {
         existing.name !== options.name ||
         existing.namespaceId !== namespace.id ||
         existing.harness !== options.harness ||
-        existing.sandboxDriver !== local.sandboxDriver)
+        existing.sandboxDriver !== local.sandboxDriver ||
+        existing.controlUi !== options.controlUi)
     ) {
       throw new Error(
-        "This Agent's recorded Namespace, model, Harness, or Sandbox Driver differs. Reuse its recorded selection or choose a new Agent name.",
+        "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
       );
     }
     const record = existing ?? {
@@ -809,6 +876,7 @@ async function main(options) {
       model,
       harness: options.harness,
       sandboxDriver: local.sandboxDriver,
+      controlUi: options.controlUi,
       secretName: `first-agent-${randomUUID()}`,
       ...(local.sandboxDriver === "openshell"
         ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
@@ -849,19 +917,48 @@ async function main(options) {
       );
     }
 
-    const expectedConfiguration = nativeConfiguration(model, record.harness);
-    if (record.configurationId) {
-      const storedConfiguration = await api(
-        "GET",
-        `${base}/configurations/${record.configurationId}`,
-      );
-      assertManagedConfiguration(storedConfiguration, record, expectedConfiguration);
-      record.configurationGeneration = storedConfiguration.generation;
+    const baseConfiguration = nativeConfiguration(model, record.harness);
+    async function ensureManagedConfiguration(selectedAgent) {
+      if (record.controlUi && record.controlUiOrigin === undefined) {
+        const target = new URL(local.nativeAdmin.browserOrigin);
+        target.hostname = deriveNativeAdminHost(
+          installation.id,
+          selectedAgent,
+          local.nativeAdmin.domain,
+        );
+        record.controlUiOrigin = target.origin;
+        await save(record);
+      }
+      const expected = nativeConfiguration(model, record.harness, record.controlUiOrigin);
+      let stored = await api("GET", `${base}/configurations/${record.configurationId}`);
+      if (record.controlUi) {
+        if (stored.generation === 1) {
+          record.configurationGeneration = 1;
+          assertManagedConfiguration(stored, record, baseConfiguration);
+          progress("Enabling durable native Control UI access...");
+          stored = await api("PATCH", `${base}/configurations/${record.configurationId}`, {
+            values: expected.values,
+          });
+        }
+        if (stored.generation !== 2) {
+          throw new Error(
+            "This Agent's Configuration generation changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
+          );
+        }
+        record.configurationGeneration = 2;
+      } else {
+        record.configurationGeneration = 1;
+      }
+      assertManagedConfiguration(stored, record, expected);
       await save(record);
+      return expected;
     }
+
+    let expectedConfiguration;
     if (agent) {
       assertManagedAgent(agent, record);
       record.agentId = agent.id;
+      expectedConfiguration = await ensureManagedConfiguration(agent);
       for (const revisionId of new Set(
         [agent.activeRevisionId, record.revisionId].filter(Boolean),
       )) {
@@ -937,9 +1034,9 @@ async function main(options) {
     }
 
     if (!record.configurationId) {
-      const configuration = await api("POST", `${base}/configurations`, expectedConfiguration);
+      const configuration = await api("POST", `${base}/configurations`, baseConfiguration);
       record.configurationId = configuration.id;
-      assertManagedConfiguration(configuration, record, expectedConfiguration);
+      assertManagedConfiguration(configuration, record, baseConfiguration);
       record.configurationGeneration = configuration.generation;
       await save(record);
     }
@@ -958,6 +1055,9 @@ async function main(options) {
     assertManagedAgent(agent, record);
     record.agentId = agent.id;
     await save(record);
+    if (expectedConfiguration === undefined) {
+      expectedConfiguration = await ensureManagedConfiguration(agent);
+    }
     const agentPath = `${base}/agents/${agent.id}`;
     if (credentialSource === undefined) {
       progress("Authorizing the Agent to use its exact model Secret...");
@@ -978,10 +1078,11 @@ async function main(options) {
     }
 
     if (!record.revisionId) {
-      const revisions = (await api("GET", `${agentPath}/revisions`)).sort(
-        (left, right) => right.revision - left.revision,
-      );
-      const latest = revisions[0];
+      // Revisions list as summaries, newest first; the exact read carries the saved snapshot.
+      const [newest] = await api("GET", `${agentPath}/revisions?limit=1`);
+      const latest = newest
+        ? await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`)
+        : undefined;
       if (latest) {
         assertManagedRevision(latest, record, expectedConfiguration);
       }
@@ -1024,11 +1125,17 @@ async function main(options) {
       apiKey: suppliedKey,
       expectProviderKey: record.sandboxDriver !== "openshell",
     });
-    const consoleUrl = new URL(`/console/agents/${agent.id}`, local.origin);
+    const consoleUrl = new URL(
+      `/console/agents/${agent.id}`,
+      local.nativeAdmin?.browserOrigin ?? local.origin,
+    );
     consoleUrl.searchParams.set("namespace", namespace.id);
     process.stdout.write(
       `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nHarness: ${record.harness}\nModel: ${record.harness === "codex" ? "codex" : "openai"}/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
     );
+    if (record.controlUiOrigin !== undefined) {
+      process.stdout.write(`Control UI: ${record.controlUiOrigin}/\n`);
+    }
     if (proof.response !== undefined) {
       process.stdout.write(`\nAgent response:\n${proof.response}\n`);
     }

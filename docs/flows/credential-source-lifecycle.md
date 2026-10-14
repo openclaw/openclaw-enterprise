@@ -71,12 +71,13 @@ read or gateway write, it rejects a type the catalog lacks with
 with `ScopeViolationError` (`404`).
 It then calls the Driver's side-effect-free
 `validateSourceConfig`. Invalid values return `CredentialSourceConfigError`
-(`400 INVALID_REQUEST`) before any Secret read, record creation, or gateway write.
-The shared `apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl`
-rejects decoded hostname wildcards, wildcard paths, and port `0`. OpenShell's
+(`400 INVALID_REQUEST`) before any Secret read, record creation, or gateway write;
+OCC stores any configuration it returns.
+`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` rejects
+rewritten spellings, decoded hostname wildcards, wildcard paths, and port `0`.
+OpenShell's
 `apps/controller/src/drivers/credential-gateway/openshell.ts:normalizedSourceBaseUrl`
-also rejects bracketed IPv6, braces, and empty hostname labels its matcher cannot
-use. Compute still accepts IPv6. Registration and attachment require the
+also requires an exact DNS host name; Compute accepts IP hosts. Registration and attachment require the
 OpenShell-safe form; status and deletion do not guess ownership from an invalid URL.
 
 ### 2. Read Secret values

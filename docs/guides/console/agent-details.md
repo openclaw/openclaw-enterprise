@@ -40,7 +40,9 @@ another version or the draft. Its milestones use the persisted record:
 | **Deployment work**     | `queued` awaits an initial or subsequent claim; `running` records a worker claim. |
 | **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
 
-A `failed` result shows the stored error. Select **Open vN Logs** to open that
+Work ended by a newer version (`REVISION_SUPERSEDED` or
+`REPOSITORY_REVISION_SUPERSEDED`) shows as a neutral `superseded`
+result, not a failure. A `failed` result shows the stored error. Select **Open vN Logs** to open that
 version's [Logs tab](../topics/agent-logs.md) and bring the panel into view,
 even from the draft or another version. If logs are unavailable, the panel
 shows an access or availability message.
@@ -78,7 +80,8 @@ Verify the runtime and a real response with
 An **AgentRevision** is an immutable version created by deployment. A
 **Configuration** is the reusable, mutable input for the next version.
 
-**Versions** marks the current version. **View version vN** shows creation time,
+**Versions** lists the newest 50 versions and marks the current one; **Show
+older versions** loads the next 50. **View version vN** shows creation time,
 Configuration generation, deployment status, and read-only settings, including
 native JSON. Activity follows the latest visible deployment. **Available versions**
 jumps to readable versions; `rev_…` identifies the version for API calls and

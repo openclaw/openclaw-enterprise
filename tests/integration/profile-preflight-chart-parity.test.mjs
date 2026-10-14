@@ -11,6 +11,7 @@ import { clientAddressConfiguration } from "../../apps/controller/src/auth/clien
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -720,10 +721,11 @@ const controlPlaneImageCases = [
   ["registry.example.invalid/controller?tag", false],
   ["-registry.example.invalid/controller", false],
   ["_registry.example.invalid/controller", false],
-  // An uppercase registry host or tag is allowed. A second @ is refused, and so is a bracket
-  // anywhere: control-plane images cannot use an IPv6 registry host.
+  // An uppercase registry host or tag is allowed, and so is an IPv6 registry host. A second @
+  // is refused, and so is a bracket after the first component.
   ["Registry.Example.invalid/team/controller", true],
   ["registry.example.invalid/team/controller:Release_1", true],
+  ["[fd00::1]:5000/team/controller", true],
   ["registry.example.invalid/controller@extra", false],
   ["registry.example.invalid/[fd00::1]/controller", false],
 ];
@@ -797,8 +799,7 @@ test(
 
 // Profiles take no Collector image: preflight refuses the field and writes none, so the chart
 // renders its default. An operator values file can still set logging.collector.image, and the
-// chart applies the images.* repository path rule to it. Its shape rule stays looser than
-// images.* (the Collector may use an IPv6 registry host).
+// chart applies the images.* rule to it.
 test(
   "logging.collector.image follows the images.* repository path rule; profiles leave the chart default",
   { skip: helmSkip },
@@ -864,10 +865,9 @@ test(
 );
 
 // runtime.image never reaches the chart: it becomes Compute's images.gateway and
-// images.agent. Every reference preflight accepts, including an IPv6 registry host the
-// chart's control-plane rule would refuse, must reach Compute as written and start it.
-// Preflight also refuses whitespace and a second @, which no runtime pulls; Compute checks
-// only the trailing digest.
+// images.agent. Every reference preflight accepts, including an IPv6 registry host, must reach
+// Compute as written and start it. Both refuse whitespace and a second @, which no runtime
+// pulls.
 test("runtime image references get Compute's verdict in preflight", () =>
   each(
     [
@@ -902,6 +902,112 @@ test("runtime image references get Compute's verdict in preflight", () =>
       );
     },
   ));
+
+// Kubernetes refuses to pull a reference its parser refuses (InvalidImageName). Every image
+// field in preflight, Compute and the chart takes exactly the references Kubernetes accepts,
+// with a lowercase SHA-256 digest where the field requires one. tests/fixtures/image-reference-
+// cases.mjs holds Kubernetes' verdicts.
+function imageRefusal(field, image, problem) {
+  return problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/.test(image)
+    ? new RegExp(`${escape(field)} repository path must be lowercase`)
+    : new RegExp(
+        `${escape(field)} must be an (immutable|approved immutable SHA-256) image reference`,
+      );
+}
+
+test("image references get Kubernetes' verdict in preflight and Compute", () =>
+  each(imageReferenceCases, ([label, image, problem]) => {
+    // Compute without the immutable-image policy takes every reference Kubernetes accepts.
+    assertCompute(
+      { images: { gateway: image, agent: image, requireImmutableDigest: false } },
+      problem === undefined,
+      problem === "uppercase-repository"
+        ? /Gateway image repository path must be lowercase/
+        : /Gateway image must be a container image reference Kubernetes can pull/,
+      label,
+    );
+    const accepted = immutableImageAccepted(image, problem);
+    // One profile carries the reference in all three image fields; preflight refuses each.
+    return withProfile(
+      {
+        ...input({ controllerImage: image }),
+        runtime: { ...input({}).runtime, image },
+        repository: { ...repositoryInput, image },
+      },
+      ({ directory, renderer }) => {
+        assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
+        if (!accepted) {
+          for (const field of [
+            "controlPlane.controllerImage",
+            "runtime.image",
+            "repository.image",
+          ]) {
+            assert.match(
+              renderer.output,
+              imageRefusal(field, image, problem),
+              `${label}: ${field}`,
+            );
+          }
+          return;
+        }
+        const values = loadYaml(readFileSync(join(directory, "values.yaml"), "utf8"));
+        assert.equal(values.images.controller, image, label);
+        assert.equal(values.repositoryCredentials.image, image, label);
+        const installation = loadYaml(readFileSync(join(directory, "installation.yaml"), "utf8"));
+        const images = installation.drivers.compute.configuration.images;
+        assert.deepEqual(images, { gateway: image, agent: image, requireImmutableDigest: true });
+        assertCompute({ images }, true, undefined, label);
+      },
+    );
+  }));
+
+test(
+  "image references get Kubernetes' verdict in every chart image field",
+  { skip: helmSkip },
+  async () => {
+    // A profile with the Collector and repository credentials enabled, so every chart image
+    // field renders.
+    const baselineProfile = await renderProfile({
+      ...input({ loggingCollector: { enabled: true, exporter: { cidr: "192.0.2.40/32" } } }),
+      repository: repositoryInput,
+    });
+    try {
+      assert.equal(baselineProfile.renderer.ok, true, baselineProfile.renderer.output);
+      const baselineValuesFile = join(baselineProfile.directory, "values.yaml");
+      const fields = [
+        ["images.controller", (image) => ({ images: { controller: image } })],
+        ["repositoryCredentials.image", (image) => ({ repositoryCredentials: { image } })],
+        ["logging.collector.image", (image) => ({ logging: { collector: { image } } })],
+      ];
+      await each(imageReferenceCases, async ([label, image, problem]) => {
+        const directory = mkdtempSync(join(baselineProfile.directory, "case-"));
+        if (immutableImageAccepted(image, problem)) {
+          const chart = await helmTemplate([
+            baselineValuesFile,
+            writeOverride(
+              directory,
+              Object.assign({}, ...fields.map(([, values]) => values(image))),
+            ),
+          ]);
+          assert.equal(chart.ok, true, `${label}: helm template\n${chart.output}`);
+          // The controller, its Jobs, the Slack proxy, the repository broker and the Collector.
+          assert.ok(chart.output.includes(`image: ${JSON.stringify(image)}`), label);
+          return;
+        }
+        for (const [field, values] of fields) {
+          const chart = await helmTemplate([
+            baselineValuesFile,
+            writeOverride(mkdtempSync(join(directory, "field-")), values(image)),
+          ]);
+          assert.equal(chart.ok, false, `${label}: ${field}: helm template\n${chart.output}`);
+          assert.match(chart.output, imageRefusal(field, image, problem), `${label}: ${field}`);
+        }
+      });
+    } finally {
+      rmSync(baselineProfile.directory, { recursive: true, force: true });
+    }
+  },
+);
 
 // The chart checks the percent-decoded host for invisible characters that Node's host
 // parser drops.

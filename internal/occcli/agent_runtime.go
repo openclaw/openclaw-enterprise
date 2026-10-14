@@ -56,11 +56,7 @@ func (app *application) agentRevision(
 	resource, _ := agent.(map[string]any)
 	active, _ := resource["activeRevisionId"].(string)
 	if active == "" {
-		revisions, err := client.ListAgentRevisions(namespace, agentID)
-		if err != nil {
-			return "", nil, err
-		}
-		latest, err := latestRevisionID(agentID, revisions)
+		latest, err := latestRevisionID(client, namespace, agentID)
 		if err != nil {
 			return "", nil, err
 		}
@@ -109,11 +105,7 @@ type newerRevision struct {
 // and reads its runtime description to see whether it has Pods. A failure to
 // list revisions keeps the active revision silently.
 func newerRevisionWithPods(client *occclient.Client, namespace, agentID, active string) newerRevision {
-	revisions, err := client.ListAgentRevisions(namespace, agentID)
-	if err != nil {
-		return newerRevision{}
-	}
-	latest, err := latestRevisionID(agentID, revisions)
+	latest, err := latestRevisionID(client, namespace, agentID)
 	if err != nil || latest == active {
 		return newerRevision{}
 	}

@@ -12,11 +12,6 @@ export function betterAuthIssuer(installationId: string): string {
   return `${OCC_BETTER_AUTH_ISSUER_PREFIX}${installationId}:better-auth`;
 }
 
-// Four decimal octets, 0–255, with no leading zero. Node's URL parser reads a
-// leading zero as octal, and also accepts hex, shorthand and a single integer,
-// then URL.toString() publishes that other address.
-const strictDecimalIpv4 = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
-
 // URL parsing strips only C0 controls and spaces from the ends. A character
 // class cannot spell that range: the linter rejects a null in a regex.
 function stripUrlEdges(value: string): string {
@@ -31,8 +26,10 @@ function stripUrlEdges(value: string): string {
   return value.slice(start, end);
 }
 
-// Refuses a URL whose IPv4 host Node rewrote: the written host must be the parsed one, in
-// strict decimal (isIP already rules out an octet above 255). `setting` names the
+// Refuses a URL whose IPv4 host Node rewrote. Node's URL parser reads a leading zero as octal,
+// and also accepts hex, shorthand and a single integer, then URL.toString() publishes that
+// other address. isIP accepts only four decimal octets from 0 to 255 with no leading zeros,
+// so a written host equal to the parsed one is already in that form. `setting` names the
 // URL in the error (OCC_AUTH_BASE_URL, observability.url).
 export function refuseRewrittenIpv4Host(setting: string, raw: string, parsed: URL): void {
   if (isIP(parsed.hostname) !== 4) {
@@ -40,7 +37,7 @@ export function refuseRewrittenIpv4Host(setting: string, raw: string, parsed: UR
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
-  if (written === parsed.hostname && strictDecimalIpv4.test(parsed.hostname)) {
+  if (written === parsed.hostname) {
     return;
   }
   throw new Error(

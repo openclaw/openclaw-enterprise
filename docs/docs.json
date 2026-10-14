@@ -459,6 +459,14 @@
                     "label": "Earlier Breaking Changes"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
+                    "label": "Breaking Changes Before 2026-10-13"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
+                    "label": "Breaking Changes Before 2026-10-12"
+                  },
+                  {
                     "page": "guides/deploy/breaking-changes-before-2026-10-11",
                     "label": "Breaking Changes Before 2026-10-11"
                   },
@@ -998,6 +1006,7 @@
               "testing/plugins",
               "testing/plugins-proof-notes",
               "testing/openshell",
+              "testing/openshell-coverage",
               "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",
               "flows/agent-repository-credentials",

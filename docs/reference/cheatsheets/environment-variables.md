@@ -28,7 +28,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_PORT` — API listener port; no process default.
 - `OCC_CONFIG_PATH` — Absolute path to trusted Installation YAML; required in production and shared with the worker.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
-- `OCC_AUTH_BASE_URL` — Authentication and cookie origin; required in production; default in development: `http://127.0.0.1:3000`.
+- `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_GITHUB_CLIENT_ID` — Optional GitHub App client ID, not App ID; selects the provider instance. Requires PostgreSQL, native IAM, and both GitHub settings below; see [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
 - `OCC_AUTH_GITHUB_CLIENT_SECRET` — Protected server-side client secret for the configured GitHub App; its private key stays with the repository credential consumer.
 - `OCC_AUTH_GITHUB_ALLOWED_ORGS` — Optional comma-separated GitHub organization logins; when set (or with the teams), GitHub sign-in requires active membership. See the [allowlist](../authentication/external-sign-in.md#organization-and-team-allowlist).

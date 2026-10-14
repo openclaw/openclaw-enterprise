@@ -17,6 +17,8 @@ import type {
   AccessBinding,
   Agent,
   AgentRead,
+  AgentRevisionMetadata,
+  AgentRevisionSummaryPage,
   AgentRevisionRead,
   WorkspaceSetup,
   AgentDesiredRuntimeState,
@@ -38,6 +40,7 @@ import type {
   PluginDesiredState,
   PluginApprovers,
   Preset,
+  PresetSummary,
   RepositoryBindingSelection,
   RepositoryAccess,
   Secret,
@@ -161,6 +164,11 @@ export interface AgentReadRepository {
   listAgentsForBrowsing(namespaceId: string): Promise<readonly Readonly<AgentRead>[]>;
   findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
   listAgents(namespaceId: string): Promise<readonly Readonly<Agent>[]>;
+  /**
+   * The identity of every Agent in every live Namespace, in one read that decodes no saved
+   * settings, for callers that resolve an opaque Agent address before authorizing it.
+   */
+  listAgentReferences(): Promise<readonly Readonly<Pick<Agent, "id" | "namespaceId">>[]>;
 }
 
 export interface AgentRepository extends AgentReadRepository {
@@ -228,6 +236,24 @@ export interface AgentRevisionReadRepository {
     revisionId: string,
   ): Promise<Readonly<AgentRevision> | undefined>;
   listRevisions(namespaceId: string, agentId: string): Promise<readonly Readonly<AgentRevision>[]>;
+  /**
+   * The Agent's revisions in revision order, as listRevisions returns them but without their
+   * saved settings, so a caller that counts or picks revisions decodes only the one it uses.
+   */
+  listRevisionMetadata(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<readonly Readonly<AgentRevisionMetadata>[]>;
+  /**
+   * One page of the Agent's revision summaries, newest first: at most `limit` revisions numbered
+   * below `before` (from the newest when omitted). It decodes no saved settings, so a list route
+   * costs about the same whatever the admitted snapshots weigh (finding 1323).
+   */
+  pageRevisionSummaries(
+    namespaceId: string,
+    agentId: string,
+    page: { readonly before?: number; readonly limit: number },
+  ): Promise<Readonly<AgentRevisionSummaryPage>>;
 }
 
 export interface AgentRevisionRepository extends AgentRevisionReadRepository {
@@ -275,6 +301,8 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
 export interface PresetReadRepository {
   findPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
   listPresets(namespaceId: string): Promise<readonly Readonly<Preset>[]>;
+  /** The Namespace's Presets in listPresets order, without their templates. */
+  listPresetSummaries(namespaceId: string): Promise<readonly Readonly<PresetSummary>[]>;
 }
 
 export interface PresetRepository extends PresetReadRepository {
@@ -1435,6 +1463,17 @@ function repositories(
               .sort((a, b) => a.id.localeCompare(b.id))
               .map((preset) => immutableCopy(preset)),
       ),
+    listPresetSummaries: async (namespaceId) =>
+      Object.freeze(
+        snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined
+          ? []
+          : Array.from(snapshot.presets.values())
+              .filter((preset) => preset.namespaceId === namespaceId)
+              .sort((a, b) => a.id.localeCompare(b.id))
+              .map(({ id, namespaceId, name, createdAt }) =>
+                Object.freeze({ id, namespaceId, name, createdAt }),
+              ),
+      ),
     createPreset: async (preset) => {
       assertInitialized(snapshot);
       const namespace = await namespaces.lockNamespace(preset.namespaceId);
@@ -2204,6 +2243,18 @@ function repositories(
               .map((agent) => immutableCopy(agent))
           : [],
       ),
+    listAgentReferences: async () => {
+      const live = new Set(
+        Array.from(snapshot.namespaces.values())
+          .filter((namespace) => namespace.deletedAt === undefined)
+          .map((namespace) => namespace.id),
+      );
+      return Object.freeze(
+        Array.from(snapshot.agents.values())
+          .filter((agent) => live.has(agent.namespaceId))
+          .map((agent) => Object.freeze({ id: agent.id, namespaceId: agent.namespaceId })),
+      );
+    },
     createAgent: async (agent) => {
       assertInitialized(snapshot);
       if (agent.executionMode !== "embedded" && agent.executionMode !== "dedicated") {
@@ -2470,6 +2521,61 @@ function repositories(
               .map((revision) => immutableCopy(revision))
           : [],
       ),
+    listRevisionMetadata: async (namespaceId, agentId) =>
+      Object.freeze(
+        snapshot.namespaces.get(namespaceId)?.deletedAt === undefined
+          ? (snapshot.revisions.get(agentKey(namespaceId, agentId)) ?? [])
+              .filter(
+                (revision) => revision.namespaceId === namespaceId && revision.agentId === agentId,
+              )
+              .map(({ id, namespaceId, agentId, revision, backendId, createdAt }) =>
+                Object.freeze({ id, namespaceId, agentId, revision, backendId, createdAt }),
+              )
+          : [],
+      ),
+    pageRevisionSummaries: async (namespaceId, agentId, { before, limit }) => {
+      const older =
+        snapshot.namespaces.get(namespaceId)?.deletedAt === undefined
+          ? (snapshot.revisions.get(agentKey(namespaceId, agentId)) ?? [])
+              .filter(
+                (revision) =>
+                  revision.namespaceId === namespaceId &&
+                  revision.agentId === agentId &&
+                  (before === undefined || revision.revision < before),
+              )
+              .sort((left, right) => right.revision - left.revision)
+          : [];
+      const page = older
+        .slice(0, limit)
+        .map(
+          ({
+            id,
+            namespaceId,
+            agentId,
+            revision,
+            backendId,
+            configurationId,
+            configurationGeneration,
+            harness,
+            createdAt,
+          }) =>
+            immutableCopy({
+              id,
+              namespaceId,
+              agentId,
+              revision,
+              backendId,
+              configurationId,
+              configurationGeneration,
+              harness,
+              createdAt,
+            }),
+        );
+      return Object.freeze({
+        revisions: Object.freeze(page),
+        ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
+      });
+    },
     createRevision: async (revision) => {
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);

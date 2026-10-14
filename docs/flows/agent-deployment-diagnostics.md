@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-11
-last_updated_session: issue-2142
+updated: 2026-10-14
+last_updated_session: authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4
 ---
 
 # Agent deployment diagnostics flow
@@ -62,6 +62,9 @@ namespace; dedicated Harnesses use the tenant namespace. The Driver reads a
 private endpoint, then checks the Pod name, UID, and container ID again. Missing
 or replaced Pods produce `unknown` checks. Invalid endpoint data fails the
 request. Collection has a ten-second deadline and a 64 KiB response limit.
+The Driver's Kubernetes clients do not follow redirects. For a redirected Pod
+status response, the Driver requests body cancellation and fails the read without
+retrying.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
@@ -150,6 +153,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 15:27: Reject redirected status responses before reading their bodies. (authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4 - 8e916a6c)
 
 - 2026-10-11 14:30: Reject impossible private runtime timestamps before returning held failure evidence. (issue-2142)
 

@@ -117,6 +117,23 @@ test("Installation startup validates the optional external observability URL", a
       },
     );
   }
+  for (const raw of [
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+    "http://good.example\revil.com/x",
+  ]) {
+    configuration.observability = { url: raw };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./,
+      JSON.stringify(raw),
+    );
+  }
   configuration.observability = { url: "http://192.168.1.1" };
   await writeFile(path, JSON.stringify(configuration), "utf8");
   const canonical = await loadInstallationConfiguration({
@@ -125,6 +142,18 @@ test("Installation startup validates the optional external observability URL", a
   });
   assert.equal(canonical.installation.observability.url, "http://192.168.1.1/");
   assert.equal(new URL(canonical.installation.observability.url).hostname, "192.168.1.1");
+  configuration.observability = {
+    url: "https://grafana.example.test/d/operations?var-pattern=\\d+",
+  };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const queryBackslash = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(
+    new URL(queryBackslash.installation.observability.url).hostname,
+    "grafana.example.test",
+  );
 });
 
 test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
@@ -169,6 +198,9 @@ test("API and worker refuse a bad observability host or runtime image before ope
     "http://@grafana.example.internal/d",
     syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
     "javascript:alert(1)",
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
   ]) {
     configuration.observability = { url: shorthand };
     await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -178,21 +210,24 @@ test("API and worker refuse a bad observability host or runtime image before ope
       assert.equal(diagnostic.message, undefined);
     }
   }
-  // Kubernetes refuses to pull an image whose repository path has an uppercase letter.
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path.
   configuration.observability = { url: "http://192.168.1.1" };
   const images = configuration.drivers.compute.configuration.images;
   for (const role of ["gateway", "agent"]) {
     const original = images[role];
-    images[role] = original.replace(
-      /^([^/]*\/)(.)/,
-      (_, host, first) => host + first.toUpperCase(),
-    );
-    assert.notEqual(images[role], original);
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    for (const [script, event, env] of processes) {
-      const diagnostic = boot(script, event, env);
-      assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
-      assert.equal(diagnostic.message, undefined);
+    for (const refused of [
+      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
+      original.replace(/^([^/]*\/)/, "$1re..po/"),
+    ]) {
+      assert.notEqual(refused, original);
+      images[role] = refused;
+      await writeFile(path, JSON.stringify(configuration), "utf8");
+      for (const [script, event, env] of processes) {
+        const diagnostic = boot(script, event, env);
+        assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
+        assert.equal(diagnostic.message, undefined);
+      }
     }
     images[role] = original;
   }
