@@ -203,7 +203,8 @@ test(
 // stopped only after the drain. Kubernetes' own wait is in the Compute conformance tests. `busy`
 // names revisions that never become ready, so their deployments keep Work due; `onFirstStop` runs
 // once, inside an Agent's first stop. A record's `drainStartedAt` and `drainEndsAt` are its drain's
-// wall-clock window, for same-run ordering checks. `record` is the first owner's.
+// wall-clock window, set once `onFirstStop` returns, for same-run ordering checks. `record` is the
+// first owner's.
 function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
   const busy = new Set();
   const records = new Map(
@@ -321,10 +322,11 @@ test(
     ]);
 
     // Same-run ordering, not a wall-clock total (finding 1344). The worker is serial, so another
-    // Agent's pass ends inside the drain only if the stop yielded. The stops end after the drain,
-    // and less than another drain after its end: a pass cut short by the restart waits out its
-    // 3 s lease, and a deferred stop rechecks within about 1 s. A stop that waited out a drain,
-    // a default lease or a long retry backoff of its own would end later.
+    // Agent's pass ends inside the drain only if a stop pass ended during it, which a yield does
+    // (no pass failed, checked below). The stops end after the drain, and less than another drain
+    // after its end: a pass cut short by the restart waits out its 3 s lease, and a deferred stop
+    // rechecks within about 1 s. A stop that waited out a drain, a default lease or a long retry
+    // backoff of its own would end later.
     const { drainStartedAt, drainEndsAt } = record;
     const offset = (time) => (time === undefined ? "none" : `${time - drainStartedAt}`);
     const otherPasses = events
