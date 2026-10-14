@@ -28,6 +28,9 @@ primary model's provider. Configuration create and update, Agent provisioning an
 Preset save run this one set (`validateConfigurationContent` in
 [OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
+Create, update and provisioning first ask the Driver's optional
+[`validateSize`](../../reference/drivers/configuration.md#optional-validation)
+to refuse a document too large to store, so no rule walks it.
 A stored row that predates a rule still reads and an edit can replace it: a
 bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and

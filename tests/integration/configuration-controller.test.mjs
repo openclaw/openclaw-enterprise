@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
@@ -3347,6 +3348,71 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
     });
     assert.equal(escaped.status, 201, JSON.stringify(escaped.body));
   });
+});
+
+test("Configuration save refuses a document too large to store before its content rules", async () => {
+  // Finding 1317: the Kubernetes Driver's 1 MiB ConfigMap cap ran after OCC's content rules, so
+  // the rules walked any document up to the 6.2 MiB request limit. OCC now asks the Driver
+  // first. The real Kubernetes Driver checks the values here; the simple substrate stands in for
+  // its ConfigMap storage.
+  const kubernetes = new KubernetesConfigurationDriver({ authentication: { mode: "inCluster" } });
+  const configurationDriver = {
+    ...createConfigurationBackend(),
+    validate: (configuration) => kubernetes.validate(configuration),
+    validateSize: (values) => kubernetes.validateSize(values),
+  };
+  const { namespace, collection, ...context } = await fixture({ configurationDriver });
+  const contentRefusal =
+    "Configuration setting models.providers.openai.models must be an array of model entries.";
+  // A document that breaks a content rule, padded to `bytes` of JSON.
+  const document = (bytes) => {
+    const values = {
+      models: { providers: { openai: { models: "gpt-5" } } },
+      plugins: { entries: { knowledge: { config: { note: "" } } } },
+    };
+    values.plugins.entries.knowledge.config.note = "x".repeat(
+      bytes - JSON.stringify(values).length,
+    );
+    return values;
+  };
+  const limit = 1_048_576;
+  const under = document(limit - 1);
+  const over = document(limit);
+  const save = (method, path, values) =>
+    request(context.app, method, path, {
+      body: method === "POST" ? { kind: "agent", values } : { values },
+    });
+
+  // Just under the cap the content rule refuses it by name; at the cap the size refusal wins.
+  const named = await save("POST", collection, under);
+  assert.equal(named.status, 400, JSON.stringify(named.body));
+  assert.equal(named.body.error.message, contentRefusal);
+  const oversized = await save("POST", collection, over);
+  assert.equal(oversized.status, 400, JSON.stringify(oversized.body));
+  assert.equal(oversized.body.error.message, "The supplied configuration is invalid.");
+  await assert.rejects(
+    context.controller.createConfiguration(context.principal.id, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: over,
+    }),
+    { message: "Configuration exceeds the Kubernetes ConfigMap size limit." },
+  );
+
+  // An update is checked in the same order.
+  const created = await save("POST", collection, {});
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  const renamed = await save("PATCH", item, under);
+  assert.equal(renamed.status, 400, JSON.stringify(renamed.body));
+  assert.equal(renamed.body.error.message, contentRefusal);
+  const replaced = await save("PATCH", item, over);
+  assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
+  assert.equal(replaced.body.error.message, "The supplied configuration is invalid.");
+  assert.deepEqual(
+    configurationDriver.storedConfigurations().map(({ values }) => values),
+    [{}],
+  );
 });
 
 test("Configuration and Preset saves read a git config value as a proxy when its key names one", async (t) => {

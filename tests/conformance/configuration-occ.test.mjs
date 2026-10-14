@@ -730,6 +730,64 @@ test("native selected-model policy explicitly chooses Codex or OpenClaw", () => 
   );
 });
 
+test("Harness resolution stays in step with the size of the model selections and catalog", () => {
+  // Finding 1316: every Configuration and Preset save resolves the Harness synchronously, while
+  // holding the Namespace row lock. It matched every catalog row against every selected model,
+  // and repeated the defaults' fallbacks for each entry without its own model, so one large
+  // valid document held the controller for seconds to minutes. Each shape below took over a
+  // minute before; resolution now takes tens of milliseconds, under the 1 s bound.
+  const count = 50_000;
+  const fallbacks = Array.from({ length: count }, (_, index) => `openai/m${index + 1}`);
+  const timed = (values, expected) => {
+    const started = performance.now();
+    assert.equal(resolveConfiguredHarnessId(values), expected);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 1_000, `took ${elapsed.toFixed(0)} ms`);
+  };
+  // 50k fallbacks, each listed in a 50k-row provider catalog that selects its runtime.
+  timed(
+    {
+      agents: { defaults: { model: { primary: "openai/m0", fallbacks } } },
+      models: {
+        providers: {
+          openai: {
+            models: [
+              { id: "m0", agentRuntime: { id: "openclaw" } },
+              ...fallbacks.map((model) => ({ id: model.slice("openai/".length) })),
+            ],
+            agentRuntime: { id: "openclaw" },
+          },
+        },
+      },
+    },
+    "openclaw",
+  );
+  // 50k entries without their own model each select the defaults' 50k fallbacks; the entries'
+  // own `models` policies still apply: the last entry's conflicts with the provider's.
+  const entries = Object.fromEntries(
+    Array.from({ length: count }, (_, index) => [`a${index}`, { models: {} }]),
+  );
+  const values = {
+    agents: {
+      ownership: "explicit",
+      defaults: { model: { primary: "openai/m0", fallbacks } },
+      entries,
+    },
+    models: { providers: { openai: { agentRuntime: { id: "openclaw" } } } },
+  };
+  timed(values, "openclaw");
+  entries[`a${count - 1}`] = {
+    models: {
+      "openai/m0": { agentRuntime: { id: "codex" } },
+      [fallbacks.at(-1)]: { agentRuntime: { id: "codex" } },
+    },
+  };
+  assert.throws(
+    () => resolveConfiguredHarnessId(values),
+    new ConfigurationHarnessError("The selected model has conflicting Harness runtime policies."),
+  );
+});
+
 test("an unambiguous built-in model defaults to embedded OpenClaw", () => {
   assert.equal(resolveConfiguredHarnessId({}), "openclaw");
   assert.equal(

@@ -43,6 +43,11 @@ Bundled filesystem and Kubernetes Drivers implement this method. A Driver that
 omits it still supports ordinary Configuration operations, but OCC rejects
 Preset writes containing `configuration.values` with dependency unavailable.
 
+`validateSize?(values)` refuses values too large to store, as `validate` would.
+OCC calls it before its content rules on Configuration create and update and
+Agent provisioning, so no rule walks a document the Driver would refuse. The
+bundled Kubernetes Driver implements it with its ConfigMap size limit.
+
 ## IAM
 
 OCC authorizes `create` on the Namespace's Configuration collection and `read`,
