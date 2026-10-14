@@ -59,7 +59,8 @@ A `CredentialSourceType` declares:
   optional description. `config` fields are nonsecret strings; `secrets` fields
   are supplied as OCC Secret references. `issuerRotated: true` marks a secret
   the issuer replaces on use, such as a rotating refresh token; an update must
-  reference a new Secret for it.
+  reference a different Secret ID from the last committed handoff for it, even
+  if that Secret was deleted or its value changed. This does not prove value freshness.
 - `rotation`: `none`, `external`, or `refresh`. A `refresh` type stores no
   static value. The [Credential Refresh Driver](credential-refresh.md) on the
   same Backend mints and refreshes its tokens, and OCC calls that Driver, not
@@ -114,7 +115,9 @@ configuration. The interface has no initializer or destructor.
    `registerSource` outside the transaction. A second transaction moves the
    record to `ready` with its audit event. For a `refresh` type, the
    [Credential Refresh Driver](credential-refresh.md#lifecycle) first mints the
-   source's first token. If `registerSource` returns `failed` or
+   source's first token. OCC then atomically retains non-reference input IDs,
+   releases live Secret bindings and commits ready state plus audit. Static source
+   bindings remain live. If `registerSource` returns `failed` or
    `absent`, OCC calls `removeSource` and deletes the record. If it throws, a
    create may still land, so OCC calls `removeSource` but keeps the record
    `deleting`. OCC finalizes a deletion only 70 seconds after `createdAt`, and a

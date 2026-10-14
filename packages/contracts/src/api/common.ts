@@ -347,7 +347,7 @@ export const CredentialSourceConfig = Type.Record(
 export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, SecretReference, {
   maxProperties: 16,
   description:
-    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. Refresh sources release these live references after a successful mint and return an empty secrets map.",
 });
 
 export const CreateCredentialSourceBody = Type.Object(
@@ -367,7 +367,7 @@ export const UpdateCredentialSourceBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+      "Static sources re-read current or replacement Secret values. Refresh sources require explicit Secret inputs, configure and mint once, then release live references atomically with the last-committed input IDs. An issuerRotated field must use a different Secret ID from its last committed handoff, even if that Secret's value changed or it was deleted. This is not token-value freshness. Non-secret config is immutable.",
   },
 );
 

@@ -175,6 +175,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 53) {
+        return "preCredentialRefreshSecretHandoff";
+      }
       if (receipts.length === 52) {
         return "preComputePreparationFailureEvidence";
       }
@@ -272,6 +275,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 51) {
     return "preProvisioningDeploymentOutcome";
+  }
+  if (receipts.length === 53) {
+    return "preCredentialRefreshSecretHandoff";
   }
   if (receipts.length === 52) {
     return "preComputePreparationFailureEvidence";

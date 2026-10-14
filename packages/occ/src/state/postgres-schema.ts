@@ -14,6 +14,7 @@ import type {
   SecretBindings,
   ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
+import type { CredentialSourceHandoff } from "./platform-state.ts";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -565,6 +566,29 @@ export const credentialSourceSecrets = occSchema.table(
       .onDelete("restrict"),
     check("credential_source_secrets_field_format", sql`${table.field} ~ '^[a-z][a-z0-9_]{0,63}$'`),
     index("credential_source_secrets_secret_idx").on(table.namespaceId, table.secretId),
+  ],
+);
+
+/** Last-committed input IDs; not live Secret references or access capabilities. */
+export const credentialSourceHandoffs = occSchema.table(
+  "credential_source_handoffs",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").primaryKey(),
+    secretIds: jsonb("secret_ids").$type<CredentialSourceHandoff>().notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    foreignKey({
+      name: "credential_source_handoffs_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    check(
+      "credential_source_handoffs_ids_valid",
+      sql`occ.credential_source_handoff_ids_are_valid(${table.secretIds})`,
+    ),
   ],
 );
 

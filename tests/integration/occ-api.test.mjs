@@ -1440,14 +1440,17 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     },
   };
   let mint = { state: "ready" };
+  const refreshCalls = { configure: 0, rotate: 0 };
   const refresh = {
     id: "credential-refresh-api",
     capability: "credential_refresh",
     implementation: "test-recording-refresh",
     async configureRefresh() {
+      refreshCalls.configure += 1;
       return { state: "pending" };
     },
     async rotate() {
+      refreshCalls.rotate += 1;
       return mint;
     },
     async refreshStatus() {
@@ -1473,6 +1476,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     assert.equal(created.status, 201, JSON.stringify(created.body));
     return created.data.ref;
   };
+  const originalRefreshToken = await secret();
   const source = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/credential-sources`,
@@ -1481,17 +1485,29 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
         name: "oauth-user",
         type: "oauth-user",
         config: { client_id: "occ-tools" },
-        secrets: { refresh_token: await secret() },
+        secrets: { refresh_token: originalRefreshToken },
       },
     },
   );
   assert.equal(source.status, 201, JSON.stringify(source.body));
   const sourcePath = `/namespaces/${namespace.id}/credential-sources/${source.data.id}`;
 
+  assert.deepEqual(refreshCalls, { configure: 1, rotate: 1 });
+  // Omitted inputs and an explicitly re-sent token reach different refusal guards.
+  const missing = await controller.request("PATCH", sourcePath, { body: {} });
+  assert.equal(missing.status, 409, JSON.stringify(missing.body));
+  assert.equal(missing.body.error.code, "RESOURCE_CONFLICT");
+  assert.match(missing.body.error.message, /requires explicit Secret inputs.*new sign-in/);
+  assert.deepEqual(refreshCalls, { configure: 1, rotate: 1 });
+
   // Re-sending the recorded refresh token is refused before any gateway effect.
-  const stale = await controller.request("PATCH", sourcePath, { body: {} });
+  const stale = await controller.request("PATCH", sourcePath, {
+    body: { secrets: { refresh_token: originalRefreshToken } },
+  });
   assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.error.code, "RESOURCE_CONFLICT");
   assert.match(stale.body.error.message, /newer refresh_token.*new sign-in/);
+  assert.deepEqual(refreshCalls, { configure: 1, rotate: 1 });
 
   mint = { state: "failed", failureCode: "oauth_invalid_grant", recoveryAction: "reauthorize" };
   const rotated = await controller.request("POST", `${sourcePath}/rotate`);
@@ -1501,7 +1517,8 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
   });
   assert.equal(updated.status, 503, JSON.stringify(updated.body));
 
-  // Both failures changed the gateway, so each is audited; the refusal changed nothing.
+  assert.deepEqual(refreshCalls, { configure: 2, rotate: 3 });
+  // Both failures changed the gateway, so each is audited; the refusals changed nothing.
   const events = fixture.auditSink.events.filter(
     (event) => event.kind === "mutation" && event.resource.id === source.data.id,
   );

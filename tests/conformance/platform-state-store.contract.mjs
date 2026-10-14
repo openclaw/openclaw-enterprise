@@ -1446,6 +1446,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     "teardown work for an absent Agent must be refused",
   );
 
+  await verifyCredentialHandoffContract(store);
   await verifyCredentialSourceContract(store, {
     namespace,
     harnessSecret,
@@ -2749,6 +2750,122 @@ async function verifyCredentialSourceContract(
         namesakeSource.id,
       ),
       false,
+    );
+  });
+}
+
+async function verifyCredentialHandoffContract(store) {
+  const namespace = {
+    id: identifier("ns"),
+    name: `Handoff ${randomUUID()}`,
+    status: "ready",
+    createdAt: new Date().toISOString(),
+  };
+  const secret = {
+    id: identifier("sec"),
+    namespaceId: namespace.id,
+    name: `Handoff ${randomUUID()}`,
+    driverId: "secret-contract",
+    backendRef: { namespaceName: "contract", name: "handoff", key: "value", uid: randomUUID() },
+    createdAt: namespace.createdAt,
+  };
+  const refs = { refresh_token: { kind: "secret", namespaceId: namespace.id, id: secret.id } };
+  const source = {
+    id: identifier("cs"),
+    namespaceId: namespace.id,
+    name: `Handoff ${randomUUID()}`,
+    type: "oauth-user",
+    config: {},
+    secrets: refs,
+    driverId: "gateway-contract",
+    state: "registering",
+    createdAt: namespace.createdAt,
+  };
+  await store.transact(async (unit) => {
+    await unit.namespaces.createNamespace(namespace);
+    await unit.secrets.createSecret(secret);
+    await unit.credentialSources.createCredentialSource(source);
+    assert.equal(
+      await unit.credentialSources.findCredentialSourceHandoff(namespace.id, source.id),
+      undefined,
+    );
+    assert.equal(
+      await unit.credentialSources.handoffCredentialSourceSecrets(namespace.id, source.id, refs),
+      undefined,
+    );
+  });
+  // Ready, provenance and reference release must all roll back together.
+  await assert.rejects(
+    store.transact(async (unit) => {
+      await unit.credentialSources.markCredentialSourceReady(namespace.id, source.id);
+      const handed = await unit.credentialSources.handoffCredentialSourceSecrets(
+        namespace.id,
+        source.id,
+        refs,
+      );
+      assert.deepEqual(handed.secrets, {});
+      assert.equal(await unit.secrets.hasReferences(namespace.id, secret.id), false);
+      throw new Error("handoff rollback");
+    }),
+    /handoff rollback/,
+  );
+  await store.transact(async (unit) => {
+    assert.deepEqual(
+      await unit.credentialSources.findCredentialSource(namespace.id, source.id),
+      source,
+    );
+    assert.equal(
+      await unit.credentialSources.findCredentialSourceHandoff(namespace.id, source.id),
+      undefined,
+    );
+    assert.equal(await unit.secrets.hasReferences(namespace.id, secret.id), true);
+    await unit.credentialSources.markCredentialSourceReady(namespace.id, source.id);
+  });
+  await assert.rejects(
+    store.transact((unit) =>
+      unit.credentialSources.handoffCredentialSourceSecrets(namespace.id, source.id, {
+        refresh_token: { ...refs.refresh_token, namespaceId: identifier("ns") },
+      }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+  await assert.rejects(
+    store.transact((unit) =>
+      unit.credentialSources.handoffCredentialSourceSecrets(namespace.id, source.id, {
+        refresh_token: { ...refs.refresh_token, id: identifier("sec") },
+      }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+  await store.transact(async (unit) => {
+    assert.equal(
+      await unit.credentialSources.handoffCredentialSourceSecrets(
+        identifier("ns"),
+        source.id,
+        refs,
+      ),
+      undefined,
+    );
+    await unit.credentialSources.handoffCredentialSourceSecrets(namespace.id, source.id, refs);
+    assert.deepEqual(
+      await unit.credentialSources.findCredentialSourceHandoff(namespace.id, source.id),
+      { refresh_token: secret.id },
+    );
+    assert.equal(await unit.secrets.deleteSecret(namespace.id, secret.id), true);
+  });
+  await store.transact(async (unit) => {
+    assert.deepEqual(
+      await unit.credentialSources.findCredentialSourceHandoff(namespace.id, source.id),
+      { refresh_token: secret.id },
+    );
+    assert.equal(
+      await unit.credentialSources.findCredentialSourceHandoff(identifier("ns"), source.id),
+      undefined,
+    );
+    await unit.credentialSources.deleteCredentialSource(namespace.id, source.id);
+    assert.equal(
+      await unit.credentialSources.findCredentialSourceHandoff(namespace.id, source.id),
+      undefined,
     );
   });
 }

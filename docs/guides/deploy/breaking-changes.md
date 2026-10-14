@@ -1,18 +1,25 @@
 # Breaking-change notices
 
-OpenClaw Enterprise (OCE) is pre-alpha and has no stable release, so a newer
-main can refuse or break an Installation that an older build created. Each
-change like that gets an entry here: what breaks, who is affected, how to tell,
-and the steps. Before an upgrade, read every entry dated after the source commit
-you run now, here, in the [earlier notices](breaking-changes-archive.md), in the
-[notices before 2026-10-12](breaking-changes-before-2026-10-12.md), in the
-[notices before 2026-10-11](breaking-changes-before-2026-10-11.md) and in the
-[notices before 2026-10-10](breaking-changes-before-2026-10-10.md),
-then follow the [upgrade checklist](upgrade-checklist.md) and
+OpenClaw Enterprise (OCE) is pre-alpha; upgrades can break existing Installations.
+Before upgrading, read notices newer than your commit here and in the
+[earlier notices](breaking-changes-archive.md),
+[notices before October 12](breaking-changes-before-2026-10-12.md),
+[notices before October 11](breaking-changes-before-2026-10-11.md), and
+[notices before October 10](breaking-changes-before-2026-10-10.md).
+Follow the [upgrade checklist](upgrade-checklist.md) and
 [production image upgrades](production-upgrade.md).
+Entries are newest first. _Untested_ steps lack real-Installation proof.
 
-Entries are newest first. Steps marked _untested_ have not been run against a
-real Installation.
+## 2026-10-14: refresh sources release bootstrap references
+
+Refresh registration and reauthorization return `secrets: {}`; empty refresh
+updates return `409`. Last-committed issuer-rotated Secret-ID rejection survives
+deletion and value changes.
+
+Before applying `0054_credential_refresh_secret_handoff`, qualify it for the target
+Installation. Catalog correspondence was measured for the selected SQL/history
+tuple; full migration/history and real upgrade qualification remain incomplete.
+Missing legacy history stays unavailable. See [recovery and deletion limits](../../reference/credential-sources.md#update-a-source).
 
 ## 2026-10-14: every model selection must use the Harness provider
 

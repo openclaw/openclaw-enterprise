@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: "2026-10-08"
-last_updated_session: claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY
+updated: "2026-10-14"
+last_updated_session: authoring-run/92488d54-b44d-449b-b76a-5ac69c9965d2
 ---
 
 # Credential source refresh Flow
@@ -40,7 +40,7 @@ graph TD
   B -- "ready" --> C["<b>configureRefresh</b><br/>material, stable request ID"]
   C --> D["<b>rotate</b><br/>first mint"]
   D -- "not ready" --> X
-  D -- "ready" --> E["<b>Mark ready</b><br/>with audit"]
+  D -- "ready" --> E["<b>Commit handoff</b><br/>ready, input IDs, release references, audit"]
   E --> F["<b>Gateway re-mints</b><br/>before expiry, no OCC call"]
   E --> G["<b>PATCH</b><br/>configure, then rotate"]
   E --> H["<b>POST rotate</b><br/>forced mint"]
@@ -80,7 +80,13 @@ the access token on the provider. A thrown call leaves the outcome unknown, and
 OCC keeps the record `deleting` after cleanup. A definite non-`ready` mint is
 terminal: OCC removes the refresh material and provider, deletes the record, and
 returns `503` with the Driver's failure code. Otherwise the second transaction
-marks the source `ready` with its audit event.
+marks the source `ready`, records the last committed Secret IDs in internal
+source-owned provenance, clears live Secret references, and appends the success
+audit in one transaction (`handoffCredentialSourceSecrets`). The response's
+`secrets` is `{}`. The operator may delete bootstrap Secrets once no other
+consumer holds them. A definite rollback retains the prior state. If the database
+commit outcome is unknown, reconcile the handoff and success audit before acting.
+An unknown external outcome does not authorize another configure or mint.
 
 ### 3. Background refresh
 
@@ -101,24 +107,38 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 `PATCH` locks the source, not the Namespace, so other Namespace writes do not
 wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
-must name a different Secret than the recorded one, or the update returns `409`
-before any Secret read: OpenShell may hold a newer token. `PATCH` then reads
-its Secrets and checks the gateway status. For a `refresh` type it calls
+must name a different Secret ID than its last committed handoff, or the update
+returns `409` before any Secret read: OpenShell may hold a newer token. Changing
+that Secret's value or deleting it does not remove the rejection. Every refresh
+update requires explicit Secret inputs; `{}` returns `409`. This ID comparison
+proves neither token freshness nor rejection of every older submission.
+
+The source lock protects the provenance read. Legacy live bindings supply the
+actual IDs until their first successful handoff. An issuer-rotated source with
+neither live bindings nor retained history returns `503`; OCC does not invent
+history or silently allow the resend. `PATCH` then reads its authorized
+same-Namespace Secrets and checks the gateway status (including `pending`). For a `refresh` type it calls
 `configureRefresh` with a new request ID, then `rotate`, instead of the
 gateway's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
-the Secret references, but OpenShell keeps the new material, the next `GET`
-reports the failed mint, and OCC records a `failure` audit event. OpenShell
+the committed handoff IDs or releasing references, but OpenShell keeps the new material, the next `GET`
+reports the failed mint, and OCC attempts the configured failure audit after rollback. OpenShell
 starts a new authorization epoch on each reconfiguration, even one whose mint
 fails, which revokes the stable placeholders of running Sandboxes, so Agents
-need a redeploy.
+need a redeploy. On success, the new last-committed IDs, live-reference release
+and success audit commit together. A failed or unknown configure/mint response
+before handoff does not replace the prior committed evidence. An unknown database
+commit leaves the handoff and success-audit outcome unknown. The evidence is not
+a record of every externally submitted attempt.
 
 `packages/occ/src/index.ts:rotateCredentialSource`
 
 `POST …/rotate` requires `credential_source:update`, a `ready` source, and a
 `refresh` type; a static type returns `409`. It calls `rotate` under the source
 lock and returns the new status. The HTTP handler commits the audit event in
-the same transaction; a failed mint commits a `failure` event instead. A commit
-whose outcome is unknown records neither event.
+the same transaction; after a failed mint and definite rollback, OCC attempts the
+configured failure audit separately. An unknown
+commit does not run the rollback-triggered failure audit; whether the success
+event committed remains unknown and requires reconciliation.
 
 ### 5. Deletion
 
@@ -135,7 +155,7 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 - `oauth_token_endpoint_unavailable` means the OpenShell gateway Pod could not
   reach `token_url`; check its NetworkPolicy and trust of the issuer's CA.
 - `reauthorize` follows a revoked refresh token; supply new material with `PATCH`.
-- `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` proves minting,
+- When run, `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` exercises minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
   a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
   ordering and cleanup.
@@ -153,7 +173,11 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 
 ## Changelog
 
+- 2026-10-14 03:10: Release refresh bootstrap references while preserving last-committed Secret-ID rejection. (authoring-run/92488d54-b44d-449b-b76a-5ac69c9965d2 - b749f9e2b992f16169b69a3695a257239196b991)
+
 - 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
+
+- 2026-10-09 10:38: Document Secret-reference handoff and explicit refresh reauthorization for the accompanying change. (authoring-run/f7c45a46-6f14-42ea-acd8-7f8990a41d89 - 1c6ac12fb)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)
 - 2026-10-08 11:46: Reading a source no longer needs its type in the current catalog. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 3ce93bfda)

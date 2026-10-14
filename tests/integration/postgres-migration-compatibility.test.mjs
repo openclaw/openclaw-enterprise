@@ -1633,6 +1633,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preCredentialRefreshSecretHandoff"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1894,6 +1895,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preCredentialRefreshSecretHandoff"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1975,6 +1977,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preCredentialRefreshSecretHandoff"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2700,5 +2703,120 @@ test(
     }
     assert.equal(await authorize(principals[2], "update"), false);
     assert.equal(await authorize(principals[2], "read"), true);
+  },
+);
+
+test(
+  "Credential handoff migration seeds only actual ready bindings and retains deletion-independent IDs",
+  concurrentHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "credentialhandoff", { prefix: 53 });
+    const namespace = `ns_${randomUUID()}`;
+    const secret = `sec_${randomUUID()}`;
+    const ready = `cs_${randomUUID()}`;
+    const unknown = `cs_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,$2,'ready',now())",
+      [namespace, `handoff-${randomUUID()}`],
+    );
+    await db.app.query(
+      "INSERT INTO occ.secrets(id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at) VALUES($1,$2,$3,'secret-contract','contract','bootstrap','value',$4,now())",
+      [secret, namespace, `bootstrap-${randomUUID()}`, randomUUID()],
+    );
+    for (const id of [ready, unknown]) {
+      await db.app.query(
+        "INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at) VALUES($1,$2,$3,'oauth-user','{}','gateway-contract','ready',now())",
+        [id, namespace, id],
+      );
+    }
+    await db.app.query(
+      "INSERT INTO occ.credential_source_secrets(namespace_id,credential_source_id,field,secret_id) VALUES($1,$2,'refresh_token',$3)",
+      [namespace, ready, secret],
+    );
+    const receipts = await historyReceipts(db.migrator);
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preCredentialRefreshSecretHandoff",
+    });
+    await assertCompletedHistory(db, receipts);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT credential_source_id,secret_ids FROM occ.credential_source_handoffs ORDER BY credential_source_id",
+        )
+      ).rows,
+      [{ credential_source_id: ready, secret_ids: { refresh_token: secret } }],
+    );
+    // Backfill does not release a binding or infer catalog semantics. OCC's definite successful
+    // refresh transaction owns that release; an unknown cleared legacy row stays unseeded.
+    assert.equal(
+      (
+        await db.app.query(
+          "SELECT count(*)::integer AS count FROM occ.credential_source_secrets WHERE credential_source_id=$1",
+          [ready],
+        )
+      ).rows[0].count,
+      1,
+    );
+    // The ownership FK uses RESTRICT: require that specific denial, not an unrelated failure.
+    await assert.rejects(
+      db.app.query("DELETE FROM occ.secrets WHERE id=$1", [secret]),
+      (error) =>
+        error.code === "23001" &&
+        error.constraint === "credential_source_secrets_secret_owner" &&
+        error.schema === "occ" &&
+        error.table === "credential_source_secrets",
+    );
+    assert.deepEqual(
+      (await db.app.query("SELECT id FROM occ.secrets WHERE id=$1", [secret])).rows,
+      [{ id: secret }],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT secret_id FROM occ.credential_source_secrets WHERE credential_source_id=$1",
+          [ready],
+        )
+      ).rows,
+      [{ secret_id: secret }],
+    );
+    await db.app.query("DELETE FROM occ.credential_source_secrets WHERE credential_source_id=$1", [
+      ready,
+    ]);
+    await db.app.query("DELETE FROM occ.secrets WHERE id=$1", [secret]);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT secret_ids FROM occ.credential_source_handoffs WHERE credential_source_id=$1",
+          [ready],
+        )
+      ).rows,
+      [{ secret_ids: { refresh_token: secret } }],
+    );
+    await assert.rejects(
+      db.app.query(
+        "UPDATE occ.credential_source_handoffs SET namespace_id=$1 WHERE credential_source_id=$2",
+        [`ns_${randomUUID()}`, ready],
+      ),
+      (error) => error.code === "42501",
+    );
+    await assert.rejects(
+      db.app.query(
+        "UPDATE occ.credential_source_handoffs SET secret_ids=$1::jsonb WHERE credential_source_id=$2",
+        [JSON.stringify({ refresh_token: "not-a-secret-id" }), ready],
+      ),
+      (error) => error.code === "23514",
+    );
+    await db.app.query("DELETE FROM occ.credential_sources WHERE id=$1", [ready]);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT secret_ids FROM occ.credential_source_handoffs WHERE credential_source_id=$1",
+          [ready],
+        )
+      ).rows,
+      [],
+    );
   },
 );

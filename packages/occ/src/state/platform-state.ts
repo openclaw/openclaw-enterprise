@@ -356,7 +356,21 @@ export interface CredentialSourceReadRepository {
 
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 
+/** Internal last-committed handoff identity, never a live Secret reference or value. */
+export type CredentialSourceHandoff = Readonly<Record<string, string>>;
+
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
+  /** Undefined means no retained history; an empty map is a known empty handoff. */
+  findCredentialSourceHandoff(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<CredentialSourceHandoff | undefined>;
+  /** Records committed input IDs and releases live bindings in the same transaction. */
+  handoffCredentialSourceSecrets(
+    namespaceId: string,
+    credentialSourceId: string,
+    secrets: Readonly<Record<string, SecretReference>>,
+  ): Promise<Readonly<CredentialSource> | undefined>;
   lockCredentialSource(
     namespaceId: string,
     credentialSourceId: string,
@@ -940,6 +954,7 @@ interface PlatformSnapshot {
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
+  readonly credentialSourceHandoffs: Map<string, CredentialSourceHandoff>;
   readonly credentialWithdrawals: Map<string, Readonly<CredentialWithdrawal>>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
@@ -974,6 +989,33 @@ export function assertSameCredentialSourceFields(
   ) {
     throw new ScopeViolationError("Credential source Secret fields cannot change.");
   }
+}
+
+/** The controller has already validated catalog fields and authorized the actual Secrets. */
+export function credentialSourceHandoffIds(
+  namespaceId: string,
+  secrets: Readonly<Record<string, SecretReference>>,
+): CredentialSourceHandoff {
+  const entries = Object.entries(secrets);
+  if (
+    entries.length > 16 ||
+    entries.some(
+      ([field, reference]) =>
+        !/^[a-z][a-z0-9_]{0,63}$/.test(field) ||
+        reference.kind !== "secret" ||
+        reference.namespaceId !== namespaceId ||
+        !/^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          reference.id,
+        ),
+    )
+  ) {
+    throw new ScopeViolationError(
+      "Credential source handoff requires exact same-Namespace Secret inputs.",
+    );
+  }
+  return Object.freeze(
+    Object.fromEntries(entries.map(([field, reference]) => [field, reference.id])),
+  );
 }
 
 function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string {
@@ -1011,6 +1053,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     ),
     credentialSources: new Map(
       Array.from(snapshot.credentialSources, ([key, source]) => [key, immutableCopy(source)]),
+    ),
+    credentialSourceHandoffs: new Map(
+      Array.from(snapshot.credentialSourceHandoffs, ([key, ids]) => [key, immutableCopy(ids)]),
     ),
     serviceAccounts: new Map(
       Array.from(snapshot.serviceAccounts, ([key, account]) => [key, immutableCopy(account)]),
@@ -1765,6 +1810,30 @@ function repositories(
 
   const credentialSources: CredentialSourceRepository = {
     findCredentialSource,
+    findCredentialSourceHandoff: async (namespaceId, credentialSourceId) => {
+      if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
+        return undefined;
+      }
+      const ids = snapshot.credentialSourceHandoffs.get(agentKey(namespaceId, credentialSourceId));
+      return ids === undefined ? undefined : immutableCopy(ids);
+    },
+    handoffCredentialSourceSecrets: async (namespaceId, credentialSourceId, secrets) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.state !== "ready") {
+        return undefined;
+      }
+      const ids = credentialSourceHandoffIds(namespaceId, secrets);
+      for (const id of Object.values(ids)) {
+        if (!snapshot.secrets.has(agentKey(namespaceId, id))) {
+          throw new ScopeViolationError("The credential source references an unavailable Secret.");
+        }
+      }
+      const key = agentKey(namespaceId, credentialSourceId);
+      const saved = immutableCopy({ ...current, secrets: {} });
+      snapshot.credentialSourceHandoffs.set(key, ids);
+      snapshot.credentialSources.set(key, saved);
+      return immutableCopy(saved);
+    },
     findCredentialWithdrawal,
     listCredentialWithdrawals: async (namespaceId, revisionId) =>
       Object.freeze(
@@ -2014,6 +2083,7 @@ function repositories(
         );
       }
       snapshot.credentialSources.delete(agentKey(namespaceId, credentialSourceId));
+      snapshot.credentialSourceHandoffs.delete(agentKey(namespaceId, credentialSourceId));
       deleteResourceAccessBindings("credential_source", credentialSourceId);
       return true;
     },
@@ -3101,6 +3171,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    credentialSourceHandoffs: new Map(),
     credentialWithdrawals: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),

@@ -163,6 +163,7 @@ registers:
 The supervisor picks up re-minted tokens on its provider poll (every 10 seconds
 by default); running processes then present them. Reconfiguring refresh material
 starts a new OpenShell authorization epoch, revoking running Sandboxes’ placeholders.
+Refresh handoff releases references and preserves the [last-committed ID guard](credential-refresh.md#lifecycle).
 
 ## How sources map to OpenShell
 

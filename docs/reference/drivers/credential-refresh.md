@@ -10,8 +10,9 @@ material, obtains an access token from the issuer, and obtains a new one before
 it expires. The Agent keeps the same placeholder throughout, so running
 processes need no restart.
 
-OpenClaw Control Plane (OCC) owns the source record, its Secret references, and
-authorization. The paired [Credential Gateway](credential-gateway.md) owns the
+OpenClaw Control Plane (OCC) owns the source record, authorization, live Secret
+references and internal last-committed handoff IDs. After a successful refresh
+handoff, it releases the live references; the IDs remain solely for resend rejection. The paired [Credential Gateway](credential-gateway.md) owns the
 source's stored record and applies the current token to the Agent's requests.
 This Driver owns the refresh material and the minted tokens. OCC calls it only to
 set up refresh, to force a rotation, and to read refresh status; it never calls
@@ -69,19 +70,23 @@ destructor.
    resolved Secret values go only to this Driver. After it succeeds, OCC calls
    `configureRefresh` and then `rotate` to mint the first token. Both request IDs
    derive from the source ID, so a replay of the same step is not applied twice.
-   The source becomes `ready` only once `rotate` reports `ready`. On any failure,
+   The source becomes `ready` only once `rotate` reports `ready`. OCC then commits
+   ready state, handoff IDs, reference release and success audit atomically. On any failure,
    OCC calls `removeRefresh` and the gateway's `removeSource`, as for a failed
    static registration.
 2. **Background refresh.** The Driver re-mints before expiry without OCC. A
    failure appears in the source's status with its recovery action.
-3. **Update.** `PATCH` reads the current or replacement Secret values and calls
-   `configureRefresh`, then `rotate`. OCC commits replacement Secret references
-   only after a `ready` mint. The update is not atomic: after `configureRefresh`
+3. **Update.** `PATCH` requires explicit Secret inputs and calls
+   `configureRefresh`, then `rotate`. After a `ready` mint, OCC atomically commits
+   last-committed input IDs, clears live references and appends the success audit. The update is not atomic: after `configureRefresh`
    succeeds, a failed mint returns `503` but the Driver keeps the new material,
    and the source stays `ready` with the failure in its status. OCC restores
    nothing; supply corrected Secrets. An update must name a different Secret
    for a catalog field marked `issuerRotated`, such as `refresh_token`,
-   because the Driver may hold a newer value. On OpenShell, running Agents need a
+   because the Driver may hold a newer value. The comparison uses last-committed
+   IDs, even after Secret deletion or value replacement; it is not token freshness
+   or all-attempt history. Missing legacy history is unavailable, never invented.
+   On OpenShell, running Agents need a
    redeploy after any update that reaches `configureRefresh`; see its
    [limits](openshell-credential-gateway.md#limits).
 4. **Rotation.** `POST …/rotate` calls `rotate` for incidents such as a

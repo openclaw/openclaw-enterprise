@@ -142,12 +142,23 @@ Mirrors each Agent draft's `credential_sources` through a trigger, so the databa
 
 ### `credential_source_secrets`
 
-Links each credential source secret field to the Namespace Secret that supplied it.
+Links each live credential-source input to a same-Namespace Secret. Refresh handoff
+releases these rows after a definite successful mint; static bindings remain live.
 
 - `namespace_id`
 - `credential_source_id`
 - `field`
 - `secret_id`
+
+### `credential_source_handoffs`
+
+Internal last-committed input IDs for a source. Owned by the exact Namespace/source,
+with no Secret foreign key, value or access capability. Secret deletion leaves IDs
+intact; source deletion cascades. Absence means unavailable history, not an empty handoff.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ids` (bounded field-to-ID map)
 
 ### `credential_withdrawals`
 

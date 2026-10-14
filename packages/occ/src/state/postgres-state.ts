@@ -109,6 +109,7 @@ import {
 import {
   assertHarnessAuthAvailable,
   assertSameCredentialSourceFields,
+  credentialSourceHandoffIds,
   harnessAuthMatches,
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
@@ -2544,6 +2545,66 @@ export class PostgresPlatformState implements PlatformStateStore {
 
     const credentialSources: CredentialSourceRepository = {
       findCredentialSource,
+      findCredentialSourceHandoff: async (namespaceId, credentialSourceId) => {
+        if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
+          return undefined;
+        }
+        const found = rows(
+          (
+            await client.query(
+              `SELECT secret_ids FROM occ.credential_source_handoffs
+           WHERE namespace_id = $1 AND credential_source_id = $2`,
+              [namespaceId, credentialSourceId],
+            )
+          ).rows,
+        )[0];
+        if (found === undefined) {
+          return undefined;
+        }
+        const ids = jsonObject(found.secret_ids);
+        if (
+          Object.keys(ids).length > 16 ||
+          Object.entries(ids).some(
+            ([field, id]) =>
+              !/^[a-z][a-z0-9_]{0,63}$/.test(field) ||
+              typeof id !== "string" ||
+              !/^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+          )
+        ) {
+          throw new DependencyUnavailableError(
+            "Persisted credential source handoff IDs are invalid.",
+          );
+        }
+        return immutableCopy(ids as Record<string, string>);
+      },
+      handoffCredentialSourceSecrets: async (namespaceId, credentialSourceId, secrets) => {
+        const current = await findCredentialSource(namespaceId, credentialSourceId, true);
+        if (current === undefined || current.state !== "ready") {
+          return undefined;
+        }
+        const ids = credentialSourceHandoffIds(namespaceId, secrets);
+        // Input existence is checked under the caller's ordered Secret locks. Provenance has
+        // no Secret FK: deleting a handed-off Secret must not delete this replay evidence.
+        for (const id of Object.values(ids)) {
+          if ((await findSecret(namespaceId, id)) === undefined) {
+            throw new ScopeViolationError(
+              "The credential source references an unavailable Secret.",
+            );
+          }
+        }
+        await client.query(
+          `INSERT INTO occ.credential_source_handoffs (namespace_id, credential_source_id, secret_ids)
+           VALUES ($1, $2, $3::jsonb)
+           ON CONFLICT (credential_source_id) DO UPDATE SET secret_ids = EXCLUDED.secret_ids
+           WHERE credential_source_handoffs.namespace_id = EXCLUDED.namespace_id`,
+          [namespaceId, credentialSourceId, JSON.stringify(ids)],
+        );
+        await client.query(
+          `DELETE FROM occ.credential_source_secrets WHERE namespace_id = $1 AND credential_source_id = $2`,
+          [namespaceId, credentialSourceId],
+        );
+        return findCredentialSource(namespaceId, credentialSourceId);
+      },
       findCredentialWithdrawal,
       listCredentialWithdrawals: async (namespaceId, revisionId) =>
         Object.freeze(

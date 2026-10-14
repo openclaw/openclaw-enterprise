@@ -429,7 +429,7 @@ async function refreshSource(context, name = "oauth-client") {
 test("a refresh source is ready only after its first mint, and its material is not a gateway value", async () => {
   const context = await fixture();
   await context.makeReady();
-  const { secret, source } = await refreshSource(context);
+  const { source } = await refreshSource(context);
   assert.equal(source.state, "ready");
   assert.deepEqual(source.status, {
     state: "ready",
@@ -449,7 +449,7 @@ test("a refresh source is ready only after its first mint, and its material is n
   assert.match(calls[1].input.requestId, NAME_BASED_UUID);
   assert.match(calls[2].requestId, NAME_BASED_UUID);
   assert.notEqual(calls[1].input.requestId, calls[2].requestId);
-  assert.deepEqual(source.secrets, { client_secret: secret.ref });
+  assert.deepEqual(source.secrets, {});
   assert.equal(JSON.stringify(source).includes("synthetic-client-secret"), false);
 });
 
@@ -632,7 +632,7 @@ test("an update reconfigures refresh material and mints again instead of pushing
     credentialSourceId: source.id,
     secrets: { client_secret: replacement.ref },
   });
-  assert.deepEqual(updated.secrets, { client_secret: replacement.ref });
+  assert.deepEqual(updated.secrets, {});
   assert.equal(updated.status.refresh.state, "ready");
   const calls = context.gateway.calls.slice(before);
   assert.deepEqual(
@@ -680,7 +680,9 @@ test("an update refuses to re-send an issuer-rotated refresh token from its reco
       }),
       (error) =>
         error instanceof ResourceConflictError &&
-        /newer refresh_token/.test(error.message) &&
+        (secrets === undefined ? /explicit Secret inputs/ : /newer refresh_token/).test(
+          error.message,
+        ) &&
         /new sign-in/.test(error.message),
     );
   }
@@ -694,7 +696,7 @@ test("an update refuses to re-send an issuer-rotated refresh token from its reco
     ...input,
     secrets: { refresh_token: fresh.ref, client_secret: client.ref },
   });
-  assert.deepEqual(updated.secrets, { refresh_token: fresh.ref, client_secret: client.ref });
+  assert.deepEqual(updated.secrets, {});
   const calls = context.gateway.calls.slice(gatewayCalls);
   assert.deepEqual(
     calls.map(({ operation }) => operation),
@@ -702,17 +704,17 @@ test("an update refuses to re-send an issuer-rotated refresh token from its reco
   );
   assert.equal(calls[0].input.secrets.refresh_token, "fresh-refresh-token");
 
-  // A client-credentials type has no issuer-rotated value, so a bare update still re-sends it.
+  // All refresh types require explicit material, even without issuer-rotated fields.
   const { source: clientSource } = await refreshSource(context);
   const before = context.gateway.calls.length;
-  await context.controller.updateCredentialSource(administrator, {
-    namespaceId: context.namespace.id,
-    credentialSourceId: clientSource.id,
-  });
-  assert.deepEqual(
-    context.gateway.calls.slice(before).map(({ operation }) => operation),
-    ["configureRefresh", "rotate"],
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      namespaceId: context.namespace.id,
+      credentialSourceId: clientSource.id,
+    }),
+    /explicit Secret inputs/,
   );
+  assert.equal(context.gateway.calls.length, before);
 });
 
 test("an update reconfigures a refresh source whose gateway status is pending", async () => {
@@ -731,7 +733,7 @@ test("an update reconfigures a refresh source whose gateway status is pending", 
     context.gateway.calls.slice(before).map(({ operation }) => operation),
     ["configureRefresh", "rotate"],
   );
-  assert.deepEqual(updated.secrets, { client_secret: replacement.ref });
+  assert.deepEqual(updated.secrets, {});
   assert.equal(updated.status.refresh.state, "ready");
 });
 
@@ -3448,4 +3450,367 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
   }
   const [after] = await controller.listCredentialSources(administrator, namespace.id);
   assert.equal(after.state, "ready");
+});
+
+test("refresh handoff releases bootstrap deletion blockers but preserves last committed ID refusal", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const token = await createSecret(context, "handoff-token", "synthetic-token");
+  const source = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "handoff-user",
+    type: "oauth-user",
+    config: { client_id: "occ-tools" },
+    secrets: { refresh_token: token.ref },
+  });
+  assert.deepEqual(source.secrets, {});
+  await context.controller.updateSecret(administrator, {
+    namespaceId: context.namespace.id,
+    secretId: token.id,
+    value: "changed-same-identity",
+  });
+  const input = { namespaceId: context.namespace.id, credentialSourceId: source.id };
+  const calls = context.gateway.calls.length;
+  const reads = context.secretDriver.calls.length;
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      secrets: { refresh_token: token.ref },
+    }),
+    /newer refresh_token/,
+  );
+  assert.equal(context.gateway.calls.length, calls);
+  assert.equal(context.secretDriver.calls.length, reads);
+  await context.controller.deleteSecret(administrator, context.namespace.id, token.id);
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      secrets: { refresh_token: token.ref },
+    }),
+    /newer refresh_token/,
+  );
+  const fresh = await createSecret(context, "next-token", "synthetic-next-token");
+  const updated = await context.controller.updateCredentialSource(administrator, {
+    ...input,
+    secrets: { refresh_token: fresh.ref },
+  });
+  assert.deepEqual(updated.secrets, {});
+  await context.controller.deleteSecret(administrator, context.namespace.id, fresh.id);
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      secrets: { refresh_token: fresh.ref },
+    }),
+    /newer refresh_token/,
+  );
+});
+
+async function handoffIds(context, source) {
+  return context.state.transact((unit) =>
+    unit.credentialSources.findCredentialSourceHandoff(context.namespace.id, source.id),
+  );
+}
+
+async function legacyRefreshSource(context, secrets) {
+  // A real pre-handoff state row, created through the same repository used by registration.
+  const source = await context.state.transact((unit) =>
+    unit.credentialSources.createCredentialSource({
+      id: `cs_${crypto.randomUUID()}`,
+      namespaceId: context.namespace.id,
+      name: `legacy-${crypto.randomUUID()}`,
+      type: "oauth-user",
+      config: { client_id: "occ-tools" },
+      secrets,
+      driverId: context.gateway.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  context.gateway.stored.set(source.id, {});
+  return source;
+}
+
+test("legacy live IDs seed a successful handoff; missing history never fabricates IDs", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const old = await createSecret(context, "legacy-token", "synthetic-old");
+  const fresh = await createSecret(context, "fresh-token", "synthetic-new");
+  const source = await legacyRefreshSource(context, { refresh_token: old.ref });
+  assert.equal(await handoffIds(context, source), undefined);
+  const input = { namespaceId: context.namespace.id, credentialSourceId: source.id };
+  const calls = context.gateway.calls.length;
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      secrets: { refresh_token: old.ref },
+    }),
+    /newer refresh_token/,
+  );
+  assert.equal(context.gateway.calls.length, calls);
+  const updated = await context.controller.updateCredentialSource(administrator, {
+    ...input,
+    secrets: { refresh_token: fresh.ref },
+  });
+  assert.deepEqual(updated.secrets, {});
+  assert.deepEqual(await handoffIds(context, source), { refresh_token: fresh.id });
+  await context.controller.deleteSecret(administrator, context.namespace.id, old.id);
+  const unknown = await legacyRefreshSource(context, {});
+  const before = [context.gateway.calls.length, context.secretDriver.calls.length];
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      credentialSourceId: unknown.id,
+      secrets: { refresh_token: fresh.ref },
+    }),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      /no retained Secret-ID handoff history/.test(error.message),
+  );
+  assert.deepEqual([context.gateway.calls.length, context.secretDriver.calls.length], before);
+  assert.equal(await handoffIds(context, unknown), undefined);
+});
+
+test("refresh handoff tracks only last committed IDs, not values or all submitted history", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const first = await createSecret(context, "first-token", "same-synthetic-value");
+  const next = await createSecret(context, "next-token", "same-synthetic-value");
+  const source = await legacyRefreshSource(context, { refresh_token: first.ref });
+  const input = { namespaceId: context.namespace.id, credentialSourceId: source.id };
+  await context.controller.updateCredentialSource(administrator, {
+    ...input,
+    secrets: { refresh_token: next.ref },
+  });
+  assert.deepEqual(await handoffIds(context, source), { refresh_token: next.id });
+  // Reusing an older ID is outside the existing last-committed-ID rule. This is not a
+  // token freshness guarantee, and callers must not interpret it as issuer acceptance.
+  await context.controller.updateCredentialSource(administrator, {
+    ...input,
+    secrets: { refresh_token: first.ref },
+  });
+  assert.deepEqual(await handoffIds(context, source), { refresh_token: first.id });
+});
+
+test("failed or unknown refresh and transaction rollback preserve committed handoff identity", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const old = await createSecret(context, "old-token", "synthetic-old");
+  const next = await createSecret(context, "next-token", "synthetic-next");
+  const source = await legacyRefreshSource(context, { refresh_token: old.ref });
+  const input = {
+    namespaceId: context.namespace.id,
+    credentialSourceId: source.id,
+    secrets: { refresh_token: next.ref },
+  };
+  for (const outcome of [
+    async () => ({ state: "failed", failureCode: "oauth_invalid_grant" }),
+    async () => {
+      throw new Error("controlled unknown reply");
+    },
+  ]) {
+    context.refresh.nextRotate = outcome;
+    const before = context.gateway.calls.length;
+    await assert.rejects(
+      context.controller.updateCredentialSource(administrator, input),
+      DependencyUnavailableError,
+    );
+    assert.deepEqual(
+      context.gateway.calls.slice(before).map(({ operation }) => operation),
+      ["configureRefresh", "rotate"],
+    );
+    assert.equal(await handoffIds(context, source), undefined);
+    assert.deepEqual(
+      (
+        await context.controller.readCredentialSource(
+          administrator,
+          context.namespace.id,
+          source.id,
+        )
+      ).secrets,
+      source.secrets,
+    );
+  }
+  context.refresh.nextRotate = undefined;
+  await assert.rejects(
+    context.controller.transact(async () => {
+      await context.controller.updateCredentialSource(administrator, input);
+      throw new Error("controlled success audit rollback");
+    }),
+    /controlled success audit rollback/,
+  );
+  assert.equal(await handoffIds(context, source), undefined);
+  assert.deepEqual(
+    (await context.controller.readCredentialSource(administrator, context.namespace.id, source.id))
+      .secrets,
+    source.secrets,
+  );
+  // A separate successful update establishes provenance; a later failed update cannot replace it.
+  await context.controller.updateCredentialSource(administrator, input);
+  const third = await createSecret(context, "third-token", "synthetic-third");
+  context.refresh.nextRotate = async () => ({ state: "failed" });
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      secrets: { refresh_token: third.ref },
+    }),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(await handoffIds(context, source), { refresh_token: next.id });
+});
+
+test("handoff preserves other consumers, authorization, Namespace checks and static bindings", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const secret = await createSecret(context, "shared-token", "synthetic-shared");
+  const staticSource = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "static-shared",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const source = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "refresh-shared",
+    type: "oauth-user",
+    config: { client_id: "occ-tools" },
+    secrets: { refresh_token: secret.ref },
+  });
+  assert.deepEqual(source.secrets, {});
+  assert.deepEqual(staticSource.secrets, { api_key: secret.ref });
+  await assert.rejects(
+    context.controller.deleteSecret(administrator, context.namespace.id, secret.id),
+    /referenced/,
+  );
+  const fresh = await createSecret(context, "fresh-token", "synthetic-fresh");
+  const input = {
+    namespaceId: context.namespace.id,
+    credentialSourceId: source.id,
+    secrets: { refresh_token: fresh.ref },
+  };
+  const before = context.gateway.calls.length;
+  await assert.rejects(
+    context.controller.updateCredentialSource(updater, input),
+    AuthorizationDeniedError,
+  );
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      ...input,
+      secrets: { refresh_token: { ...fresh.ref, namespaceId: `ns_${crypto.randomUUID()}` } },
+    }),
+    ScopeViolationError,
+  );
+  assert.equal(context.gateway.calls.length, before);
+  await context.controller.updateCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    credentialSourceId: staticSource.id,
+  });
+  assert.deepEqual(
+    (
+      await context.controller.readCredentialSource(
+        administrator,
+        context.namespace.id,
+        staticSource.id,
+      )
+    ).secrets,
+    staticSource.secrets,
+  );
+});
+
+test("first-mint success cannot commit a reference release without its success audit", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const token = await createSecret(context, "audit-token", "synthetic-audit-token");
+  await assert.rejects(
+    context.controller.createCredentialSource(
+      administrator,
+      {
+        namespaceId: context.namespace.id,
+        name: "audit-handoff",
+        type: "oauth-user",
+        config: { client_id: "occ-tools" },
+        secrets: { refresh_token: token.ref },
+      },
+      () => {
+        throw new Error("controlled audit construction failure");
+      },
+    ),
+    /controlled audit construction failure/,
+  );
+  const [source] = await context.controller.listCredentialSources(
+    administrator,
+    context.namespace.id,
+  );
+  assert.equal(source.state, "registering");
+  assert.deepEqual(source.secrets, { refresh_token: token.ref });
+  assert.equal(await handoffIds(context, source), undefined);
+  await assert.rejects(
+    context.controller.deleteSecret(administrator, context.namespace.id, token.id),
+    /referenced/,
+  );
+  assert.deepEqual(
+    context.gateway.calls.map(({ operation }) => operation),
+    ["registerSource", "configureRefresh", "rotate"],
+  );
+});
+
+test("an unknown configure reply preserves the last committed handoff without mint or retry", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const old = await createSecret(context, "old-configure", "synthetic-old");
+  const source = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "unknown-configure",
+    type: "oauth-user",
+    config: { client_id: "occ-tools" },
+    secrets: { refresh_token: old.ref },
+  });
+  const next = await createSecret(context, "next-configure", "synthetic-next");
+  const original = context.refresh.configureRefresh;
+  context.refresh.configureRefresh = async function (...args) {
+    await original.apply(this, args);
+    throw new Error("controlled lost configure reply");
+  };
+  const before = context.gateway.calls.length;
+  await assert.rejects(
+    context.controller.updateCredentialSource(administrator, {
+      namespaceId: context.namespace.id,
+      credentialSourceId: source.id,
+      secrets: { refresh_token: next.ref },
+    }),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(
+    context.gateway.calls.slice(before).map(({ operation }) => operation),
+    ["configureRefresh"],
+  );
+  assert.deepEqual(await handoffIds(context, source), { refresh_token: old.id });
+  assert.deepEqual(
+    (await context.controller.readCredentialSource(administrator, context.namespace.id, source.id))
+      .secrets,
+    {},
+  );
+});
+
+test("refresh handoff preserves the Driver's normalized configuration on record and wire", async () => {
+  const context = await fixture();
+  await context.makeReady();
+  const secret = await createSecret(context, "normalized-client", "synthetic-client");
+  context.gateway.validateSourceConfig = () => ({ client_id: "normalized-client" });
+  const source = await context.controller.createCredentialSource(administrator, {
+    namespaceId: context.namespace.id,
+    name: "normalized-handoff",
+    type: "oauth-client",
+    config: { client_id: "written-client" },
+    secrets: { client_secret: secret.ref },
+  });
+  assert.deepEqual(source.config, { client_id: "normalized-client" });
+  assert.deepEqual(source.secrets, {});
+  const calls = context.gateway.calls.filter(({ operation }) =>
+    ["registerSource", "configureRefresh"].includes(operation),
+  );
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.deepEqual(call.input.config, source.config);
+  }
+  assert.deepEqual(await handoffIds(context, source), { client_secret: secret.id });
 });

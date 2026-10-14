@@ -575,7 +575,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 	var updateFile string
 	update := &cobra.Command{
 		Use:   "update ID",
-		Short: "Push current or replacement Secret values to the gateway copy",
+		Short: "Update static credentials or supply refresh reauthorization material",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
 			// An explicit empty --file was refused by refuseEmptyFlags.
@@ -606,7 +606,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values (refused for oauth2-refresh-token: put a new sign-in's refresh token in a new Secret)",
+		"JSON document with Secret inputs; required for refresh sources (issuer-rotated fields need a different Secret ID from the last committed handoff); omit only for static sources to re-send current values",
 	)
 
 	rotate := &cobra.Command{

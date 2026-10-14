@@ -72,7 +72,9 @@ on a timeout, a copy may still appear later, so the record stays listed as
 `deleting`; send DELETE to remove it.
 
 A `refresh`-type source becomes `ready` only after the gateway mints its first
-token. If the issuer refuses the material or cannot be reached, registration
+token. Its successful commit stores internal last-committed input IDs and clears
+live Secret references; returned `secrets` is `{}`. Bootstrap Secrets can then
+be deleted unless another consumer still references them. If the issuer refuses the material or cannot be reached, registration
 fails with `503` naming the Driver's failure code, and OCC removes the source.
 
 ## Read and list sources
@@ -145,8 +147,8 @@ value, send
 caller needs exact `credential_source:update` and `secret:operate` on every
 Secret the update reads:
 
-- An empty body `{}` re-reads the source's current Secrets. An
-  `oauth2-refresh-token` source refuses it; see below.
+- An empty body `{}` re-reads a static source's current Secrets. Every
+  `refresh` type requires explicit `secrets` and refuses `{}` with `409`.
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
@@ -154,9 +156,12 @@ Secret the update reads:
 
 A successful update returns `200` with the source and its live gateway `status`.
 Only a `ready` source can be updated. A gateway failure returns `503` and leaves
-the Secret references unchanged; once the gateway may have changed, the failure
-is audited. The gateway is updated before OCC commits, so
-if the request fails after that, repeating the same request converges. If the
+the Secret references unchanged. Once a gateway write begins, a definite rollback
+attempts any configured failure audit; that separate write can fail. Unknown commits
+require reconciliation of references and success audit before acting. The gateway is updated before OCC commits, so
+a failed response does not prove no external change. Static updates can converge
+on repeated values; refresh configure or mint outcomes must be resolved before
+another submission. If the
 gateway no longer holds a copy (`absent`), the update also returns `503`;
 delete the source and register it again.
 
@@ -175,8 +180,9 @@ gateway gives updated values only to new processes. To rotate a key:
 3. Redeploy each Agent that uses the source.
 
 A `refresh`-type source keeps no static value: an update replaces its refresh
-material and mints a new token, and OCC commits replacement Secret references
-only after that mint succeeds. If the mint fails, the update returns `503`, but
+material and mints a new token. Only after that mint succeeds does OCC atomically
+replace its internal last-committed input IDs and release live references, returning
+`secrets: {}`. The success audit shares that transaction. If the mint fails, the update returns `503`, but
 the gateway keeps the new material; the source stays `ready` and its
 `status.refresh` reports the failure. OCC does not restore the previous
 material; update again with corrected Secrets. Running Agents lose the source's
@@ -186,9 +192,13 @@ until you redeploy them.
 The issuer can replace an `oauth2-refresh-token` source's refresh token each
 time the gateway uses it, so the recorded Secret may hold an already-used
 token. Re-sending it can fail or make the issuer revoke the sign-in, so an
-update that keeps the `refresh_token` Secret, including `{}`, returns `409`.
-Complete a new sign-in, store its refresh token in a new Secret, and reference
-that Secret.
+update that names the last committed `refresh_token` Secret ID returns `409`,
+even after its value changes or the Secret is deleted. This is an ID guard, not
+proof of token freshness or a history of every submission. Complete a new sign-in,
+store its refresh token in a new Secret, and supply it explicitly. Legacy live
+references seed the guard before release. A source with no retained IDs and no
+live references cannot safely compare an issuer-rotated field and returns `503`;
+OCC does not guess the missing history.
 
 ## Rotate a refresh source
 
@@ -240,7 +250,9 @@ requires exact `delete` and returns `204`:
   copy. Retry after that window.
 
 While a source exists, including one in `deleting`, its Namespace cannot be
-deleted, and its referenced Secrets cannot be deleted.
+deleted, and its live referenced Secrets cannot be deleted. Successfully handed-off
+refresh inputs are no longer live references. Their retained IDs neither authorize
+Secret access nor block deletion, and disappear when the source is deleted.
 
 ## After a Credential Gateway change
 
