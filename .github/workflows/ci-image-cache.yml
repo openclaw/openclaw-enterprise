@@ -47,8 +47,8 @@ on:
 permissions:
   contents: read
 
-# One export at a time, never cancelled; a newer push replaces only the pending
-# run, which the Actions list then shows as cancelled.
+# One export at a time, never cancelled; a newer push or scheduled run replaces
+# only the pending run, which the Actions list then shows as cancelled.
 concurrency:
   group: ci-image-cache-${{ github.ref }}
   cancel-in-progress: false

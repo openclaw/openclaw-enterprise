@@ -897,12 +897,13 @@ function imageCache(role) {
 }
 
 // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change, in order and never cancelled, so the newest commit's export
-// lands last. CI lanes only restore: a lane export on main could land after a
-// newer commit's warm export and replace it, and on a pull request it cost about
-// 40 s and filled only the merge ref's scope. The warm job exports in a second
-// build after the image is built and loaded: the same arguments without --load or
-// the tag, so BuildKit reuses the steps it just ran and only uploads the cache.
+// image input change and on a schedule from main's newest commit, in order and
+// never cancelled, so the newest commit's export lands last. CI lanes only
+// restore: a lane export on main could land after a newer commit's warm export
+// and replace it, and on a pull request it cost about 40 s and filled only the
+// merge ref's scope. The warm job exports in a second build after the image is
+// built and loaded: the same arguments without --load or the tag, so BuildKit
+// reuses the steps it just ran and only uploads the cache.
 function imageCacheExportArgs(role, buildArgs) {
   if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
     throw new Error("Only a hosted cache build can export the image cache.");
@@ -3222,9 +3223,9 @@ const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
 async function warmImageCache({ statePath }) {
   if (
     process.env.GITHUB_REF !== "refs/heads/main" ||
-    !["push", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
+    !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
   ) {
-    throw new Error("Only a push or dispatch on main may warm the image cache.");
+    throw new Error("Only a push, schedule or dispatch on main may warm the image cache.");
   }
   const lane = "images-packaging";
   await validateLaneInputsBeforeSideEffects(lane);
