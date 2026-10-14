@@ -4480,6 +4480,7 @@ export class OpenClawController {
       const config = Object.freeze({
         ...(selected.validateSourceConfig({ type: type.type, config: written }) ?? written),
       });
+      credentialSourceFieldsMatch("config", type.config, config);
       const refreshDriver =
         type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);

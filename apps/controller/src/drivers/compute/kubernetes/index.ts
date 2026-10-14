@@ -11508,7 +11508,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);
       if (normalized === undefined) {
         throw new ConfigurationFailure(
-          "Codex model endpoint requires a valid HTTPS /v1 URL with a nonzero port and no hostname wildcards.",
+          openAiBaseUrlSpellingMessage("Codex model endpoint", openaiBaseUrl) ??
+            "Codex model endpoint requires a valid HTTPS /v1 URL with a nonzero port and no hostname wildcards.",
         );
       }
       openaiBaseUrl = normalized;

@@ -1,8 +1,10 @@
 /**
  * Why a written endpoint is refused before it is parsed, or `undefined`. The URL parser drops
- * tabs and newlines, trims spaces and controls, reads a backslash as a slash, treats the `//`
- * after the scheme as optional, and drops an empty user name (`https://@host`), so each of
- * these spellings would silently name a different URL than the one written (finding 1292).
+ * tabs and newlines, trims spaces and controls, treats the `//` after the scheme as optional,
+ * and drops an empty user name (`https://@host`), so these spellings name a different URL than
+ * the one written (finding 1292). Other rewrites it makes (a backslash for a slash, case,
+ * escapes and Unicode mapping in the host, a default port) are kept: callers use and store the
+ * normalized URL, so they show in what is stored.
  * - `characters`: a space or control character anywhere.
  * - `slashes`: an http(s) scheme followed by one or no slash, as the shared baseUrl rule says
  *   (`missesSchemeSlashes` in packages/occ/src/model-provider-settings.ts, findings 1259, 1285).

@@ -77,7 +77,7 @@ OCC stores any configuration it returns.
 rewritten spellings, decoded hostname wildcards, wildcard paths, and port `0`.
 OpenShell's
 `apps/controller/src/drivers/credential-gateway/openshell.ts:normalizedSourceBaseUrl`
-also requires an exact DNS host name. Registration and attachment require the
+also requires an exact DNS host name; Compute accepts IP hosts. Registration and attachment require the
 OpenShell-safe form; status and deletion do not guess ownership from an invalid URL.
 
 ### 2. Read Secret values

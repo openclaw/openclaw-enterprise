@@ -21,21 +21,22 @@ with a space or control character, without the `//` after `https:`, or with an
 `@` before the host (`https://@host/v1`), which the URL parser silently
 rewrote. An `openai` source host must be an exact DNS name, like a
 `bearer-token` host: an IP address in any spelling (`127.0.0.1`,
-`0x7f000001`, `127.1`) or a label with `_` or an edge `-` is refused, and a
-deployment bound to an existing such source fails. A new source stores its
+`0x7f000001`, `127.1`) or a label with `_` or an edge `-` is refused. A
+deployment or Secret update of an existing source with such a host or spelling
+fails. A new source stores its
 `base_url` normalized (`https://API.example.com:443/v1/` as
 `https://api.example.com/v1`).
 
 **Who is affected.** Sources or Compute settings that use those spellings, and
-`openai` sources whose endpoint host is an IP address.
+`openai` sources with such a host.
 
 **How to tell.** Creation returns `400` for `/config/base_url`, with `... host
 must be an exact DNS name.` or the spelling's message. Compute startup reports
-`Codex model endpoint must ...`. A deployment with an IP-host source fails with
-`The OpenShell endpoint requires HTTPS, a DNS host name, ...`.
+`Codex model endpoint must ...` or `... requires HTTPS ...`. A deployment with
+such a source fails with `The OpenShell endpoint requires HTTPS, ...`.
 
-**Steps.** Fix the spelling. Replace an IP-host source with one whose endpoint
-is a DNS name its certificate covers, as the
+**Steps.** Fix the spelling. Replace such a source with one whose endpoint is a
+DNS name its certificate covers, as the
 [`openai` source replacement notice](breaking-changes-archive.md#2026-10-13-openshell-openai-credential-sources-need-replacing)
 describes. _untested_ against a live Installation.
 
