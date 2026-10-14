@@ -63,9 +63,11 @@ stores only references, recording `registering` before the call. After rejection
 the record. An uncertain result, such as a timeout, leaves the record `deleting`
 because a copy may appear later; send DELETE to remove it.
 
-A `refresh`-type source becomes `ready` only after the gateway mints its first
-token. If the issuer refuses the material or cannot be reached, registration
-fails with `503` naming the Driver's failure code, and OCC removes the source.
+Secret-backed refresh sources complete registration only after the gateway
+mints the first token. If the issuer refuses the material or cannot be reached,
+registration fails with `503` naming the Driver's failure code, and OCC removes
+the source. Device-authorized sources register before login; their live status
+stays `pending` until login and managed-token setup complete.
 
 ## Read and list sources
 
