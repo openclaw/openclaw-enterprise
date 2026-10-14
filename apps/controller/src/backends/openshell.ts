@@ -19,6 +19,12 @@ const OCC_PROVIDER_NAME = /^oce-cs-[0-9a-f]{24}$/;
 
 export class OpenShellBackendConfigurationFailure extends Error {}
 
+/** The gateway's Service name and the Kubernetes namespace its Pods run in. */
+export interface OpenShellGatewayPlacement {
+  readonly service: string;
+  readonly namespace: string;
+}
+
 export interface OpenShellGatewaySelection {
   /** Replaces gRPC clients for every namespace, as when a caller owns the transport. */
   readonly gatewayClient?: OpenShellGatewayClient;
@@ -58,6 +64,31 @@ export class OpenShellGateway {
     const created = new GrpcOpenShellGatewayClient(options);
     this.clients.set(options.endpoint, created);
     return created;
+  }
+
+  /**
+   * Where the gateway runs, when the configuration names it (finding 1356). A bare Service name
+   * runs in each tenant `namespace`, so it needs one. A dotted Service name, or an endpoint host
+   * `<service>.<namespace>.svc[.<cluster domain>]`, names one namespace. An IP address, a node
+   * address or any other host names none.
+   */
+  placement(namespace?: string): OpenShellGatewayPlacement | undefined {
+    const { endpoint, serviceName } = this.configuration;
+    if (endpoint !== undefined) {
+      const labels = new URL(endpoint.includes("://") ? endpoint : `http://${endpoint}`).hostname
+        .toLowerCase()
+        .split(".");
+      return labels.length >= 3 && labels[2] === "svc"
+        ? { service: labels[0]!, namespace: labels[1]! }
+        : undefined;
+    }
+    const labels = (serviceName as string).toLowerCase().split(".");
+    if (labels.length === 1) {
+      return namespace === undefined ? undefined : { service: labels[0]!, namespace };
+    }
+    return labels.length === 2 || labels[2] === "svc"
+      ? { service: labels[0]!, namespace: labels[1]! }
+      : undefined;
   }
 
   close(): void {

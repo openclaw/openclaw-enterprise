@@ -2208,7 +2208,7 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
       {
         backend: {
           drivers: { credential_gateway: "credential-gateway-openshell" },
-          client: { clientForNamespace: () => client },
+          client: { clientForNamespace: () => client, placement: () => undefined },
         },
       },
     );
