@@ -195,8 +195,8 @@ function tokenUrlHostMessage(type: string): string {
  * - the names the Pod's DNS search list completes into it: `<x>.<namespace>`,
  *   `<x>.<y>.<namespace>`, and any name of up to three labels ending in the gateway Service or
  *   `<gateway Service>-*` (its peer Service). CoreDNS reads one leading label as an endpoint and
- *   two as a port and protocol (`grpc.tcp.<service>`, matched case-insensitively, and older
- *   versions take `any` or `*` as wildcards), so the label count decides, not the port name
+ *   two as a port and protocol (`grpc.tcp.<service>`, matched case-insensitively). The label
+ *   count decides, not the port name, so any port the gateway's Services name is covered
  *   (finding 1366).
  * Always refused: a `pod` zone name (`<a-b-c-d>.<namespace>.pod...`), which CoreDNS's default
  * `pods insecure` answers with the written address in any namespace, the Pod's own included.

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: "2026-10-14"
-last_updated_session: claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY
+last_updated_session: fix-1366
 ---
 
 # Credential source refresh Flow
@@ -187,7 +187,7 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 
 ## Changelog
 
-- 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366)
+- 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366 - bc85338f2)
 - 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)

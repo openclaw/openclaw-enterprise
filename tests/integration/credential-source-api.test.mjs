@@ -800,8 +800,8 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://openshell-gateway.openshell-system.svc/token",
     "https://openshell-gateway.openshell-system/token",
     "https://openshell-gateway-0.openshell-gateway/token",
-    // CoreDNS reads two leading labels as a port and protocol, case-insensitively (older
-    // versions take `any` as a wildcard), and the search list completes them (finding 1366).
+    // CoreDNS reads two leading labels as a port and protocol, case-insensitively, and the
+    // search list completes them; whatever the port name, they are refused (finding 1366).
     "https://grpc.tcp.openshell-gateway/token",
     "https://GRPC.TCP.openshell-gateway/token",
     "https://grpc.tcp.openshell-gateway-peer/token",
