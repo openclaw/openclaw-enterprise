@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { ComputePreparationFailedError } from "../../packages/occ/src/index.ts";
 import {
   backendDefinition,
   backendId,
@@ -173,6 +174,122 @@ for (const cause of ["authorization", "backend", "deadline"]) {
     },
   );
 }
+
+test(
+  "terminal active preparation retains retirement until outbound withdrawal survives restart and lease recovery",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const { candidate } = await fixture.admitInitialRevision("outbound-preparation-retirement", {
+      agent: { executionMode: "dedicated" },
+      revision: { gatewayOutbound: outboundAdmission },
+    });
+    const preparation = {
+      workload: {
+        kind: "Job",
+        name: "terminal-preparation-proof",
+        uid: "terminal-preparation-proof",
+        namespace: "tenant-proof",
+      },
+      reason: "retry_limit",
+      observedAt: "2026-10-14T12:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+      pods: [],
+    };
+    let preparationFails = false;
+    let removalAvailable = false;
+    let removed = false;
+    let withdrawals = 0;
+    let preparations = 0;
+    let retired = 0;
+    const retirementRows = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state, created_at FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE '%:repository_cleanup:retire:%'",
+          [candidate.id],
+        )
+      ).rows;
+    // The real error class carries the existing terminal preparation contract.
+    // PostgreSQL and the worker own the withdrawal and retirement handoff below.
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 60_000,
+      async prepareRevision(revision) {
+        preparations += 1;
+        if (preparationFails) {
+          throw new ComputePreparationFailedError(
+            "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+            preparation,
+          );
+        }
+        return fixture.compute.prepareRevision(revision);
+      },
+      async withdrawGatewayOutbound() {
+        withdrawals += 1;
+        assert.deepEqual(await retirementRows(), [], "retirement must wait for outbound removal");
+        if (!removalAvailable) {
+          throw new Error("Runtime deletion temporarily unavailable");
+        }
+        removed = true;
+      },
+      async stopRevision(revision) {
+        assert.equal(removed, true, "terminal cleanup cannot stop the runtime before withdrawal");
+        assert.equal(revision.id, candidate.id);
+        retired += 1;
+        return fixture.compute.stopRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    const [maintenance] = (await fixture.advanceMaintenance(candidate)).rows;
+    preparationFails = true;
+    await fixture.start(compute);
+    await waitFor("terminal preparation's pending outbound removal", async () =>
+      withdrawals >= 1 ? true : undefined,
+    );
+    await fixture.stop();
+    const preparationCount = preparations;
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
+    const assertObligation = async () => {
+      const evidence = await queue.findWorkAttempt(maintenance.idempotency_key, withdrawalPending);
+      assert.equal(evidence.refusal, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+      assert.equal(evidence.cleanupFailedPreparation, true);
+      assert.deepEqual(evidence.refusalData, { preparation });
+      assert.deepEqual(await retirementRows(), []);
+    };
+    await assertObligation();
+
+    // A real expired claim recovers the committed obligation before a new worker
+    // retries removal. This revision has no repository credentials to imply cleanup.
+    await fixture.advanceMaintenance(candidate);
+    const lost = await queue.claim();
+    assert.equal(lost.idempotencyKey, maintenance.idempotency_key);
+    await fixture.expireClaim({ idempotencyKey: maintenance.idempotency_key }, lost.claimToken);
+    assert.equal((await queue.recoverStale()).failedPermanent, 0);
+    await assertObligation();
+    const beforeRestart = withdrawals;
+    preparationFails = false;
+    await fixture.advanceMaintenance(candidate);
+    await fixture.start(compute);
+    await waitFor("removal-only retries retaining terminal retirement", async () =>
+      withdrawals >= beforeRestart + 2 ? true : undefined,
+    );
+    assert.equal(preparations, preparationCount, "recovery must not prepare the terminal runtime");
+    await assertObligation();
+    removalAvailable = true;
+    await fixture.work({ idempotencyKey: maintenance.idempotency_key }, "failed_permanent");
+    await waitFor("durable terminal preparation retirement to finish", async () =>
+      (await retirementRows())[0]?.state === "succeeded" ? true : undefined,
+    );
+    assert.equal(retired, 1);
+    assert.equal(preparations, preparationCount);
+    const terminal = await queue.findWork(maintenance.idempotency_key);
+    assert.equal(terminal.reasonCode, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+    assert.deepEqual(terminal.resultData, { preparation });
+  },
+);
 
 test(
   "PostgreSQL preserves outbound removal across reduced retry limits and repeated expired leases",

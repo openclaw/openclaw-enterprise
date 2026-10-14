@@ -49,6 +49,8 @@ export interface ControllerWorkAttempt {
   readonly refusal?: string;
   /** Validated terminal failure evidence preserved while the refusal is pending. */
   readonly refusalData?: Readonly<Record<string, unknown>>;
+  /** Terminal preparation still requires durable runtime retirement after withdrawal. */
+  readonly cleanupFailedPreparation?: true;
 }
 
 const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
@@ -295,6 +297,8 @@ export interface DeferredWork extends RetryableFailure {
   readonly refusal?: string;
   /** Existing terminal failure evidence, validated against `refusal`. */
   readonly refusalData?: unknown;
+  /** Preserve the existing terminal preparation retirement obligation. */
+  readonly cleanupFailedPreparation?: true;
   /** That stop yielded to other Work rather than failing; recorded as `stopYielded: true`. */
   readonly stopYielded?: boolean;
 }

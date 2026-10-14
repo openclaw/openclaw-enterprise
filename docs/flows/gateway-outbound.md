@@ -124,7 +124,8 @@ only OCC API clients; Agent selections never broaden it. See the
 
 `apps/controller/src/worker.ts:ControllerWorker.finalizeRevision` defers a terminal
 active-version result as `GATEWAY_OUTBOUND_WITHDRAWAL_PENDING` before any removal.
-Work-bound audit evidence preserves the refusal and bounded failure details. The next pass finishes only
+Work-bound audit evidence preserves the refusal, bounded failure details and any
+required runtime retirement. The next pass finishes only
 `KubernetesComputeDriver.withdrawGatewayOutbound`, validating ownership and waiting
 for exact proxy Pods and tunnels to terminate. Restored permissions cannot repair
 the old route during this wait; a new authorized revision restores service.

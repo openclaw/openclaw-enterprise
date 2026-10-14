@@ -61,10 +61,12 @@ checks passed. Console captures use simulated API/runtime fixtures on macOS arm6
 at 1400 × 900; they establish the visible workflow only. Backend and native
 networking proof are separate. Required final-head CI, both native image
 architectures and full Helm-installed production proof remain merge requirements.
-Independent P2 review completed with one policy-withdrawal finding: terminal
-maintenance could leave a live proxy after deployer revocation. The fix adds
-durable removal-only withdrawal; its regression proof and refinement review are
-in progress. The broad local conformance attempt also encountered host
+Independent P2 reviews found abandoned proxy authority after deployer revocation
+and a lost runtime retirement obligation during withdrawal. Both fixes preserve
+durable removal-only work, failure evidence and required cleanup across retries,
+restart and lease recovery. Five focused PostgreSQL cases and the existing
+candidate cleanup case passed without skips; final refinement review and native
+proof remain in progress. The broad local conformance attempt also encountered host
 prerequisite failures; targeted passing suites do not imply all local suites passed.
 
 ## Changelog

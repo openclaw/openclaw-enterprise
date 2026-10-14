@@ -3387,6 +3387,7 @@ export class ControllerWorker {
           claim,
           outboundWait.refusal,
           outboundWait.refusalData,
+          outboundWait.cleanupFailedPreparation,
         );
         return;
       }
@@ -4870,6 +4871,7 @@ export class ControllerWorker {
           code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
           refusal: result.code,
           ...(result.data === undefined ? {} : { refusalData: result.data }),
+          ...(result.cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
         },
         { delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS, repeatEvidence: true },
       );
@@ -4902,6 +4904,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     refusal: string,
     refusalData?: Readonly<Record<string, unknown>>,
+    cleanupFailedPreparation?: true,
   ): Promise<void> {
     try {
       const { namespace, agent, revision } = await this.state.read(async (view) => ({
@@ -4934,6 +4937,7 @@ export class ControllerWorker {
         outcome: "permanent",
         code: refusal,
         ...(refusalData === undefined ? {} : { data: refusalData }),
+        ...(cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
         gatewayOutboundWithdrawn: true,
       });
     } catch (error) {
@@ -4950,6 +4954,7 @@ export class ControllerWorker {
             code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
             refusal,
             ...(refusalData === undefined ? {} : { refusalData }),
+            ...(cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
           },
           { delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS, repeatEvidence: true },
         );

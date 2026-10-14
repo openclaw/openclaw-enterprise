@@ -783,13 +783,22 @@ async function startInClusterControllers(
   let logError;
   let stopping = false;
   const startLogs = async () => {
+    const pod = await waitFor("ready OCC worker Pod for log observation", async () => {
+      const current = await resources("pods", platformNamespace);
+      return current.find(
+        ({ metadata, status }) =>
+          metadata.deletionTimestamp === undefined &&
+          Object.entries(workerLabels).every(([key, value]) => metadata.labels?.[key] === value) &&
+          status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+      );
+    });
     const logs = spawn(
       "kubectl",
       kubectlArguments([
         "logs",
         "--namespace",
         platformNamespace,
-        `deployment/${workerName}`,
+        `pod/${pod.metadata.name}`,
         "--container=worker",
         "--follow=true",
       ]),
@@ -891,6 +900,7 @@ async function startInClusterControllers(
     pod: pods[0],
     url: forwarding.url,
     worker,
+    stopForwarding: () => forwarding.stop(),
     async restart() {
       const previousUid = activeApiPod.metadata.uid;
       const port = Number(new URL(forwarding.url).port);
@@ -1507,6 +1517,16 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
   let restartInClusterApi;
+  let stopInClusterApiForwarding;
+  let directory;
+  let observerPool;
+  let detachPostgres;
+  let workerPool;
+  let worker;
+  let productionApp;
+  let placement;
+  let gatewayRuntimeNamespace;
+  let forwarding;
   const workerOptions = {
     pollIntervalMs: 50,
     leaseDurationMs: 60_000,
@@ -1517,17 +1537,41 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
   await kubectl("create", "namespace", platformNamespace);
   context.after(async () => {
-    try {
-      await inClusterWorker?.stop();
-    } finally {
-      await kubectl(
-        "delete",
-        "namespace",
-        platformNamespace,
-        "--ignore-not-found=true",
-        "--wait=true",
-        "--timeout=120s",
-      );
+    // Finish every owned cleanup even if stopping a failed worker reports an error.
+    const failures = [];
+    const cleanup = async (operation) => {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    await cleanup(() => forwarding?.stop());
+    await cleanup(() => stopInClusterApiForwarding?.());
+    await cleanup(() => inClusterWorker?.stop());
+    await cleanup(() => (worker === undefined ? workerPool?.end() : worker.stop()));
+    await cleanup(() => productionApp?.close());
+    await cleanup(() => observerPool?.end());
+    await cleanup(() => detachPostgres?.());
+    for (const namespace of new Set([gatewayRuntimeNamespace, placement, platformNamespace])) {
+      if (namespace !== undefined) {
+        await cleanup(() =>
+          kubectl(
+            "delete",
+            "namespace",
+            namespace,
+            "--ignore-not-found=true",
+            "--wait=true",
+            "--timeout=120s",
+          ),
+        );
+      }
+    }
+    if (directory !== undefined) {
+      await cleanup(() => rm(directory, { recursive: true, force: true }));
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Owned production topology cleanup failed.");
     }
   });
   const controller = await createScopedController(
@@ -1597,7 +1641,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
   ]);
 
-  const directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
+  directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
   const startupPath = join(directory, "api-installation.yaml");
   const workerStartupPath = join(directory, "worker-installation.yaml");
   const workerConfiguration = installationConfiguration(
@@ -1648,55 +1692,11 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           environment: { OCC_CONFIG_PATH: workerStartupPath },
         })
       : undefined;
-  const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+  observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const platformState = new PostgresPlatformState(observerPool);
-  let detachPostgres;
   let databaseAddress;
-  let workerPool;
-  let worker;
-  let productionApp;
   let controllerApiPod;
-  let placement;
-  let gatewayRuntimeNamespace;
   let gatewayPlacement;
-  let forwarding;
-  context.after(async () => {
-    try {
-      await forwarding?.stop();
-    } finally {
-      if (worker !== undefined) {
-        await worker.stop();
-      } else if (workerPool !== undefined) {
-        await workerPool.end();
-      }
-      if (productionApp !== undefined) {
-        await productionApp.close();
-      }
-      await observerPool.end();
-      await detachPostgres?.();
-      if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
-        await kubectl(
-          "delete",
-          "namespace",
-          gatewayRuntimeNamespace,
-          "--ignore-not-found=true",
-          "--wait=true",
-          "--timeout=120s",
-        );
-      }
-      if (placement !== undefined) {
-        await kubectl(
-          "delete",
-          "namespace",
-          placement,
-          "--ignore-not-found=true",
-          "--wait=true",
-          "--timeout=120s",
-        );
-      }
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
 
   // Docker may replace published-port connections when another network attaches.
   // Complete that topology change before opening the observer/bootstrap pools;
@@ -1760,6 +1760,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     });
     inClusterWorker = controllerApi.worker;
     restartInClusterApi = controllerApi.restart;
+    stopInClusterApiForwarding = controllerApi.stopForwarding;
     controllerApiPod = controllerApi.pod;
     controllerUrl = controllerApi.url;
     requestFactory = (requestCredentials) =>
@@ -3750,7 +3751,6 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     await setRules(controllerRole.rules);
     roleRestored = true;
     const closed = await tunnel.assertClosed();
-    await assertProxyResourcesAbsent(topology, topology.revision.id);
     const failure = await waitFor(
       "permanent maintenance refusal after completed outbound withdrawal",
       async () => {
@@ -3765,6 +3765,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
         return rows[0];
       },
     );
+    await assertProxyResourcesAbsent(topology, topology.revision.id);
     // The Gateway probe and worker share the cluster's clock: close must precede final refusal.
     assert.ok(
       closed.closedAt <= failure.completed_at.getTime(),

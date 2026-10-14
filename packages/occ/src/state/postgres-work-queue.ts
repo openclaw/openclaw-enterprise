@@ -447,11 +447,12 @@ const RECOVERING_REFUSED_STOPS_SQL = `
 // preserves its removal-only phase even after IAM restoration or an attempt-limit change.
 const RECOVERING_GATEWAY_OUTBOUND_SQL = `
     recovering_gateway_outbound AS MATERIALIZED (
-      SELECT work.idempotency_key, latest.refusal, latest.refusal_data
+      SELECT work.idempotency_key, latest.refusal, latest.refusal_data, latest.cleanup_failed_preparation
       FROM occ.controller_work AS work
       JOIN candidates AS candidate ON candidate.idempotency_key = work.idempotency_key
       CROSS JOIN LATERAL (
-        SELECT prior.details->>'refusal' AS refusal, prior.details->'refusalData' AS refusal_data
+        SELECT prior.details->>'refusal' AS refusal, prior.details->'refusalData' AS refusal_data,
+          prior.details->'cleanupFailedPreparation' AS cleanup_failed_preparation
         FROM occ.audit_events AS prior
         WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
           AND prior.resource_kind = 'agent_revision'
@@ -706,7 +707,8 @@ const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(
   "$4::text",
   `CASE WHEN $10::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusal', $10::text) END
      || CASE WHEN $12::boolean THEN jsonb_build_object('stopYielded', true) ELSE '{}'::jsonb END
-     || CASE WHEN $13::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusalData', $13::jsonb) END`,
+     || CASE WHEN $13::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusalData', $13::jsonb) END
+     || CASE WHEN $14::boolean THEN jsonb_build_object('cleanupFailedPreparation', true) ELSE '{}'::jsonb END`,
 )}
   SELECT transitioned.* FROM transitioned`;
 const SETTLE_PROVISIONING_FAILURE_SQL = `
@@ -1114,7 +1116,8 @@ export class PostgresWorkQueue {
     // to this exact work item can explain its progress; unbound history is unknown.
     const found = await this.client.query(
       `SELECT event.occurred_at, event.details->>'reasonCode' AS reason_code,
-         event.details->>'refusal' AS refusal, event.details->'refusalData' AS refusal_data
+         event.details->>'refusal' AS refusal, event.details->'refusalData' AS refusal_data,
+         event.details->'cleanupFailedPreparation' AS cleanup_failed_preparation
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
          ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
@@ -1133,10 +1136,14 @@ export class PostgresWorkQueue {
           reason_code: string;
           refusal: string | null;
           refusal_data: unknown;
+          cleanup_failed_preparation: unknown;
         }
       | undefined;
     if (row === undefined) {
       return undefined;
+    }
+    if (row.cleanup_failed_preparation != null && row.cleanup_failed_preparation !== true) {
+      throw new ScopeViolationError("Deferred preparation cleanup evidence is invalid.");
     }
     const refusalData =
       row.refusal_data == null
@@ -1147,6 +1154,9 @@ export class PostgresWorkQueue {
       code: row.reason_code,
       ...(row.refusal === null ? {} : { refusal: row.refusal }),
       ...(refusalData === undefined ? {} : { refusalData }),
+      ...(row.cleanup_failed_preparation === true
+        ? { cleanupFailedPreparation: true as const }
+        : {}),
     });
   }
 
@@ -1273,6 +1283,12 @@ export class PostgresWorkQueue {
     if (pending.refusalData !== undefined && pending.refusal === undefined) {
       throw new ScopeViolationError("Deferred terminal failure evidence requires its refusal.");
     }
+    if (
+      pending.cleanupFailedPreparation !== undefined &&
+      (pending.cleanupFailedPreparation !== true || pending.refusal === undefined)
+    ) {
+      throw new ScopeViolationError("Deferred preparation cleanup requires its terminal refusal.");
+    }
     const refusalData =
       pending.refusalData === undefined
         ? undefined
@@ -1311,6 +1327,7 @@ export class PostgresWorkQueue {
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
         refusalData === undefined ? null : JSON.stringify(refusalData),
+        pending.cleanupFailedPreparation === true,
       ],
     );
     if (deferred.rows.length === 0) {
@@ -1543,8 +1560,11 @@ export class PostgresWorkQueue {
             THEN 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
             WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
             THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT jsonb_strip_nulls(jsonb_build_object('refusal', withdrawal.refusal,
-              'refusalData', withdrawal.refusal_data))
+         `COALESCE((SELECT jsonb_build_object('refusal', withdrawal.refusal)
+              || CASE WHEN withdrawal.refusal_data IS NULL THEN '{}'::jsonb
+                ELSE jsonb_build_object('refusalData', withdrawal.refusal_data) END
+              || CASE WHEN withdrawal.cleanup_failed_preparation IS NULL THEN '{}'::jsonb
+                ELSE jsonb_build_object('cleanupFailedPreparation', withdrawal.cleanup_failed_preparation) END
             FROM recovering_gateway_outbound AS withdrawal
             WHERE withdrawal.idempotency_key = transitioned.idempotency_key),
            (SELECT jsonb_build_object('refusal', stop.refusal)
@@ -1600,8 +1620,11 @@ export class PostgresWorkQueue {
          `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_gateway_outbound)
             THEN 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
             WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT jsonb_strip_nulls(jsonb_build_object('refusal', withdrawal.refusal,
-              'refusalData', withdrawal.refusal_data))
+         `COALESCE((SELECT jsonb_build_object('refusal', withdrawal.refusal)
+              || CASE WHEN withdrawal.refusal_data IS NULL THEN '{}'::jsonb
+                ELSE jsonb_build_object('refusalData', withdrawal.refusal_data) END
+              || CASE WHEN withdrawal.cleanup_failed_preparation IS NULL THEN '{}'::jsonb
+                ELSE jsonb_build_object('cleanupFailedPreparation', withdrawal.cleanup_failed_preparation) END
             FROM recovering_gateway_outbound AS withdrawal
             WHERE withdrawal.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
        )}
