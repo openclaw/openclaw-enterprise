@@ -941,7 +941,11 @@ if (args.includes("exec")) {
 
 test("Codex startup logs in, probes and starts the app server in each login mode", (t) => {
   const login = {
-    api_key: { env: { OPENAI_API_KEY: "fixture-key" }, flag: "--with-api-key", input: "fixture-key" },
+    api_key: {
+      env: { OPENAI_API_KEY: "fixture-key" },
+      flag: "--with-api-key",
+      input: "fixture-key",
+    },
     codex_pat: {
       env: { CODEX_ACCESS_TOKEN: "at-fixture" },
       flag: "--with-access-token",
@@ -996,7 +1000,9 @@ test("Codex startup logs in, probes and starts the app server in each login mode
       .split("\n")
       .map((line) => JSON.parse(line));
     assert.deepEqual(
-      calls.map(({ args }) => ["login", "exec", "app-server"].find((command) => args.includes(command))),
+      calls.map(({ args }) =>
+        ["login", "exec", "app-server"].find((command) => args.includes(command)),
+      ),
       [...(flag === undefined ? [] : ["login"]), "exec", "app-server"],
       mode,
     );

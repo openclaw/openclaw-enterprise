@@ -11,6 +11,10 @@ import {
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
+import {
+  normalizeOpenAiBaseUrl,
+  openAiBaseUrlSpellingMessage,
+} from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
 
@@ -294,6 +298,21 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
     }
   }
   return value;
+}
+
+// Kubernetes Compute startup's rule and messages (finding 1296). The normalized URL is the one
+// Compute uses.
+function codexModelBaseUrl(runtime, diagnostics) {
+  const field = "runtime.codexModelBaseUrl";
+  const value = asString(runtime, field.split("."), diagnostics);
+  const url = normalizeOpenAiBaseUrl(value);
+  if (url === undefined && value !== "") {
+    diagnostics.errors.push(
+      openAiBaseUrlSpellingMessage(field, value) ??
+        `${field} requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.`,
+    );
+  }
+  return url ?? value;
 }
 
 // URL parsing strips only C0 controls and spaces (U+0000 to U+0020) from the ends.
@@ -1132,6 +1151,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayNodeSelector",
       "transportSecretPrefix",
       "codexSeccompProfile",
+      "codexModelBaseUrl",
     ],
     diagnostics,
   );
@@ -1494,8 +1514,10 @@ function buildRendered(profile, parsed, diagnostics) {
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
-  if (profile.name === "openclaw" && runtime.codexSeccompProfile !== undefined) {
-    diagnostics.errors.push("runtime.codexSeccompProfile is only consumed by the codex profile.");
+  for (const key of ["codexSeccompProfile", "codexModelBaseUrl"]) {
+    if (profile.name === "openclaw" && runtime[key] !== undefined) {
+      diagnostics.errors.push(`runtime.${key} is only consumed by the codex profile.`);
+    }
   }
   if (!repositoryEnabled && Object.keys(repository).some((key) => key !== "enabled")) {
     diagnostics.errors.push(
@@ -1845,6 +1867,9 @@ function buildRendered(profile, parsed, diagnostics) {
                         "a relative localhost profile path without traversal or unconfined mode",
                     },
                   ),
+                  ...(runtime.codexModelBaseUrl === undefined
+                    ? {}
+                    : { codexModelBaseUrl: codexModelBaseUrl(runtime, diagnostics) }),
                 }
               : {}),
             ...(managedSlackProxyEnabled

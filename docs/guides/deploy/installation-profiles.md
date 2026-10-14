@@ -151,6 +151,9 @@ For the `codex` profile, add the reviewed Codex seccomp profile to the base inpu
 }
 ```
 
+The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
+preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
+
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
 ChatGPT Backend admin credential path:
