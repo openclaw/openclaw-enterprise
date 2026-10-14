@@ -3462,9 +3462,9 @@ export class OpenClawController {
 
   /**
    * One page of the Agent's revisions the principal may read, newest first, as summaries: a
-   * list never decodes a saved snapshot (finding 1323). The page covers `limit` revisions
-   * numbered below `before`; unreadable ones are left out, so it can hold fewer, even none.
-   * `nextBefore` continues below the page's last revision, readable or not.
+   * list never decodes a saved snapshot (finding 1323). The page holds up to `limit` readable
+   * revisions numbered below `before`; unreadable ones are skipped. `nextBefore` names the
+   * page's last revision, and only when a readable revision remains below it (finding 1334).
    */
   async listRevisions(
     principalId: string,
@@ -3480,16 +3480,21 @@ export class OpenClawController {
     }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
     // Read checks stay per revision. Scanning on past unreadable revisions keeps the cursor on
-    // a readable one, so a page never names a revision the caller cannot read.
+    // a readable one, so a page never names a revision the caller cannot read. The scan reads
+    // the store in batches of at least 100, whatever the page size, so a small page over many
+    // unreadable revisions costs few queries. A full page looks ahead for one more readable
+    // revision before it emits a cursor, so a cursor never leads to an empty page; a batch one
+    // larger than the page lets a fully readable page find that revision in the same query.
+    const batch = Math.max(page.limit + 1, 100);
     return this.read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];
       let before = page.before;
       for (;;) {
         const listed = await state.revisions.pageRevisionSummaries(agent.namespaceId, agent.id, {
           ...(before === undefined ? {} : { before }),
-          limit: page.limit,
+          limit: batch,
         });
-        for (const [index, revision] of listed.revisions.entries()) {
+        for (const revision of listed.revisions) {
           if (
             !(await this.canRead(principalId, {
               kind: "agent_revision",
@@ -3499,14 +3504,13 @@ export class OpenClawController {
           ) {
             continue;
           }
-          readable.push(revision);
           if (readable.length === page.limit) {
-            const more = index < listed.revisions.length - 1 || listed.nextBefore !== undefined;
             return Object.freeze({
               revisions: Object.freeze(readable),
-              ...(more ? { nextBefore: revision.revision } : {}),
+              nextBefore: readable.at(-1)!.revision,
             });
           }
+          readable.push(revision);
         }
         if (listed.nextBefore === undefined) {
           return Object.freeze({ revisions: Object.freeze(readable) });

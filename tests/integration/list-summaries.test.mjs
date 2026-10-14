@@ -255,3 +255,80 @@ test("a revision page leaves out revisions the caller cannot read and still cont
   );
   assert.equal(refused.status, 403);
 });
+
+test("a revision cursor needs a readable revision below it, and the scan reads in batches", async (t) => {
+  const { state, fixture, namespace, agent, first, seedRevisions, page } = await listFixture(
+    t,
+    "Revision scan batches",
+  );
+  const seeded = await seedRevisions(250);
+  const newest = seeded.at(-1);
+  assert.equal(newest.revision, 251);
+  const reader = async (name, revisions) => {
+    const account = await fixture.createAccountWithPolicy(name, (principal) => {
+      grantRole(fixture.policy, principal.id, {
+        id: `agent-reader-${randomUUID()}`,
+        namespaceId: namespace.id,
+        permissions: { agent: ["read"] },
+        resource: { kind: "agent", id: agent.id },
+      });
+      for (const revision of revisions) {
+        grantRole(fixture.policy, principal.id, {
+          id: `${name}-${revision.id}`,
+          namespaceId: namespace.id,
+          permissions: { agent_revision: ["read"] },
+          resource: { kind: "agent_revision", id: revision.id },
+        });
+      }
+    });
+    return fixture.signIn(account.credentials);
+  };
+  // Count store pages the list asks for, through the in-memory store's read views.
+  let storePages = 0;
+  const read = state.read.bind(state);
+  state.read = (work) =>
+    read((view) =>
+      work({
+        ...view,
+        revisions: {
+          ...view.revisions,
+          pageRevisionSummaries: (...args) => {
+            storePages += 1;
+            return view.revisions.pageRevisionSummaries(...args);
+          },
+        },
+      }),
+    );
+  const counted = async (query, options) => {
+    storePages = 0;
+    const result = await page(query, options);
+    return { ...result, storePages };
+  };
+
+  // Finding 1334: a full page whose remaining revisions are all unreadable carries no cursor,
+  // so a cursor never leads to an empty page.
+  const onlyNewest = await reader("newest-reader", [newest]);
+  const alone = await counted("?limit=1", { session: onlyNewest });
+  assert.deepEqual([alone.numbers, alone.nextCursor], [[251], null]);
+  // A small page scans 250 unreadable revisions in batches of 100, not one query per revision.
+  assert.ok(alone.storePages <= 3, `store pages: ${alone.storePages}`);
+
+  const ends = await reader("ends-reader", [newest, first]);
+  const top = await counted("?limit=1", { session: ends });
+  assert.deepEqual([top.numbers, top.nextCursor], [[251], "v1.251"]);
+  assert.ok(top.storePages <= 3, `store pages: ${top.storePages}`);
+  const bottom = await counted(`?limit=1&cursor=${top.nextCursor}`, { session: ends });
+  assert.deepEqual([bottom.numbers, bottom.nextCursor], [[1], null]);
+  assert.ok(bottom.storePages <= 3, `store pages: ${bottom.storePages}`);
+
+  // A caller who reads everything still gets full pages, a cursor on each but the last, and one
+  // store query per page: the batch holds the row that shows another readable revision remains.
+  const all = await counted("?limit=100");
+  assert.deepEqual([all.data.length, all.numbers[0], all.nextCursor], [100, 251, "v1.152"]);
+  assert.equal(all.storePages, 1);
+  const tail = await counted("?limit=100&cursor=v1.52");
+  assert.deepEqual(
+    [tail.data.length, tail.numbers[0], tail.numbers.at(-1), tail.nextCursor],
+    [51, 51, 1, null],
+  );
+});
