@@ -729,6 +729,30 @@ test("Agent detail and list show a superseded deployment as neutral, not failed"
         body: deploymentBody(namespace.id, agent.id, first.revision.id, "failed", error),
       }),
   );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}/diagnostics`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            revisionId: first.revision.id,
+            observedAt: "2026-10-14T16:00:01.000Z",
+            checks: [
+              {
+                component: "gateway",
+                check: "connectivity",
+                state: "unknown",
+                checkedAt: "2026-10-14T16:00:00.000Z",
+                code: "UNAVAILABLE",
+              },
+            ],
+          },
+          meta: { requestId: "req_test_superseded_diagnostics" },
+        }),
+      }),
+  );
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const row = page.getByRole("row").filter({ hasText: "Superseded Agent" });
@@ -747,7 +771,7 @@ test("Agent detail and list show a superseded deployment as neutral, not failed"
   await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
   await activity
     .getByText(
-      "Superseded by a newer version before this one became current (REVISION_SUPERSEDED). This is not a failure of this version and needs no fix.",
+      "Superseded by a newer version before this one became current (REVISION_SUPERSEDED). This version did not fail; no action is needed.",
     )
     .waitFor();
   assert.equal(await activity.locator(".deployment-step-superseded").count(), 2);
@@ -759,7 +783,15 @@ test("Agent detail and list show a superseded deployment as neutral, not failed"
     .waitFor();
   assert.equal(await page.locator(".agent-status-line").isVisible(), false);
   // Nothing names the newer version, which this reader cannot read.
-  assert.equal(await page.getByText(/\bv2\b|Failed|failed|Live serving is unverified/).count(), 0);
+  const outcome = page.locator(
+    ".agent-current-summary, .deployment-status, .version-deployment-record, .agent-status-line",
+  );
+  assert.equal(await outcome.getByText(/\bv2\b|failed|Live serving is unverified/i).count(), 0);
+  // Diagnostics do not ask the reader to resolve a superseded record first.
+  const observations = page.locator(".version-diagnostics");
+  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+  await observations.getByText(/Check this version's recorded outcome and its Logs tab/).waitFor();
+  assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
 
   // A real failure on the same record still renders as failed.
   error = authenticationFailure;

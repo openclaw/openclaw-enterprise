@@ -293,7 +293,7 @@ function deploymentResult(record, hrefs = {}, logsLink = null) {
     return element(
       "p",
       { className: "muted deployment-superseded" },
-      `${SUPERSEDED_DEPLOYMENT_NOTE} before this one became current (${record.error.code}). This is not a failure of this version and needs no fix.`,
+      `${SUPERSEDED_DEPLOYMENT_NOTE} before this one became current (${record.error.code}). This version did not fail; no action is needed.`,
     );
   }
   return deploymentFailure(record.error, hrefs, logsLink);
