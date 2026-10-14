@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,6 +10,15 @@ import { withStateLock } from "./state-lock.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
+const activeCommands = new Set();
+
+// A caller that is about to hard-kill its descendant processes must stop these
+// groups first: killing a supervisor alone prevents its IPC-disconnect cleanup.
+function stopCleanupCommands() {
+  for (const stop of activeCommands) {
+    stop();
+  }
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -48,13 +57,26 @@ function databaseDropTimeoutMs() {
 function execFile(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const processGroup = process.platform !== "win32";
-    const child = spawn(command, args, {
+    const spawnOptions = {
       cwd: options.cwd ?? repositoryRoot,
       env: { ...process.env, ...(options.env ?? {}) },
-      stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-      // Only this command and descendants that stay in its group receive signals.
-      detached: processGroup,
-    });
+    };
+    // The supervisor remains the group leader until command and pipes settle.
+    // It also owns termination when this caller exits without running JS hooks.
+    const child = processGroup
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          ...spawnOptions,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
+    let commandResult;
+    if (processGroup) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+    }
     let signalError;
     let killSent = false;
     const signalCommand = (signal) => {
@@ -62,8 +84,12 @@ function execFile(command, args, options = {}) {
         killSent = true;
       }
       try {
-        if (processGroup && child.pid > 1) {
-          process.kill(-child.pid, signal);
+        if (processGroup) {
+          // A live supervisor anchors the numeric group ID. Once it exits,
+          // never signal an ID that another process could have reused.
+          if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+            process.kill(-child.pid, signal);
+          }
         } else {
           child.kill(signal);
         }
@@ -73,25 +99,8 @@ function execFile(command, args, options = {}) {
         }
       }
     };
-    // Detached groups no longer receive the caller's terminal signals.
-    const forwarders = processGroup
-      ? ["SIGINT", "SIGTERM"].map((signal) => [
-          signal,
-          () => {
-            stopForwardingSignals();
-            signalCommand(signal);
-            process.kill(process.pid, signal);
-          },
-        ])
-      : [];
-    function stopForwardingSignals() {
-      for (const [signal, handler] of forwarders) {
-        process.removeListener(signal, handler);
-      }
-    }
-    for (const [signal, handler] of forwarders) {
-      process.once(signal, handler);
-    }
+    const stop = () => signalCommand("SIGKILL");
+    activeCommands.add(stop);
     const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
     const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
     let timedOut = false;
@@ -126,7 +135,7 @@ function execFile(command, args, options = {}) {
         return;
       }
       settled = true;
-      stopForwardingSignals();
+      activeCommands.delete(stop);
       clearTimeout(timeoutTimer);
       clearTimeout(killTimer);
       clearTimeout(abandonTimer);
@@ -136,6 +145,18 @@ function execFile(command, args, options = {}) {
         signalCommand("SIGKILL");
       }
       let error = spawnError;
+      if (processGroup && !error) {
+        if (commandResult) {
+          ({ code, signal } = commandResult);
+          if (commandResult.error) {
+            error = Object.assign(new Error(commandResult.error.message), commandResult.error);
+          }
+        } else {
+          error = new Error(
+            `Cleanup command supervisor exited before reporting a result (${signal ?? code})`,
+          );
+        }
+      }
       if (timedOut) {
         error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
       } else if (!error && code !== 0) {
@@ -163,6 +184,9 @@ function execFile(command, args, options = {}) {
     // Exit precedes pipe drain. Keep the deadline and escalation alive until
     // close, even when the wrapper has exited but its descendants have not.
     child.on("close", (code, signal) => finish(code, signal));
+    if (processGroup) {
+      child.send({ command, args });
+    }
   });
 }
 
@@ -500,7 +524,7 @@ async function main() {
   await cleanupState(args.state);
 }
 
-export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster };
+export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

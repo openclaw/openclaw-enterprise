@@ -194,8 +194,8 @@ the same host.
 | `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS` | `300000` (five minutes) | Each cleanup container-engine or k3d command. Database drops use the smaller of this value and 60 seconds. |
 | `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`      | `5000` (five seconds)   | Maximum grace between TERM and KILL, then for pipe closure. Also used by preparation.                      |
 
-Scope overrides to one invocation. Invalid, nonpositive or nonfinite cleanup
-values use defaults. Deadlines include pipe drain after wrapper exit.
+Scope overrides per invocation; invalid values use defaults. Deadlines include
+pipe drain. POSIX groups remain owned through caller cancellation or exit.
 See [termination and ownership](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result).
 Bounded waiting does not prove external resource deletion.
 

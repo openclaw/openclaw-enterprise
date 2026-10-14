@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-10-14
-last_updated_session: authoring-run/6dec0b67-a5cd-4a9e-82dc-7609f956b115
+last_updated_session: authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b
 ---
 
 # GitHub Actions testing flow
@@ -182,21 +182,22 @@ even when Kubernetes is unavailable. Cleanup failure fails the check. Private
 state remains usable only on its runner host and path. User databases, contexts,
 unrelated containers and global images are outside that ownership.
 
-`scripts/ci/cleanup.mjs:execFile` waits for exit and output-pipe closure.
-At the [command deadline](../testing/ci.md#cleanup-command-deadlines), it sends
-TERM to its own POSIX command group, then KILL within the grace period. Child exit
-does not cancel escalation while descendants hold pipes. After another grace,
-it destroys retained streams without signalling escaped groups. Windows uses
-direct-child termination with the same stream bound. Failed resources stay in
-state while cleanup attempts subsequent resources and reports failures.
+`scripts/ci/cleanup.mjs:execFile` waits for exit and drained output.
+On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
+including SIGKILL or `process.exit()`, closes its private IPC channel;
+the supervisor kills its group. Completion drains output, kills grouped
+descendants, and returns command status.
+At its [deadline](../testing/ci.md#cleanup-command-deadlines), TERM then KILL
+bound the group despite direct-child exit. Escaped groups receive no signals;
+retained streams close after another grace. Windows provides direct-child
+termination and stream bounds, without this supervisor.
 
-`scripts/ci/run-tests.mjs:main` writes results before exiting after abandoned
-preparation or cleanup; `killDescendants` snapshots its process tree and terminates
-observed descendants. `tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep`
-records named teardown timeouts while later disposal continues. After root hooks,
-the fixture allows two seconds for reporting before exit; failed cleanup arms
-that grace immediately. A 60-second backstop covers skipped final hooks.
-The parent Node runner still accounts for failures.
+`scripts/ci/run-tests.mjs:killDescendants` stops active cleanup groups before
+sweeping descendants and exiting after abandoned work.
+`tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records named
+timeouts and continues disposal. Root hooks allow two seconds for reports before
+exit; cleanup failure arms that grace immediately. A 60-second backstop covers
+skipped hooks. The parent runner accounts for failures. Failed resources stay in state; cleanup continues.
 
 `CI Required` checks jobs even after failures. Full-mode aggregation verifies
 same-revision lane identity, success, required evidence and cleanup; the runner
@@ -228,6 +229,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 10:19: Retain cleanup ownership. (authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b - 10f34280f56dc2375f48df9d2161024520a35882)
 
 - 2026-10-14 09:44: Document command-group termination, bounded pipes, and abandoned runner and fixture handoffs in the accompanying fix. (authoring-run/6dec0b67-a5cd-4a9e-82dc-7609f956b115 - 47d5b8cc901e225e51227a905ee688c69c8ea729)
 
