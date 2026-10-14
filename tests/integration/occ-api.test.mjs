@@ -5819,6 +5819,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
       },
       'Configuration setting models.providers.openai.request.headers must not set the credential header "Authorization" (its name marks a credential): model credentials come from the Agent\'s Harness authentication binding.',
     ],
+    // Finding 1311: provisioning runs the agents roster rules Configuration save runs, with the
+    // same text, so a roster every deployment refuses is refused before anything is stored.
+    [
+      { agents: { ...model.agents, entries: { "main!": {} } } },
+      'The OpenClaw Gateway rejects the Agent ID in agents.entries["main!"]: use up to 64 letters, digits, _ or -, not starting with -.',
+    ],
+    [
+      { agents: { ...model.agents, entries: { main: {}, helper: {} } } },
+      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
+    ],
   ]) {
     const refused = await injectedRequest(
       fixture.app,

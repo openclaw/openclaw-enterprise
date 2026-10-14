@@ -772,6 +772,11 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
     // An ownership no filling makes "explicit", or that a number variable fills.
     [withAgents({ ownership: "shared-{{ vars.ownership }}", entries: { main: {} } }), onlyExplicit],
     [withAgents({ ownership: "{{ vars.count }}", entries: { main: {} } }), onlyExplicit],
+    // Many adjacent variables are matched in linear time (finding 1311's review).
+    [
+      withAgents({ ownership: `${"{{ vars.ownership }}".repeat(64)}x`, entries: { main: {} } }),
+      onlyExplicit,
+    ],
   ];
   for (const [index, [values, message]] of refused.entries()) {
     await t.test(`refuses Preset ${index}: ${message}`, async () => {
@@ -939,6 +944,91 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   ]) {
     const saved = await request(context.app, "PATCH", item, { body: { values } });
     assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+  }
+});
+
+test("Preset save refuses a Codex approval policy every Gateway refuses, as Configuration save does", async (t) => {
+  // Finding 1311: Preset save skipped the settings rules Configuration save and Agent
+  // provisioning run, so a Preset with a retired or unknown Codex approval policy saved and was
+  // refused only when a launch created its Configuration. A policy that waits on an unfilled
+  // variable is checked as far as its written text goes, and in full once filled.
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-settings-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { namespace, ...context } = await fixture({
+    configurationDriver: new FilesystemConfigurationDriver(root),
+    // The rule holds on every Compute, so none of Kubernetes' own rules run here.
+    computeDriver: createReadyComputeDriver("compute-preset-settings"),
+  });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const variables = { policy: { type: "string" }, count: { type: "number" } };
+  const policy = (approvalPolicy) => ({
+    ...runtimeSelected,
+    plugins: { entries: { codex: { config: { appServer: { approvalPolicy } } } } },
+  });
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+  const policyEnum = setting(
+    "plugins.entries.codex.config.appServer.approvalPolicy",
+    'must be "never", "on-request" or "on-failure"',
+  );
+  const retired = setting(
+    "plugins.entries.codex.config.appServer.approvalPolicy",
+    'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
+  );
+  const savePreset = (name, values) =>
+    request(context.app, "POST", presets, {
+      body: { name, template: { variables, configuration: { values } } },
+    });
+  for (const [index, [values, message]] of [
+    [policy("untrusted"), retired],
+    [policy("always"), policyEnum],
+    [policy({ mode: "never" }), policyEnum],
+    // Written text no filling makes an accepted policy, or a number variable.
+    [policy("un{{ vars.policy }}"), policyEnum],
+    [policy("{{ vars.policy }}-never"), policyEnum],
+    [policy("{{ vars.count }}"), policyEnum],
+    // Many adjacent variables are matched in linear time.
+    [policy(`${"{{ vars.policy }}".repeat(64)}x`), policyEnum],
+  ].entries()) {
+    const label = JSON.stringify(values);
+    const started = Date.now();
+    const saved = await savePreset(`Refused-${index}`, values);
+    assert.equal(saved.status, 400, `${label}: ${JSON.stringify(saved.body)}`);
+    assert.equal(saved.body.error.code, "INVALID_REQUEST", label);
+    assert.equal(saved.body.error.message, message, label);
+    assert.ok(Date.now() - started < 5_000, label);
+  }
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // A policy a filling can still make accepted saves; the launch's Configuration is checked in
+  // full, with the Configuration save text.
+  for (const [index, values] of [
+    policy("never"),
+    policy("on-request"),
+    policy("on-failure"),
+    policy("{{ vars.policy }}"),
+    policy("on-{{ vars.policy }}"),
+    policy("{{ vars.policy }}ever"),
+  ].entries()) {
+    const saved = await savePreset(`Accepted-${index}`, values);
+    assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+  }
+  for (const [values, inputs, message] of [
+    [policy("{{ vars.policy }}"), { policy: "untrusted" }, retired],
+    [policy("on-{{ vars.policy }}"), { policy: "success" }, policyEnum],
+  ]) {
+    const launched = await request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate({ variables, configuration: { values } }, { count: 1, ...inputs })
+          .configuration,
+      },
+    });
+    assert.equal(launched.status, 400, JSON.stringify(launched.body));
+    assert.equal(launched.body.error.message, message);
   }
 });
 
@@ -1189,6 +1279,18 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       },
       setting("agents.entries.main.modelPolicy.allow", openai),
     ],
+    // Finding 1310: OpenClaw reads openrouter:auto and openrouter:free, which have no slash, as
+    // the openrouter provider's models, trimmed and in any case.
+    [
+      { agents: { defaults: { ...runtimeDefaults, subagents: { model: "openrouter:auto" } } } },
+      setting("agents.defaults.subagents.model", openai),
+    ],
+    [
+      {
+        agents: { defaults: { ...runtimeDefaults, modelPolicy: { allow: [" OpenRouter:Free "] } } },
+      },
+      setting("agents.defaults.modelPolicy.allow", openai),
+    ],
     [
       {
         ...valid,
@@ -1266,6 +1368,22 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       assert.deepEqual(revisions.body.data, [], label);
       await writePastOcc(configurationDriver, configurationId, valid);
     }
+  });
+
+  // Finding 1310: deployment reads an OpenRouter compatibility selector as save does, so a row
+  // stored before the rule is refused by name before a revision exists.
+  await t.test("a stored OpenRouter compatibility selector", async () => {
+    const values = {
+      agents: { defaults: { ...runtimeDefaults, heartbeat: { model: "openrouter:auto" } } },
+    };
+    const message = setting("agents.defaults.heartbeat.model", openai);
+    await writePastOcc(configurationDriver, configurationId, values);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+    assert.equal(deployed.body.error.message, message);
+    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+    assert.deepEqual(revisions.body.data, []);
+    await writePastOcc(configurationDriver, configurationId, valid);
   });
 
   // A Configuration whose model policy selects the Codex Harness runs as Dedicated Codex, which
@@ -1473,6 +1591,11 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
         agents: { defaults: { ...runtimeDefaults, modelPolicy: { allow: ["{{ vars.count }}"] } } },
       },
       setting("agents.defaults.modelPolicy.allow", "must be provider/model references"),
+    ],
+    // Finding 1310: an OpenRouter compatibility selector names the openrouter provider.
+    [
+      { agents: { defaults: { ...templated, utilityModel: "openrouter:free" } } },
+      setting("agents.defaults.utilityModel", openai),
     ],
     // A fallback and a policy key whose provider waits on a variable leave the rest checked.
     [

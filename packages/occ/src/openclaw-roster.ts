@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 
+import { canSpell } from "./configuration-settings.ts";
 import { requireAgentsShape, requireFallbackProviders } from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
@@ -122,8 +123,7 @@ function canFillExplicit(
   if (literals === undefined || (type !== undefined && type !== "string")) {
     return false;
   }
-  const escaped = literals.map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return new RegExp(`^${escaped.join(".*")}$`).test("explicit");
+  return canSpell(literals, "explicit");
 }
 
 /**

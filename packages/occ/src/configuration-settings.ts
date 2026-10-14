@@ -1,4 +1,7 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import { ConfigurationHarnessError, GatewayPasswordValueError } from "./errors.ts";
@@ -14,6 +17,30 @@ export const CODEX_APPROVAL_POLICY_SETTING =
   "plugins.entries.codex.config.appServer.approvalPolicy";
 const CODEX_APPROVAL_POLICY_PATH = CODEX_APPROVAL_POLICY_SETTING.split(".");
 const CODEX_APPROVAL_POLICIES: readonly unknown[] = ["never", "on-request", "on-failure"];
+const ACCEPTED_POLICIES = 'must be "never", "on-request" or "on-failure"';
+
+/**
+ * Whether filling the gaps between `literals`, the text around each unfilled Preset variable
+ * (`options.unresolved`), can spell `value`. Each literal is matched at its leftmost place after
+ * the one before, in linear time: a pattern of one wildcard per variable backtracks
+ * exponentially on many adjacent variables.
+ */
+export function canSpell(literals: readonly string[], value: string): boolean {
+  const first = literals[0] ?? "";
+  const last = literals.length > 1 ? (literals[literals.length - 1] ?? "") : "";
+  if (!value.startsWith(first)) {
+    return false;
+  }
+  let position = first.length;
+  for (const literal of literals.slice(1, -1)) {
+    const found = value.indexOf(literal, position);
+    if (found < 0) {
+      return false;
+    }
+    position = found + literal.length;
+  }
+  return value.length - last.length >= position && value.endsWith(last);
+}
 
 /**
  * The configured Codex session approval policy, or undefined when none is set. One rule for
@@ -25,6 +52,7 @@ const CODEX_APPROVAL_POLICIES: readonly unknown[] = ["never", "on-request", "on-
 export function codexApprovalPolicy(
   configuration: Readonly<OpenClawConfigurationDocument>,
   createError: (setting: string, requirement: string) => Error,
+  options?: ConfigurationValidationOptions,
 ): string | undefined {
   let value: unknown = configuration;
   for (const [index, key] of CODEX_APPROVAL_POLICY_PATH.entries()) {
@@ -39,6 +67,20 @@ export function codexApprovalPolicy(
   if (value === undefined) {
     return undefined;
   }
+  // On a Preset save (`options.unresolved`), a value that waits on an unfilled variable is checked
+  // once filled, on the Configuration a launch creates, if its written text can still spell an
+  // accepted policy; a number or boolean variable fills it with no string (finding 1311).
+  const literals = options?.unresolved?.(CODEX_APPROVAL_POLICY_PATH);
+  if (literals !== undefined) {
+    const type = options?.unresolvedType?.(CODEX_APPROVAL_POLICY_PATH);
+    if (
+      (type === undefined || type === "string") &&
+      CODEX_APPROVAL_POLICIES.some((policy) => canSpell(literals, policy as string))
+    ) {
+      return undefined;
+    }
+    throw createError(CODEX_APPROVAL_POLICY_SETTING, ACCEPTED_POLICIES);
+  }
   if (value === "untrusted") {
     throw createError(
       CODEX_APPROVAL_POLICY_SETTING,
@@ -46,10 +88,7 @@ export function codexApprovalPolicy(
     );
   }
   if (!CODEX_APPROVAL_POLICIES.includes(value)) {
-    throw createError(
-      CODEX_APPROVAL_POLICY_SETTING,
-      'must be "never", "on-request" or "on-failure"',
-    );
+    throw createError(CODEX_APPROVAL_POLICY_SETTING, ACCEPTED_POLICIES);
   }
   return value as string;
 }
@@ -65,17 +104,22 @@ function isCredentialReference(value: unknown): boolean {
 
 /**
  * Configuration rules that do not depend on the Agent's topology or the Installation, checked
- * when a Configuration is created, replaced or provisioned. A stored Configuration that
- * predates a rule still reads; Compute admission refuses it at its next deployment.
+ * when a Configuration is created, replaced or provisioned, and when a Preset is saved, with
+ * `options` locating its unfilled variables. A stored Configuration that predates a rule still
+ * reads; Compute admission refuses it at its next deployment.
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
  */
-export function validateConfigurationSettings(values: OpenClawConfigurationDocument): void {
+export function validateConfigurationSettings(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
   codexApprovalPolicy(
     values,
     (setting, requirement) =>
       new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`),
+    options,
   );
   refuseLiteralGatewayPassword(values);
 }

@@ -10,7 +10,7 @@ import {
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
 } from "@openclaw-enterprise/occ";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
 
 /**
@@ -422,12 +422,13 @@ export function providerWaitsOnVariable(
 /**
  * Every model selection names `provider`, the one the Agent's Harness authentication binding
  * serves (finding 1291): a reference elsewhere would make the Gateway request another provider
- * directly. A bare name passes: OpenClaw resolves it through an alias on a policy key checked
- * here, or to a configured provider's model, whose apiKey Harness admission refuses. On
- * `dedicatedCodex`, which qualifies each policy selector (`models` keys and `modelPolicy.allow`
- * entries), a selector must be provider/model, and media and voice models are refused: OpenClaw
- * calls them directly as capability references, and Codex serves only chat models (finding
- * 1306). Refusals name the setting, never the reference. On a Preset save
+ * directly. OpenClaw's `openrouter:auto` and `openrouter:free` name the openrouter provider
+ * (`splitModelRef`, finding 1310). Any other bare name passes: OpenClaw resolves it through an
+ * alias on a policy key checked here, or to a configured provider's model, whose apiKey Harness
+ * admission refuses. On `dedicatedCodex`, which qualifies each policy selector (`models` keys and
+ * `modelPolicy.allow` entries), a selector must be provider/model, and media and voice models are
+ * refused: OpenClaw calls them directly as capability references, and Codex serves only chat
+ * models (finding 1306). Refusals name the setting, never the reference. On a Preset save
  * (`options.unresolved`), a reference whose provider waits on an unfilled variable is checked
  * once filled, on the Configuration a launch creates; one whose provider is written is checked
  * here.
@@ -457,15 +458,11 @@ export function requireSelectedModelProvider(
     if (providerWaitsOnVariable(options, path, policy === "key")) {
       continue;
     }
-    const separator = reference.indexOf("/");
-    if (separator < 0 && !(policy !== undefined && dedicatedCodex)) {
+    const { provider: selected, id } = splitModelRef(reference);
+    if (id === undefined && !(policy !== undefined && dedicatedCodex)) {
       continue;
     }
-    if (
-      separator < 0 ||
-      reference.slice(0, separator) !== provider ||
-      separator === reference.length - 1
-    ) {
+    if (id === undefined || selected !== provider || id === "") {
       throw createError(
         setting,
         policy === "key" ? `keys must select ${requirement}` : `must select ${requirement}`,
