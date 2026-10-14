@@ -7,7 +7,13 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { Linter } from "eslint";
 import globals from "globals";
+import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import {
+  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import * as runtimeEntrypoints from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { WORKSPACE_SETUP_RUNTIME } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   createKubernetesComputeDriver,
@@ -907,12 +913,19 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
 // runs: the probe's dead chatgpt_service_account branch named an undefined workspaceId (finding 1295).
 test("generated runtime modules reference only declared names", () => {
   const linter = new Linter();
-  for (const [name, source] of Object.entries(runtimeEntrypoints)) {
-    if (!name.endsWith("_ENTRYPOINT")) {
-      continue;
-    }
+  const programs = {
+    ...Object.fromEntries(
+      Object.entries(runtimeEntrypoints).filter(([name]) => name.endsWith("_ENTRYPOINT")),
+    ),
+    REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+    REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+    WORKSPACE_SETUP_RUNTIME,
+    DOCKER_GATEWAY_RUNTIME_ENTRYPOINT,
+  };
+  for (const [name, source] of Object.entries(programs)) {
+    // nodeProgramArguments runs each as a script (vm.runInThisContext), not a CommonJS module.
     const messages = linter.verify(source, {
-      languageOptions: { ecmaVersion: "latest", sourceType: "commonjs", globals: globals.node },
+      languageOptions: { ecmaVersion: "latest", sourceType: "script", globals: globals.node },
       rules: { "no-undef": "error" },
     });
     assert.deepEqual(

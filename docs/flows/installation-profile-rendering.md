@@ -191,7 +191,8 @@ storage class, node selectors, and transport Secret prefix. The Codex profile
 also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
 the Compute driver's localhost-profile rule and refuses an absolute path, a
 backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
-before writing `installation.yaml`. When optional
+before writing `installation.yaml`. Optional `runtime.codexModelBaseUrl` gets
+Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
 `codex_pat` token path configured at Agent creation. If the chart-managed Slack
