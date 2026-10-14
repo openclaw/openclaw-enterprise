@@ -1,6 +1,6 @@
 ---
 created: "2026-10-08"
-updated: "2026-10-08"
+updated: "2026-10-14"
 last_updated_session: claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY
 ---
 
@@ -81,7 +81,9 @@ NetworkPolicy does not police (finding 1356):
   (`apps/controller/src/backends/openshell.ts:placement`), any name in that
   namespace's `svc` or `pod` zone, whatever the cluster domain, and the shorter
   names the gateway Pod's DNS search list completes into it: `<x>.<namespace>`, `<x>.<y>.<namespace>`, and
-  `<pod>.<service>-peer`, the StatefulSet Pod's own name. An `endpoint` host
+  any name of up to three labels ending in the gateway Service or `<service>-*`. CoreDNS reads the leading
+  labels as an endpoint (`<pod>.<service>-peer`, the StatefulSet Pod's own name) or a port and protocol
+  (`grpc.tcp.<service>`), so the label count decides, not the port name (finding 1366). An `endpoint` host
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
   registration and attach know it; registration's profile check refuses the
@@ -185,6 +187,7 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 
 ## Changelog
 
+- 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366)
 - 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)

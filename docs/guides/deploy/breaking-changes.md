@@ -34,7 +34,7 @@ name (`10-42-0-5.idp.pod.cluster.local`), also with extra leading labels or
 without the cluster domain (`x.10-42-0-5.idp.pod`), and, when the OpenShell Backend's
 `endpoint` or `serviceName` names the gateway's namespace, any name in that
 namespace (`openshell-gateway.openshell-system.svc`,
-`openshell-gateway-0.openshell-gateway-peer`). OCC now stores `token_url` in
+`openshell-gateway-0.openshell-gateway-peer`, `grpc.tcp.openshell-gateway`). OCC now stores `token_url` in
 normalized form (`https://Login.Example.test:443/token` becomes
 `https://login.example.test/token`). A `bearer-token` or OAuth2 `host` ending in a
 numeric or `0x` label (`0x7f.0x1`, `example.123`) is refused like an IP address.
