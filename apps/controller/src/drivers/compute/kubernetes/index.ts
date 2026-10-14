@@ -2168,7 +2168,10 @@ function requireProviderApiKeys(
   const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
   for (const [provider, value] of Object.entries(providers)) {
     const config = asRecord(value);
-    if (config?.apiKey === undefined || (referencesOnly && !isCredentialReference(config.apiKey))) {
+    if (
+      config?.apiKey === undefined ||
+      (referencesOnly && config.apiKey !== null && !isCredentialReference(config.apiKey))
+    ) {
       continue;
     }
     const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
@@ -2225,7 +2228,7 @@ function requireProviderApiKeys(
 }
 
 // A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
-// (model-auth.ts); it refuses anything else as an inline credential, with its own message.
+// (model-auth.ts); it refuses anything else but null as an inline credential, with its own message.
 function isCredentialReference(value: unknown): boolean {
   if (typeof value === "string") {
     return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);

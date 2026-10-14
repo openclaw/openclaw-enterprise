@@ -1173,22 +1173,20 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       body: { kind: "agent", values: codexValues },
     });
     assert.equal(codex.status, 201, JSON.stringify(codex.body));
-    const codexKey = await request(context.app, "PATCH", `${collection}/${codex.body.data.id}`, {
-      body: {
-        values: {
-          ...codexValues,
-          models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } },
-        },
-      },
-    });
-    assert.equal(codexKey.status, 400, JSON.stringify(codexKey.body));
-    assert.equal(
-      codexKey.body.error.message,
-      setting(
-        "models.providers.codex.apiKey",
-        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-      ),
-    );
+    // A null key is still set: deployment refuses it, so save does too.
+    for (const apiKey of ["${OPENAI_API_KEY}", null]) {
+      const codexKey = await request(context.app, "PATCH", `${collection}/${codex.body.data.id}`, {
+        body: { values: { ...codexValues, models: { providers: { codex: { apiKey } } } } },
+      });
+      assert.equal(codexKey.status, 400, JSON.stringify(codexKey.body));
+      assert.equal(
+        codexKey.body.error.message,
+        setting(
+          "models.providers.codex.apiKey",
+          "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+        ),
+      );
+    }
   });
 
   // Oracle: a caller who may update Configurations but not read Agents gets the same answer for
