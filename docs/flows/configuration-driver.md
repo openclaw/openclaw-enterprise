@@ -213,6 +213,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-14 06:00: Configuration and Agent saves on every Compute refuse a model fallback on another provider than its primary's, naming the setting, as deployment now does; Kubernetes Configuration save also runs the model provider and `apiKey` rules deployment applies, and accepts OpenClaw's built-in `default` env provider in an `apiKey` reference. (fix-1298-1299, findings 1298-1299)
 - 2026-10-13 23:00: Configuration and Preset saves require references in MCP server credential headers, and read a `GIT_CONFIG_VALUE_<n>` or `GIT_CONFIG_PARAMETERS` value whose key names a git proxy as a proxy URL. (findings 1276, 1278)
 - 2026-10-13 18:00: Kubernetes credential header refusals quote the header name, not a word list; a Preset header name waiting on a variable saves on Kubernetes too. (findings 1207-1208)
 - 2026-10-13 16:00: The credential header rule also matches authentication, assertion, HMAC, JWT, license, OTP, pass, PIN and pwd words, `-v2` suffixes and `.` separators, and exempts partition, shard, sort and dedup keys; Configuration and Preset saves on every Compute refuse a header name that is not an HTTP field name, and Preset saves run the model provider settings check. (findings 1189-1191)

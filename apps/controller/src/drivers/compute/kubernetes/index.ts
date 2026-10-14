@@ -2187,19 +2187,33 @@ function requireProviderApiKeys(
       continue;
     }
     const ref = asRecord(config.apiKey);
+    const secrets = asRecord(configuration.secrets);
     const source =
       typeof ref?.provider === "string"
-        ? asRecord(asRecord(asRecord(configuration.secrets)?.providers)?.[ref.provider])
+        ? asRecord(asRecord(secrets?.providers)?.[ref.provider])
         : undefined;
+    // OpenClaw reads an env ref on its default env provider alias (secrets.defaults.env, else
+    // "default") from the process environment, unless that name is configured as an env provider
+    // (isBuiltInDefaultSecretProviderRef), so such a ref needs no secrets.providers entry.
+    const defaultEnv = asRecord(secrets?.defaults)?.env;
+    const builtInEnv =
+      source?.source !== "env" &&
+      ref?.provider ===
+        (typeof defaultEnv === "string" && defaultEnv.trim() !== ""
+          ? defaultEnv.trim()
+          : "default");
     if (
       !ref ||
       Object.keys(ref).length !== 3 ||
       ref.source !== "env" ||
       ref.id !== authentication.environmentName ||
-      source?.source !== "env" ||
-      (source.allowlist !== undefined &&
-        (!Array.isArray(source.allowlist) ||
-          !source.allowlist.includes(authentication.environmentName)))
+      !(
+        builtInEnv ||
+        (source?.source === "env" &&
+          (source.allowlist === undefined ||
+            (Array.isArray(source.allowlist) &&
+              source.allowlist.includes(authentication.environmentName))))
+      )
     ) {
       throw callerSettingError(
         setting,
@@ -3670,7 +3684,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
-   * and model credentials only through the Harness authentication binding.
+   * model credentials only through the Harness authentication binding, and (not for Preset
+   * defaults) model selections and provider apiKeys on the primary model's provider.
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -3684,7 +3699,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  // Deployment runs the model provider rules later, in Harness authentication admission's order.
+  // validateHarnessAuth runs these first and the model provider rules in its own order.
   private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,

@@ -69,10 +69,14 @@ Agent that fails a check still reads; its next update must fix the pair.
   text around the variable (`Authorization{{ vars.suffix }}` is refused) and
   checked again once filled.
   A `models` that is not a list is refused too: it would hide its rows.
+- once the Configuration selects a primary model on a supported provider, a
+  model selection or `models.providers.<name>.apiKey` off that provider, and
+  an `apiKey` its model policy's Harness refuses (Dedicated Codex takes none;
+  OpenClaw takes only the Harness authentication reference). A Preset save
+  skips this: a model may wait on a variable.
 
 These close the credential slots in a provider's `headers` and `request`.
-The provider `apiKey` stays, checked against the Harness binding on selected
-providers only. The Configuration Driver accepts the `apiKey`, the credential
+The provider `apiKey` stays, checked against the Harness binding. The Configuration Driver accepts the `apiKey`, the credential
 headers, `request.auth.token` and `.value` and the TLS client keys only as
 references, and refuses a `request.proxy.url` or model `baseUrl` with a user
 name or password.

@@ -9233,6 +9233,8 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
     undefined,
     "${ANTHROPIC_API_KEY}",
     { source: "env", provider: "model", id: "ANTHROPIC_API_KEY" },
+    // OpenClaw's built-in default env provider reads the process environment unconfigured.
+    { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" },
   ]) {
     assert.doesNotThrow(() =>
       driver.validateHarnessAuth(embedded, apiKeyAuth, {
@@ -9241,6 +9243,24 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
       }),
     );
   }
+  // With secrets.defaults.env naming another alias, "default" is an unconfigured provider.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(embedded, apiKeyAuth, {
+        ...configuration,
+        secrets: { ...configuration.secrets, defaults: { env: "model" } },
+        models: {
+          providers: {
+            anthropic: { apiKey: { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" } },
+          },
+        },
+      }),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting models.providers.anthropic.apiKey must be ${ANTHROPIC_API_KEY} or an env SecretRef to ANTHROPIC_API_KEY, which the Agent's Harness authentication binding supplies.",
+    },
+  );
   for (const apiKey of [
     "plaintext-fixture",
     "${OPENAI_API_KEY}",

@@ -16,13 +16,15 @@ OCC owns API-level native Configuration validation before it calls the selected
 bundled or installed Configuration Driver: model provider settings,
 `requireDeployableRoster` in
 [the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
-an `agents` roster every deployment refuses with deployment's own text, and
+an `agents` roster or a model fallback on another provider than its primary's
+that every deployment refuses with deployment's own text, and
 [the settings rules](../../../packages/occ/src/configuration-settings.ts), which
 refuse a Codex approval policy the Gateway refuses and a literal
 `gateway.auth.password`, and the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
-Kubernetes refuses unsupported channels and model credentials outside the Harness
-authentication binding. A stored row that predates a rule still reads and an
+Kubernetes refuses unsupported channels, model credentials outside the Harness
+authentication binding, and model selections or provider `apiKey`s off the
+primary model's provider. A stored row that predates a rule still reads and an
 edit can replace it: a bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
 deployment against all of them. The Driver owns backing document
