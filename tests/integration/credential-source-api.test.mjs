@@ -667,9 +667,17 @@ test("the OpenShell Backend names its gateway's namespace only from Service-shap
     { serviceName: "openshell-gateway.openshell-system" },
     { serviceName: "openshell-gateway.openshell-system.svc.cluster.local" },
     { serviceName: "openshell-gateway-0.openshell-gateway-peer.openshell-system.svc" },
+    // DNS names are case-insensitive, and token_url hosts are compared after URL parsing.
+    { serviceName: "OpenShell-Gateway.OpenShell-System" },
+    { serviceName: "OpenShell-Gateway.OpenShell-System.SVC.Cluster.Local" },
   ]) {
     assert.deepEqual(placement(configuration, "oce-0123456789abcde"), named, configuration);
   }
+  // Only a trailing `-peer` names the peer Service of the gateway Service.
+  assert.deepEqual(
+    placement({ endpoint: "https://gateway-0.gateway-peering.openshell-system.svc:8080" }),
+    { service: "gateway-peering", namespace: "openshell-system" },
+  );
   // A bare Service name resolves in each tenant namespace, so only a tenant names it.
   assert.equal(placement({ serviceName: "openshell-gateway" }), undefined);
   assert.deepEqual(placement({ serviceName: "openshell-gateway" }, "oce-0123456789abcde"), {
@@ -718,8 +726,9 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://x.0--1.default.pod.cluster.local/token",
     "https://x.169-254-169-254.idp.pod.k8s.example.internal/token",
     // Any `pod` label after the second is refused, so a public name of that shape is too
-    // (deliberately fail-closed).
+    // (deliberately fail-closed), and so is any prefix depth.
     "https://login.idp.pod.example.com/token",
+    "https://a.b.c.127-0-0-1.default.pod.cluster.local/token",
   ];
   // Issuers in other namespaces, including the test and development Keycloaks, keep working.
   const accepted = [
