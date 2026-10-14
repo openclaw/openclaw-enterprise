@@ -408,8 +408,9 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 }
 
 // LatestAgentRevision returns the newest revision summary the caller can read,
-// or nil when there is none. It reads older pages only while the newer ones
-// hold no readable revision.
+// or nil when there is none. The server returns a cursor only while a readable
+// revision remains, so the first page answers; the loop still follows a cursor
+// past an empty page, as an older server could return one.
 func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
 	cursor := ""
 	for {

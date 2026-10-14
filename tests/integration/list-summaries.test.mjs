@@ -311,15 +311,15 @@ test("a revision cursor needs a readable revision below it, and the scan reads i
   const alone = await counted("?limit=1", { session: onlyNewest });
   assert.deepEqual([alone.numbers, alone.nextCursor], [[251], null]);
   // A small page scans 250 unreadable revisions in batches of 100, not one query per revision.
-  assert.ok(alone.storePages <= 3, `store pages: ${alone.storePages}`);
+  assert.ok(alone.storePages >= 1 && alone.storePages <= 3, `store pages: ${alone.storePages}`);
 
   const ends = await reader("ends-reader", [newest, first]);
   const top = await counted("?limit=1", { session: ends });
   assert.deepEqual([top.numbers, top.nextCursor], [[251], "v1.251"]);
-  assert.ok(top.storePages <= 3, `store pages: ${top.storePages}`);
+  assert.ok(top.storePages >= 1 && top.storePages <= 3, `store pages: ${top.storePages}`);
   const bottom = await counted(`?limit=1&cursor=${top.nextCursor}`, { session: ends });
   assert.deepEqual([bottom.numbers, bottom.nextCursor], [[1], null]);
-  assert.ok(bottom.storePages <= 3, `store pages: ${bottom.storePages}`);
+  assert.ok(bottom.storePages >= 1 && bottom.storePages <= 3, `store pages: ${bottom.storePages}`);
 
   // A caller who reads everything still gets full pages, a cursor on each but the last, and one
   // store query per page: the batch holds the row that shows another readable revision remains.
