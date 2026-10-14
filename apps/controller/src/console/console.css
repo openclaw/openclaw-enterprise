@@ -779,6 +779,10 @@ select:not([multiple])[size="1"] {
   color: var(--muted);
   font-size: 12px;
 }
+.version-older {
+  color: var(--muted);
+  text-align: center;
+}
 .version-item[aria-current="page"],
 .revision-create[aria-current="page"] {
   background: var(--accent-subtle);

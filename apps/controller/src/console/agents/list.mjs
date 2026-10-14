@@ -27,6 +27,23 @@ export const NAMESPACE_NOT_READY_MESSAGE =
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
 
+// Revisions list newest first, one page at a time (finding 1323). A page can be empty when
+// its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
+async function latestReadableRevision(context, path) {
+  let cursor = null;
+  do {
+    const page = await context.request(
+      cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
+      { includeMeta: true },
+    );
+    if (page.data.length > 0) {
+      return page.data[0];
+    }
+    cursor = page.meta?.nextCursor ?? null;
+  } while (cursor);
+  return null;
+}
+
 export function message(error, mutation = false) {
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const field = {
@@ -139,20 +156,18 @@ export function renderAgentList(context) {
       if (!deployments.has(item.id)) {
         deployments.set(
           item.id,
-          context
-            .request(
-              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
-            )
-            .then(async (revisions) => {
-              const latest = [...revisions].sort((a, b) => b.revision - a.revision)[0];
-              if (!latest) {
-                return null;
-              }
-              const status = await context.request(
-                `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
-              );
-              return { revision: latest, status };
-            }),
+          latestReadableRevision(
+            context,
+            `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
+          ).then(async (latest) => {
+            if (!latest) {
+              return null;
+            }
+            const status = await context.request(
+              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
+            );
+            return { revision: latest, status };
+          }),
         );
       }
       void deployments

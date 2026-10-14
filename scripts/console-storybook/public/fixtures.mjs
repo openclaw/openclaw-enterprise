@@ -360,6 +360,21 @@ export function installFixture(scenario, evidence) {
       currentRevision.configuration.agents.defaults.model = "codex/gpt-4.1";
     }
     revisions.set(revisionId, currentRevision);
+    if (scenario.revisionHistory) {
+      // Earlier deploys of the same Agent, one per day before the current version.
+      currentRevision.revision = scenario.revisionHistory;
+      for (let number = 1; number < scenario.revisionHistory; number += 1) {
+        const older = snapshot(
+          agent,
+          `rev_00000000-0000-4000-8000-${String(100 + number).padStart(12, "0")}`,
+          number,
+        );
+        older.createdAt = new Date(
+          Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
+        ).toISOString();
+        revisions.set(older.id, older);
+      }
+    }
     deployments.set(revisionId, {
       deploymentId: revisionId,
       namespaceId,
@@ -770,7 +785,17 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (resource === "presets" && method === "GET") {
-        return response(scenario.emptyPresets ? [] : presets);
+        // Lists carry summaries; the template stays on the exact Preset read.
+        return response(
+          scenario.emptyPresets
+            ? []
+            : presets.map(({ id, namespaceId, name, createdAt }) => ({
+                id,
+                namespaceId,
+                name,
+                createdAt,
+              })),
+        );
       }
       if (resource.startsWith("presets/") && method === "GET") {
         const selectedPreset = presets.find((item) => item.id === resource.split("/")[1]);
@@ -1144,7 +1169,30 @@ export function installFixture(scenario, evidence) {
           if (scenario.latestDeploymentReadDelay) {
             await new Promise((resolve) => setTimeout(resolve, scenario.latestDeploymentReadDelay));
           }
-          return response([...revisions.values()].filter((item) => item.agentId === id));
+          // Summaries, newest first, one page at a time; a cursor continues below a revision.
+          const limit = Number(url.searchParams.get("limit") ?? scenario.revisionPageSize ?? 50);
+          const cursor = url.searchParams.get("cursor");
+          const before = cursor ? Number(cursor.slice("v1.".length)) : Infinity;
+          const remaining = [...revisions.values()]
+            .filter((item) => item.agentId === id && item.revision < before)
+            .sort((left, right) => right.revision - left.revision);
+          const page = remaining.slice(0, limit);
+          return response(
+            page.map((item) => ({
+              id: item.id,
+              namespaceId: item.namespaceId,
+              agentId: item.agentId,
+              revision: item.revision,
+              backendId: item.backendId,
+              configurationId: item.configurationId,
+              configurationGeneration: item.configurationGeneration,
+              harness: item.harness,
+              createdAt: item.createdAt,
+            })),
+            200,
+            undefined,
+            { nextCursor: remaining.length > limit ? `v1.${page.at(-1).revision}` : null },
+          );
         }
         if (suffix.startsWith("/revisions/") && method === "GET") {
           return revisions.has(suffix.split("/")[2])

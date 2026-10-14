@@ -6,6 +6,7 @@ export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const NewVersion = story("newVersion");
+export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
 export const GatewayPasswordAccess = story("gatewayPasswordAccess");

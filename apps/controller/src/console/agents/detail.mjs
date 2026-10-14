@@ -33,6 +33,16 @@ import {
 } from "./credentials.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 
+// One page of revision summaries, newest first (finding 1323). Summaries carry no saved
+// settings; read the exact revision for those.
+async function readRevisionPage(request, path, cursor = null) {
+  const page = await request(
+    cursor ? `${path}/revisions?cursor=${encodeURIComponent(cursor)}` : `${path}/revisions`,
+    { includeMeta: true },
+  );
+  return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
+}
+
 function deployFailureText(error, submitted) {
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
     return "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again.";
@@ -379,7 +389,7 @@ function createDeploymentStatusPanel(
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
         context.request(`${path}/deployments/${encodeURIComponent(revision.id)}`),
         refreshAgent ? context.request(path) : Promise.resolve(null),
-        refreshAgent ? context.request(`${path}/revisions`) : Promise.resolve(null),
+        refreshAgent ? readRevisionPage(context.request, path) : Promise.resolve(null),
       ]);
       if (!context.isCurrent()) {
         return;
@@ -899,8 +909,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
   function revisionHidden(revisionId) {
+    // Until every page is loaded, an unlisted version may simply be older than those shown.
     return (
       visibleRevisionsLoaded &&
+      olderCursor === null &&
       Boolean(revisionId) &&
       revisionId !== "draft" &&
       !visibleRevisions.some((revision) => revision.id === revisionId)
@@ -1062,7 +1074,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let latestDeploymentErrorCode = null;
   let latestDeploymentRecord = null;
   let versionRecord = null;
-  const revisionsPromise = request(`${path}/revisions`);
+  const revisionsPromise = readRevisionPage(request, path);
+  // Older pages the viewer asked for, and the cursor for the next one (null once complete).
+  let olderRevisions = [];
+  let olderCursor = null;
+  let olderLoading = false;
+  let olderError = null;
+  // The newest revision with its saved settings, read only when a check needs them.
+  let latestRevisionDetail = null;
 
   function versionNotice() {
     return selected === "draft"
@@ -1157,9 +1176,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (revision.id === currentRevisionId) {
         control.append(element("span", { className: "version-current" }, "Current version"));
       }
-      if (revision.configurationReadError) {
-        control.append(element("small", {}, "Saved configuration unreadable"));
-      }
       trackRevisionControl(control);
       list.append(control);
     }
@@ -1185,6 +1201,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           ),
         );
       }
+    }
+    // Versions list one page at a time, newest first; older pages load on request.
+    if (olderCursor && !historyError) {
+      const older = button(
+        olderLoading ? "Loading older versions…" : "Show older versions",
+        () => void loadOlderRevisions(),
+        { className: "version-item version-older", disabled: olderLoading },
+      );
+      trackRevisionControl(older);
+      list.append(older);
     }
     const chooser = element(
       "select",
@@ -1224,6 +1250,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         element("p", { className: "muted" }, "Choose a version to inspect its saved details."),
         newVersion,
         list,
+        olderError
+          ? element(
+              "p",
+              { className: "error", role: "alert" },
+              `Older versions unavailable. ${message(olderError)}`,
+            )
+          : null,
         revisions.length || selected !== "draft"
           ? element("label", { for: "revision-selector" }, "Available versions")
           : null,
@@ -1368,12 +1401,69 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
 
+  // List summaries omit the credential binding a revision was admitted with, so the
+  // rejected-credential hint reads the newest revision once.
+  async function readLatestRevisionDetail(revision) {
+    if (latestRevisionDetail?.id === revision.id) {
+      return;
+    }
+    try {
+      const detail =
+        viewedSnapshot?.id === revision.id
+          ? viewedSnapshot
+          : await request(`${path}/revisions/${encodeURIComponent(revision.id)}`);
+      if (!context.isCurrent() || deleting || visibleRevisions[0]?.id !== revision.id) {
+        return;
+      }
+      latestRevisionDetail = detail;
+      refreshDeployControls();
+    } catch {
+      // Without the detail the hint stays generic; the deployment status still shows.
+    }
+  }
+
+  async function loadOlderRevisions() {
+    if (olderLoading || !olderCursor) {
+      return;
+    }
+    olderLoading = true;
+    olderError = null;
+    renderOverview(latestRevisionResult, viewedSnapshot);
+    try {
+      const page = await readRevisionPage(request, path, olderCursor);
+      if (!context.isCurrent() || deleting) {
+        return;
+      }
+      olderRevisions = [...olderRevisions, ...page.revisions];
+      olderCursor = page.nextCursor;
+    } catch (error) {
+      if (!context.isCurrent() || deleting) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      olderError = error;
+    } finally {
+      olderLoading = false;
+    }
+    renderOverview(latestRevisionResult, viewedSnapshot);
+    renderDetailHeading();
+  }
+
   function renderOverview(revisionResult, snapshot) {
     latestRevisionResult = revisionResult;
-    const revisions =
-      revisionResult.status === "fulfilled"
-        ? [...revisionResult.value].sort((a, b) => b.revision - a.revision)
-        : [];
+    const newest = revisionResult.status === "fulfilled" ? revisionResult.value.revisions : [];
+    // Until an older page is loaded, the newest page's cursor says whether older ones exist.
+    if (olderRevisions.length === 0 && revisionResult.status === "fulfilled") {
+      olderCursor = revisionResult.value.nextCursor;
+    }
+    // A refreshed newest page keeps the older pages already shown; a revision appears once.
+    const listed = new Map(
+      [...newest, ...olderRevisions].map((revision) => [revision.id, revision]),
+    );
+    const revisions = [...listed.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     renderCurrentVersion();
@@ -1402,6 +1492,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               latestDeploymentStatus = status;
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
+              if (errorCode === "RUNTIME_AUTHENTICATION_FAILED") {
+                void readLatestRevisionDetail(mostRecent);
+              }
               latestDeploymentRecord = record
                 ? { revisionId: mostRecent.id, status: record }
                 : null;
@@ -1676,7 +1769,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           // Secret values can be updated in place, so a rejected credential warns instead of blocking.
           deployStatus.textContent =
             latestDeploymentErrorCode === "RUNTIME_AUTHENTICATION_FAILED" &&
-            JSON.stringify(visibleRevisions[0]?.harnessAuth) === JSON.stringify(agent.harnessAuth)
+            latestRevisionDetail !== null &&
+            latestRevisionDetail.id === visibleRevisions[0]?.id &&
+            JSON.stringify(latestRevisionDetail.harnessAuth) === JSON.stringify(agent.harnessAuth)
               ? `${gate} The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.`
               : gate;
         }
