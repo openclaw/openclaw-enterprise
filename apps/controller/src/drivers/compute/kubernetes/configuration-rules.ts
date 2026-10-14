@@ -148,6 +148,9 @@ interface ModelSelection {
   readonly policy?: true;
 }
 
+/** The reference that replaces `reference`; `policy` marks a `models` policy key. */
+export type ModelSelectionRewrite = (reference: string, policy: boolean) => string;
+
 // Settings under agents.defaults and each agents.entries entry that select a model in the pinned
 // OpenClaw Gateway's config schema. The Gateway refuses the ones an entry does not accept.
 const AGENT_MODEL_SETTINGS: readonly (readonly string[])[] = [
@@ -177,35 +180,72 @@ const ROOT_MODEL_SETTINGS: readonly (readonly string[])[] = [
 const settingValue = (record: Record<string, unknown> | undefined, keys: readonly string[]) =>
   keys.reduce<unknown>((value, key) => asRecord(value)?.[key], record);
 
+/** Where a selection sits in the document, so a projection can replace it. */
+type Assign = (value: unknown) => void;
+
 /**
  * Every model selection in the Configuration: the agents.defaults and agents.entries.* model
  * settings (model, subagents, image, PDF, voice, media, utility, decision, heartbeat,
  * compaction, reviewer and TTS summary models), their `models` policy keys, hook models and
  * channels.modelByChannel. A primary/fallbacks object yields its primary and each fallback; a
  * value of another shape is yielded as written, so a rule can refuse it by name.
+ *
+ * With `rewrite`, each string reference is also replaced in place by what `rewrite` returns (a
+ * policy map keeps its key order); other values are left as written.
  */
-function modelSelections(configuration: Readonly<OpenClawConfigurationDocument>): ModelSelection[] {
+function modelSelections(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  rewrite?: ModelSelectionRewrite,
+): ModelSelection[] {
   const selections: ModelSelection[] = [];
-  const add = (setting: string, value: unknown): void => {
+  const visit = (selection: ModelSelection): unknown => {
+    selections.push(selection);
+    return typeof selection.reference === "string" && rewrite !== undefined
+      ? rewrite(selection.reference, selection.policy === true)
+      : selection.reference;
+  };
+  const add = (setting: string, value: unknown, assign: Assign): void => {
     if (value === undefined || value === null) {
       return;
     }
     const selection = asRecord(value);
     if (typeof value === "string" || selection === undefined) {
-      selections.push({ setting, reference: value });
+      const next = visit({ setting, reference: value });
+      if (next !== value) {
+        assign(next);
+      }
       return;
     }
     if (selection.primary !== undefined) {
-      selections.push({ setting: `${setting}.primary`, reference: selection.primary });
-    }
-    // Fallbacks that are not a list are yielded as null: no list item is a reference.
-    const fallbacks = selection.fallbacks;
-    for (const reference of Array.isArray(fallbacks)
-      ? fallbacks
-      : [fallbacks === undefined ? undefined : null]) {
-      if (reference !== undefined) {
-        selections.push({ setting: `${setting}.fallbacks`, reference });
+      const next = visit({ setting: `${setting}.primary`, reference: selection.primary });
+      if (next !== selection.primary) {
+        selection.primary = next;
       }
+    }
+    const fallbacks = selection.fallbacks;
+    if (Array.isArray(fallbacks)) {
+      const next = fallbacks.map((reference: unknown) =>
+        reference === undefined ? reference : visit({ setting: `${setting}.fallbacks`, reference }),
+      );
+      if (next.some((reference, index) => reference !== fallbacks[index])) {
+        selection.fallbacks = next;
+      }
+    } else if (fallbacks !== undefined) {
+      // Fallbacks that are not a list are yielded as null: no list item is a reference.
+      visit({ setting: `${setting}.fallbacks`, reference: null });
+    }
+  };
+  const addAt = (
+    path: string,
+    record: Record<string, unknown> | undefined,
+    keys: readonly string[],
+  ) => {
+    const parent = asRecord(settingValue(record, keys.slice(0, -1)));
+    const key = keys[keys.length - 1];
+    if (parent !== undefined && key !== undefined) {
+      add([path, ...keys].filter(Boolean).join("."), parent[key], (value) => {
+        parent[key] = value;
+      });
     }
   };
   const agents = asRecord(configuration.agents);
@@ -220,28 +260,57 @@ function modelSelections(configuration: Readonly<OpenClawConfigurationDocument>)
   ];
   for (const [path, scope] of scopes) {
     for (const keys of AGENT_MODEL_SETTINGS) {
-      add([path, ...keys].join("."), settingValue(scope, keys));
+      addAt(path, scope, keys);
     }
-    for (const reference of Object.keys(asRecord(scope?.models) ?? {})) {
-      selections.push({ setting: `${path}.models`, reference, policy: true });
+    const policies = asRecord(scope?.models);
+    if (scope === undefined || policies === undefined) {
+      continue;
+    }
+    const keys = Object.keys(policies);
+    const next = keys.map((reference) =>
+      visit({ setting: `${path}.models`, reference, policy: true }),
+    );
+    if (next.some((reference, index) => reference !== keys[index])) {
+      scope.models = Object.fromEntries(
+        keys.map((key, index) => [String(next[index]), policies[key]]),
+      );
     }
   }
   const root = configuration as Record<string, unknown>;
   for (const keys of ROOT_MODEL_SETTINGS) {
-    add(keys.join("."), settingValue(root, keys));
+    addAt("", root, keys);
   }
   const mappings = asRecord(configuration.hooks)?.mappings;
-  (Array.isArray(mappings) ? mappings : []).forEach((mapping, index) =>
-    add(`hooks.mappings.${index}.model`, asRecord(mapping)?.model),
-  );
+  (Array.isArray(mappings) ? mappings : []).forEach((mapping, index) => {
+    const record = asRecord(mapping);
+    if (record !== undefined) {
+      add(`hooks.mappings.${index}.model`, record.model, (value) => {
+        record.model = value;
+      });
+    }
+  });
   const byChannel = asRecord(asRecord(configuration.channels)?.modelByChannel) ?? {};
-  for (const [channel, models] of Object.entries(byChannel)) {
+  for (const [channel, value] of Object.entries(byChannel)) {
     const path = keyedSettingPath("channels.modelByChannel", channel);
-    for (const value of Object.values(asRecord(models) ?? {})) {
-      add(path, value);
+    const models = asRecord(value);
+    for (const [key, model] of Object.entries(models ?? {})) {
+      add(path, model, (next) => {
+        (models as Record<string, unknown>)[key] = next;
+      });
     }
   }
   return selections;
+}
+
+/**
+ * Replace, in place, every model selection `requireSelectedModelProvider` checks with what
+ * `rewrite` returns, so a projection of the admitted document covers the same settings.
+ */
+export function rewriteModelSelections(
+  configuration: OpenClawConfigurationDocument,
+  rewrite: ModelSelectionRewrite,
+): void {
+  modelSelections(configuration, rewrite);
 }
 
 /**
