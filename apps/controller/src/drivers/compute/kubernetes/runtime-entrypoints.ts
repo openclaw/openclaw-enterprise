@@ -3546,9 +3546,6 @@ function probeCodexAuthentication(timeout) {
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".requires_openai_auth=true",
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".supports_websockets=false",
       ]),
-      ...(loginMode === "chatgpt_service_account" ? [
-        "-c", "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
-      ] : []),
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
