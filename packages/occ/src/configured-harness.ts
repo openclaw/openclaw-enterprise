@@ -1,4 +1,7 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
@@ -51,25 +54,46 @@ function requirePrimaryProvider(models: readonly string[], setting: SelectionMes
 /**
  * The fallback rule of resolveConfiguredHarnessId alone, over every well-formed selection. Every
  * deployment refuses a fallback on another provider, so Configuration save (through
- * requireDeployableRoster) and Agent save refuse it too, even where another model policy rule
- * leaves the rest to deployment (finding 1298).
+ * requireDeployableRoster), Preset save and Agent save refuse it too, even where another model
+ * policy rule leaves the rest to deployment (finding 1298). On a Preset save
+ * (`options.unresolved`), a reference whose provider waits on an unfilled variable (no `/` before
+ * the first one) is checked once filled, on the Configuration a launch creates (finding 1305).
  */
-export function requireFallbackProviders(values: Readonly<OpenClawConfigurationDocument>): void {
+export function requireFallbackProviders(
+  values: Readonly<OpenClawConfigurationDocument>,
+  { unresolved }: ConfigurationValidationOptions = {},
+): void {
   const agents = asRecord(values.agents);
-  const selections: [unknown, SelectionMessage][] = [
-    [asRecord(agents?.defaults)?.model, defaultModelMessage],
+  const selections: [unknown, readonly string[], SelectionMessage][] = [
+    [asRecord(agents?.defaults)?.model, ["agents", "defaults", "model"], defaultModelMessage],
     ...Object.entries(asRecord(agents?.entries) ?? {}).map(
-      ([key, entry]): [unknown, SelectionMessage] => [
+      ([key, entry]): [unknown, readonly string[], SelectionMessage] => [
         asRecord(entry)?.model,
+        ["agents", "entries", key, "model"],
         entryModelMessage(key),
       ],
     ),
   ];
-  for (const [value, setting] of selections) {
+  const writtenProvider = (
+    selected: unknown,
+    path: readonly (string | number)[],
+  ): selected is string => {
+    const literals = unresolved?.(path);
+    return isModelReference(selected) && (literals === undefined || literals[0]!.includes("/"));
+  };
+  for (const [value, at, setting] of selections) {
     const selection = asRecord(value);
-    if (isModelReference(selection?.primary) && Array.isArray(selection.fallbacks)) {
+    if (
+      writtenProvider(selection?.primary, [...at, "primary"]) &&
+      Array.isArray(selection.fallbacks)
+    ) {
       requirePrimaryProvider(
-        [selection.primary, ...selection.fallbacks.filter(isModelReference)],
+        [
+          selection.primary,
+          ...selection.fallbacks.filter((selected: unknown, index: number): selected is string =>
+            writtenProvider(selected, [...at, "fallbacks", index]),
+          ),
+        ],
         setting,
       );
     }
