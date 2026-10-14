@@ -421,17 +421,17 @@ function httpOrigin(value) {
 }
 
 // The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
-// hex, shorthand, a single integer or a trailing dot publish a different host. Callers refuse
-// user info first (writtenUserinfo), so the host follows scheme:// directly.
+// hex, shorthand, a single integer or a trailing dot publish a different host. isIP accepts
+// only four decimal octets from 0 to 255 with no leading zeros, and the parser serializes every
+// IPv4 host that way, so the written host must equal the parsed one. Callers refuse user info
+// first (writtenUserinfo), so the host follows scheme:// directly.
 function ipv4HostKept(raw, url) {
   if (isIP(url.hostname) !== 4) {
     return true;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
-  return (
-    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
-  );
+  return written === url.hostname;
 }
 
 // KubernetesComputeDriver.validateCodexSeccompProfile. A localhost profile is a
