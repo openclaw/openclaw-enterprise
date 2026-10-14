@@ -17,8 +17,8 @@ const MAX_CHATGPT_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60;
  * Both gateway clients parse a bare `host:port` as `http://<value>` and an origin
  * with `new URL`. Shorthand, a single integer, hex, and leading zeros then dial a
  * different IPv4 address (`192.168.1` becomes `192.168.0.1`). `isIP` accepts only four
- * decimal octets from 0 to 255 with no leading zeros, so a written host that differs from
- * the parsed one is exactly the rewrite.
+ * decimal octets from 0 to 255 with no leading zeros, so comparing the written host with
+ * the parsed one is enough.
  */
 export function gatewayEndpointRewritesIpv4(raw: string): boolean {
   let parsed: URL;
