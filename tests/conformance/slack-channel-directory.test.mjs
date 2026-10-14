@@ -411,3 +411,41 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
     });
   }
 });
+
+test("Slack credential checks refuse redirects instead of resending the bot token", async (t) => {
+  // Undici follows these by default and resends the authorization header to the same origin;
+  // a redirect to an {ok:true} body then passed the check (finding 1349).
+  for (const status of [301, 302, 307, 308]) {
+    await t.test(`HTTP ${status}`, async (t) => {
+      const requests = [];
+      const server = createServer((request, response) => {
+        requests.push(request.url);
+        if (request.url === "/api/auth.test") {
+          response.writeHead(status, { location: "/api/redirected", "content-length": "0" });
+          response.end();
+          return;
+        }
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TWORKSPACE" }));
+      });
+      t.after(async () => {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const driver = new SlackChannelDriver((url, options) =>
+        globalThis.fetch(new URL(new URL(url).pathname, origin), options),
+      );
+
+      await assert.rejects(
+        driver.validateCredentials(
+          { channels: { slack: { mode: "http", botToken: { source: "env", id: "SLACK_BOT" } } } },
+          async (_id, _field, use) => use(token),
+        ),
+        { reason: "unavailable", path: "/channels/slack/botToken" },
+      );
+      assert.deepEqual(requests, ["/api/auth.test"]);
+    });
+  }
+});

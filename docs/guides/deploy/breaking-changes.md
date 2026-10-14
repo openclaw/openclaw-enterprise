@@ -15,6 +15,36 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-14: OAuth2 token_url hosts must be DNS names
+
+**What breaks.** Creating an OpenShell `oauth2-client-credentials` or
+`oauth2-refresh-token` credential source refuses a `token_url` whose host is an
+IP address in any spelling (`10.0.0.5`, `0x7f000001`, `127.1`, `[::1]`) or a
+`localhost` name. The OpenShell gateway posts the source's client secret and
+refresh token to that URL from its own network position. A deployment that
+binds an existing source with such a `token_url` fails. DNS names, including
+in-cluster Service names such as `keycloak.idp.svc.cluster.local`, stay
+accepted.
+
+**Who is affected.** Installations with OAuth2 credential sources whose issuer
+is addressed by IP address or `localhost`.
+
+**How to tell.** Creation returns `400` for `/config/token_url` with `... token_url
+host must be an exact DNS name, not an IP address or localhost.` A deployment
+that binds such a source fails with the same message. `GET` on the source shows
+its stored `config.token_url`.
+
+**Steps.** _untested_ against a live Installation:
+
+1. Give the issuer a DNS name its TLS certificate covers, such as its Service
+   name.
+2. Register a replacement source with that `token_url`.
+3. For each Agent bound to the old source, grant its service principal
+   `operate` on the replacement, list the replacement in `credentialSources`
+   instead of the old source, and deploy.
+4. Delete the old source. That also stops the gateway refreshing its token
+   against the old URL.
+
 ## 2026-10-14: Preset and revision lists return summaries; revisions page
 
 **What breaks.** `GET .../presets` items carry only `id`, `namespaceId`, `name`

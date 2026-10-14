@@ -202,6 +202,8 @@ export class SlackChannelDriver implements ChannelDriver {
       const options = {
         method: method === "auth.test" ? "POST" : "GET",
         headers: { authorization: `Bearer ${token}` },
+        // Never send the bot token to a redirect target, even on slack.com (finding 1349).
+        redirect: "error" as const,
         signal:
           signal === undefined
             ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)

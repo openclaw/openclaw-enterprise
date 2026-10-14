@@ -141,6 +141,24 @@ function exactDnsName(host: string): boolean {
   return HOST.test(host) && !/^[0-9.]+$/.test(host);
 }
 
+/**
+ * The OAuth2 token endpoint host. The OpenShell gateway, not the Sandbox, posts the source's
+ * client secret and refresh token there from its own network position, so the parsed hostname
+ * follows the protected host's DNS-name rule (no IP address in any spelling the URL parser
+ * accepts) and is not a `localhost` name (finding 1348).
+ */
+function tokenUrlHostAllowed(tokenUrl: string): boolean {
+  if (!URL.canParse(tokenUrl)) {
+    return false;
+  }
+  const host = new URL(tokenUrl).hostname;
+  return exactDnsName(host) && host !== "localhost" && !host.endsWith(".localhost");
+}
+
+function tokenUrlHostMessage(type: string): string {
+  return `The ${type} token_url host must be an exact DNS name, not an IP address or localhost.`;
+}
+
 /** Checks the protected endpoint and placeholder variable shared by every non-model type. */
 function validateEndpointConfig(type: string, config: Readonly<Record<string, string>>): void {
   const { host, port, path } = bearerTokenEndpoint(config);
@@ -176,6 +194,9 @@ function validateOAuth2Config(type: string, config: Readonly<Record<string, stri
       "token_url",
       `The ${type} token_url must be an HTTPS URL without credentials, query, or fragment.`,
     );
+  }
+  if (!tokenUrlHostAllowed(config.token_url ?? "")) {
+    throw new CredentialSourceConfigError("token_url", tokenUrlHostMessage(type));
   }
   if (!CLIENT_ID.test(config.client_id ?? "")) {
     throw new CredentialSourceConfigError(
@@ -239,8 +260,12 @@ function oauth2SourceType(
     validate: (config) => validateOAuth2Config(type, config),
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
-    profile: (sourceId, config, options) =>
-      bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
+    profile: (sourceId, config, options) => {
+      // A source stored before the token_url host rule fails here until it is replaced.
+      if (!tokenUrlHostAllowed(config.token_url ?? "")) {
+        throw new ScopeViolationError(tokenUrlHostMessage(type));
+      }
+      return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
         refresh: {
           strategy,
@@ -252,7 +277,8 @@ function oauth2SourceType(
             ...material,
           ],
         },
-      }),
+      });
+    },
   };
 }
 
