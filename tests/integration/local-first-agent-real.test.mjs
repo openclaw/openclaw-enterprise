@@ -601,7 +601,7 @@ test(
         async (nativeContext) => {
           const request = (method, path, body) =>
             requestLocalApi(first.origin, serviceKey, method, path, body);
-          const { agents, models } = createHarnessConfiguration("openclaw", expectedModel);
+          const configuration = createHarnessConfiguration("openclaw", expectedModel);
           const installation = await request("GET", "/installation");
           assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
           assert.ok(
@@ -619,8 +619,7 @@ test(
             configuration: {
               kind: "agent",
               values: {
-                agents,
-                models,
+                ...configuration,
                 tools: { allow: ["exec"] },
               },
             },
