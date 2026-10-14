@@ -41,7 +41,7 @@ async function startDevelopment(environment) {
     const secrets = failureSecrets([environment]);
     const tail = String(error.stderr ?? error.message)
       .split("\n")
-      .slice(-12)
+      .slice(-80)
       .map((line) => redactLogLine(line, secrets, 800))
       .join("\n");
     // Node's direct test reporter would print the raw subprocess output from a cause.

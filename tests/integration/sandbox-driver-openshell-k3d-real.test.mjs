@@ -1627,8 +1627,11 @@ function createIntegrationSandboxDriverFactory(
       if (ownedState !== undefined) {
         await stopGatewayForward(namespaceName, ownedState);
       }
-      context.signal.removeEventListener("abort", stopOwnedForward);
       throw error;
+    } finally {
+      // Once established, the shared management connection belongs to this fixture.
+      // Worker restarts cancel an operation, but the API still needs the same gateway.
+      context.signal.removeEventListener("abort", stopOwnedForward);
     }
   }
 
