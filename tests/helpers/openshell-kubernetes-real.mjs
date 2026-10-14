@@ -1083,17 +1083,22 @@ export function createOpenShellKubernetesFixture({
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
           // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
           // cannot start exec tools in a working directory that does not exist there.
+          const workspace = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace";
           const started = await request("thread/start", {
-            cwd: process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace",
+            cwd: workspace,
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
-            sandbox: "danger-full-access",
+            sandbox: "workspace-write",
             config: { project_doc_max_bytes: 131072 },
           });
           await request("turn/start", {
             threadId: started.thread.id,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
-            sandboxPolicy: { type: "dangerFullAccess", networkAccess: true },
+            // Keep native managed policy enforced alongside the real OpenShell boundary.
+            sandboxPolicy: {
+              type: "workspaceWrite", writableRoots: [workspace], networkAccess: true,
+              excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+            },
           });
         } catch (error) {
           fail(error);

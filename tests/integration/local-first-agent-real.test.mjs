@@ -337,10 +337,11 @@ async function diagnoseFirstAgentFailure(context, { name, stateDirectory, env, s
         const lines = logs.records.map(({ type, time, level, message, fields, reason, count }) =>
           JSON.stringify({ type, time, level, message, fields, reason, count }),
         );
-        context.diagnostic(
-          `First-Agent ${source} runtime logs:\n` +
-            redactOutputLines(lines, secrets, repoRoot, 1000).join("\n"),
-        );
+        // The reporter bounds each diagnostic separately; one joined page loses its tail.
+        context.diagnostic(`First-Agent ${source} runtime logs:`);
+        for (const line of redactOutputLines(lines, secrets, repoRoot, 900)) {
+          context.diagnostic(line);
+        }
       } catch (error) {
         context.diagnostic(
           `First-Agent ${source} runtime logs unavailable: ${redact(error.message)}`,

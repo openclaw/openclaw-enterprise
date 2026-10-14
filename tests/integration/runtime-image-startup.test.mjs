@@ -1140,12 +1140,11 @@ function run(args, env, readinessUrl) {
 );
 
 test(
-  "runtime image Gateway keeps OpenShell's Codex turns out of Codex's own sandbox",
+  "runtime image Gateway preserves OpenShell Codex managed workspace restrictions",
   imageTestOptions,
   async () => {
-    // Finding 1026: bwrap cannot create a user namespace inside an OpenShell Sandbox, so the
-    // pinned Gateway must send danger-full-access per turn for the OpenShell-configured app
-    // server. This runs the bundled Codex policy resolver on the documented Configuration.
+    // Run the bundled policy resolver: the Gateway must preserve the admitted restricted
+    // sandbox and human reviewer, including models without model-backed review support.
     const documented = {
       mode: "guardian",
       approvalPolicy: "on-request",
@@ -1157,6 +1156,7 @@ test(
     const cases = [
       { documented },
       { documented: { ...documented, approvalPolicy: "never" } },
+      { documented: { ...documented, sandbox: "danger-full-access" } },
       { documented: { ...documented, approvalsReviewer: "auto_review" } },
     ].flatMap(({ documented: appServer }) =>
       // The Gateway passes no provider for the documented `codex/<model>` ref; `openai` is a
@@ -1166,12 +1166,6 @@ test(
         modelProvider,
       })),
     );
-    // Without the reviewer pin, the documented shape is the reported failure. If this case
-    // resolves to danger-full-access after a pin bump, re-evaluate the pin before dropping it.
-    cases.push({
-      appServer: { ...documented, sandbox: "danger-full-access" },
-      expectedSandbox: "workspace-write",
-    });
     const script = String.raw`
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -1224,8 +1218,8 @@ process.stdout.write(JSON.stringify(results));
     ]);
     assert.deepEqual(
       JSON.parse(stdout),
-      cases.map(({ expectedSandbox }) => ({
-        sandbox: expectedSandbox ?? "danger-full-access",
+      cases.map(() => ({
+        sandbox: "workspace-write",
         approvalsReviewer: "user",
       })),
     );

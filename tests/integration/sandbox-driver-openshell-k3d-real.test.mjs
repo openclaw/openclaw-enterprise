@@ -2455,8 +2455,8 @@ async function prepareProductionInstallation(
   if (harnessId === "codex") {
     assert.equal(
       deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      "danger-full-access",
-      "OCC must freeze OpenShell-selected Codex revisions with the inner sandbox disabled.",
+      "workspace-write",
+      "OCC must freeze OpenShell-selected Codex revisions within managed sandbox restrictions.",
     );
   } else {
     assert.equal(

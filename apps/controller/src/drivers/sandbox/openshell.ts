@@ -183,20 +183,13 @@ const OPENSHELL_WORKSPACE_STATE_DIRECTORY = "state";
 // OpenShell probes TMPDIR before the Harness entrypoint can create a nested directory.
 const OPENSHELL_TEMPORARY = "/tmp";
 /**
- * The Codex app-server policy every OpenShell dedicated Codex revision freezes. OpenShell is
- * the outer containment boundary, and Codex's own sandbox (bwrap) cannot create a user
- * namespace inside it, so every command would fail. The pinned OpenClaw Gateway sends each
- * turn `workspace-write`, whatever `sandbox` says, when it forces a user reviewer: guardian
- * mode without an explicit `user` reviewer, or an explicit model-backed reviewer, on a model
- * it cannot verify for model-backed review (the documented `codex/<model>` Configuration is
- * one). An explicit `user` reviewer keeps the configured sandbox, and approvals still go to a
- * person. OpenClaw `tools.exec` settings other than the default or `mode: full` still make
- * every command fail (Codex's own sandbox, or a refusal).
- * Source: `extensions/codex/src/app-server/config-options.ts` at the `OPENCLAW_COMMIT` in
- * `deploy/runtime/Dockerfile`; recheck when that pin changes.
+ * Keep admitted turns within managed Codex workspace restrictions. OpenShell still owns
+ * the outer filesystem, network and credential boundary; native sandbox failures remain
+ * failures. The explicit user reviewer preserves human approval instead of selecting a
+ * model-backed reviewer. Recheck against the pinned OpenClaw config-options.ts on upgrades.
  */
 export const OPENSHELL_CODEX_APP_SERVER_POLICY = Object.freeze({
-  sandbox: "danger-full-access",
+  sandbox: "workspace-write",
   approvalsReviewer: "user",
 } as const);
 const OPENSHELL_DEFAULT_READ_ONLY_PATHS = Object.freeze([

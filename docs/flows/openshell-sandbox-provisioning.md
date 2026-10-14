@@ -173,6 +173,11 @@ adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
 plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
 requirements and removes their ConfigMap paths from the remaining environment.
 
+`OpenShellSandboxDriver.configureAgent` freezes `workspace-write` and user
+review for Codex. Managed policy remains enforced; nested bubblewrap execution
+can fail because OpenShell blocks user namespaces. Model readiness does not
+prove shell-tool execution.
+
 PAT bootstrap (`prepareHarnessAuth`,
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
 stores only the opaque token in private `auth.json`, clears the child override
@@ -360,6 +365,8 @@ networking. Native OpenClaw remains verification-only.
 
 ## Changelog
 
+- 2026-10-14 00:30: Preserve managed Codex sandbox restrictions. (01a136ee-8824-7043-b9e2-49eccacac3bd - 20bac2e2e)
+
 - 2026-10-13 22:23: Trace native PAT prerequisites. (01a136ee-8824-7043-b9e2-49eccacac3bd - 204354a83)
 
 - 2026-10-13 21:36: Admit the exact Codex managed-configuration route. (01a136ee-8824-7043-b9e2-49eccacac3bd - 822d00a55)
@@ -388,13 +395,5 @@ networking. Native OpenClaw remains verification-only.
 - 2026-10-06 11:17: Reconciled endpoint flow with current namespace and provider provisioning; condensed repeated prose. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - b6dc6b87a461ad33374e133d15cc739d8e074fea)
 
 - 2026-10-05 16:17: Documented version-fenced workspace-node setup renewal through the revision provider and supervisor refresh. (authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d - fd9a082e2587432bde6282748a82e3025a64fd1a)
-
-- 2026-10-05 11:36: Trace pre-registration endpoint validation and condense repeated setup and runtime details. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 9958ef0412565864efba7b13995536d7c2a51d22)
-
-- 2026-10-05 00:06: Bind immutable credential-source endpoints to provider profiles and Codex runtime configuration while retaining existing default endpoint limits for other consumers. (authoring-run/4e4824a1-f107-44c2-90bf-00fe13ff650c - d269c6d03)
-
-- 2026-10-05 12:50: Removed repeated setup and wire-contract detail while preserving the current OpenShell provisioning sequence and moved older entries to the history page. (authoring-run/fd7f6cdb-1d1d-40d5-8d4a-d6d80cd946e7 - 4b5afe0cb653f7dd99fccdb2e3432cbf60e6a03e)
-
-- 2026-10-02 16:26: Passed OpenShell's provider-local workspace root to the dedicated Gateway while preserving the canonical Kubernetes Harness root. (authoring-run/3bf937d5-c422-419e-af2d-754abe024ca4 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

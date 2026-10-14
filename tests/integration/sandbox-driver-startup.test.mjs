@@ -566,7 +566,7 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     mode: "dedicated",
   });
   assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
-    sandbox: "danger-full-access",
+    sandbox: "workspace-write",
     approvalsReviewer: "user",
   });
   assert.throws(
@@ -580,17 +580,15 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
   );
 });
 
-test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 1026)", () => {
+test("OpenShell admits dedicated Codex turns with managed workspace restrictions", () => {
   const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
     backend: backendFor(workspaceGatewayClient()),
   });
   const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  // The documented OpenShell Configuration's guardian app-server, plus a member's model-backed
-  // reviewer. On a model the Gateway cannot verify for review, both make the pinned Gateway
-  // force a user reviewer, and with it a workspace-write turn sandbox that bwrap cannot start
-  // inside OpenShell. The explicit user reviewer keeps the frozen danger-full-access.
+  // Service-account managed policy permits read-only/workspace-write, not full access.
+  // Admission must never reintroduce the rejected mode or a model-backed reviewer.
   for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
     const appServer = {
       mode: "guardian",
@@ -608,7 +606,7 @@ test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 
     assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
       mode: "guardian",
       approvalPolicy: "on-request",
-      sandbox: "danger-full-access",
+      sandbox: "workspace-write",
       transport: "websocket",
       url: "${APP_SERVER_URL}",
       authToken: "${APP_SERVER_TOKEN}",
