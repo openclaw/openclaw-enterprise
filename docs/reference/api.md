@@ -4093,7 +4093,7 @@ List authorized immutable revision summaries for one exact Agent, newest first
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].revision` | `integer` | Yes | minimum: 1 |
 | `meta` | `object` | Yes | — |
-| `meta.nextCursor` | `string or null` | Yes | Pass as `cursor` to read older revisions; `null` when no older revision is readable. |
+| `meta.nextCursor` | `string or null` | Yes | Pass as `cursor` to read older revisions. A cursor indicates that an older revision was readable during this request; a later page may be empty if access changes. `null` means no older revision was readable during this request. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}`

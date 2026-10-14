@@ -20816,7 +20816,7 @@
                       "properties": {
                         "nextCursor": {
                           "anyOf": [{ "maxLength": 32, "type": "string" }, { "type": "null" }],
-                          "description": "Pass as `cursor` to read older revisions; `null` when no older revision is readable."
+                          "description": "Pass as `cursor` to read older revisions. A cursor indicates that an older revision was readable during this request; a later page may be empty if access changes. `null` means no older revision was readable during this request."
                         },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

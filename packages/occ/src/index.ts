@@ -3483,8 +3483,9 @@ export class OpenClawController {
     // a readable one, so a page never names a revision the caller cannot read. The scan reads
     // the store in batches of at least 100, whatever the page size, so a small page over many
     // unreadable revisions costs few queries. A full page looks ahead for one more readable
-    // revision before it emits a cursor, so a cursor never leads to an empty page; a batch one
-    // larger than the page lets a fully readable page find that revision in the same query.
+    // revision before it emits a cursor. Access can change before the next request, so that
+    // page may be empty. A batch one larger than the page lets a fully readable page find
+    // the next revision in the same query.
     const batch = Math.max(page.limit + 1, 100);
     return this.read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];
