@@ -5149,6 +5149,25 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
       /Codex model endpoint/,
     );
   }
+  // Spellings the URL parser rewrites to https://models.example.test/v1 (finding 1292), refused
+  // as the shared baseUrl and auth.baseUrl rules refuse them.
+  for (const [codexModelBaseUrl, message] of [
+    ["https://@models.example.test/v1", /must not contain user info or an @ before the host/],
+    ["https://:@models.example.test/v1", /must not contain user info or an @ before the host/],
+    ["https:models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
+    ["https:/models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
+    ["https:///models.example.test/v1", /requires HTTPS/],
+    [" https://models.example.test/v1 ", /must not contain spaces or control characters/],
+    ["https://models.example.test\t/v1", /must not contain spaces or control characters/],
+    ["https://models.exam\nple.test/v1", /must not contain spaces or control characters/],
+    ["https://models.example.test/v1\u0000", /must not contain spaces or control characters/],
+  ]) {
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      (error) => /^Codex model endpoint /.test(error.message) && message.test(error.message),
+      JSON.stringify(codexModelBaseUrl),
+    );
+  }
 });
 
 test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", () => {
