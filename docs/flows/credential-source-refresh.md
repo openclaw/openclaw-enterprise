@@ -63,8 +63,10 @@ are issuer material, so only the refresh Driver receives them.
 
 The gateway posts the issuer material to `token_url` from its own network
 position, so `validateOAuth2Config` refuses a `token_url` host that is an IP
-address in any spelling or a `localhost` name, before any Secret read. Building
-the profile refuses a stored one too, so attaching such a source fails.
+address in any spelling, a `localhost` or `localdomain` name, or a single-label
+name (the gateway Pod's `/etc/hosts` maps those to the Pod), before any Secret
+read. Building the profile refuses a stored one, or a stored port `0`, too, so
+attaching such a source fails.
 
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 imports a per-source OpenShell profile whose `access_token` credential declares

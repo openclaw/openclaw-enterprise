@@ -438,7 +438,7 @@ test("credential source endpoints require an exact DNS host name", async (t) => 
   );
 });
 
-test("OAuth2 token_url hosts must be exact DNS names, not IP addresses or localhost", async (t) => {
+test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or localhost names", async (t) => {
   const f = await fixture(t, { toolSources: true });
   const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
   const config = { host: "tools.example.test", env_var: "TOOL_TOKEN", client_id: "occ" };
@@ -457,10 +457,29 @@ test("OAuth2 token_url hosts must be exact DNS names, not IP addresses or localh
     "https://localhost/token",
     "https://LOCALHOST:8443/token",
     "https://issuer.localhost/token",
+    // The gateway resolves names through its Pod's /etc/hosts, where the kubelet and
+    // container runtimes map these to loopback, link-local or multicast addresses, and the
+    // Pod's own single-label hostname to the Pod itself (finding 1354).
+    "https://ip6-localhost/token",
+    "https://ip6-loopback:8443/token",
+    "https://IP6-LOOPBACK/token",
+    "https://ip6-localnet/token",
+    "https://ip6-allnodes/token",
+    "https://localhost4/token",
+    "https://localhost6/token",
+    "https://localhost.localdomain/token",
+    "https://LOCALHOST.LOCALDOMAIN:8443/token",
+    "https://localhost4.localdomain4/token",
+    "https://localhost6.localdomain6/token",
+    "https://keycloak/token",
+    "https://openshell-gateway-0:8443/token",
   ];
   // In-cluster issuers have DNS names, which the protected host accepts too.
   const accepted = [
     "https://login.example.test/oauth2/token",
+    "https://localhost.example/token",
+    "https://localdomain.example/token",
+    "https://keycloak.idp/token",
     "https://kubernetes.default.svc/token",
     "https://keycloak.idp.svc.cluster.local:8443/realms/occ/protocol/openid-connect/token",
   ];
@@ -485,7 +504,7 @@ test("OAuth2 token_url hosts must be exact DNS names, not IP addresses or localh
       );
       assert.equal(
         response.body.error.message,
-        `The ${type} token_url host must be an exact DNS name, not an IP address or localhost.`,
+        `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost name.`,
         token_url,
       );
     }
@@ -514,39 +533,51 @@ test("OAuth2 token_url hosts must be exact DNS names, not IP addresses or localh
   assert.deepEqual(f.mutations, []);
   // A source stored before the rule, with its provider, cannot be attached to a new revision,
   // and its profile is not rewritten.
-  const stored = {
-    id: "cs_" + randomUUID(),
-    namespaceId: f.namespace.id,
-    name: "stored-issuer",
-    type: "oauth2-client-credentials",
-    config: { ...config, token_url: "https://169.254.169.254/token" },
-    secrets: { client_secret: secret.ref },
-    driverId: f.driver.id,
-    state: "ready",
-    createdAt: new Date().toISOString(),
-  };
-  const workspace = openShellWorkspaceName(f.namespace);
-  const name = openShellProviderName(stored.id);
-  f.providers.set(workspace + "/" + name, {
-    workspace,
-    name,
-    type: name,
-    labels: {
-      "app.kubernetes.io/managed-by": "openclaw-enterprise",
-      "openclaw.dev/credential-source-id": stored.id,
-      "openclaw.dev/namespace-id": f.namespace.id,
-    },
-    credentials: {},
-  });
-  await assert.rejects(
-    f.driver.attachForRevision({
-      namespace: f.namespace,
-      sources: [stored],
-      revision: { harness: { id: "codex", mode: "dedicated" } },
-      signal: AbortSignal.timeout(5000),
-    }),
-    /^ScopeViolationError: The oauth2-client-credentials token_url host must be an exact DNS name/,
-  );
+  for (const [token_url, refusal] of [
+    ["https://169.254.169.254/token", /token_url host must be a DNS name with at least two labels/],
+    ["https://ip6-localhost/token", /token_url host must be a DNS name with at least two labels/],
+    ["https://localhost.localdomain/token", /token_url host must be a DNS name/],
+    ["https://login.example.test:0/token", /token_url port must be 1 to 65535\.$/],
+  ]) {
+    const stored = {
+      id: "cs_" + randomUUID(),
+      namespaceId: f.namespace.id,
+      name: "stored-issuer",
+      type: "oauth2-client-credentials",
+      config: { ...config, token_url },
+      secrets: { client_secret: secret.ref },
+      driverId: f.driver.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const workspace = openShellWorkspaceName(f.namespace);
+    const name = openShellProviderName(stored.id);
+    f.providers.set(workspace + "/" + name, {
+      workspace,
+      name,
+      type: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/credential-source-id": stored.id,
+        "openclaw.dev/namespace-id": f.namespace.id,
+      },
+      credentials: {},
+    });
+    await assert.rejects(
+      f.driver.attachForRevision({
+        namespace: f.namespace,
+        sources: [stored],
+        revision: { harness: { id: "codex", mode: "dedicated" } },
+        signal: AbortSignal.timeout(5000),
+      }),
+      (error) => {
+        assert.equal(error.name, "ScopeViolationError", token_url);
+        assert.match(error.message, /^The oauth2-client-credentials /, token_url);
+        assert.match(error.message, refusal, token_url);
+        return true;
+      },
+    );
+  }
   assert.equal(f.profiles.size, 0);
 });
 
