@@ -430,6 +430,9 @@ export class GatewayPasswordValueError extends ModelCredentialValueError {
 const modelProviderSettingMessages = {
   baseUrl: (path: string): string =>
     `Configuration field ${path} must be an absolute http or https URL.`,
+  // An http(s) scheme followed by one or no slash, which the URL parser accepts (finding 1285).
+  baseUrlSlashes: (path: string): string =>
+    `Configuration field ${path} must start with https:// or http:// (the // after the scheme is missing).`,
   api: (path: string): string =>
     `Configuration field ${path} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`,
 } as const;

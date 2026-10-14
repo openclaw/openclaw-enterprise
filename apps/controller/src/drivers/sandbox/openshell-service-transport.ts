@@ -1,4 +1,4 @@
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
 import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -51,6 +51,11 @@ export function serviceTarget(
   ) {
     throw new OpenShellGatewayFailure(
       "OpenShell service URL must be an HTTP origin without credentials, query, or fragment.",
+    );
+  }
+  if (gatewayEndpointRewritesIpv4(options.endpoint)) {
+    throw new OpenShellGatewayFailure(
+      "OpenShell gateway endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
     );
   }
   const endpoint = options.endpoint.includes("://")

@@ -1367,6 +1367,17 @@ test(
                 revisionId,
               }),
               line({ severity: "WARN", event: "native_admin.websocket_denial_audit_failed" }),
+              // A Compute-owner mismatch keeps the Agent's IDs; the Driver names stay local.
+              line({
+                severity: "WARN",
+                event: "native_admin.compute_owner_mismatch",
+                namespaceId,
+                agentId,
+                revisionId,
+                revisionCompute: { id: `compute-${canary}`, implementation: canary },
+                selectedCompute: { id: `selected-${canary}`, implementation: canary },
+                message: `Native admin UI is refused ${canary}`,
+              }),
               // Account IDs and messages that name them stay in local logs.
               line({
                 severity: "WARN",
@@ -1488,6 +1499,12 @@ test(
           "occ.revision.id": revisionId,
         }),
         api("WARN", { "event.name": "native_admin.websocket_denial_audit_failed" }),
+        api("WARN", {
+          "event.name": "native_admin.compute_owner_mismatch",
+          "occ.namespace.id": namespaceId,
+          "occ.agent.id": agentId,
+          "occ.revision.id": revisionId,
+        }),
         api("WARN", { "event.name": "authentication.activation-warning" }),
         api("WARN", {
           "event.name": "authentication.password-sign-in-warning",

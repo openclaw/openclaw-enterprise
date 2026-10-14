@@ -15,6 +15,7 @@ export const imageReferenceCases = [
   ["IPv6 registry host without a port", `[fd00::1]/repo${digest}`],
   ["IPv4 registry host", `192.0.2.1:5000/repo${digest}`],
   ["localhost registry", `localhost/repo${digest}`],
+  ["localhost path of 255 characters", `localhost/${"a".repeat(255)}${digest}`],
   ["registry port", `registry.example:5000/repo${digest}`],
   ["uppercase registry host", `Registry.example:5000/repo${digest}`],
   ["uppercase tag", `registry.example:5000/repo:Tag${digest}`],
@@ -25,6 +26,9 @@ export const imageReferenceCases = [
   ["legacy Docker Hub host", `index.docker.io/repo${digest}`],
   ["tag with uppercase letters", `registry.example/repo:V1.2.3-RC${digest}`],
   ["path double hyphen", `registry.example/re--po${digest}`],
+  // A port keeps the host from reading as a path component, so `re--po` must pass the
+  // first-component rule.
+  ["path double hyphen after a registry port", `registry.example:5000/re--po${digest}`],
   ["path double underscore", `registry.example/re__po${digest}`],
   // A first component with a dot names a registry; one Kubernetes cannot parse as a host is
   // read as a repository path instead, which these characters allow.
@@ -37,6 +41,7 @@ export const imageReferenceCases = [
   ["unparsable dotted host in a path of 255 characters", `my_reg.io/${"a".repeat(245)}${digest}`],
   ["explicit Docker Hub path of 255 characters", `docker.io/${"a".repeat(247)}${digest}`],
   ["SHA-512 digest", `registry.example/repo@sha512:${"a".repeat(128)}`],
+  ["SHA-384 digest", `registry.example/repo@sha384:${"a".repeat(96)}`],
   ["tag without a digest", "registry.example/repo:1.0"],
   ["IPv6 registry host without a digest", "[fd00::1]:5000/repo:1.0"],
 
@@ -92,7 +97,13 @@ export const imageReferenceCases = [
     `docker.io/${"a".repeat(248)}${digest}`,
     "invalid",
   ],
+  [
+    "legacy Docker Hub path of 256 characters with library/",
+    `index.docker.io/${"a".repeat(248)}${digest}`,
+    "invalid",
+  ],
   ["letter in the port", `registry.example:5000A/repo${digest}`, "invalid"],
+  ["empty registry port", `registry.example:/repo${digest}`, "invalid"],
   ["@ in the path", `registry.example/re@po${digest}`, "invalid"],
   ["second @ before the digest", `registry.example/repo@extra${digest}`, "invalid"],
   ["bare image ID", "a".repeat(64), "invalid"],

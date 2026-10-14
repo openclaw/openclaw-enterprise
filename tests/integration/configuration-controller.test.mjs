@@ -1890,6 +1890,15 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
     [{ env: { vars: { all_proxy: userinfo } } }, "/env/vars/all_proxy"],
     // curl and git read a proxy without a scheme as http.
     [{ env: { vars: { HTTPS_PROXY: `${sentinel}@proxy.example:3128` } } }, "/env/vars/HTTPS_PROXY"],
+    // Read as http, a backslash or a double quote in the user name is still userinfo to curl.
+    [
+      { env: { vars: { HTTPS_PROXY: `CORP\\ops:${sentinel}@proxy.example:3128` } } },
+      "/env/vars/HTTPS_PROXY",
+    ],
+    [
+      { env: { vars: { HTTPS_PROXY: `ops"${sentinel}@proxy.example:3128` } } },
+      "/env/vars/HTTPS_PROXY",
+    ],
     // As in #2347: an environment reference in the port, or a fallback that holds userinfo.
     [
       { channels: { telegram: { proxy: `http://u:${sentinel}@proxy.example:\${PROXY_PORT}` } } },
@@ -1919,7 +1928,45 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
       },
       "/plugins/entries/codex/config/appServer/networkProxy/proxyUrl",
     ],
+    [
+      {
+        plugins: {
+          entries: {
+            codex: {
+              config: {
+                appServer: {
+                  networkProxy: { socksUrl: `socks5://u:${sentinel}@proxy.example:1080` },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/plugins/entries/codex/config/appServer/networkProxy/socksUrl",
+    ],
     [{ tts: { providers: { microsoft: { proxy: userinfo } } } }, "/tts/providers/microsoft/proxy"],
+    [
+      {
+        channels: {
+          discord: { voice: { tts: { providers: { microsoft: { proxy: userinfo } } } } },
+        },
+      },
+      "/channels/discord/voice/tts/providers/microsoft/proxy",
+    ],
+    [
+      {
+        plugins: {
+          entries: {
+            "voice-call": { config: { tts: { providers: { microsoft: { proxy: userinfo } } } } },
+          },
+        },
+      },
+      "/plugins/entries/voice-call/config/tts/providers/microsoft/proxy",
+    ],
+    [
+      { talk: { realtime: { providers: { microsoft: { proxy: userinfo } } } } },
+      "/talk/realtime/providers/microsoft/proxy",
+    ],
     [
       {
         agents: {
@@ -2223,6 +2270,20 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       { skills: { entries: { none: { env: { INDEX: `HTTPS:u:${sentinel}@pypi` } } } } },
       "/skills/entries/none/env/INDEX",
     ],
+    // So does every other special scheme.
+    ...["http", "wss", "ftp"].map((scheme) => [
+      { skills: { entries: { [scheme]: { env: { INDEX: `${scheme}:u:${sentinel}@h` } } } } },
+      `/skills/entries/${scheme}/env/INDEX`,
+    ]),
+    // A reference's fallback can end the URL around it and start one of its own.
+    [
+      {
+        skills: {
+          entries: { fallback: { env: { GOPROXY: `https://h\${P:-/,https://u:${sentinel}@h}` } } },
+        },
+      },
+      "/skills/entries/fallback/env/GOPROXY",
+    ],
     // A reference in the scheme renders it: `https${X:-}:` reads as `https:`.
     [
       { skills: { entries: { ref: { env: { INDEX: `https\${X:-}:u:${sentinel}@pypi` } } } } },
@@ -2289,6 +2350,8 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     [{ PIP_INDEX_URL: "https://{{ vars.url }}@pypi.example.test" }, "PIP_INDEX_URL"],
     [{ GOPROXY: `{{ vars.scheme }}://u:${sentinel}@{{ vars.host }}` }, "GOPROXY"],
     [{ REGISTRY: `https:{{ vars.scheme }}//u:${sentinel}@npm.test` }, "REGISTRY"],
+    // A variable scheme may be a special one, which needs no slashes.
+    [{ NPM_REGISTRY: `{{ vars.scheme }}:u:${sentinel}@npm.test` }, "NPM_REGISTRY"],
   ]) {
     await t.test(`refuses a Preset ${field} at save`, async () => {
       const response = await request(context.app, "POST", presets, {
@@ -2378,6 +2441,9 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     JSON: '{"url": "https://api.example.test", "contact": "ops@example.test"}',
     ORIGINS: "http://localhost:3000,http://127.0.0.1:3000",
     WINDOWS_FILE: "file:///C:\\Users\\ops@example.test\\notes.txt",
+    WINDOWS_DIRECTORY: "file:///${NOTES_DIR:-C:\\Users\\ops@example.test}\\notes.txt",
+    // `$${NAME}` renders literal text.
+    ESCAPED: "$${HOME}:ops@example.test",
     NO_PROXY: "localhost,.svc,10.0.0.0/8",
     LOG_LEVEL: "debug",
   };
@@ -2491,6 +2557,58 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
     assert.equal(response.body.error.message, cost("/proxy/proxyUrl"));
     assert.ok(response.elapsed < 500, `took ${response.elapsed} ms`);
   });
+  // Each unfilled Preset variable is charged as a dozen characters in every rendering.
+  await t.test("refuses a Preset URL of fallbacks and many variables", async () => {
+    const response = await timed(presets, {
+      name: "Costly",
+      template: {
+        variables: { host: { type: "string" } },
+        configuration: {
+          values: {
+            proxy: {
+              proxyUrl: `https://h.example/${"${A:-x}".repeat(300)}${"/{{ vars.host }}".repeat(2000)}`,
+            },
+          },
+        },
+      },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, cost("/proxy/proxyUrl"));
+    assert.ok(response.elapsed < 500, `took ${response.elapsed} ms`);
+  });
+  // The budget is the document's: seven proxies that each fit it exceed it together.
+  await t.test("refuses URL fields that fit the budget alone but not together", async () => {
+    const proxy = `x://h${"${A:-x}".repeat(300)}`;
+    const accounts = Object.fromEntries(
+      Array.from({ length: 7 }, (_, index) => [`a${index}`, { proxy }]),
+    );
+    const one = await request(context.app, "POST", configurations, {
+      body: { kind: "agent", values: { channels: { telegram: { accounts: { a0: { proxy } } } } } },
+    });
+    assert.equal(one.status, 201, JSON.stringify(one.body));
+    const response = await timed(configurations, {
+      kind: "agent",
+      values: { channels: { telegram: { accounts } } },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, cost("/channels/telegram/accounts/a6/proxy"));
+  });
+  for (const [name, value] of [
+    // A scheme-less proxy is checked as written and as http, and pays for both readings.
+    ["HTTPS_PROXY", "${A:-x}".repeat(415)],
+    // A git config proxy spends the budget too: unbudgeted, this one took 12 s.
+    ["GIT_CONFIG_PARAMETERS", `'http.proxy'='${"${A:-x}".repeat(8500)}'`],
+  ]) {
+    await t.test(`refuses ${name} of fallbacks`, async () => {
+      const response = await timed(configurations, {
+        kind: "agent",
+        values: { env: { vars: { [name]: value } } },
+      });
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.message, cost(`/env/vars/${name}`));
+      assert.ok(response.elapsed < 500, `took ${response.elapsed} ms`);
+    });
+  }
   // A URL with a few fallbacks is still checked whole.
   await t.test("still refuses userinfo in a fallback and accepts a plain one", async () => {
     const refused = await request(context.app, "POST", configurations, {
@@ -2508,6 +2626,16 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
       },
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  });
+  // An escaped `$${NAME:-fallback}` is literal text, and costs no rendering.
+  await t.test("accepts a URL of escaped fallbacks", async () => {
+    const escaped = await request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        values: { proxy: { proxyUrl: `http://proxy:3128/${"$${A:-x}".repeat(800)}` } },
+      },
+    });
+    assert.equal(escaped.status, 201, JSON.stringify(escaped.body));
   });
 });
 
@@ -2623,6 +2751,40 @@ test("Configuration and Preset saves read a git config value as a proxy when its
       { env: { vars: { GIT_CONFIG_PARAMETERS: `'remote.origin.proxy=${proxy}'` } } },
       "/env/vars/GIT_CONFIG_PARAMETERS",
     ],
+    // A value is split at the first `=` (a password may end in one), `'\''` quotes a `'`, a key
+    // may be a reference, and a proxy without a scheme or a password still names a user.
+    [
+      {
+        env: {
+          vars: {
+            GIT_CONFIG_PARAMETERS: `'remote.origin.proxy=u:${sentinel}=@proxy.example.test:3128'`,
+          },
+        },
+      },
+      "/env/vars/GIT_CONFIG_PARAMETERS",
+    ],
+    [
+      {
+        env: {
+          vars: {
+            GIT_CONFIG_PARAMETERS: `'user.name'='o'\\''brien' 'http.proxy'='u:it'\\''s${sentinel}@proxy.example.test:3128'`,
+          },
+        },
+      },
+      "/env/vars/GIT_CONFIG_PARAMETERS",
+    ],
+    [
+      { env: { vars: { GIT_CONFIG_PARAMETERS: `'\${GIT_PROXY_KEY}'='${proxy}'` } } },
+      "/env/vars/GIT_CONFIG_PARAMETERS",
+    ],
+    [
+      {
+        env: {
+          vars: { GIT_CONFIG_PARAMETERS: `'http.proxy'='${sentinel}@proxy.example.test:3128'` },
+        },
+      },
+      "/env/vars/GIT_CONFIG_PARAMETERS",
+    ],
   ];
   for (const [values, field] of refused) {
     await t.test(`refuses ${field}`, async () => {
@@ -2654,6 +2816,10 @@ test("Configuration and Preset saves read a git config value as a proxy when its
     ],
     [
       { GIT_CONFIG_KEY_0: "http.{{ vars.url }}.proxy", GIT_CONFIG_VALUE_0: proxy },
+      "GIT_CONFIG_VALUE_0",
+    ],
+    [
+      { GIT_CONFIG_KEY_0: "http.https://{{ vars.url }}/.proxy", GIT_CONFIG_VALUE_0: proxy },
       "GIT_CONFIG_VALUE_0",
     ],
     [
@@ -2715,6 +2881,13 @@ test("Configuration and Preset saves read a git config value as a proxy when its
         entries: {
           mail: {
             env: { GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ops@example.test" },
+          },
+          // `$${NAME}` renders literal text, which names no proxy section.
+          jump: {
+            env: {
+              GIT_CONFIG_KEY_0: "$${GIT_SECTION}.proxy",
+              GIT_CONFIG_VALUE_0: "ops@jump.example.test",
+            },
           },
         },
       },
@@ -2857,6 +3030,7 @@ test("Configuration and Preset saves refuse a literal credential in an MCP serve
   // Credential headers that hold references, and headers that name no credential, still save.
   const headers = {
     Authorization: "Bearer ${MCP_TOKEN}",
+    "Authorization-V2": "Bearer ${MCP_TOKEN_V2}",
     "X-Api-Key": "${MCP_API_KEY}",
     "Proxy-Authorization": "${MCP_PROXY_AUTH}",
     Accept: "application/json",
@@ -2896,11 +3070,15 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
   const baseUrl = (field = "baseUrl") =>
     `Configuration field /models/providers/gateway/${field} must be an absolute http or https URL.`;
+  // Finding 1285: a scheme followed by one or no slash names the missing `//`.
+  const slashes = (field = "baseUrl") =>
+    `Configuration field /models/providers/gateway/${field} must start with https:// or http:// (the // after the scheme is missing).`;
   const api =
     "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.";
 
   // An empty written authority, however it is spelled, is refused on Configuration create, and
-  // so is one or no slash after the scheme (finding 1259), which the URL parser accepts.
+  // so is one or no slash after the scheme (finding 1259), which the URL parser accepts. Only the
+  // latter says the `//` is missing (finding 1285).
   for (const [settings, message] of [
     [{ baseUrl: "https:///v1" }, baseUrl()],
     [{ baseUrl: " HTTP:\\\\\\v1" }, baseUrl()],
@@ -2909,15 +3087,27 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
       { models: [{ id: "m", baseUrl: "http:////models.example.test/v1" }] },
       baseUrl("models/0/baseUrl"),
     ],
-    [{ baseUrl: "https:/models.example.test/v1" }, baseUrl()],
-    [{ baseUrl: "https:v1" }, baseUrl()],
-    [{ baseUrl: " \tHTTPS:/models.example.test" }, baseUrl()],
-    [{ baseUrl: "https:\\models.example.test" }, baseUrl()],
-    [{ baseUrl: "https:${MODEL_HOST}/v1" }, baseUrl()],
-    [{ models: [{ id: "m", baseUrl: "http:/${MODEL_HOST}" }] }, baseUrl("models/0/baseUrl")],
-    // The runtime renders a fallback when its variable is unset.
+    [{ baseUrl: "https:/models.example.test/v1" }, slashes()],
+    [{ baseUrl: "https:v1" }, slashes()],
+    [{ baseUrl: "http:/models.example.test" }, slashes()],
+    [{ baseUrl: " \tHTTPS:/models.example.test" }, slashes()],
+    [{ baseUrl: "https:\\models.example.test" }, slashes()],
+    [{ baseUrl: "https:${MODEL_HOST}/v1" }, slashes()],
+    [{ models: [{ id: "m", baseUrl: "http:/${MODEL_HOST}" }] }, slashes("models/0/baseUrl")],
+    // The runtime renders a fallback when its variable is unset. The value does not start with
+    // the scheme, so the general message stays.
     [{ baseUrl: "${MODEL_URL:-https:/models.example.test/v1}" }, baseUrl()],
     [{ baseUrl: "https://${MODEL_HOST:-}/v1" }, baseUrl()],
+    // A value that is not a string is refused for its type.
+    [{ baseUrl: ["https:/v1"] }, baseUrl()],
+    // As the URL parser reads them: tabs dropped, leading spaces trimmed, any scheme case.
+    [{ baseUrl: "https://\t/v1" }, baseUrl()],
+    [{ baseUrl: "https://\t/${MODEL_HOST}/v1" }, baseUrl()],
+    [{ baseUrl: " HTTPS:${MODEL_HOST}/v1" }, slashes()],
+    // Each rendering counts: every reference set, every fallback, and the first fallback alone.
+    [{ baseUrl: "https:${MODEL_SLASHES:-//}models.example.test/v1" }, slashes()],
+    [{ baseUrl: "${MODEL_SCHEME:-https://}${MODEL_SLASH:-/}models.example.test/v1" }, baseUrl()],
+    [{ baseUrl: "${MODEL_SCHEME:-https:/}${MODEL_PATH:-/models.example.test}/v1" }, baseUrl()],
   ]) {
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values: gateway(settings) },
@@ -2935,8 +3125,8 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     // An empty default is a literal empty host.
     [{ h: { type: "string", default: "" } }, hostVariable, baseUrl()],
     // A variable cannot supply the slashes (finding 1259).
-    [{ h: { type: "string" } }, { baseUrl: "https:{{ vars.h }}" }, baseUrl()],
-    [{ h: { type: "string" } }, { baseUrl: "HTTPS:/{{ vars.h }}/v1" }, baseUrl()],
+    [{ h: { type: "string" } }, { baseUrl: "https:{{ vars.h }}" }, slashes()],
+    [{ h: { type: "string" } }, { baseUrl: "HTTPS:/{{ vars.h }}/v1" }, slashes()],
     [{ n: { type: "number" } }, { baseUrl: "{{ vars.n }}" }, baseUrl()],
     [{ b: { type: "boolean" } }, { baseUrl: "{{ vars.b }}" }, baseUrl()],
     [{ n: { type: "number" } }, { api: "{{ vars.n }}" }, api],
@@ -2976,7 +3166,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   assert.equal(empty.body.error.message, baseUrl());
   const oneSlash = await launch({ h: "models.example.test", n: 1000, u: "https:/v1" });
   assert.equal(oneSlash.status, 400, JSON.stringify(oneSlash.body));
-  assert.equal(oneSlash.body.error.message, baseUrl("models/0/baseUrl"));
+  assert.equal(oneSlash.body.error.message, slashes("models/0/baseUrl"));
 
   // Two slashes or backslashes after any spelling of the scheme, and references beside them, save.
   for (const value of [
@@ -2984,6 +3174,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     "https:\\\\models.example.test/v1",
     "http://localhost:${MODEL_PORT}/v1",
     "https://${MODEL_HOST}/v1",
+    "https:\\\\${MODEL_HOST}/v1",
     "${MODEL_BASE_URL}/v1",
     "${MODEL_URL:-https://models.example.test}/v1",
   ]) {

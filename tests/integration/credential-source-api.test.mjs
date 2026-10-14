@@ -326,12 +326,24 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     ["https://models.example.test/v1", "models.example.test", 443, "/v1/**"],
     ["https://MODELS.example.test:443/api/./v1/", "models.example.test", 443, "/api/v1/**"],
     ["https://bücher.example.test:8443/api/v1/", "xn--bcher-kva.example.test", 8443, "/api/v1/**"],
-    ["https://192.0.2.1/v1", "192.0.2.1", 443, "/v1/**"],
     ["https://API.OpenAI.com:443/v1/", "api.openai.com", 443, "/v1/**"],
+    // Spellings the URL parser rewrites: the source stores and returns the rewritten URL.
+    ["HTTPS://models.example.test/v1", "models.example.test", 443, "/v1/**"],
+    ["https://models.example.test:00443/v1", "models.example.test", 443, "/v1/**"],
+    ["https://ｍｏｄｅｌｓ.example.test/v1", "models.example.test", 443, "/v1/**"],
+    ["https:\\\\models.example.test/v1", "models.example.test", 443, "/v1/**"],
   ];
   for (const [base_url, host, port, path] of cases) {
     const created = await f.create("concrete endpoint", { base_url });
     assert.equal(created.status, 201, JSON.stringify(created.body));
+    // The stored endpoint is the one the profile uses, not the written spelling (finding 1292).
+    const stored = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
+    assert.deepEqual(created.data.config, { base_url: stored }, base_url);
+    assert.deepEqual(
+      (await f.request("GET", f.path + "/" + created.data.id)).data.config,
+      { base_url: stored },
+      base_url,
+    );
     // Assert the profile produced through HTTP/OCC, not a copied normalizer.
     const profile = [...f.profiles.values()][0];
     assert.deepEqual(profile.endpoints, [{ host, port, protocol: "rest", path }]);
@@ -345,6 +357,84 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     assert.equal(f.profiles.size, 0);
     assert.equal(f.providers.size, 0);
   }
+});
+
+test("credential source endpoints refuse spellings the URL parser would rewrite", async (t) => {
+  const f = await fixture(t);
+  // Each parses as https://models.example.test/v1, so it used to be stored as written while the
+  // profile used another URL (finding 1292). The shared baseUrl rules refuse these spellings.
+  for (const [base_url, message] of [
+    ["https://@models.example.test/v1", /must not contain user info or an @ before the host/],
+    ["https://:@models.example.test/v1", /must not contain user info or an @ before the host/],
+    ["https:models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
+    ["https:/models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
+    ["https:///models.example.test/v1", /requires HTTPS/],
+    ["  https://models.example.test/v1  ", /must not contain spaces or control characters/],
+    ["https://models.example.test\t/v1", /must not contain spaces or control characters/],
+    ["https://models.exam\nple.test/v1", /must not contain spaces or control characters/],
+    // The API schema already refuses a NUL in any string (INVALID_FORMAT).
+  ]) {
+    const response = await f.create("rewritten", { base_url });
+    assert.equal(response.status, 400, JSON.stringify(base_url));
+    assert.deepEqual(response.body.error.details, [
+      { path: "/config/base_url", code: "INVALID_VALUE" },
+    ]);
+    assert.match(response.body.error.message, message, JSON.stringify(base_url));
+    assert.deepEqual((await f.request("GET", f.path)).data, [], JSON.stringify(base_url));
+  }
+  assert.deepEqual(f.mutations, []);
+});
+
+test("credential source endpoints require an exact DNS host name", async (t) => {
+  const f = await fixture(t);
+  // The bearer-token host rule: IP addresses in any spelling the URL parser accepts, and labels
+  // with `_` or an edge `-`, widened the member's Sandbox egress (finding 1293).
+  for (const host of [
+    "127.0.0.1",
+    "10.0.0.1",
+    "192.0.2.1",
+    "169.254.169.254",
+    "0x7f000001",
+    "2130706433",
+    "127.1",
+    "models_internal.example.test",
+    "-models.example.test",
+    "models-.example.test",
+  ]) {
+    const response = await f.create("ip", { base_url: `https://${host}/v1` });
+    assert.equal(response.status, 400, host);
+    assert.deepEqual(response.body.error.details, [
+      { path: "/config/base_url", code: "INVALID_VALUE" },
+    ]);
+    assert.equal(
+      response.body.error.message,
+      "The openai base_url host must be an exact DNS name.",
+      host,
+    );
+  }
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
+  assert.deepEqual(f.mutations, []);
+  // A source stored before the rule, with its provider, cannot be attached to a new revision.
+  const healthy = await f.create("healthy");
+  assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
+  const existing = [...f.providers.values()][0];
+  const stored = await f.seedInvalid("openai", "https://169.254.169.254/v1");
+  const name = openShellProviderName(stored.id);
+  f.providers.set(existing.workspace + "/" + name, {
+    ...existing,
+    name,
+    type: name,
+    labels: { ...existing.labels, "openclaw.dev/credential-source-id": stored.id },
+  });
+  await assert.rejects(
+    f.driver.attachForRevision({
+      namespace: { ...f.namespace, name: existing.workspace },
+      sources: [stored],
+      revision: { harness: { id: "codex", mode: "dedicated" } },
+      signal: AbortSignal.timeout(5000),
+    }),
+    /DNS host name.*IP addresses/,
+  );
 });
 
 test("offered OpenShell source values return field-specific HTTP 400 before effects", async (t) => {

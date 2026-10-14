@@ -187,8 +187,8 @@ history does not consume capacity. OpenClaw does not yet retire idle paired-node
 workers, so size the limit against the Agent workload's CPU and memory limits.
 
 For dedicated Codex `api_key` authentication, `runtime.codexModelBaseUrl` selects
-an HTTPS OpenAI-compatible streaming Responses endpoint ending in `/v1` (including `/api/v1`).
-Rejects hostname/path wildcards, port `0`, credentials, queries, and fragments.
+an HTTPS OpenAI-compatible streaming Responses endpoint ending in `/v1`.
+Rejects wildcards, port `0`, `@` or credentials, spaces, controls, missing `//`, queries, and fragments.
 Omission retains OpenAI's default; OpenShell sources select their own endpoint.
 OAuth, account logins, and OpenClaw ignore this option. Only the Harness receives
 the key. Private Gateway configuration qualifies parent and subagent selections

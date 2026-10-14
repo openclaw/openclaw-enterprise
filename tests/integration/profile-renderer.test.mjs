@@ -2674,6 +2674,66 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
 });
 
+test("the codex profile carries a Codex model endpoint under Compute startup's rule", () => {
+  const field = "runtime.codexModelBaseUrl";
+  assertFieldRefusals(
+    "openclaw",
+    baseInput(),
+    field,
+    ["https://models.example.com/v1"],
+    "is only consumed by the codex profile",
+  );
+  const accepted = render(
+    "codex",
+    codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
+  );
+  const compute = loadYaml(accepted.installation).drivers.compute.configuration;
+  // Written as Compute normalizes it, and accepted by Compute startup.
+  assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
+  KubernetesComputeDriver.validateConfiguration(compute);
+  assert.equal(
+    loadYaml(render("codex", codexInput()).installation).drivers.compute.configuration.runtime
+      .codexModelBaseUrl,
+    undefined,
+  );
+  // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
+  const general =
+    "requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.";
+  for (const [value, message] of [
+    ["", "must be a nonempty string."],
+    [7, "must be a nonempty string."],
+    ["https://models.example.com/v1 ", "must not contain spaces or control characters."],
+    ["https://models.example.com/\tv1", "must not contain spaces or control characters."],
+    [
+      "https:models.example.com/v1",
+      "must start with https:// (the // after the scheme is missing).",
+    ],
+    ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
+    [
+      "https://user:pass@models.example.com/v1",
+      "must not contain user info or an @ before the host.",
+    ],
+    ["http://models.example.com/v1", general],
+    ["https://models.example.com/v2", general],
+    ["https://models.example.com/v1/responses", general],
+    ["https://*.example.com/v1", general],
+    ["https://models.example.com:0/v1", general],
+    ["https://models.example.com/v1?key=1", general],
+    ["https://models.example.com/v1#v1", general],
+  ]) {
+    assertFieldRefusals("codex", codexInput(), field, [value], message);
+    assert.throws(
+      () =>
+        KubernetesComputeDriver.validateConfiguration({
+          ...compute,
+          runtime: { ...compute.runtime, codexModelBaseUrl: value },
+        }),
+      undefined,
+      JSON.stringify(value),
+    );
+  }
+});
+
 test("profile transport Secret prefixes agree with controller startup admission", async (t) => {
   const baseline = render("openclaw", baseInput());
   t.after(() => rmSync(baseline.directory, { recursive: true, force: true }));
