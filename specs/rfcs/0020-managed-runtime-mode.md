@@ -14,8 +14,12 @@ author: stevenlee-oai
 
 ## Summary
 
-OpenClaw Enterprise (OCE) should require a versioned managed mode from its
-Harness and Gateway runtimes. OCE supplies their control configuration; runtimes
+Dedicated OpenClaw (OC) is the first required delivery target for OpenClaw
+Enterprise (OCE) managed mode. Both its separate Harness and Gateway must enforce
+the contract. The baseline also covers embedded OC and dedicated Codex.
+
+OCE should require a versioned managed mode from its Harness and Gateway
+runtimes. OCE supplies their control configuration; runtimes
 enforce it against model execution and native administration. Compute activates a
 deployment only after both runtime enforcement and execution containment are
 established. AGENTS.md, SOUL.md, IDENTITY.md, USER.md, and other agent documents
@@ -30,7 +34,7 @@ model access. “No native API” means none found at the inspected pin; host/MC
 integrations or shell access may still provide the action.
 
 OC capabilities remain on the Gateway when Codex is the Harness. Embedded OC
-runs both roles together; dedicated OC is experimental. Dedicated Codex with a
+runs both roles together; dedicated OC separates them. Dedicated Codex with a
 workspace node and Codex plugin entry excludes selected OC management/file/shell
 dynamic tools. The OC admin UI still relays native RPCs without a command filter.
 
@@ -126,9 +130,10 @@ readiness. An echoed launch argument or copied configuration file is insufficien
 Missing, invalid, unsupported, or unapplied managed policy keeps the deployment
 unready; it must not fall back to ordinary execution.
 
-Embedded OC covers both Harness and Gateway roles. Dedicated Codex requires
-separate Codex and OC acknowledgements: protecting the Harness does not protect
-its Gateway.
+Dedicated OC requires acknowledgements from both its OC Harness and Gateway;
+hosted workers must inherit and enforce the same baseline. Embedded OC covers
+both roles in one runtime. Dedicated Codex requires separate Codex and OC
+acknowledgements: protecting the Harness does not protect its Gateway.
 
 ## Enforce the baseline
 
@@ -153,12 +158,16 @@ are not drift. Reconciliation complements mutation prevention. An unreachable na
 no drift. Recovery must preserve workspace and persistent runtime data; it must
 not use destructive native agent deletion. Agent document changes are ignored.
 
-First implement and qualify the managed-mode interface. A follow-up plan should
-define observation cadence, repair mechanics, and repair authorization; today's
+Dedicated OC is the first implementation and qualification milestone. It must
+run a separate Harness and Gateway with managed mode active on both. A follow-up
+plan should define observation cadence, repair mechanics, and repair
+authorization; today's
 worker reauthorizes the deployer and cannot silently assume system authority.
 
+Run the acceptance proof on dedicated OC first, then embedded OC and dedicated
+Codex. Verify initial deployment, resume, delegation, and an admitted OCE update.
 Acceptance requires real-runtime proof that prohibited native and model writes
 fail, permitted session/task work and trusted credential refresh still work,
 and resume/delegation cannot weaken policy. Also verify unsupported-mode refusal,
-truthful applied-generation reporting, an admitted OCE update, and drift recovery that preserves data. This
+truthful applied-generation reporting and drift recovery that preserves data. This
 RFC changes no runtime behavior; these checks have not run.
