@@ -25,9 +25,10 @@ export function immutableCopy<T>(value: T): Readonly<T> {
 const immutableSnapshots = new WeakSet<object>();
 
 /**
- * An `immutableCopy` that is also recorded as a snapshot: a deep-frozen structured clone
- * holding only plain data, which can never change. Consumers may therefore memoize what
- * they derive from it by object identity (`isImmutableSnapshot`).
+ * An `immutableCopy` that is also recorded as a snapshot, so consumers may memoize what they
+ * derive from it by object identity (`isImmutableSnapshot`). Pass only plain JSON-like data
+ * (objects, arrays, primitives): `deepFreeze` cannot freeze the contents of a Map, Set, Date
+ * or typed array, so a snapshot holding one could still change.
  */
 export function immutableSnapshot<T extends object>(value: T): Readonly<T> {
   const snapshot = immutableCopy(value);

@@ -1185,7 +1185,9 @@ export class PostgresPlatformState implements PlatformStateStore {
     // Read the policy once per unit of work, not once per decision. A READ ONLY REPEATABLE
     // READ unit sees one snapshot and writes nothing, so its policy cannot change. Any other
     // unit reuses the policy only while no statement has been issued since it was read, so
-    // its own IAM writes (and anything else it does) are always seen. Nothing outlives the
+    // its own IAM writes (and anything else it does) are always seen. A commit by another
+    // unit, even one nested in this unit's callback, is not a statement here: back-to-back
+    // decisions do not see it, as if it had committed just after them. Nothing outlives the
     // unit: a new unit always reads again.
     const cached = context.nativeIAM;
     if (cached !== undefined && (context.readOnly || cached.statement === context.statements)) {
