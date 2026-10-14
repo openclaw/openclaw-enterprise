@@ -151,7 +151,24 @@ function canRetryFailedProvisioning(job) {
   );
 }
 
-async function waitForProvisioning({ request, status, first }) {
+// Stop and Delete are the only operations that cancel provisioning, and a Stop keeps the Agent
+// and its name. So a cancelled job whose Agent is still there, and not being deleted, was
+// stopped (finding 1376). Without that Agent the console cannot tell, so it claims neither.
+async function retainedAgent(request, namespaceId, agentId) {
+  if (typeof agentId !== "string" || !agentId) {
+    return false;
+  }
+  try {
+    const agent = await request(
+      `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`,
+    );
+    return agent?.status !== "deleting";
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProvisioning({ request, status, first, namespaceId }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
   while (current?.status === "queued" || current?.status === "running") {
@@ -163,15 +180,19 @@ async function waitForProvisioning({ request, status, first }) {
     const next = await request(current.url);
     current = next.provisioning ?? next;
   }
-  status.textContent =
-    current?.status === "failed" && current.error?.code === "REVISION_STOPPED"
-      ? "Provisioning stopped."
-      : provisioningStatusText(current?.status);
+  // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
+  // is the owner's choice, not a failure to repair.
+  const stopped =
+    current?.status === "failed" &&
+    (current.error?.code === "REVISION_STOPPED" ||
+      (current.error?.code === "PROVISIONING_CANCELLED" &&
+        (await retainedAgent(request, namespaceId, current.agentId))));
+  status.textContent = stopped ? "Provisioning stopped." : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
     error.provisioningAgentId = current?.agentId;
     error.provisioningRevisionId = current?.revisionId;
-    error.provisioningCode = current?.error?.code;
+    error.provisioningStopped = stopped;
     error.provisioningTerminal = true;
     error.provisioningFailed = current?.status === "failed";
     error.canRetryProvisioning = error.provisioningFailed && canRetryFailedProvisioning(current);
@@ -208,6 +229,7 @@ async function finishProvisioningAttempt({ request, status, namespaceId, attempt
     request,
     status,
     first: provisioned,
+    namespaceId,
   });
 }
 
@@ -1635,9 +1657,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = "Outcome unknown. Retry resubmits the same request ID and saved references.";
       } else if (error.provisioningTerminal && error.canRetryProvisioning) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
-      } else if (error.provisioningRevisionId && error.provisioningCode === "REVISION_STOPPED") {
-        // A stopped Agent needs a new deployment, not a repaired failure.
-        detail = `${error.message} Open this Agent and deploy a new version when you want it running.`;
+      } else if (error.provisioningStopped) {
+        // A stopped Agent keeps its name and needs a deployment, not a repair or a new Agent.
+        detail = `${error.message} Open this Agent and deploy ${error.provisioningRevisionId ? "a new version" : "a version"} when you want it running.`;
       } else if (error.provisioningRevisionId) {
         detail = `${error.message} Open this Agent, correct the cause and deploy a new version.`;
       } else if (error.provisioningFailed) {
@@ -1652,7 +1674,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       } else {
         detail = rejectionMessage(error, mutationStarted);
       }
-      feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      if (error.provisioningStopped) {
+        // Not an error: keep the guidance out of the error colour. Later messages replace the span.
+        feedback.replaceChildren(
+          element("span", { className: "provisioning-stopped" }, feedbackText),
+        );
+      } else {
+        feedback.textContent = feedbackText;
+      }
       if (error.provisioningRevisionId && error.provisioningAgentId) {
         feedback.append(
           link(
@@ -1661,6 +1691,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
             context,
           ),
         );
+      } else if (error.provisioningStopped && error.provisioningAgentId) {
+        feedback.append(link(" Open Agent", `agents/${error.provisioningAgentId}`, context));
       }
       // A 400 to an unacknowledged request means the API never admitted it: a resend of
       // an admitted request returns that job before validation.

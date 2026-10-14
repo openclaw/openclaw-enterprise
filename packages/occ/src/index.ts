@@ -7380,7 +7380,7 @@ export class OpenClawController {
       }
       await state.provisioning.cancelByAgent(namespaceId, agentId, {
         code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled by Stop.",
+        message: "Provisioning was cancelled because the Agent was stopped.",
       });
       const stopped = await state.agents.transitionAgentDesiredRuntimeState(
         namespaceId,
@@ -7600,7 +7600,7 @@ export class OpenClawController {
       }
       await state.provisioning.cancelByAgent(namespace.id, agent.id, {
         code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled by deletion.",
+        message: "Provisioning was cancelled because the Agent was deleted.",
       });
       // Deletion ends delivery ownership immediately, including never-deployed Agents.
       await state.workspaceSetups.delete(namespace.id, agent.id);

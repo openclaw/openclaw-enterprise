@@ -69,8 +69,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   // Each accepted request fails in the worker: first a taken name (permanent), then an
   // unavailable dependency (transient). Its retry is then rejected after the job created
   // the Agent, which only the job's retry can finish, and the next retry is refused
-  // because the Agent's lifecycle changed. The third job is cancelled by Stop after it
-  // created its Agent (permanent). The fourth job's status is first unreadable, then it
+  // because the Agent's lifecycle changed. The third job is cancelled by deleting the Agent it
+  // created (permanent; the Agent is gone, so the name is free again). The fourth job's status is first unreadable, then it
   // has succeeded.
   // Each job that gets far enough creates its own Agent.
   const agentIds = [2, 3, 4].map((job) => `agt_00000000-0000-4000-8000-00000000c0d${job}`);
@@ -85,7 +85,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     },
     {
       code: "PROVISIONING_CANCELLED",
-      message: "Provisioning was cancelled. Create a new Agent to provision again.",
+      message: "Provisioning was cancelled because the Agent was deleted.",
       agentId: agentIds[1],
     },
   ];
@@ -296,7 +296,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
     .getByText(
-      "Provisioning was cancelled. Create a new Agent to provision again. Select Create Agent to submit a new request.",
+      "Provisioning was cancelled because the Agent was deleted. Select Create Agent to submit a new request.",
     )
     .waitFor();
   assert.equal(bodies.length, 3);
@@ -529,6 +529,112 @@ test("Dedicated Agent creation reports a first deployment stopped by the owner w
     await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
     false,
   );
+  await assertNotErrorColour(page.locator(".provisioning-stopped"));
+});
+
+// The stopped guidance is not an error, so it does not take the error colour.
+async function assertNotErrorColour(locator) {
+  const [colour, errorColour] = await locator.evaluate((node) => {
+    const view = node.ownerDocument.defaultView;
+    return [view.getComputedStyle(node).color, view.getComputedStyle(node.closest(".error")).color];
+  });
+  assert.notEqual(colour, errorColour);
+}
+
+// A Stop before the first revision is admitted cancels provisioning (PROVISIONING_CANCELLED) but
+// keeps the stopped Agent and its name, so "create a new Agent" would be refused as a duplicate.
+// The create page reads that Agent, names the stop and links it (finding 1376).
+test("Dedicated Agent creation reports a stop before the first deployment and links the kept Agent", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision cancelled", { ready: true });
+  // The Agent the cancelled job created and kept: stopped, with no versions.
+  const kept = await fixture.createAgent(namespace.id, "Kept Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
+    }),
+  );
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const url = `/namespaces/${namespace.id}/agents/provision/work_cancelled`;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          provisioning: {
+            workId: "work_cancelled",
+            status: "queued",
+            phase: "accepted",
+            attemptCount: 0,
+            updatedAt,
+            url,
+          },
+        },
+        meta,
+      }),
+    }),
+  );
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_cancelled`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          workId: "work_cancelled",
+          status: "failed",
+          phase: "configuration",
+          attemptCount: 1,
+          updatedAt,
+          url,
+          agentId: kept.id,
+          error: {
+            code: "PROVISIONING_CANCELLED",
+            message: "Provisioning was cancelled because the Agent was stopped.",
+          },
+        },
+        meta,
+      }),
+    }),
+  );
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Stopped before deployment");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByText(
+      "Provisioning was cancelled because the Agent was stopped. Open this Agent and deploy a version when you want it running.",
+    )
+    .waitFor();
+  await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/Provisioning failed|Create a new Agent/).count(), 0);
+  await assertNotErrorColour(page.locator(".provisioning-stopped"));
+  assert.equal(
+    await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+    false,
+  );
+  const open = page.getByRole("link", { name: "Open Agent", exact: true });
+  assert.equal(
+    await open.getAttribute("href"),
+    `/console/agents/${kept.id}?namespace=${namespace.id}`,
+  );
+  // The kept Agent's page has nothing failed to show: it simply has no deployment yet.
+  await open.click();
+  await page.getByRole("heading", { name: "Kept Agent" }).waitFor();
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("No readable deployments.", { exact: true }).waitFor();
+  assert.equal(await summary.getByText(/failed/i).count(), 0);
 });
 
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
