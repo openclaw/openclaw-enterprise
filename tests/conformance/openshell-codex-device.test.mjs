@@ -131,7 +131,12 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
       credential_gateway: "credential-gateway-openshell",
       credential_refresh: "credential-refresh-openshell",
     },
-    client: { clientForNamespace: () => client, credentialClientForNamespace: () => client },
+    client: {
+      clientForNamespace: () => client,
+      credentialClientForNamespace: () => client,
+      // The controlled transport models a gateway without a named Kubernetes placement.
+      placement: () => undefined,
+    },
   };
   const driver = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/local/bin/codex"] },
