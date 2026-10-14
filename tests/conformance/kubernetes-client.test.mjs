@@ -410,7 +410,10 @@ for (const [target, location] of [
       response.end("{}");
     });
     await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => other.close(resolve)));
+    t.after(() => {
+      other.closeAllConnections();
+      return new Promise((resolve) => other.close(resolve));
+    });
     const api = await recordingApiServer(directory, (request, response) => {
       // The API server's own answer for any other path: a body worth stealing.
       if (request.url !== STATUS_PROXY_PATH) {

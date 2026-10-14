@@ -114,9 +114,10 @@ export async function createKubernetesClientConfiguration(
  * proxy response is written by the Pod, and the API server passes some `Location`
  * values through, so following one could send this client's credential to another
  * API server path, or make it fetch another origin from the controller's network
- * position (finding 1347). The Kubernetes API does not redirect these requests, so
- * every client returns a 3xx as received: client-node reports it as an ApiException
- * with that status, and no second request is made.
+ * position (finding 1347). The Kubernetes API redirects no request the controller
+ * makes (the proxy's trailing-slash 301 needs a bare `/proxy` path), so every client
+ * returns a 3xx as received: client-node reports it as an ApiException with that
+ * status, and no second request is made.
  */
 export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
   return sdk.wrapHttpLibrary({

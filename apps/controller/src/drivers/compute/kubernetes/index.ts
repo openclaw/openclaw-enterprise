@@ -8864,8 +8864,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
           return notServing;
         }
-        // The client never follows a redirect (finding 1347). The Pod wrote this one: the
-        // status is unreadable, and a retry would get the same answer.
+        // The client never follows a redirect (finding 1347). Any 3xx here was written by the
+        // Pod: the status is unreadable, and a retry would get the same answer.
         const status = numericErrorStatus(error);
         if (status !== undefined && status >= 300 && status <= 399) {
           return redirected;
