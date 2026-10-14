@@ -1165,9 +1165,14 @@ class RuntimeStatusOversized extends Error {}
 async function limitRuntimeStatusBody(response: ResponseContext): Promise<ResponseContext> {
   const stream = response.body.stream();
   if (stream !== null) {
-    const bytes = await readCappedBody(stream, MAX_RUNTIME_STATUS_RESPONSE_BYTES);
+    let bytes = await readCappedBody(stream, MAX_RUNTIME_STATUS_RESPONSE_BYTES);
     if (bytes === undefined) {
-      throw new RuntimeStatusOversized();
+      // An error answer is judged by its status code (404/503 read as not serving), not its body.
+      if (response.httpStatusCode < 200 || response.httpStatusCode > 299) {
+        bytes = Buffer.alloc(0);
+      } else {
+        throw new RuntimeStatusOversized();
+      }
     }
     response.body = {
       text: async () => new TextDecoder().decode(bytes),
@@ -8848,7 +8853,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           options,
         );
       } catch (error) {
-        // Not retried: the next read would be just as large.
+        // An oversized 2xx is not retried: the next read would be just as large.
         if (error instanceof RuntimeStatusOversized) {
           return oversized;
         }
