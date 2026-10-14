@@ -116,11 +116,12 @@ reads or persistence:
 - `host` is an exact lowercase DNS name, not an IP address or wildcard.
 - `port` is 1 to 65535 and defaults to `443`.
 - `path` is an absolute path pattern and defaults to `/**`.
-- `env_var` names the Sandbox variable holding the placeholder. It is upper
-  case and cannot be `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, or
-  `LANG`, or start with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
+- `env_var` is the upper-case Sandbox variable holding the placeholder, not
+  `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, or a name starting
+  with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
 - `token_url` is an `https` URL without credentials, query, or fragment. Its
-  parsed, lowercased host follows the `host` rule and is not `localhost`.
+  host follows the `host` rule, has a dot, and is not a `localhost` or
+  `localdomain` name.
 - `client_id` is 1 to 256 visible characters; `scope` is space-separated
   OAuth2 scopes.
 

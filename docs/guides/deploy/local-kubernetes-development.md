@@ -144,11 +144,14 @@ If Agent Sandbox rollout fails, startup tries to print bounded controller status
 image identities and Warning reasons before the unchanged rollback; messages,
 environment values and logs are excluded.
 
-Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL, OCC and its
-Kubernetes worker in Compose. This OpenShell profile installs the pinned private
-Envoy route in k3d, mounts its service key and public CA only into the Compose
-controller and `worker-kubernetes`, and records the node hostname and Envoy
-NodePort in the Installation; skip manual hybrid routing.
+Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
+Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
+mounts its service key and public CA only into the controller and
+`worker-kubernetes`, and records the node hostname and Envoy NodePort in the
+Installation. It enables OCC native administration, publishes loopback HTTPS
+for console and Agent hosts, and prints the browser CA path.
+`OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
+Skip manual hybrid routing.
 
 First startup requires network access. To use reviewed local assets instead,
 set
@@ -169,21 +172,18 @@ startup defaults to Compose with Docker Compute.
 
 Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
 containing kubeconfig and credentials. Its default is `openclaw-development`
-under the temporary directory (macOS: `/private/var/folders/<id>/T`). To override,
-set absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup; parent
+under the temporary directory (macOS: `/private/var/folders/<id>/T`). Set absolute
+`OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup to override it; parent
 paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).
-`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds k3d
-readiness and each later startup wait. A cluster timeout triggers owned-resource
-rollback; follow the printed cleanup instruction if state is retained. A failed
-exclusive key-file write removes its partial output so you can retry after
-resolving the filesystem error. Existing destination files are never removed;
-if removal itself fails, the error reports both failures. Startup
-refuses an existing state directory or cluster. To pick up source changes,
-[rebuild the running services](#rebuild-after-a-source-edit); cleanup is for
-discarding the Installation. The state directory remains mode `0700`; generated
-files mounted into the non-root controller and worker are container-readable but
-inaccessible to other host users through that directory. The helper does not
-modify the default kubeconfig or current kubectl context.
+`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds cluster readiness and later waits.
+Failures roll back owned resources; retained state includes cleanup instructions.
+Failed exclusive key writes remove partial outputs, never existing files, and
+report removal errors alongside write errors.
+
+Startup refuses existing state or clusters. For source edits,
+[rebuild services](#rebuild-after-a-source-edit); cleanup discards the Installation.
+State stays mode `0700`; generated mounts are container-readable but inaccessible
+to other host users. The helper preserves the default kubeconfig and context.
 
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
@@ -266,11 +266,11 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints API and Kubernetes access paths. Sandbox Driver `none` also prints
-the HTTPS Console URL and browser CA; follow
+Startup prints API and Kubernetes access paths. Sandbox Driver `none` and
+Compose-backed OpenShell also print the HTTPS Console URL and browser CA; follow
 [Local Setup](../quickstart.md#open-the-platform-console) and its
 [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
-OpenShell does not configure that browser endpoint.
+Kubernetes-only OpenShell does not configure that browser endpoint.
 
 Use the printed paths with other tools:
 

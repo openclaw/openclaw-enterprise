@@ -147,7 +147,8 @@ the stock local-path StorageClass supports the Harness-only claim.
 
 ## Open an Agent's native admin UI
 
-For a separate console-managed Agent, follow [local native admin setup](deploy/native-admin.md#local-development).
-It requires exact-Agent `administer` permission and the Agent's native access policy.
-The first-Agent helper disables native UI and refuses to reuse its Agent after
-outside Configuration edits.
+Follow [local native admin setup](deploy/native-admin.md#local-development). It
+requires exact-Agent `administer` permission and the Agent's native access
+policy. The first-Agent helper can opt in a new Agent when Local setup uses the
+Compose control plane with Kubernetes Compute and OpenShell; other profiles use
+a separate console-managed Agent.

@@ -488,6 +488,71 @@ for (const body of ["truncated", "held open"]) {
   });
 }
 
+// Finding 1355: undici refuses a 100 Continue or an unrequested 101 with a status-less socket
+// error. The Pod chose that answer, so the readback reports it once instead of retrying it.
+for (const [interim, write] of [
+  [
+    "100 Continue",
+    (response) => {
+      response.writeContinue();
+      response.writeHead(302, { location: "/api/v1/namespaces/occ-system/secrets/x" });
+      response.end();
+    },
+  ],
+  [
+    "101 Switching Protocols",
+    (response) =>
+      response.socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n",
+      ),
+  ],
+]) {
+  test(`runtime status readback reports an unrequested ${interim} once, without a retry`, async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const api = await recordingApiServer(directory, (request, response) => {
+      if (request.url !== STATUS_PROXY_PATH) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"kind":"Secret"}');
+        return;
+      }
+      write(response);
+    });
+    t.after(() => api.close());
+    const authentication = await writeTokenKubeconfig(directory, api);
+    const outcome = await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
+      statusReadback(authentication),
+    );
+    assert.equal(
+      outcome.error?.message,
+      "Runtime status answered with an unrequested 1xx status.",
+      String(outcome.error?.cause ?? outcome.error),
+    );
+    assert.deepEqual(api.requests, [
+      { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" },
+    ]);
+  });
+}
+
+test("runtime status readback still retries a dropped connection", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const api = await recordingApiServer(directory, (request, response) => {
+    // The first read loses its connection mid-request, as when an API server restarts.
+    if (api.requests.length === 1) {
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"revisionId":"revision-1"}');
+  });
+  t.after(() => api.close());
+  assert.deepEqual(await statusReadback(await writeTokenKubeconfig(directory, api)), {
+    value: { status: { revisionId: "revision-1" }, podUid: "agent-uid", containerId: undefined },
+  });
+  assert.equal(api.requests.length, 2);
+});
+
 test("runtime status readback through the production client keeps 200 and 404 answers", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

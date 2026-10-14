@@ -16,6 +16,10 @@ import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-fa
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+function isDevelopmentBrowserHost(hostname) {
+  return loopbackHosts.has(hostname) || hostname.endsWith(".localhost");
+}
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
@@ -245,7 +249,7 @@ function configuration() {
   refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
   refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
   const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
-  if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {
+  if (mode === "development" && !isDevelopmentBrowserHost(new URL(authBaseURL).hostname)) {
     throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
   }
 

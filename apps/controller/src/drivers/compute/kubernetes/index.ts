@@ -1161,6 +1161,27 @@ class RuntimeStatusOversized extends Error {}
 class RuntimeStatusRedirected extends Error {}
 
 /**
+ * undici's refusal of an interim answer the request never asked for: a `100 Continue`
+ * ("bad response") or a `101` without an upgrade request ("bad upgrade"). The peer chose that
+ * answer, so unlike a dropped or reset connection, a retry gets the same one (finding 1355).
+ * The texts are undici's (`lib/dispatcher/client-h1.js` `onHeadersComplete`, undici 8.11.2):
+ * recheck them when undici changes, or these answers fall back to the generic retry.
+ */
+function unsolicitedInterimResponse(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (
+      (current as { readonly code?: unknown }).code === "UND_ERR_SOCKET" &&
+      (current.message === "bad response" || current.message === "bad upgrade")
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
  * Reads a Pod proxy response up to the status limit instead of buffering all of it.
  * Error bodies are capped too: the client reads them unbounded for its exception.
  */
@@ -8857,6 +8878,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const notServing = Symbol("not serving");
     const oversized = Symbol("oversized");
     const redirected = Symbol("redirected");
+    const interim = Symbol("interim");
     const options = await runtimeStatusOptions();
     const raw = await this.request(async () => {
       try {
@@ -8875,6 +8897,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         if (error instanceof RuntimeStatusRedirected) {
           return redirected;
+        }
+        if (unsolicitedInterimResponse(error)) {
+          return interim;
         }
         if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
           return notServing;
@@ -8896,6 +8921,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (raw === redirected) {
       throw new DependencyUnavailableError("Runtime status answered with a redirect.");
+    }
+    if (raw === interim) {
+      throw new DependencyUnavailableError(
+        "Runtime status answered with an unrequested 1xx status.",
+      );
     }
     const parsed = this.boundedRuntimeStatusResponse(raw);
     const latestPods = (await this.revisionPods(revision, namespace, container)).filter(

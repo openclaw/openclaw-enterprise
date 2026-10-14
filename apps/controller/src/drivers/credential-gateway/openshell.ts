@@ -142,21 +142,41 @@ function exactDnsName(host: string): boolean {
 }
 
 /**
+ * Last labels that hosts files map to loopback: `localhost` (RFC 6761) and the
+ * `localhost.localdomain`, `localhost4.localdomain4` and `localhost6.localdomain6` aliases.
+ */
+const LOOPBACK_LAST_LABELS = new Set(["localhost", "localdomain", "localdomain4", "localdomain6"]);
+
+/**
  * The OAuth2 token endpoint host. The OpenShell gateway, not the Sandbox, posts the source's
  * client secret and refresh token there from its own network position, so the parsed hostname
  * follows the protected host's DNS-name rule (no IP address in any spelling the URL parser
- * accepts) and is not a `localhost` name (finding 1348).
+ * accepts) and is not a `localhost` name (finding 1348). The gateway resolves it through its
+ * Pod's `/etc/hosts` first, whose loopback, link-local and own-hostname aliases are single-label
+ * names (`ip6-localhost`, `ip6-allnodes`, the Pod's hostname) or end in `localdomain`, so those
+ * shapes are refused too; in-cluster issuers keep their Service names
+ * (`keycloak.idp.svc.cluster.local`) (finding 1354).
  */
 function tokenUrlHostAllowed(tokenUrl: string): boolean {
   if (!URL.canParse(tokenUrl)) {
     return false;
   }
   const host = new URL(tokenUrl).hostname;
-  return exactDnsName(host) && host !== "localhost" && !host.endsWith(".localhost");
+  const labels = host.split(".");
+  return exactDnsName(host) && labels.length > 1 && !LOOPBACK_LAST_LABELS.has(labels.at(-1) ?? "");
 }
 
 function tokenUrlHostMessage(type: string): string {
-  return `The ${type} token_url host must be an exact DNS name, not an IP address or localhost.`;
+  return `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost or localdomain name.`;
+}
+
+/** Like the protected endpoint's port: 0 names no endpoint. */
+function tokenUrlPortAllowed(tokenUrl: string): boolean {
+  return URL.canParse(tokenUrl) && new URL(tokenUrl).port !== "0";
+}
+
+function tokenUrlPortMessage(type: string): string {
+  return `The ${type} token_url port must be 1 to 65535.`;
 }
 
 /** Checks the protected endpoint and placeholder variable shared by every non-model type. */
@@ -198,12 +218,8 @@ function validateOAuth2Config(type: string, config: Readonly<Record<string, stri
   if (!tokenUrlHostAllowed(config.token_url ?? "")) {
     throw new CredentialSourceConfigError("token_url", tokenUrlHostMessage(type));
   }
-  // Like the protected endpoint's port: 0 names no endpoint.
-  if (new URL(config.token_url ?? "").port === "0") {
-    throw new CredentialSourceConfigError(
-      "token_url",
-      `The ${type} token_url port must be 1 to 65535.`,
-    );
+  if (!tokenUrlPortAllowed(config.token_url ?? "")) {
+    throw new CredentialSourceConfigError("token_url", tokenUrlPortMessage(type));
   }
   if (!CLIENT_ID.test(config.client_id ?? "")) {
     throw new CredentialSourceConfigError(
@@ -271,6 +287,9 @@ function oauth2SourceType(
       // A source stored before the token_url host rule fails here until it is replaced.
       if (!tokenUrlHostAllowed(config.token_url ?? "")) {
         throw new ScopeViolationError(tokenUrlHostMessage(type));
+      }
+      if (!tokenUrlPortAllowed(config.token_url ?? "")) {
+        throw new ScopeViolationError(tokenUrlPortMessage(type));
       }
       return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
