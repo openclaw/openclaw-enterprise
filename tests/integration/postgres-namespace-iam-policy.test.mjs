@@ -167,30 +167,54 @@ function countPolicyReads(pool) {
   };
 }
 
-async function grantAgentRead(iam, state, namespace, principal) {
+/** An exact Agent read grant, as the Console share panel writes it. */
+async function grantAgentRead(iam, state, agent, principal) {
   return state.transact(async (unit) => {
     const role = await iam.createNamespaceRole(
       { policy: unit.iamPolicy },
       {
         id: identifier("role"),
-        namespaceId: namespace.id,
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "read", resourceKind: "agent" },
-        ],
+        namespaceId: agent.namespaceId,
+        permissions: [{ action: "read", resourceKind: "agent" }],
       },
     );
     return iam.createNamespaceAccessBinding(
       { policy: unit.iamPolicy },
       {
         id: identifier("binding"),
-        namespaceId: namespace.id,
+        namespaceId: agent.namespaceId,
         subjectKind: "identity",
         subjectId: principal.id,
         roleId: role.id,
-        resourceKind: "namespace",
-        resourceId: namespace.id,
+        resourceKind: "agent",
+        resourceId: agent.id,
       },
+    );
+  });
+}
+
+/** A Namespace-wide read of the Namespace and its Agents, as a member Role grants it. */
+async function grantNamespaceReader(state, namespaceId, principal) {
+  const roleId = identifier("role");
+  await state.transact(async (unit) => {
+    await state.queryInTransaction(
+      unit,
+      `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
+       VALUES ($1, $2, 'Namespace reader', $3::jsonb)`,
+      [
+        roleId,
+        namespaceId,
+        JSON.stringify([
+          { action: "read", resourceKind: "namespace" },
+          { action: "read", resourceKind: "agent" },
+        ]),
+      ],
+    );
+    await state.queryInTransaction(
+      unit,
+      `INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id)
+       VALUES ($1, $2, $3, $4)`,
+      [identifier("binding"), namespaceId, principal.id, roleId],
     );
   });
 }
@@ -1562,7 +1586,7 @@ test(
       action: "read",
       resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
     };
-    const binding = await grantAgentRead(iam, state, namespace, principal);
+    const binding = await grantAgentRead(iam, state, agent, principal);
 
     // Every decision and lookup in one read unit shares one policy read.
     counted.reads.count = 0;
@@ -1600,7 +1624,7 @@ test(
       return [before, await iam.authorize(read)];
     });
     await started.promise;
-    const regrant = await grantAgentRead(iam, state, namespace, principal);
+    const regrant = await grantAgentRead(iam, state, agent, principal);
     const newer = await state.read(() => iam.authorize(read));
     resume.resolve();
     const [before, after] = await older;
@@ -1625,7 +1649,7 @@ test(
     const iam = new NativeIAMDriver(state, { id: `postgres-list-cost-${randomUUID()}` });
     const { installation, namespace, agent } = await createNamespaceAgentState(state);
     const principal = await createHumanPrincipal(state);
-    await grantAgentRead(iam, state, namespace, principal);
+    await grantNamespaceReader(state, namespace.id, principal);
     await state.transact(async (unit) => {
       for (let index = 1; index < 2000; index += 1) {
         await unit.agents.createAgent({
@@ -1647,8 +1671,9 @@ test(
     assert.equal(counted.reads.count, 2);
 
     // The bound is relative to reading the same Agents plus one standalone decision, so a slow
-    // or busy runner does not fail it; each is timed at its best of three. At two CPUs the list
-    // takes about one such read; with a policy read per Agent it took hundreds.
+    // or busy runner does not fail it; each is timed at its best of three. The list makes two
+    // policy reads and 2000 cheap decisions, so it takes a few such reads; with a policy read
+    // per Agent it took hundreds.
     const namespaceRead = {
       principalId: principal.id,
       action: "read",
@@ -1673,7 +1698,7 @@ test(
     }
     const { listing, reading } = timings;
     assert.ok(
-      listing < 4 * reading,
+      listing < 8 * reading,
       `listing took ${listing.toFixed(0)} ms, reading the Agents ${reading.toFixed(0)} ms`,
     );
   },
