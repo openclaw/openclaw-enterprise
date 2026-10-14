@@ -4,6 +4,8 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   environmentReference,
+  invalidHeaderNameRequirement,
+  isAdmittedHeaderName,
   isCredentialHeaderName,
   ModelCredentialValueError,
   urlHoldsUserinfo,
@@ -75,11 +77,14 @@ function gitConfigParameters(text: string): [string, string][] {
 }
 
 // A credential header outside `models.providers` (MCP servers, memory search, media models, web
-// fetch, OpenTelemetry export) and a key outside it: neither is the Agent's model credential.
+// fetch, OpenTelemetry export, edge auth), a key and a media query option outside it: none is
+// the Agent's model credential.
 const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
+const credentialOptionMessage = (path: string): string =>
+  `Configuration field ${path} holds a credential value inline, where a reference is required. Make the option value a \${NAME} reference.`;
 
 const urlCostMessage = (path: string): string =>
   `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
@@ -368,13 +373,26 @@ export function validateModelCredentialReferences(
     }
   };
 
-  // Each credential header in the headers object at `headersPath` must hold a reference.
+  // Each credential header in the headers object at `headersPath` must hold a reference. Outside
+  // `models.providers`, whose names the model provider settings check, `message` is passed and a
+  // name that is not an HTTP field name (`"Authorization "`, a lookalike) is refused too: the
+  // credential rule would not recognize a literal under it, which would reach the ConfigMap.
   const refuseCredentialHeaders = (
     headersPath: SettingPath,
     headers: unknown,
     message?: (path: string) => string,
   ): void => {
     for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
+      if (message && !isAdmittedHeaderName(name, options, headersPath)) {
+        const requirement = invalidHeaderNameRequirement(
+          name,
+          options.unresolved?.([...headersPath, name], true),
+        );
+        throw new ModelCredentialValueError(
+          pointer(...headersPath),
+          (path) => `Configuration field ${path} ${requirement}.`,
+        );
+      }
       const credential = credentialHeader(headersPath, name);
       if (credential) {
         validateReference(value, pointer(...headersPath, name), credential.authorization, message);
@@ -414,6 +432,21 @@ export function validateModelCredentialReferences(
     // environment reference fills its host or port (finding 1250).
     refuseUrlUserinfo([...path, "baseUrl"], row?.baseUrl);
     refuseUrlUserinfo([...path, "request", "proxy", "url"], proxy?.url);
+    // A media entry's `providerOptions.<provider>` go into the request's query string, where a
+    // provider such as Google reads its key: an option named as a credential, in any case or
+    // camelCase, holds a reference.
+    for (const [provider, settings] of Object.entries(asRecord(row?.providerOptions) ?? {})) {
+      const optionsPath = [...path, "providerOptions", provider];
+      for (const [option, value] of Object.entries(asRecord(settings) ?? {})) {
+        if (
+          [option, option.replaceAll(/([a-z0-9])([A-Z])/g, "$1-$2")].some((name) =>
+            isCredentialHeaderName(name, options, optionsPath),
+          )
+        ) {
+          validateReference(value, pointer(...optionsPath, option), false, credentialOptionMessage);
+        }
+      }
+    }
   };
 
   const providers = asRecord(asRecord(values.models)?.providers);
@@ -550,9 +583,11 @@ export function validateModelCredentialReferences(
     }
     // The other key and header slots OpenClaw sends a provider (finding 1307): the memory search
     // embedding endpoint's (the Gateway's and each Agent's), every media understanding entry's
-    // request (`tools.media.models`, each capability's defaults and the older per-capability
-    // `models` lists), web fetch and OpenTelemetry export headers, a skill's key and the cron
-    // webhook's bearer token. These hold references, as a model provider's do.
+    // request (`tools.media.models` and each capability's defaults; the per-capability `models`
+    // lists older OpenClaw releases read, which Doctor moves, are checked too, since a literal
+    // there still reaches the ConfigMap), web fetch, OpenTelemetry export and remote Gateway edge
+    // auth headers, a skill's key and the cron webhook's bearer token. These hold references, as
+    // a model provider's do.
     const searches: [SettingPath, unknown][] = [
       [["memory", "search"], get(values, ["memory", "search"])],
       ...keyed(["agents", "entries"], ["memory", "search"]),
@@ -588,6 +623,7 @@ export function validateModelCredentialReferences(
     for (const path of [
       ["tools", "web", "fetch", "headers"],
       ["diagnostics", "otel", "headers"],
+      ["gateway", "remote", "edgeAuth"],
     ]) {
       refuseCredentialHeaders(path, get(values, path), credentialHeaderMessage);
     }

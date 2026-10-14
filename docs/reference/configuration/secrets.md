@@ -76,14 +76,16 @@ that compete with the Agent's binding.
 Writes and deployment also require a `${NAME}` reference or a SecretRef in the
 other key and credential header slots the Gateway sends: MCP server `headers`
 (also under `nodeHost`), `memory.search.remote.apiKey` and `.headers` (also
-under `agents.entries.<id>`), every `tools.media` request (`models[]`, each
-capability's defaults and its older `models` list: `headers`, `request.headers`,
-`request.auth` and the TLS client keys), speech (`tts`, personas, per-Agent and
+under `agents.entries.<id>`), every `tools.media` request (`models[]` and each
+capability's defaults: `headers`, `request.headers`, `request.auth`, the TLS
+client keys and credential-named `providerOptions`, also in the per-capability
+`models` lists older releases read), speech (`tts`, personas, per-Agent and
 voice blocks) and Talk provider `apiKey`s, `tools.web.fetch.headers`,
-`diagnostics.otel.headers`, `skills.entries.<id>.apiKey` and
-`cron.webhookToken`. Headers follow the model provider's credential name rule.
-A stored document that predates one of these rules still reads, so its operator
-can replace it.
+`diagnostics.otel.headers`, `gateway.remote.edgeAuth`,
+`skills.entries.<id>.apiKey` and `cron.webhookToken`. Headers follow the model
+provider's credential name rule, and a name that is not an HTTP field name is
+refused. A stored document that predates one of these rules still reads, so its
+operator can replace it.
 
 OpenClaw owns SecretRef syntax, provider configuration, and validation. OCC,
 ConfigurationDriver, and Kubernetes Compute preserve native `env`, `file`, and

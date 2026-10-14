@@ -26,8 +26,9 @@ another-provider fallbacks at save. A Preset variable's provider is checked at
 launch; a number or boolean model variable is refused. On every Compute,
 Configuration and Preset saves and deployment also refuse a literal key in
 `memory.search.remote` (also per Agent), `tools.media` requests, speech and Talk
-provider `apiKey`s, web fetch and OpenTelemetry credential headers, skill
-`apiKey`s and `cron.webhookToken`.
+provider `apiKey`s, web fetch, OpenTelemetry and edge auth credential headers,
+skill `apiKey`s and `cron.webhookToken`, and a header name there or in MCP
+`headers` that is not an HTTP field name.
 
 **Who is affected.** Configurations and Presets that select a second provider
 or give it an `apiKey`, set any `apiKey` for Dedicated Codex, or hold a

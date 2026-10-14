@@ -3490,6 +3490,7 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
     `${inline(field)} Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
   const userinfo = (field) =>
     `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const option = (field) => `${inline(field)} Make the option value a \${NAME} reference.`;
   const refused = [
     [{ memory: { search: { remote: { apiKey: sentinel } } } }, key("/memory/search/remote/apiKey")],
     [
@@ -3562,6 +3563,34 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
       key("/skills/entries/weather/apiKey"),
     ],
     [{ cron: { webhookToken: sentinel } }, key("/cron/webhookToken")],
+    // Media query options carry a provider's key; a camelCase name is matched by its words.
+    [
+      { tools: { media: { models: [{ providerOptions: { google: { key: sentinel } } }] } } },
+      option("/tools/media/models/0/providerOptions/google/key"),
+    ],
+    [
+      { tools: { media: { audio: { providerOptions: { deepgram: { accessToken: sentinel } } } } } },
+      option("/tools/media/audio/providerOptions/deepgram/accessToken"),
+    ],
+    [
+      { gateway: { remote: { edgeAuth: { "CF-Access-Client-Secret": sentinel } } } },
+      header("/gateway/remote/edgeAuth/CF-Access-Client-Secret"),
+    ],
+    // A header name no HTTP client sends would hide a literal from the credential rule.
+    [
+      { memory: { search: { remote: { headers: { "Authorization ": `Bearer ${sentinel}` } } } } },
+      'Configuration field /memory/search/remote/headers must use valid HTTP header names, not "Authorization…".',
+    ],
+    [
+      {
+        mcp: {
+          servers: {
+            docs: { url: "https://mcp.example.test", headers: { "X-Api-Key\t": sentinel } },
+          },
+        },
+      },
+      'Configuration field /mcp/servers/docs/headers must use valid HTTP header names, not "X-Api-Key…".',
+    ],
   ];
   for (const [values, message] of refused) {
     await t.test(`refuses ${message.split(" ")[2]}`, async () => {
@@ -3604,7 +3633,10 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
     tools: {
       media: {
         models: [{ provider: "openai", model: "gpt-5", headers }],
-        audio: { request: { auth: { mode: "authorization-bearer", token: "${MEDIA_TOKEN}" } } },
+        audio: {
+          request: { auth: { mode: "authorization-bearer", token: "${MEDIA_TOKEN}" } },
+          providerOptions: { deepgram: { model: "nova-3", smart_format: true, key: "${DG_KEY}" } },
+        },
         image: { models: [{ request: { headers } }] },
       },
       web: { fetch: { headers: { Authorization: "Bearer ${FETCH_TOKEN}", "User-Agent": "oce" } } },
@@ -3620,6 +3652,14 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
     diagnostics: { otel: { headers: { "x-api-key": "${OTEL_KEY}", "x-tenant": "oce" } } },
     skills: { entries: { weather: { apiKey: secretRef("WEATHER_KEY") } } },
     cron: { webhookToken: "${CRON_WEBHOOK_TOKEN}" },
+    gateway: {
+      remote: {
+        edgeAuth: {
+          "CF-Access-Client-Id": "oce.access",
+          "CF-Access-Client-Secret": "${CF_SECRET}",
+        },
+      },
+    },
   };
   const created = await request(context.app, "POST", configurations, {
     body: { kind: "agent", values: accepted },
