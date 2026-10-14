@@ -632,6 +632,8 @@ test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or 
     "https://localhost6.localdomain6/token",
     "https://keycloak/token",
     "https://openshell-gateway-0:8443/token",
+    // An SRV-style `_port._protocol` name is not a host name (finding 1366).
+    "https://_grpc._tcp.openshell-gateway/token",
   ];
   // In-cluster issuers have DNS names, which the protected host accepts too.
   const accepted = [
@@ -798,6 +800,12 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://openshell-gateway.openshell-system.svc/token",
     "https://openshell-gateway.openshell-system/token",
     "https://openshell-gateway-0.openshell-gateway/token",
+    // CoreDNS reads two leading labels as a port and protocol, case-insensitively, and the
+    // search list completes them; whatever the port name, they are refused (finding 1366).
+    "https://grpc.tcp.openshell-gateway/token",
+    "https://GRPC.TCP.openshell-gateway/token",
+    "https://grpc.tcp.openshell-gateway-peer/token",
+    "https://any.any.openshell-gateway/token",
     "https://keycloak.openshell-system.svc.example.internal/token",
     "https://10-42-0-5.openshell-system.pod.cluster.local/token",
   ];
@@ -826,6 +834,9 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://keycloak.oce-keycloak-0a1b2c3d.svc.cluster.local:8443/realms/occ/token",
     "https://keycloak.occ-development-keycloak.svc.cluster.local/token",
     "https://keycloak.idp/token",
+    // Three labels ending in another Service name the gateway's namespace only through a
+    // Service the OpenShell chart does not create there, and never the gateway itself.
+    "https://a.b.keycloak/token",
     "https://kubernetes.default.svc/token",
     "https://openshell-system.example/token",
     "https://login.openshell-gateway.example/token",
@@ -900,6 +911,8 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     `https://openshell-gateway-0.openshell-gateway-peer.${tenant}.svc.cluster.local/token`,
     `https://openshell-gateway.${tenant}.svc/token`,
     "https://openshell-gateway-0.openshell-gateway-peer/token",
+    "https://grpc.tcp.openshell-gateway/token",
+    "https://GRPC.TCP.openshell-gateway-peer/token",
   ];
   const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
   for (const [index, token_url] of tenantOwn.entries()) {

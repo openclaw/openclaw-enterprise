@@ -82,7 +82,9 @@ NetworkPolicy does not police (finding 1356):
   (`apps/controller/src/backends/openshell.ts:placement`), any name in that
   namespace's `svc` or `pod` zone, whatever the cluster domain, and the shorter
   names the gateway Pod's DNS search list completes into it: `<x>.<namespace>`, `<x>.<y>.<namespace>`, and
-  `<pod>.<service>-peer`, the StatefulSet Pod's own name. An `endpoint` host
+  any name of up to three labels ending in the gateway Service or `<service>-*`. CoreDNS reads the leading
+  labels as an endpoint (`<pod>.<service>-peer`, the StatefulSet Pod's own name) or a port and protocol
+  (`grpc.tcp.<service>`), so the label count decides, not the port name (finding 1366). An `endpoint` host
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
   registration and attach know it; registration's profile check refuses the
@@ -235,6 +237,8 @@ the record `deleting` for retry.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366 - bc85338f2)
 
 - 2026-10-14 01:13: Check current provider ownership before refresh mutation and retain fresh-login recovery after a poll timeout. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 
