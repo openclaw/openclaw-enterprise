@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-14
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -175,14 +175,14 @@ plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
 requirements and removes their ConfigMap paths from the remaining environment.
 
 `OpenShellSandboxDriver.configureAgent` retains `workspace-write` and user review.
-OpenShell blocks the user namespaces required by nested bubblewrap, so model
-readiness does not prove shell execution.
+OpenShell blocks nested bubblewrap user namespaces; model readiness does not
+prove shell execution.
 
-PAT bootstrap (`prepareHarnessAuth` and
+PAT bootstrap (`prepareHarnessAuth`;
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
-writes only the opaque placeholder to private `auth.json`, removes the child
-override, and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
-admit bootstrap and model traffic. Failure keeps the revision inactive.
+writes an opaque placeholder to private `auth.json`, clears the child override,
+and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+admit bootstrap and model traffic; failure keeps revisions inactive.
 For API-key sources, the credential gateway derives the profile from immutable `config.base_url`,
 defaulting to OpenAI `/v1`. Its shared validator rejects invalid endpoints before
 [registration](credential-source-lifecycle.md#1-admit-the-registration-request).
@@ -358,6 +358,8 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

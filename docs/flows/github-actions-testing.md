@@ -1,20 +1,20 @@
 ---
 created: 2026-09-04
 updated: 2026-10-14
-last_updated_session: authoring-run/0733d076-37af-4fd5-ade5-869487072f47
+last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-CI runs twenty-two noncredentialed lanes; docs-only PRs run Suite Audit and docs checks. `CI Required` rejects missing or skipped coverage. Neither proves credentialed integrations.
+CI's twenty-two noncredentialed lanes reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: trusted PR Codex and OpenShell jobs, outside `CI Required`.
-- `.github/workflows/full-integration.yml:jobs`: manual integration from main or an explicitly approved Kubernetes model or OpenShell branch, bound to the dispatched commit.
+- `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
 
@@ -50,7 +50,7 @@ graph TD
 
 ### 1. Select one source revision and coverage group
 
-`scripts/ci/run-tests.mjs:main` handles local and workflow audit, run and aggregation.
+`scripts/ci/run-tests.mjs:main` audits, runs and aggregates both locally and in CI.
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
@@ -230,6 +230,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 16:37: Document hosted QA image cleanup. (authoring-run/0733d076-37af-4fd5-ade5-869487072f47 - 1c406aef)
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-13
-last_updated_session: authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2
+updated: 2026-10-14
+last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
 ---
 
 # Credential source lifecycle Flow
@@ -22,9 +22,8 @@ freezes identity in the AgentRevision; the worker passes the live record to Comp
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:deleteCredentialSource`
-- Assumptions: the Installation selected a Credential Gateway that belongs to an
-  `openshell` Backend, a Sandbox, and bundled Kubernetes Compute; the Namespace
-  is `ready`; the caller holds the grants named in each phase.
+- Assumptions: a `ready` Namespace; an Installation selecting a Credential Gateway in an
+  `openshell` Backend, a Sandbox and bundled Kubernetes Compute; and per-phase caller grants.
 
 ## Flow
 
@@ -311,6 +310,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-13 20:30: Document provider-managed Codex PAT authentication. (01a136ee-8824-7043-b9e2-49eccacac3bd - ed9018c09)
 - 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
