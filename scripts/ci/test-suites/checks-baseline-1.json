@@ -7,6 +7,7 @@
     "tests/integration/dev-up.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/integration/stored-document-serialization.test.mjs",
+    "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
@@ -280,6 +281,9 @@
     },
     {
       "path": "tests/integration/stored-document-serialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/list-summaries.test.mjs"
     },
     {
       "path": "tests/integration/production-controller-security.test.mjs"

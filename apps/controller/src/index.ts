@@ -1752,7 +1752,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
-      operation.operationId !== "deleteServiceAccount"
+      operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "listAgentRevisions"
     ) {
       throw failure(
         400,

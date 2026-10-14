@@ -76,9 +76,6 @@ function clientAgentProvisioning(
   };
 }
 
-/** Revisions per list page when the caller names no limit; the route caps it at 100. */
-const REVISION_PAGE_DEFAULT = 50;
-
 function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, unknown> {
   if ("configurationReadError" in revision) {
     return { ...revision };
@@ -422,8 +419,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const agentId = params.agentId!;
       // The route schema admits only decimal limits 1-100 and `v1.<revision number>` cursors.
       const query = request.query as { limit?: string; cursor?: string };
+      // Without a limit the page holds the default 50 revisions.
       const page = await controller.listRevisions(context.actorId, namespaceId, agentId, {
-        limit: query.limit === undefined ? REVISION_PAGE_DEFAULT : Number(query.limit),
+        limit: query.limit === undefined ? 50 : Number(query.limit),
         ...(query.cursor === undefined ? {} : { before: Number(query.cursor.slice(3)) }),
       });
       reply.send({

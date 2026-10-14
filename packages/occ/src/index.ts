@@ -3470,7 +3470,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId: string,
-    page: { readonly before?: number; readonly limit: number },
+    page: { readonly before?: number; readonly limit: number } = { limit: 50 },
   ): Promise<Readonly<AgentRevisionSummaryPage>> {
     if (!Number.isSafeInteger(page.limit) || page.limit < 1) {
       throw new ScopeViolationError("The revision page size is invalid.");

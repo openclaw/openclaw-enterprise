@@ -6665,7 +6665,23 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "GET",
     `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/revisions`,
   );
-  assert.deepEqual(admittedRevisions.data, [readyDeployment.data, nextDeployment.data]);
+  // The list returns summaries, newest first, on one page.
+  const summary = (revision) => ({
+    id: revision.id,
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    revision: revision.revision,
+    backendId: revision.backendId,
+    configurationId: revision.configurationId,
+    configurationGeneration: revision.configurationGeneration,
+    harness: revision.harness,
+    createdAt: revision.createdAt,
+  });
+  assert.deepEqual(admittedRevisions.data, [
+    summary(nextDeployment.data),
+    summary(readyDeployment.data),
+  ]);
+  assert.equal(admittedRevisions.body.meta.nextCursor, null);
   assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.data.id, namespaceB.data.id]);
 
   const deleting = await injectedRequest(

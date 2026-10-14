@@ -1308,6 +1308,64 @@ test(
       });
       assert.equal(foreignNamespaceDecision.allowed, false);
     }
+
+    // Finding 1323 (bughunt-69): 64 revisions and 64 Presets of about 0.9 MB each. Full lists
+    // decoded every document (8-10 s on two CPUs); summaries read none into the API, and a
+    // summary page opens each row's snapshot once in the database for three top-level fields.
+    const large = JSON.stringify(
+      Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"])),
+    );
+    await pool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT 'rev_' || gen_random_uuid(), namespace_id, agent_id, 5000 + n, backend_id,
+              jsonb_set(admitted_spec, '{draft_spec,env}', jsonb_build_object('vars', $2::jsonb)),
+              admitted_at
+       FROM occ.agent_revisions, generate_series(1, 64) AS n WHERE id = $1`,
+      [fixture.revision.id, large],
+    );
+    await pool.query(
+      `INSERT INTO occ.presets (id, namespace_id, name, template, created_at)
+       SELECT 'pre_' || gen_random_uuid(), $1, 'Heavy preset ' || n,
+              jsonb_build_object('configuration',
+                jsonb_build_object('values', jsonb_build_object('env', $2::jsonb))),
+              clock_timestamp()
+       FROM generate_series(1, 64) AS n`,
+      [fixture.namespace.id, large],
+    );
+    const fastest = async (read) => {
+      let best = Infinity;
+      let result;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const started = performance.now();
+        result = await state.read(read);
+        best = Math.min(best, performance.now() - started);
+      }
+      return { result, ms: Math.round(best) };
+    };
+    const revisionPage = await fastest((view) =>
+      view.revisions.pageRevisionSummaries(fixture.namespace.id, fixture.agent.id, {
+        limit: 100,
+      }),
+    );
+    const heavyRevisions = revisionPage.result.revisions.filter(
+      ({ revision }) => revision > 5000,
+    );
+    assert.deepEqual(
+      heavyRevisions.slice(0, 2).map(({ revision }) => revision),
+      [5064, 5063],
+    );
+    assert.equal(heavyRevisions.length, 64);
+    assert.equal(heavyRevisions[0].harness.mode, fixture.revision.harness.mode);
+    const presetSummaries = await fastest((view) =>
+      view.presets.listPresetSummaries(fixture.namespace.id),
+    );
+    assert.ok(presetSummaries.result.length >= 64);
+    context.diagnostic(
+      `64 x 0.9 MB: revision summary page ${revisionPage.ms} ms, Preset summaries ${presetSummaries.ms} ms`,
+    );
+    assert.ok(revisionPage.ms < 1_000, `revision summary page took ${revisionPage.ms} ms`);
+    assert.ok(presetSummaries.ms < 1_000, `Preset summaries took ${presetSummaries.ms} ms`);
   },
 );
 

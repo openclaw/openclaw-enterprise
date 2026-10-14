@@ -61,7 +61,9 @@ function serializers(operationId, status = "200") {
 }
 
 const routes = Object.fromEntries(
-  ["getConfiguration", "getPreset", "listPresets", "getAgentRevision", "listAgentRevisions"].map(
+  // List routes return summaries without stored documents (finding 1323), so only the exact
+  // reads carry them.
+  ["getConfiguration", "getPreset", "getAgentRevision"].map(
     (operationId) => [operationId, serializers(operationId)],
   ),
 );
@@ -113,31 +115,7 @@ const payloads = {
     }),
     meta,
   }),
-  listPresets: (values) => ({
-    data: [preset({ configuration: { values } }), preset({ agent: { plugins: values } })],
-    meta,
-  }),
   getAgentRevision: (values) => ({ data: revision(values), meta }),
-  listAgentRevisions: (values) => ({
-    data: [
-      revision(values, 1),
-      // The unreadable variant of the same list.
-      {
-        id: `rev_${uuid}`,
-        namespaceId: `ns_${uuid}`,
-        agentId: `agt_${uuid}`,
-        revision: 2,
-        backendId: null,
-        createdAt,
-        configurationReadError: {
-          code: "SAVED_CONFIGURATION_UNREADABLE",
-          field: "configuration",
-        },
-      },
-      revision(values, 3),
-    ],
-    meta,
-  }),
 };
 
 function assertSameBytes(operationId, payload, label) {
@@ -265,16 +243,6 @@ test("every shipped Preset version serializes to the same bytes", async () => {
     const shipped = preset(stored(JSON.stringify(version.template)), version.name);
     assertSameBytes("getPreset", { data: shipped, meta }, `${version.file}@${version.version}`);
   }
-  assertSameBytes(
-    "listPresets",
-    {
-      data: bundledPresetVersions.map((version) =>
-        preset(stored(JSON.stringify(version.template)), version.name),
-      ),
-      meta,
-    },
-    "all shipped versions",
-  );
 });
 
 test("the serializer keeps the walk for a different schema registered as SafeJsonValue", () => {
@@ -297,55 +265,7 @@ test("the serializer keeps the walk for a different schema registered as SafeJso
   assert.equal(serializer({ value: { kept: 1, dropped: true } }), '{"value":{"kept":"1"}}');
 });
 
-test("Preset and revision lists of 64 documents near 1 MiB serialize in bounded time", () => {
-  // bughunt-69's size: 64 stored documents of about 0.9 MB, 57 MB in all. The per-node walk
-  // took 6-7 s on two CPUs, 8 to 50 times as long as JSON.stringify of the same payload; the
-  // serializer now takes 1 to 1.5 times as long. The bound is relative to JSON.stringify,
-  // measured alongside, so a busy host slows both sides alike.
-  const values = stored(
-    JSON.stringify({
-      plugins: {
-        entries: {
-          x: {
-            config: Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"])),
-          },
-        },
-      },
-    }),
-  );
-  for (const [operationId, payload] of [
-    [
-      "listPresets",
-      { data: Array.from({ length: 64 }, () => preset({ configuration: { values } })), meta },
-    ],
-    [
-      "listAgentRevisions",
-      { data: Array.from({ length: 64 }, (_, i) => revision(values, i + 1)), meta },
-    ],
-  ]) {
-    // Best of three interleaved runs, so one garbage-collection pause cannot decide the result.
-    let baseline = Infinity;
-    let elapsed = Infinity;
-    let baselineBytes;
-    let bytes;
-    for (let run = 0; run < 3; run += 1) {
-      let started = performance.now();
-      baselineBytes = JSON.stringify(payload).length;
-      baseline = Math.min(baseline, performance.now() - started);
-      started = performance.now();
-      bytes = routes[operationId].passthrough(payload);
-      elapsed = Math.min(elapsed, performance.now() - started);
-    }
-    assert.equal(bytes.length, baselineBytes, operationId);
-    assert.ok(bytes.length > 50_000_000, `${operationId}: ${bytes.length} bytes`);
-    assert.ok(
-      elapsed < 4 * baseline + 250,
-      `${operationId} took ${Math.round(elapsed)} ms; JSON.stringify took ${Math.round(baseline)} ms`,
-    );
-  }
-});
-
-test("the Preset list route answers with the bytes the per-node walk wrote", async (t) => {
+test("the Preset route answers with the bytes the per-node walk wrote", async (t) => {
   // End to end through the API's own serializer: the bundled default Presets every new
   // Namespace receives.
   const { defaultPresets, bundledPresetVersions } = await loadInstallationPresets(
@@ -360,17 +280,21 @@ test("the Preset list route answers with the bytes the per-node walk wrote", asy
   await fixture.bootstrap("Stored document serialization");
   const namespace = await fixture.createNamespace("Stored documents", { ready: true });
   const session = await fixture.signIn();
-  const { response, text } = await fixture.rawRequest(
-    "GET",
-    `/namespaces/${namespace.id}/presets`,
-    { headers: authenticatedHeaders(session, { origin: fixture.origin }) },
-  );
-  assert.equal(response.status, 200, text);
-  const body = JSON.parse(text);
-  assert.ok(body.data.length >= defaultPresets.length);
+  const headers = authenticatedHeaders(session, { origin: fixture.origin });
   const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
-  const presets = await fixture.controller.listPresets(principal.id, namespace.id);
-  assert.equal(text, routes.listPresets.node({ data: presets, meta: body.meta }));
+  const listed = await fixture.controller.listPresets(principal.id, namespace.id);
+  assert.ok(listed.length >= defaultPresets.length);
+  for (const { id } of listed) {
+    const { response, text } = await fixture.rawRequest(
+      "GET",
+      `/namespaces/${namespace.id}/presets/${id}`,
+      { headers },
+    );
+    assert.equal(response.status, 200, text);
+    const body = JSON.parse(text);
+    const preset = await fixture.controller.getPreset(principal.id, namespace.id, id);
+    assert.equal(text, routes.getPreset.node({ data: preset, meta: body.meta }));
+  }
   // The API's own copy of SafeJsonValue is the contract schema the serializer recognizes, so
   // its routes take the JSON.stringify path.
   assert.equal(JSON.stringify(fixture.app.getSchemas().SafeJsonValue), JSON.stringify(JsonValue));
