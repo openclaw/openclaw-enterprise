@@ -14,16 +14,17 @@ author: stevenlee-oai
 
 ## Summary
 
-Dedicated OpenClaw (OC) is the first required delivery target for OpenClaw
-Enterprise (OCE) managed mode. Both its separate Harness and Gateway must enforce
-the contract. The baseline also covers embedded OC and dedicated Codex.
+OpenClaw Enterprise (OCE) admins choose OpenClaw (OC) or Codex as parallel
+Harness options. Both must provide the same versioned managed-mode contract:
+OCE's trusted control plane owns managed control configuration; neither the
+model nor the running Harness may modify or replace it.
 
-OCE should require a versioned managed mode from its Harness and Gateway
-runtimes. OCE supplies their control configuration; runtimes
-enforce it against model execution and native administration. Compute activates a
-deployment only after both runtime enforcement and execution containment are
-established. AGENTS.md, SOUL.md, IDENTITY.md, USER.md, and other agent documents
-are outside this proposal.
+Compute activates a deployment only after runtime enforcement and host
+containment are established for the selected Harness and its Gateway.
+Dedicated OC is the priority for investigation and qualification; it is not a
+prerequisite for Codex support. Its separate Harness and Gateway must both enforce
+the contract. Embedded OC follows the same baseline. AGENTS.md, SOUL.md,
+IDENTITY.md, USER.md, and other agent documents are outside this proposal.
 
 ## Action support, calls, and managed-mode gaps
 
@@ -95,8 +96,8 @@ PR validation below is recorded author evidence; it was not rerun here.
 
 ## Native controls to reuse
 
-These controls cover different parts of managed mode. Native support and OCE
-activation must be qualified separately.
+These are current native building blocks. Both Harness options must close every
+required gap before managed activation; partial native coverage is insufficient.
 
 | Existing control                                                                                                                                                       | Coverage today                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -124,11 +125,12 @@ Native calls were inspected at OC `90d30a1178a7` and packaged Codex
 
 ## Remaining gaps by owner
 
-Dedicated OC comes first: apply the work to its separate Gateway and Harness,
-and qualify hosted-worker policy. Enable/configure selects existing native controls;
+The OC and Codex work below meets one mandatory contract for parallel Harness
+choices. Dedicated OC is the investigation focus: cover its separate Gateway,
+Harness and hosted workers. Enable/configure selects existing native controls;
 OCE implementation wires them and adds controller, Driver, or Compute behavior.
 
-### Dedicated OC
+### OC Harness (dedicated OC focus)
 
 | Owner                              | Remaining work                                                                                                                                                                                                                                                                                                                                                                                |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -145,18 +147,21 @@ existing controls fail this proof. Reuse [native applied-config hashes](https://
 and qualified host observations for the status contract; extend native reporting
 where they are insufficient.
 
-### Codex after dedicated OC
+### Codex Harness
 
 **OCE enable/configure:** publish administrator requirements for supported
 provider, permission, feature and plugin/MCP ceilings, plus managed permission
 profiles. Apply the same protected-file, RPC, readiness and reconciliation work
 above. Qualify existing child-policy inheritance.
 
-**Codex changes are conditional:** add guards only for reachable mutations that
-requirements and OCE containment cannot constrain, such as
+**Required Codex enforcement:** requirements pin supported fields; they do not
+freeze the entire managed configuration. Protect it against the running Harness
+as well as model tools. Native changes are required wherever existing requirements
+and OCE host enforcement cannot block a reachable mutation, including
 [account mutations](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/app-server/src/request_processors/account_processor.rs#L990)
 or [plugin uninstall](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/core-plugins/src/manager.rs#L2359).
-Add native reporting only if existing readback cannot support the required
+A Codex deployment with any required protection missing must refuse managed
+activation. Extend native reporting where existing readback cannot establish
 applied-generation evidence; requirements readback alone is insufficient.
 
 ## OCE–runtime interface
@@ -205,12 +210,15 @@ effects, and across fresh, resumed, and delegated execution. Hide prohibited man
 tools as well. Approval cannot grant permission to change OCE-owned state.
 
 Compute/Sandbox protects effective configuration, OCE-owned authority/credential
-stores, their parent directories, and runtime/plugin packages from model execution.
-A native read-only flag cannot stop shell writes to writable files. Only trusted OCE
-publication may replace a generation; startup transforms and credential rotation
-must use that path. Host administrators and trusted in-process plugin code remain
-outside this threat boundary. This narrows RFC-0010's full native administration
-exception without changing RFC-0003's document ownership.
+stores, their parents, and runtime/plugin packages from workload writers:
+model tools, the running Harness/Gateway, native API/CLI paths and loaded plugins.
+An execution sandbox alone does not constrain native Harness writes outside it.
+Only OCE's trusted control plane may publish or replace managed configuration;
+trusted bootstrap and credential rotation must use its authorized path outside
+agent-controlled execution. Ordinary session/task state remains writable within
+policy. Infrastructure administrators remain outside the workload threat boundary.
+This narrows RFC-0010's full native administration exception without changing
+RFC-0003's document ownership.
 
 ## Reconciliation and delivery
 
@@ -220,14 +228,14 @@ are not drift. Reconciliation complements mutation prevention. An unreachable na
 no drift. Recovery must preserve workspace and persistent runtime data; it must
 not use destructive native agent deletion. Agent document changes are ignored.
 
-Dedicated OC is the first implementation and qualification milestone. It must
-run a separate Harness and Gateway with managed mode active on both. A follow-up
-plan should define observation cadence, repair mechanics, and repair
-authorization; today's
+Qualify OC and Codex independently against the same acceptance criteria.
+Dedicated OC remains the priority investigation target and must run a separate
+Harness and Gateway with managed mode active on both. A follow-up plan should
+define observation cadence, repair mechanics and repair authorization; today's
 worker reauthorizes the deployer and cannot silently assume system authority.
 
-Run the acceptance proof on dedicated OC first, then embedded OC and dedicated
-Codex. Verify initial deployment, resume, delegation, and an admitted OCE update.
+Each supported topology requires its own proof; one Harness's result cannot
+qualify the other. Verify initial deployment, resume, delegation, and an admitted OCE update.
 Acceptance requires real-runtime proof that prohibited native and model writes
 fail, permitted session/task work and trusted credential refresh still work,
 and resume/delegation cannot weaken policy. Also verify unsupported-mode refusal,
