@@ -198,6 +198,13 @@ function validateOAuth2Config(type: string, config: Readonly<Record<string, stri
   if (!tokenUrlHostAllowed(config.token_url ?? "")) {
     throw new CredentialSourceConfigError("token_url", tokenUrlHostMessage(type));
   }
+  // Like the protected endpoint's port: 0 names no endpoint.
+  if (new URL(config.token_url ?? "").port === "0") {
+    throw new CredentialSourceConfigError(
+      "token_url",
+      `The ${type} token_url port must be 1 to 65535.`,
+    );
+  }
   if (!CLIENT_ID.test(config.client_id ?? "")) {
     throw new CredentialSourceConfigError(
       "client_id",

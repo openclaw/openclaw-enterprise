@@ -22,7 +22,9 @@ real Installation.
 IP address in any spelling (`10.0.0.5`, `0x7f000001`, `127.1`, `[::1]`) or a
 `localhost` name. The OpenShell gateway posts the source's client secret and
 refresh token to that URL from its own network position. A deployment that
-binds an existing source with such a `token_url` fails. DNS names, including
+binds an existing source with such a `token_url` fails. Until it is deleted,
+the gateway keeps refreshing that source against the stored `token_url`, and
+rotating it does too. DNS names, including
 in-cluster Service names such as `keycloak.idp.svc.cluster.local`, stay
 accepted.
 

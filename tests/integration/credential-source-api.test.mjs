@@ -489,6 +489,16 @@ test("OAuth2 token_url hosts must be exact DNS names, not IP addresses or localh
         token_url,
       );
     }
+    const port = await f.request("POST", f.path, {
+      body: {
+        name: "issuer",
+        type,
+        config: { ...config, token_url: "https://login.example.test:0/token" },
+        secrets: { [secretField]: secret.ref },
+      },
+    });
+    assert.equal(port.status, 400, JSON.stringify(port.body));
+    assert.equal(port.body.error.message, `The ${type} token_url port must be 1 to 65535.`);
     for (const token_url of accepted) {
       assert.doesNotThrow(
         () => f.driver.validateSourceConfig({ type, config: { ...config, token_url } }),
