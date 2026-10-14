@@ -6,6 +6,7 @@ import { isSandboxFacet, normalizeSecretBindings } from "@openclaw-enterprise/co
 import type {
   Agent,
   AgentRevision,
+  AgentRevisionMetadata,
   CredentialSource,
   AuditEvent,
   AuthorizationDecision,
@@ -1587,10 +1588,10 @@ export class ControllerWorker {
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     // Preparing a revision can recreate its runtime, so it is no longer known stopped.
     this.stoppedPredecessors.delete(revision.id);
-    let earlier: readonly Readonly<AgentRevision>[] = [];
+    let earlier: readonly Readonly<AgentRevisionMetadata>[] = [];
     if (this.compute.requiresStoppedPredecessors?.(revision) === true) {
       earlier = await this.state.read(async (view) =>
-        (await view.revisions.listRevisions(revision.namespaceId, revision.agentId)).filter(
+        (await view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)).filter(
           (candidate) => candidate.revision < revision.revision,
         ),
       );
@@ -1618,12 +1619,21 @@ export class ControllerWorker {
    */
   private async stopPredecessors(
     claim: ClaimedWork,
-    earlier: readonly Readonly<AgentRevision>[],
+    earlier: readonly Readonly<AgentRevisionMetadata>[],
     drain: "yield" | "wait" = "yield",
   ): Promise<void> {
-    for (const previous of earlier) {
-      const record = this.stoppedPredecessors.get(previous.id);
+    for (const listed of earlier) {
+      const record = this.stoppedPredecessors.get(listed.id);
       if (record !== undefined && Date.now() - record.stoppedAt < record.restopAfterMs) {
+        continue;
+      }
+      // Decode only a predecessor this pass stops; a recently stopped one is skipped unread
+      // (finding 1323). One that is gone went with its Agent or Namespace, whose own teardown
+      // stops it.
+      const previous = await this.state.read((view) =>
+        view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
+      );
+      if (previous === undefined) {
         continue;
       }
       await this.closeRevisionCredentials(claim, previous);
@@ -3520,15 +3530,28 @@ export class ControllerWorker {
       const successor =
         this.compute.requiresStoppedPredecessors === undefined
           ? undefined
-          : await this.state.read(async (view) =>
-              (await view.revisions.listRevisions(revision.namespaceId, revision.agentId)).find(
-                (candidate) =>
-                  candidate.revision > revision.revision &&
+          : await this.state.read(async (view) => {
+              // Decode only the later revisions, in revision order, until one matches.
+              const later = (
+                await view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)
+              ).filter((candidate) => candidate.revision > revision.revision);
+              for (const listed of later) {
+                const candidate = await view.revisions.findRevision(
+                  listed.namespaceId,
+                  listed.agentId,
+                  listed.id,
+                );
+                if (
+                  candidate !== undefined &&
                   candidate.compute.id === this.compute.id &&
                   candidate.compute.implementation === this.compute.implementation &&
-                  this.compute.requiresStoppedPredecessors?.(candidate) === true,
-              ),
-            );
+                  this.compute.requiresStoppedPredecessors?.(candidate) === true
+                ) {
+                  return candidate;
+                }
+              }
+              return undefined;
+            });
       if (successor !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
         // credential-source problem, a refused observation) may still wait on its candidate's
@@ -4731,10 +4754,14 @@ export class ControllerWorker {
     ) {
       return {};
     }
-    const revisions = await this.state.read((view) =>
-      view.revisions.listRevisions(claim.namespaceId, claim.agentId!),
-    );
-    const revision = revisions.find((candidate) => candidate.id === claim.revisionId);
+    const { revisions, revision } = await this.state.read(async (view) => ({
+      revisions: await view.revisions.listRevisionMetadata(claim.namespaceId, claim.agentId!),
+      revision: await view.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      ),
+    }));
     if (revision === undefined || this.compute.requiresStoppedPredecessors?.(revision) !== true) {
       return {};
     }

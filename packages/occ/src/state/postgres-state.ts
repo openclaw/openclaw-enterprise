@@ -3123,6 +3123,20 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze((await listAgentRows(namespaceId)).map((row) => agentFromRow(row))),
       listAgentsForBrowsing: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map(agentForBrowsingFromRow)),
+      listAgentReferences: async () =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT a.id, a.namespace_id
+                 FROM occ.agents AS a
+                 JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL`,
+              )
+            ).rows,
+          ).map((row) =>
+            Object.freeze({ id: text(row, "id"), namespaceId: text(row, "namespace_id") }),
+          ),
+        ),
       lockAgent: async (namespaceId, agentId) => {
         const row = await findAgentRow(namespaceId, agentId, true);
         return row === undefined ? undefined : agentFromRow(row);
@@ -3434,6 +3448,22 @@ export class PostgresPlatformState implements PlatformStateStore {
       listRevisionsForBrowsing: async (namespaceId, agentId) =>
         Object.freeze(
           (await listRevisionRows(namespaceId, agentId)).map(revisionForBrowsingFromRow),
+        ),
+      listRevisionMetadata: async (namespaceId, agentId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+                        r.admitted_at
+                 FROM occ.agent_revisions AS r
+                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+                 WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
+                [namespaceId, agentId],
+              )
+            ).rows,
+          ).map(revisionMetadataFromRow),
         ),
       createRevision: async (revision) => {
         await this.requireInitialized(context);
