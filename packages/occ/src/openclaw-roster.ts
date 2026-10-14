@@ -1,4 +1,7 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 
 import { requireAgentsShape, requireFallbackProviders } from "./configured-harness.ts";
@@ -11,7 +14,15 @@ import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 // requireDeployableRoster. SSH Compute runs the host's OpenClaw and does not check them at
 // deployment. The Gateway drops only an empty agents.list beside an implicit empty roster, so
 // that one passes. A refusal, not a rewrite: OCC skips this on status reads.
-export function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
+//
+// On a Preset save (`options.unresolved`, finding 1308), an Agent ID or agents.ownership that
+// waits on an unfilled variable is checked as far as its written text goes: an ID whose written
+// text no filling makes valid is refused, and an ownership that can still read "explicit" counts
+// as explicit, the only value a launch accepts. The launch's Configuration is checked in full.
+export function requireOpenClawRoster(
+  configuration: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
   // Each refusal names the setting and the rule it breaks. Keys come from the caller's own
   // Configuration; agentEntryMessage quotes and bounds them.
   const agents = asRecord(configuration.agents);
@@ -34,7 +45,13 @@ export function requireOpenClawRoster(configuration: OpenClawConfigurationDocume
         agentEntryMessage(id, (path) => `The OpenClaw Gateway requires ${path} to be an object.`),
       );
     }
-    if (!/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id)) {
+    // The text around each unfilled variable in a Preset's Agent ID, or undefined.
+    const literals = options?.unresolved?.(["agents", "entries", id], true);
+    if (
+      literals === undefined
+        ? !/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id)
+        : !/^[a-z0-9_-]{0,64}$/i.test(literals.join("")) || literals[0]!.startsWith("-")
+    ) {
       throw new ConfigurationHarnessError(
         agentEntryMessage(
           id,
@@ -42,6 +59,10 @@ export function requireOpenClawRoster(configuration: OpenClawConfigurationDocume
             `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`,
         ),
       );
+    }
+    if (literals !== undefined) {
+      // Its filled ID is compared on the launch's Configuration.
+      continue;
     }
     // A valid ID is plain and at most 64 characters, so both names fit the message cap.
     const key = id.startsWith("_") ? id.toLowerCase().replace(/-+$/, "") : id.toLowerCase();
@@ -54,7 +75,8 @@ export function requireOpenClawRoster(configuration: OpenClawConfigurationDocume
     normalized.set(key, id);
   }
   const rosterSize = entries.length;
-  const explicit = agents?.ownership === "explicit";
+  const explicit =
+    agents?.ownership === "explicit" || canFillExplicit(["agents", "ownership"], options);
   if (
     agents?.list !== undefined &&
     !(Array.isArray(agents.list) && agents.list.length === 0 && rosterSize === 0 && !explicit)
@@ -89,15 +111,34 @@ export function requireOpenClawRoster(configuration: OpenClawConfigurationDocume
   }
 }
 
+// Whether the Preset value at `path` waits on an unfilled string variable and its written text
+// can still read "explicit". A number or boolean variable fills it with no string.
+function canFillExplicit(
+  path: readonly string[],
+  options: ConfigurationValidationOptions | undefined,
+): boolean {
+  const literals = options?.unresolved?.(path);
+  const type = options?.unresolvedType?.(path);
+  if (literals === undefined || (type !== undefined && type !== "string")) {
+    return false;
+  }
+  const escaped = literals.map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`^${escaped.join(".*")}$`).test("explicit");
+}
+
 /**
  * Refuses, when a Configuration is saved, an agents roster that every deployment refuses, with
  * the deployment's text: resolveConfiguredHarnessId's shape rules and its fallback provider rule
  * first, as deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
  * topology, such as dedicated OpenClaw serving the main Agent, stay at deployment because a
- * Configuration does not fix one.
+ * Configuration does not fix one. A Preset save runs them too (finding 1308), with `options`
+ * locating its unfilled variables.
  */
-export function requireDeployableRoster(values: OpenClawConfigurationDocument): void {
+export function requireDeployableRoster(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
   requireAgentsShape(values);
-  requireFallbackProviders(values);
-  requireOpenClawRoster(values);
+  requireFallbackProviders(values, options);
+  requireOpenClawRoster(values, options);
 }

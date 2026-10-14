@@ -19,30 +19,31 @@ real Installation.
 **What breaks.** On Kubernetes Compute, Configuration, Preset and Agent saves
 and deployment refuse a model selection off the primary model's provider:
 fallbacks, Agent entries, `subagents.model` and the other `*Model` settings,
-`models` policy keys, hook models and `channels.modelByChannel`, and an
-`apiKey` on another `models.providers` entry. Dedicated Codex refuses every
-`apiKey` and unqualified `models` policy keys. Every Compute refuses
-another-provider fallbacks at save. A Preset variable's provider is checked at
-launch; a number or boolean model variable is refused. On every Compute,
-Configuration and Preset saves and deployment also refuse a literal key in
-`memory.search.remote` (also per Agent), `tools.media` requests, speech and Talk
-provider `apiKey`s, web fetch, OpenTelemetry and edge auth credential headers,
-skill `apiKey`s and `cron.webhookToken`, and a header name there or in MCP
-`headers` that is not an HTTP field name.
+`models` policy keys, `modelPolicy.allow`, hook models,
+`channels.modelByChannel`, and an `apiKey` on another `models.providers`
+entry. Dedicated Codex refuses every `apiKey`, `mediaModels` and `voiceModel`,
+and unqualified policy entries. Every Compute refuses another-provider
+fallbacks at save. A Preset variable's provider is checked at launch; a number
+or boolean model variable is refused. Preset saves also check `agents` rosters.
+Every Compute also refuses a literal key in `memory.search.remote` (also per
+Agent), `tools.media` requests, speech and Talk provider `apiKey`s, web fetch,
+OpenTelemetry and edge auth credential headers, skill `apiKey`s and
+`cron.webhookToken`, and a header name there or in MCP `headers` that is not an
+HTTP field name.
 
 **Who is affected.** Configurations and Presets that select a second provider
-or give it an `apiKey`, set any `apiKey` for Dedicated Codex, or hold a
-literal key in one of those slots.
+or give it an `apiKey`, set an `apiKey`, media or voice model for Dedicated
+Codex, or hold a literal key in one of those slots.
 
 **How to tell.** A `400` names the setting: `... must select
 <provider>/<model>, the provider of the Agent's Harness authentication
 binding`, `... must use the primary model's provider`, `... must be
-provider/model references`, `models.providers.<name>.apiKey must be unset`, or
-`... holds a credential value inline, where a reference is required`.
+provider/model references`, `... must be unset`, or `... holds a credential
+value inline, where a reference is required`.
 
-**Steps.** Use only the primary model's provider, remove the other provider's
-`apiKey`, make each literal key a `${NAME}` reference or a SecretRef, then save
-and deploy again.
+**Steps.** Move or remove the setting the `400` names, keeping only the
+primary model's provider, or make a literal key a `${NAME}` reference or a
+SecretRef, then save and deploy again.
 
 ## 2026-10-14: observability URLs must not hide another host
 

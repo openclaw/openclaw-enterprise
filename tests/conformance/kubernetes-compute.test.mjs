@@ -1526,8 +1526,9 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       utilityModel: ref("utility"),
       heartbeat: { model: ref("small") },
       compaction: { model: ref("small"), memoryFlush: { model: ref("flush") } },
-      mediaModels: { image: ref("media-image") },
       tts: { summaryModel: ref("summary") },
+      // Finding 1306: the /model allowlist, which OpenClaw honors over the models keys.
+      modelPolicy: { allow: [ref("gpt-5"), ref("small"), ref("allow-only")] },
     };
     fixture.revision.configuration = admitLoggingConfiguration(
       {
@@ -1544,6 +1545,7 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
             main: {
               heartbeat: { model: ref("entry-heartbeat") },
               models: { [ref("entry-policy")]: {}, [ref("small")]: { alias: "entry-small" } },
+              modelPolicy: { allow: [ref("gpt-5"), ref("entry-allow/*")] },
             },
           },
         },
@@ -1587,8 +1589,15 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       model: qualified("small"),
       memoryFlush: { model: qualified("flush") },
     });
-    assert.deepEqual(defaults.mediaModels, { image: qualified("media-image") });
     assert.deepEqual(defaults.tts, { summaryModel: qualified("summary") });
+    // An allowlist entry is qualified like a policy key, so /model back to the projected
+    // primary is allowed; one with no catalog row adds none.
+    assert.deepEqual(defaults.modelPolicy, {
+      allow: [qualified("gpt-5"), qualified("small"), qualified("allow-only")],
+    });
+    assert.deepEqual(rendered.agents.entries.main.modelPolicy, {
+      allow: [qualified("gpt-5"), qualified("entry-allow/*")],
+    });
     assert.deepEqual(Object.keys(defaults.models), [qualified("small")]);
     assert.deepEqual(rendered.agents.entries.main.heartbeat, {
       model: qualified("entry-heartbeat"),
@@ -1614,7 +1623,6 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
           "pdf",
           "utility",
           "flush",
-          "media-image",
           "summary",
           "gmail",
           "hook",
@@ -9532,6 +9540,53 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
     refused("agents.defaults.models", `keys must select ${requirement("codex")}`),
     "D",
   );
+  // So is an allowlist entry, and an allowlist that is not a list (finding 1306).
+  for (const [allow, rule] of [
+    [["codex/gpt-5", "gpt-5"], `must select ${requirement("codex")}`],
+    ["codex/*", "must be provider/model references"],
+  ]) {
+    refuses(
+      codex,
+      {
+        agents: { defaults: { model: "codex/gpt-5", modelPolicy: { allow } } },
+        models: { providers: catalog("codex", ["gpt-5"]) },
+      },
+      refused("agents.defaults.modelPolicy.allow", rule),
+      `D: allow ${JSON.stringify(allow)}`,
+    );
+  }
+  // A media or voice model with the binding's provider is still refused on Codex, and names the
+  // setting, not its primary.
+  refuses(
+    codex,
+    {
+      agents: {
+        defaults: {
+          model: "codex/gpt-5",
+          mediaModels: { image: { primary: "codex/gpt-image-1" } },
+        },
+      },
+      models: { providers: catalog("codex", ["gpt-5"]) },
+    },
+    refused(
+      "agents.defaults.mediaModels.image",
+      "must be unset: Dedicated Codex serves chat models only, not media or voice models",
+    ),
+    "D: media",
+  );
+  // Embedded OpenClaw keeps them, on the binding's provider, and a bare allowlist alias.
+  for (const admit of admissions(embedded, {
+    agents: {
+      defaults: {
+        model: "openai/gpt-5",
+        mediaModels: { image: "openai/gpt-image-1" },
+        voiceModel: "openai/gpt-realtime",
+        modelPolicy: { allow: ["openai/*", "small"] },
+      },
+    },
+  })) {
+    assert.doesNotThrow(admit, "embedded media, voice and allowlist");
+  }
   // E: fallbacks that are not model references, named instead of failing at deployment.
   for (const [scope, setting] of [
     ["model", "agents.defaults.model.fallbacks"],
@@ -9564,6 +9619,18 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
     [
       { agents: { defaults: { mediaModels: { video: "x/m" } } } },
       "agents.defaults.mediaModels.video",
+    ],
+    [
+      { agents: { entries: { main: { mediaModels: { music: "x/m" } } } } },
+      "agents.entries.main.mediaModels.music",
+    ],
+    [
+      { agents: { defaults: { modelPolicy: { allow: ["x/m"] } } } },
+      "agents.defaults.modelPolicy.allow",
+    ],
+    [
+      { agents: { entries: { main: { modelPolicy: { allow: ["x/*"] } } } } },
+      "agents.entries.main.modelPolicy.allow",
     ],
     [{ agents: { defaults: { utilityModel: "x/m" } } }, "agents.defaults.utilityModel"],
     [{ agents: { defaults: { decisionModel: "x/m" } } }, "agents.defaults.decisionModel"],
@@ -9598,12 +9665,16 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
       [embedded, "openai/gpt-5", "openai"],
     ]) {
       const agents = values.agents ?? {};
+      // Dedicated Codex refuses a media or voice model whatever its provider (finding 1306).
+      const capability = harness === codex && /\.(?:mediaModels\.\w+|voiceModel)$/.test(setting);
       refuses(
         harness,
         { ...values, agents: { ...agents, defaults: { ...agents.defaults, model } } },
         refused(
           setting,
-          `${setting === "agents.defaults.models" ? "keys " : ""}must select ${requirement(provider)}`,
+          capability
+            ? "must be unset: Dedicated Codex serves chat models only, not media or voice models"
+            : `${setting === "agents.defaults.models" ? "keys " : ""}must select ${requirement(provider)}`,
         ),
         `${harness.id}: ${setting}`,
       );
@@ -9619,7 +9690,15 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
   ]) {
     for (const admit of admissions(codex, {
       agents: {
-        defaults: { model: "codex/gpt-5", models: { "codex/*": {} }, subagents, decisionModel: "" },
+        defaults: {
+          model: "codex/gpt-5",
+          models: { "codex/*": {} },
+          modelPolicy: { allow: ["codex/*", "codex/gpt-5"] },
+          subagents,
+          decisionModel: "",
+          // An empty media or voice model selects nothing, so Codex admits it.
+          voiceModel: "",
+        },
       },
       channels: { modelByChannel: { slack: { C1: "codex/gpt-5" } } },
       models: { providers: catalog("codex", ["gpt-5"]) },

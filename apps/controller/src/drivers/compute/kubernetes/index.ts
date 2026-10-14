@@ -3718,8 +3718,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const authentication = harnessModelAuthentication(configuration);
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
-    // Codex qualifies models policy keys, so it refuses every bare key, a little more than the
-    // projection fails on. Whether that provider suits the topology is the rule below.
+    // Codex qualifies model policy selectors, so it refuses every bare one, a little more than
+    // the projection fails on, and refuses media and voice models (finding 1306). Whether that
+    // provider suits the topology is the rule below.
     requireSelectedModelProvider(
       configuration,
       authentication.providerId,

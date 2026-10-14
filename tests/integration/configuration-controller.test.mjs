@@ -608,6 +608,54 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   assert.deepEqual(updated.body.data.values, listed);
 });
 
+const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
+
+// The Gateway roster's text for an Agent ID it rejects.
+const gatewayId = (path) =>
+  `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
+// One shape per rule. Every topology's OpenClaw Gateway rejects each (finding 874).
+const rosterRefusals = [
+  [{ agents: "x" }, "Configuration setting agents must be an object."],
+  [{ agents: { defaults: [] } }, "Configuration setting agents.defaults must be an object."],
+  [
+    withAgents({ entries: [] }),
+    "Configuration setting agents.entries must be an object keyed by Agent ID.",
+  ],
+  [
+    withAgents({ entries: { main: null } }),
+    "Configuration setting agents.entries.main must be an object.",
+  ],
+  [
+    withAgents({ list: [{ id: "main" }] }),
+    "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+  ],
+  [
+    withAgents({ list: [], entries: { main: {} } }),
+    "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+  ],
+  [withAgents({ entries: { "main!": {} } }), gatewayId('agents.entries["main!"]')],
+  [
+    withAgents({ ownership: "explicit", entries: { main: {}, Main: {} } }),
+    "The OpenClaw Gateway normalizes agents.entries.main and agents.entries.Main to the same Agent ID: rename one.",
+  ],
+  [
+    withAgents({ entries: { main: { default: true } } }),
+    "The OpenClaw Gateway rejects agents.entries.main.default: remove it.",
+  ],
+  [
+    withAgents({ ownership: "shared", entries: { main: {} } }),
+    'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.',
+  ],
+  [
+    withAgents({ entries: { main: {}, helper: {} } }),
+    'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
+  ],
+  [
+    withAgents({ ownership: "explicit" }),
+    'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.',
+  ],
+];
+
 test("Configuration save refuses an agents roster every deployment refuses, with deployment's text", async () => {
   // Deployment runs the real Kubernetes Compute roster rules.
   const configurationDriver = createConfigurationBackend();
@@ -615,7 +663,6 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     configurationDriver,
     computeDriver: kubernetesRules("compute-roster-integration", "validateHarnessAuth"),
   });
-  const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
   const valid = withAgents({});
   const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
     values: valid,
@@ -626,50 +673,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
   const storeAsOlderRelease = (values) =>
     writePastOcc(configurationDriver, configurationId, values);
 
-  const gatewayId = (path) =>
-    `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
-  // One shape per rule. Every topology's OpenClaw Gateway rejects each (finding 874).
-  for (const [values, message] of [
-    [{ agents: "x" }, "Configuration setting agents must be an object."],
-    [{ agents: { defaults: [] } }, "Configuration setting agents.defaults must be an object."],
-    [
-      withAgents({ entries: [] }),
-      "Configuration setting agents.entries must be an object keyed by Agent ID.",
-    ],
-    [
-      withAgents({ entries: { main: null } }),
-      "Configuration setting agents.entries.main must be an object.",
-    ],
-    [
-      withAgents({ list: [{ id: "main" }] }),
-      "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
-    ],
-    [
-      withAgents({ list: [], entries: { main: {} } }),
-      "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
-    ],
-    [withAgents({ entries: { "main!": {} } }), gatewayId('agents.entries["main!"]')],
-    [
-      withAgents({ ownership: "explicit", entries: { main: {}, Main: {} } }),
-      "The OpenClaw Gateway normalizes agents.entries.main and agents.entries.Main to the same Agent ID: rename one.",
-    ],
-    [
-      withAgents({ entries: { main: { default: true } } }),
-      "The OpenClaw Gateway rejects agents.entries.main.default: remove it.",
-    ],
-    [
-      withAgents({ ownership: "shared", entries: { main: {} } }),
-      'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.',
-    ],
-    [
-      withAgents({ entries: { main: {}, helper: {} } }),
-      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
-    ],
-    [
-      withAgents({ ownership: "explicit" }),
-      'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.',
-    ],
-  ]) {
+  for (const [values, message] of rosterRefusals) {
     const label = JSON.stringify(values);
     const rejected = await request(context.app, "POST", collection, {
       body: { kind: "agent", values },
@@ -725,6 +729,94 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.deepEqual(saved.body.data.values, values);
   }
+});
+
+test("Preset save refuses an agents roster every deployment refuses, as Configuration save does", async (t) => {
+  // Finding 1308: Preset save skipped the agents shape and Gateway roster rules, so a Preset
+  // with a roster every deployment refuses saved and failed only when a launch created its
+  // Configuration. An Agent ID or ownership that waits on an unfilled variable is checked as far
+  // as its written text goes, and in full once filled.
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-roster-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { namespace, ...context } = await fixture({
+    configurationDriver: new FilesystemConfigurationDriver(root),
+    computeDriver: kubernetesRules("compute-roster-preset", ...configurationRules),
+  });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const variables = {
+    id: { type: "string" },
+    ownership: { type: "string" },
+    count: { type: "number" },
+  };
+  const savePreset = (name, values) =>
+    request(context.app, "POST", presets, {
+      body: { name, template: { variables, configuration: { values } } },
+    });
+  const onlyExplicit =
+    'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.';
+  const refused = [
+    ...rosterRefusals,
+    // Written text no filling makes a valid Agent ID: a space, or a leading -.
+    [
+      withAgents({ entries: { "main {{ vars.id }}": {} } }),
+      gatewayId('agents.entries["main {{ vars.id }}"]'),
+    ],
+    [
+      withAgents({ entries: { "-{{ vars.id }}": {} } }),
+      gatewayId('agents.entries["-{{ vars.id }}"]'),
+    ],
+    // An ownership no filling makes "explicit", or that a number variable fills.
+    [withAgents({ ownership: "shared-{{ vars.ownership }}", entries: { main: {} } }), onlyExplicit],
+    [withAgents({ ownership: "{{ vars.count }}", entries: { main: {} } }), onlyExplicit],
+  ];
+  for (const [index, [values, message]] of refused.entries()) {
+    await t.test(`refuses Preset ${index}: ${message}`, async () => {
+      const label = JSON.stringify(values);
+      const saved = await savePreset(`Roster-${index}`, values);
+      assert.equal(saved.status, 400, `${label}: ${JSON.stringify(saved.body)}`);
+      assert.equal(saved.body.error.code, "INVALID_REQUEST", label);
+      assert.equal(saved.body.error.message, message, label);
+    });
+  }
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // An Agent ID or ownership that a filling can still make valid saves, and the launch's
+  // Configuration is checked in full: two IDs that normalize alike, or an ownership filled with
+  // anything but "explicit", are refused there with the Configuration save text.
+  await t.test("accepts a roster whose Agent ID or ownership waits on a variable", async () => {
+    const accepted = [
+      withAgents({ ownership: "explicit", entries: { "{{ vars.id }}": {}, main: {} } }),
+      withAgents({ entries: { "agent-{{ vars.id }}": {} } }),
+      withAgents({ ownership: "{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
+      withAgents({ ownership: "ex{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
+    ];
+    for (const [index, values] of accepted.entries()) {
+      const saved = await savePreset(`Templated-${index}`, values);
+      assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+    }
+    for (const [values, inputs, message] of [
+      [
+        accepted[0],
+        { id: "Main" },
+        "The OpenClaw Gateway normalizes agents.entries.Main and agents.entries.main to the same Agent ID: rename one.",
+      ],
+      [accepted[2], { ownership: "shared" }, onlyExplicit],
+    ]) {
+      const launched = await request(context.app, "POST", configurations, {
+        body: {
+          kind: "agent",
+          ...renderPresetTemplate({ variables, configuration: { values } }, { count: 1, ...inputs })
+            .configuration,
+        },
+      });
+      assert.equal(launched.status, 400, JSON.stringify(launched.body));
+      assert.equal(launched.body.error.message, message);
+    }
+  });
 });
 
 test("Configuration save and Kubernetes deployment admission refuse settings preparation would refuse", async () => {
@@ -1079,6 +1171,24 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       { agents: { defaults: { ...runtimeDefaults, pdfModel: { primary: other } } } },
       setting("agents.defaults.pdfModel.primary", openai),
     ],
+    // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
+    [
+      {
+        agents: {
+          defaults: { ...runtimeDefaults, modelPolicy: { allow: [runtimeDefaults.model, other] } },
+        },
+      },
+      setting("agents.defaults.modelPolicy.allow", openai),
+    ],
+    [
+      {
+        agents: {
+          defaults: runtimeDefaults,
+          entries: { main: { modelPolicy: { allow: ["openai/*", other] } } },
+        },
+      },
+      setting("agents.entries.main.modelPolicy.allow", openai),
+    ],
     [
       {
         ...valid,
@@ -1187,6 +1297,54 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
         ),
       );
     }
+  });
+
+  // Finding 1306: Dedicated Codex qualifies each /model allowlist entry as it does a models
+  // policy key, so an entry needs its provider, and OpenClaw calls media and voice models
+  // directly, which Codex does not serve.
+  await t.test("an allowlist entry, media or voice model on Dedicated Codex", async () => {
+    const codexDefaults = {
+      model: "codex/gpt-5",
+      models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+    };
+    const codex = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values: { agents: { defaults: codexDefaults } } },
+    });
+    assert.equal(codex.status, 201, JSON.stringify(codex.body));
+    const codexItem = `${collection}/${codex.body.data.id}`;
+    const unset =
+      "must be unset: Dedicated Codex serves chat models only, not media or voice models";
+    for (const [defaults, message] of [
+      [
+        { modelPolicy: { allow: ["codex/gpt-5", "gpt-5"] } },
+        setting(
+          "agents.defaults.modelPolicy.allow",
+          "must select codex/<model>, the provider of the Agent's Harness authentication binding",
+        ),
+      ],
+      [
+        { mediaModels: { image: "codex/gpt-image-1" } },
+        setting("agents.defaults.mediaModels.image", unset),
+      ],
+      [
+        { mediaModels: { video: { primary: "codex/sora-2", fallbacks: [] } } },
+        setting("agents.defaults.mediaModels.video", unset),
+      ],
+      [{ voiceModel: "codex/gpt-realtime" }, setting("agents.defaults.voiceModel", unset)],
+    ]) {
+      const values = { agents: { defaults: { ...codexDefaults, ...defaults } } };
+      const replaced = await request(context.app, "PATCH", codexItem, { body: { values } });
+      assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
+      assert.equal(replaced.body.error.message, message, JSON.stringify(values));
+    }
+    // A qualified entry or wildcard saves.
+    const allowed = {
+      agents: {
+        defaults: { ...codexDefaults, modelPolicy: { allow: ["codex/gpt-5", "codex/*"] } },
+      },
+    };
+    const saved = await request(context.app, "PATCH", codexItem, { body: { values: allowed } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
   });
 
   // Oracle: a caller who may update Configurations but not read Agents gets the same answer for
@@ -1301,6 +1459,21 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       { agents: { defaults: { ...runtimeDefaults, pdfModel: "{{ vars.count }}" } } },
       setting("agents.defaults.pdfModel", "must be provider/model references"),
     ],
+    // Finding 1306: an allowlist entry is checked like a selection, a written provider at save.
+    [
+      {
+        agents: {
+          defaults: { ...templated, modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } },
+        },
+      },
+      setting("agents.defaults.modelPolicy.allow", openai),
+    ],
+    [
+      {
+        agents: { defaults: { ...runtimeDefaults, modelPolicy: { allow: ["{{ vars.count }}"] } } },
+      },
+      setting("agents.defaults.modelPolicy.allow", "must be provider/model references"),
+    ],
     // A fallback and a policy key whose provider waits on a variable leave the rest checked.
     [
       {
@@ -1389,6 +1562,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
             ...templated,
             imageModel: "{{ vars.provider }}/gpt-image-1",
             subagents: { model: "{{ vars.model }}" },
+            modelPolicy: { allow: ["{{ vars.provider }}/gpt-5", "openai/{{ vars.model }}"] },
           },
         },
         models: {

@@ -146,14 +146,27 @@ type SettingLocation = readonly (string | number)[];
 /** A model selection OpenClaw honors: the setting that holds it and its value as written. */
 interface ModelSelection {
   readonly setting: string;
-  /** Where the reference sits (a policy key: the path ends in the key). */
+  /** Where the reference sits (a `models` policy key: the path ends in the key). */
   readonly path: SettingLocation;
   readonly reference: unknown;
-  /** A key of an `agents.*.models` policy map (the `/model` allowlist and alias targets). */
-  readonly policy?: true;
+  /**
+   * A model policy selector, which may name a wildcard or an alias: a key of an `agents.*.models`
+   * policy map (`key`, alias targets and the older allowlist) or an entry of
+   * `agents.*.modelPolicy.allow` (`allow`, the explicit allowlist for `/model`, session
+   * overrides and `--model`).
+   */
+  readonly policy?: "key" | "allow";
+  /**
+   * The media or voice setting that holds it: OpenClaw calls these models directly as fixed
+   * capability references, not as chat models.
+   */
+  readonly capability?: string;
 }
 
-/** The reference that replaces `reference`; `policy` marks a `models` policy key. */
+/**
+ * The reference that replaces `reference`; `policy` marks a model policy selector. Media and
+ * voice models are never passed: Dedicated Codex, the one caller, refuses them.
+ */
 export type ModelSelectionRewrite = (reference: string, policy: boolean) => string;
 
 // Settings under agents.defaults and each agents.entries entry that select a model in the pinned
@@ -163,11 +176,7 @@ const AGENT_MODEL_SETTINGS: readonly (readonly string[])[] = [
   ["utilityModel"],
   ["decisionModel"],
   ["imageModel"],
-  ["voiceModel"],
   ["pdfModel"],
-  ["mediaModels", "image"],
-  ["mediaModels", "video"],
-  ["mediaModels", "music"],
   ["subagents", "model"],
   ["heartbeat", "model"],
   ["compaction", "model"],
@@ -175,6 +184,14 @@ const AGENT_MODEL_SETTINGS: readonly (readonly string[])[] = [
   ["embeddedAgent", "cyberFailover", "model"],
   ["tools", "exec", "reviewer", "model"],
   ["tts", "summaryModel"],
+];
+// Media and voice models: OpenClaw calls them directly as fixed capability references
+// (generation, speech, transcription), not through the chat model catalog.
+const AGENT_CAPABILITY_MODEL_SETTINGS: readonly (readonly string[])[] = [
+  ["voiceModel"],
+  ["mediaModels", "image"],
+  ["mediaModels", "video"],
+  ["mediaModels", "music"],
 ];
 const ROOT_MODEL_SETTINGS: readonly (readonly string[])[] = [
   ["tools", "exec", "reviewer", "model"],
@@ -191,12 +208,13 @@ type Assign = (value: unknown) => void;
 /**
  * Every model selection in the Configuration: the agents.defaults and agents.entries.* model
  * settings (model, subagents, image, PDF, voice, media, utility, decision, heartbeat,
- * compaction, reviewer and TTS summary models), their `models` policy keys, hook models and
- * channels.modelByChannel. A primary/fallbacks object yields its primary and each fallback; a
- * value of another shape is yielded as written, so a rule can refuse it by name.
+ * compaction, reviewer and TTS summary models), their `models` policy keys and
+ * `modelPolicy.allow` entries, hook models and channels.modelByChannel. A primary/fallbacks
+ * object yields its primary and each fallback; a value of another shape is yielded as written,
+ * so a rule can refuse it by name.
  *
- * With `rewrite`, each string reference is also replaced in place by what `rewrite` returns (a
- * policy map keeps its key order); other values are left as written.
+ * With `rewrite`, each string reference except a media or voice model is also replaced in place
+ * by what `rewrite` returns (a policy map keeps its key order); other values are left as written.
  */
 function modelSelections(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -206,19 +224,30 @@ function modelSelections(
   // The reference that replaces a string one `rewrite` changes; undefined keeps the value.
   const visit = (selection: ModelSelection): string | undefined => {
     selections.push(selection);
-    if (rewrite === undefined || typeof selection.reference !== "string") {
+    if (
+      rewrite === undefined ||
+      typeof selection.reference !== "string" ||
+      selection.capability !== undefined
+    ) {
       return undefined;
     }
-    const next = rewrite(selection.reference, selection.policy === true);
+    const next = rewrite(selection.reference, selection.policy !== undefined);
     return next === selection.reference ? undefined : next;
   };
-  const add = (setting: string, at: SettingLocation, value: unknown, assign: Assign): void => {
+  const add = (
+    setting: string,
+    at: SettingLocation,
+    value: unknown,
+    assign: Assign,
+    capability?: string,
+  ): void => {
     if (value === undefined || value === null) {
       return;
     }
+    const kind = capability === undefined ? {} : { capability };
     const selection = asRecord(value);
     if (typeof value === "string" || selection === undefined) {
-      const next = visit({ setting, path: at, reference: value });
+      const next = visit({ setting, path: at, reference: value, ...kind });
       if (next !== undefined) {
         assign(next);
       }
@@ -229,6 +258,7 @@ function modelSelections(
         setting: `${setting}.primary`,
         path: [...at, "primary"],
         reference: selection.primary,
+        ...kind,
       });
       if (next !== undefined) {
         selection.primary = next;
@@ -243,6 +273,7 @@ function modelSelections(
               setting: `${setting}.fallbacks`,
               path: [...at, "fallbacks", index],
               reference,
+              ...kind,
             }),
       );
       if (next.some((reference) => reference !== undefined)) {
@@ -252,7 +283,12 @@ function modelSelections(
       }
     } else if (fallbacks !== undefined) {
       // Fallbacks that are not a list are yielded as null: no list item is a reference.
-      visit({ setting: `${setting}.fallbacks`, path: [...at, "fallbacks"], reference: null });
+      visit({
+        setting: `${setting}.fallbacks`,
+        path: [...at, "fallbacks"],
+        reference: null,
+        ...kind,
+      });
     }
   };
   const addAt = (
@@ -260,13 +296,21 @@ function modelSelections(
     at: SettingLocation,
     record: Record<string, unknown> | undefined,
     keys: readonly string[],
+    capability = false,
   ) => {
     const parent = asRecord(settingValue(record, keys.slice(0, -1)));
     const key = keys[keys.length - 1];
     if (parent !== undefined && key !== undefined) {
-      add([path, ...keys].filter(Boolean).join("."), [...at, ...keys], parent[key], (value) => {
-        parent[key] = value;
-      });
+      const setting = [path, ...keys].filter(Boolean).join(".");
+      add(
+        setting,
+        [...at, ...keys],
+        parent[key],
+        (value) => {
+          parent[key] = value;
+        },
+        capability ? setting : undefined,
+      );
     }
   };
   const agents = asRecord(configuration.agents);
@@ -284,23 +328,41 @@ function modelSelections(
     for (const keys of AGENT_MODEL_SETTINGS) {
       addAt(path, at, scope, keys);
     }
-    const policies = asRecord(scope?.models);
-    if (scope === undefined || policies === undefined) {
-      continue;
+    for (const keys of AGENT_CAPABILITY_MODEL_SETTINGS) {
+      addAt(path, at, scope, keys, true);
     }
-    const keys = Object.keys(policies);
-    const next = keys.map((reference) =>
-      visit({
-        setting: `${path}.models`,
-        path: [...at, "models", reference],
-        reference,
-        policy: true,
-      }),
-    );
-    if (next.some((reference) => reference !== undefined)) {
-      scope.models = Object.fromEntries(
-        keys.map((key, index) => [next[index] ?? key, policies[key]]),
+    const policies = asRecord(scope?.models);
+    if (scope !== undefined && policies !== undefined) {
+      const keys = Object.keys(policies);
+      const next = keys.map((reference) =>
+        visit({
+          setting: `${path}.models`,
+          path: [...at, "models", reference],
+          reference,
+          policy: "key",
+        }),
       );
+      if (next.some((reference) => reference !== undefined)) {
+        scope.models = Object.fromEntries(
+          keys.map((key, index) => [next[index] ?? key, policies[key]]),
+        );
+      }
+    }
+    // OpenClaw's explicit allowlist for /model, session overrides and --model (finding 1306).
+    const modelPolicy = asRecord(scope?.modelPolicy);
+    const allow = modelPolicy?.allow;
+    const allowSetting = `${path}.modelPolicy.allow`;
+    const allowAt = [...at, "modelPolicy", "allow"];
+    if (Array.isArray(allow)) {
+      const next = allow.map((reference: unknown, index) =>
+        visit({ setting: allowSetting, path: [...allowAt, index], reference, policy: "allow" }),
+      );
+      if (modelPolicy !== undefined && next.some((reference) => reference !== undefined)) {
+        modelPolicy.allow = allow.map((reference: unknown, index) => next[index] ?? reference);
+      }
+    } else if (allow !== undefined) {
+      // An allowlist that is not a list is yielded as null, as fallbacks are.
+      visit({ setting: allowSetting, path: allowAt, reference: null, policy: "allow" });
     }
   }
   const root = configuration as Record<string, unknown>;
@@ -361,32 +423,42 @@ export function providerWaitsOnVariable(
  * Every model selection names `provider`, the one the Agent's Harness authentication binding
  * serves (finding 1291): a reference elsewhere would make the Gateway request another provider
  * directly. A bare name passes: OpenClaw resolves it through an alias on a policy key checked
- * here, or to a configured provider's model, whose apiKey Harness admission refuses. As a policy
- * key, `qualifiedPolicyKeys` (Dedicated Codex qualifies each key) asks for provider/model.
- * Refusals name the setting, never the reference. On a Preset save (`options.unresolved`), a
- * reference whose provider waits on an unfilled variable is checked once filled, on the
- * Configuration a launch creates; one whose provider is written is checked here.
+ * here, or to a configured provider's model, whose apiKey Harness admission refuses. On
+ * `dedicatedCodex`, which qualifies each policy selector (`models` keys and `modelPolicy.allow`
+ * entries), a selector must be provider/model, and media and voice models are refused: OpenClaw
+ * calls them directly as capability references, and Codex serves only chat models (finding
+ * 1306). Refusals name the setting, never the reference. On a Preset save
+ * (`options.unresolved`), a reference whose provider waits on an unfilled variable is checked
+ * once filled, on the Configuration a launch creates; one whose provider is written is checked
+ * here.
  */
 export function requireSelectedModelProvider(
   configuration: Readonly<OpenClawConfigurationDocument>,
   provider: string,
-  qualifiedPolicyKeys: boolean,
+  dedicatedCodex: boolean,
   createError: SettingError,
   options?: ConfigurationValidationOptions,
 ): void {
   const requirement = `${provider}/<model>, the provider of the Agent's Harness authentication binding`;
-  for (const { setting, path, reference, policy } of modelSelections(configuration)) {
+  for (const { setting, path, reference, policy, capability } of modelSelections(configuration)) {
+    // An empty value selects nothing, as an empty selection elsewhere.
+    if (dedicatedCodex && capability !== undefined && reference !== "") {
+      throw createError(
+        capability,
+        "must be unset: Dedicated Codex serves chat models only, not media or voice models",
+      );
+    }
     // A number or boolean variable that is the whole reference fills it with no string, which
-    // every launch refuses (as finding 1257 for a baseUrl).
-    const type = policy ? undefined : options?.unresolvedType?.(path);
+    // every launch refuses (as finding 1257 for a baseUrl). A key is always text.
+    const type = policy === "key" ? undefined : options?.unresolvedType?.(path);
     if (typeof reference !== "string" || (type !== undefined && type !== "string")) {
       throw createError(setting, "must be provider/model references");
     }
-    if (providerWaitsOnVariable(options, path, policy === true)) {
+    if (providerWaitsOnVariable(options, path, policy === "key")) {
       continue;
     }
     const separator = reference.indexOf("/");
-    if (separator < 0 && !(policy && qualifiedPolicyKeys)) {
+    if (separator < 0 && !(policy !== undefined && dedicatedCodex)) {
       continue;
     }
     if (
@@ -396,7 +468,7 @@ export function requireSelectedModelProvider(
     ) {
       throw createError(
         setting,
-        policy ? `keys must select ${requirement}` : `must select ${requirement}`,
+        policy === "key" ? `keys must select ${requirement}` : `must select ${requirement}`,
       );
     }
   }
