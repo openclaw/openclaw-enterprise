@@ -75,6 +75,13 @@ function writesSchemeSlashes(literals: readonly string[]): boolean {
   return scheme === null || /^[/\\]{2}(?![/\\])/.test(first.slice(scheme[0].length));
 }
 
+// Whether a baseUrl's text, as written up to its first variable, starts with an http(s) scheme
+// followed by one or no slash (`https:/v1`, `https:v1`, `https:${HOST}`, `https:{{ vars.host }}`),
+// so its refusal can say the `//` is missing (finding 1285). An empty authority (`https:///v1`)
+// keeps the general message.
+const missesSchemeSlashes = (first: string): boolean =>
+  /^[\0- ]*https?:(?![/\\]{2})/i.test(first.replaceAll(/[\t\n\r]/g, ""));
+
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
 // for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
 // address (the whole bracketed address, whatever literal text surrounds the variable in it), or
@@ -322,7 +329,12 @@ function validateSettings(
           ? !isRuntimeUrl(baseUrl)
           : !fillsAsRuntimeUrl(literals)
     ) {
-      throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
+      // A value that is not a string is refused for its type, whatever text it would make.
+      const [first = typeof baseUrl === "string" ? baseUrl : ""] = literals ?? [];
+      throw new ModelProviderSettingError(
+        pointer(...path, "baseUrl"),
+        missesSchemeSlashes(first) ? "baseUrlSlashes" : "baseUrl",
+      );
     }
   }
   // An api that waits on a variable names no adapter until it is filled.

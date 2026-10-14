@@ -14,6 +14,7 @@ import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import {
   InMemoryPlatformState,
   NoActiveAgentRevisionError,
@@ -928,10 +929,21 @@ for (const changedField of [undefined, "id", "implementation"]) {
       sharedCookieDomain: cookieDomain,
       secureCookies: true,
     });
+    const logLines = [];
     const app = createFastifyApp({
       controller,
       iamDriver: fixture.iamDriver,
       auth,
+      logger: createOccLogger({
+        component: "native-admin-test",
+        level: "info",
+        destination: {
+          write(chunk) {
+            logLines.push(...String(chunk).split("\n").filter(Boolean));
+            return true;
+          },
+        },
+      }),
       auditSink: new InMemoryAuditSink(),
       development: { enabled: false },
       resolveHarness: resolveApprovedHarness,
@@ -956,12 +968,24 @@ for (const changedField of [undefined, "id", "implementation"]) {
     const proxy = await injectJson({ app }, "GET", "/", {
       headers: { ...headers, host, origin: `https://${host}` },
     });
+    // A console poll repeats the status read; the mismatch is still warned only once.
+    const repeated = await injectJson(
+      { app },
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+      { headers },
+    );
+    assert.equal(repeated.statusCode, status.statusCode);
+    const mismatchLogs = logLines
+      .map((line) => JSON.parse(line))
+      .filter((line) => line.event === "native_admin.compute_owner_mismatch");
     if (changedField === undefined) {
+      assert.deepEqual(mismatchLogs, []);
       assert.equal(status.statusCode, 200);
       assert.equal(status.json().data.status, "available");
       assert.equal(proxy.statusCode, 200);
       assert.equal(proxy.body, "native admin upstream\n");
-      assert.equal(calls.endpoint, 2);
+      assert.equal(calls.endpoint, 3);
       assert.equal(calls.key, 1);
       assert.equal(upstream.requests.length, 1);
     } else {
@@ -971,6 +995,33 @@ for (const changedField of [undefined, "id", "implementation"]) {
       assert.equal(proxy.statusCode, 403);
       assert.deepEqual(calls, { endpoint: 0, key: 0 });
       assert.equal(upstream.requests.length, 0);
+      // One operator line names both owners and the recovery; no endpoint or key.
+      assert.equal(mismatchLogs.length, 1, logLines.join("\n"));
+      const [logged] = mismatchLogs;
+      assert.equal(logged.severity, "WARN");
+      assert.deepEqual(
+        {
+          namespaceId: logged.namespaceId,
+          agentId: logged.agentId,
+          revisionId: logged.revisionId,
+          revisionCompute: logged.revisionCompute,
+          selectedCompute: logged.selectedCompute,
+        },
+        {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          revisionId: revision.id,
+          revisionCompute: revision.compute,
+          selectedCompute: { id: compute.id, implementation: compute.implementation },
+        },
+      );
+      assert.match(logged.message, /Select that Compute Driver again/);
+      const text = logLines.join("\n");
+      assert.ok(!text.includes(nativeGatewayApiKey), "the gateway key must not be logged");
+      assert.ok(
+        !text.includes(originalCompute.getGatewayEndpoint(revision)),
+        "the private gateway endpoint must not be logged",
+      );
     }
     const persisted = await state.read((view) =>
       view.revisions.findRevision(namespace.id, agent.id, revision.id),

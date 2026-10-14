@@ -49,6 +49,11 @@ lease closes the connection through the existing failed-lease path. Matching own
 normal access. Earlier stopped, replacing and unsupported-configuration outcomes
 keep their precedence.
 
+The mismatch is not transient, so refreshing does not clear it. Each API process
+logs one `native_admin.compute_owner_mismatch` warning per revision and selected
+Driver, naming both Driver IDs and implementations. To restore access, select the
+revision's Compute Driver again, with the same ID and implementation.
+
 ## Agent host identity
 
 OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.
@@ -123,6 +128,8 @@ device state, plugins, or other persistent gateway data.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 01:20: Documented the Compute-owner mismatch warning and how to restore access. (fix-1287)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 

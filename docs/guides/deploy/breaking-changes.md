@@ -164,7 +164,8 @@ it is edited.
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,
 `Configuration field <field> carries a user name or password in the URL.`,
-or `... must be an absolute http or https URL.`
+`... must be an absolute http or https URL.`
+or `... must start with https:// or http:// (the // after the scheme is missing).`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
 list of model objects, or remove it. Remove the user name and password from
