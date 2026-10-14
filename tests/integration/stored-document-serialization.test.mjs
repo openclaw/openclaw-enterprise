@@ -364,4 +364,7 @@ test("the Preset list route answers with the bytes the per-node walk wrote", asy
   const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
   const presets = await fixture.controller.listPresets(principal.id, namespace.id);
   assert.equal(text, routes.listPresets.node({ data: presets, meta: body.meta }));
+  // The API's own copy of SafeJsonValue is the contract schema the serializer recognizes, so
+  // its routes take the JSON.stringify path.
+  assert.equal(JSON.stringify(fixture.app.getSchemas().SafeJsonValue), JSON.stringify(JsonValue));
 });
