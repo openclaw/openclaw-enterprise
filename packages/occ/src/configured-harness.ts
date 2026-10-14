@@ -18,7 +18,65 @@ function configuredRuntime(value: unknown): string | undefined {
   return runtime.id;
 }
 
-function configuredModels(value: unknown): readonly string[] {
+// Builds a refusal that names a model selection: agents.defaults.model or an agents.entries model.
+type SelectionMessage = (rest: string) => string;
+
+const defaultModelMessage: SelectionMessage = (rest) =>
+  `Configuration setting agents.defaults.model${rest}`;
+
+const entryModelMessage =
+  (key: string): SelectionMessage =>
+  (rest) =>
+    agentEntryMessage(key, (path) => `Configuration setting ${path}.model${rest}`);
+
+function isModelReference(selected: unknown): selected is string {
+  return (
+    isNonEmptyString(selected) &&
+    selected.includes("/") &&
+    !selected.startsWith("/") &&
+    !selected.endsWith("/")
+  );
+}
+
+// A fallback keeps the primary model's provider. Named, never echoed (finding 1298).
+function requirePrimaryProvider(models: readonly string[], setting: SelectionMessage): void {
+  const primaryProvider = splitModelRef(models[0]!).provider;
+  if (models.some((selected) => splitModelRef(selected).provider !== primaryProvider)) {
+    throw new ConfigurationHarnessError(
+      setting(".fallbacks must use the primary model's provider."),
+    );
+  }
+}
+
+/**
+ * The fallback rule of resolveConfiguredHarnessId alone, over every well-formed selection. Every
+ * deployment refuses a fallback on another provider, so Configuration save (through
+ * requireDeployableRoster) and Agent save refuse it too, even where another model policy rule
+ * leaves the rest to deployment (finding 1298).
+ */
+export function requireFallbackProviders(values: Readonly<OpenClawConfigurationDocument>): void {
+  const agents = asRecord(values.agents);
+  const selections: [unknown, SelectionMessage][] = [
+    [asRecord(agents?.defaults)?.model, defaultModelMessage],
+    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
+      ([key, entry]): [unknown, SelectionMessage] => [
+        asRecord(entry)?.model,
+        entryModelMessage(key),
+      ],
+    ),
+  ];
+  for (const [value, setting] of selections) {
+    const selection = asRecord(value);
+    if (isModelReference(selection?.primary) && Array.isArray(selection.fallbacks)) {
+      requirePrimaryProvider(
+        [selection.primary, ...selection.fallbacks.filter(isModelReference)],
+        setting,
+      );
+    }
+  }
+}
+
+function configuredModels(value: unknown, setting: SelectionMessage): readonly string[] {
   if (value === undefined) {
     return [];
   }
@@ -29,24 +87,14 @@ function configuredModels(value: unknown): readonly string[] {
   }
   const model = typeof value === "string" ? value : configured?.primary;
   const models = [model, ...(fallbacks ?? [])].map((selected) => {
-    if (
-      !isNonEmptyString(selected) ||
-      !selected.includes("/") ||
-      selected.startsWith("/") ||
-      selected.endsWith("/")
-    ) {
+    if (!isModelReference(selected)) {
       throw new ConfigurationHarnessError(
         "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
       );
     }
     return selected;
   });
-  const primaryProvider = splitModelRef(models[0]!).provider;
-  if (models.some((selected) => splitModelRef(selected).provider !== primaryProvider)) {
-    throw new ConfigurationHarnessError(
-      "Configured model fallbacks must retain the primary provider.",
-    );
-  }
+  requirePrimaryProvider(models, setting);
   return models;
 }
 
@@ -148,7 +196,7 @@ export function resolveConfiguredHarnessId(
   const defaults = asRecord(agents?.defaults);
   const entries = asRecord(agents?.entries);
   const providerConfigurations = asRecord(asRecord(values.models)?.providers);
-  const defaultSelection = configuredModels(defaults?.model);
+  const defaultSelection = configuredModels(defaults?.model, defaultModelMessage);
   const defaultModels = asRecord(defaults?.models);
   const candidates: Array<{ model: string; entry?: Readonly<Record<string, unknown>> }> =
     defaultSelection.map((model) => ({ model }));
@@ -156,7 +204,10 @@ export function resolveConfiguredHarnessId(
   for (const [key, value] of Object.entries(entries ?? {})) {
     // requireAgentsShape refused every entry that is not an object.
     const entry = asRecord(value)!;
-    const selection = entry.model === undefined ? defaultSelection : configuredModels(entry.model);
+    const selection =
+      entry.model === undefined
+        ? defaultSelection
+        : configuredModels(entry.model, entryModelMessage(key));
     const model = selection[0];
     if (model === undefined) {
       throw new ConfigurationHarnessError(

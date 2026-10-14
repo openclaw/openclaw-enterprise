@@ -134,7 +134,7 @@ import {
   immutableCopy,
   isNonEmptyString,
 } from "@openclaw-enterprise/utils";
-import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import { requireFallbackProviders, resolveConfiguredHarnessId } from "./configured-harness.ts";
 import { requireDeployableRoster } from "./openclaw-roster.ts";
 import {
   capability,
@@ -10347,8 +10347,11 @@ export class OpenClawController {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
     } catch (error) {
       // A model selection that names no supported Harness is the Configuration's own fault,
-      // not this Agent's; deployment refuses it with this message. Nothing below can run.
+      // not this Agent's; deployment refuses it with this message. Nothing below can run. A
+      // fallback on another provider is refused here, by name, as the Harness rules below refuse
+      // every other selection on another provider (finding 1298).
       if (error instanceof ConfigurationHarnessError) {
+        requireFallbackProviders(configuration.values);
         return;
       }
       throw error;

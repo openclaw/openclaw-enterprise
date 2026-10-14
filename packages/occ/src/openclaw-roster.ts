@@ -1,7 +1,7 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 
-import { requireAgentsShape } from "./configured-harness.ts";
+import { requireAgentsShape, requireFallbackProviders } from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
 // Every Kubernetes topology (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned
@@ -91,11 +91,13 @@ export function requireOpenClawRoster(configuration: OpenClawConfigurationDocume
 
 /**
  * Refuses, when a Configuration is saved, an agents roster that every deployment refuses, with
- * the deployment's text: resolveConfiguredHarnessId's shape rules first, as deployment checks
- * them first, then the OpenClaw Gateway's. Rules that depend on the topology, such as dedicated
- * OpenClaw serving the main Agent, stay at deployment because a Configuration does not fix one.
+ * the deployment's text: resolveConfiguredHarnessId's shape rules and its fallback provider rule
+ * first, as deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
+ * topology, such as dedicated OpenClaw serving the main Agent, stay at deployment because a
+ * Configuration does not fix one.
  */
 export function requireDeployableRoster(values: OpenClawConfigurationDocument): void {
   requireAgentsShape(values);
+  requireFallbackProviders(values);
   requireOpenClawRoster(values);
 }

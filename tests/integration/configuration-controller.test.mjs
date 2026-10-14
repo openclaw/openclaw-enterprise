@@ -977,7 +977,8 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
 
-  // A provider apiKey depends on the Agent's binding, so it saves and deployment names it.
+  // The provider apiKey rule depends only on the Configuration's primary model and Harness, so
+  // save refuses it too (finding 1299), and deployment names it on a row stored earlier.
   const apiKey = {
     ...valid,
     models: {
@@ -986,17 +987,18 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       },
     },
   };
+  const apiKeyRefusal = setting(
+    "models.providers.openai.apiKey",
+    "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
+  );
   const saved = await request(context.app, "PATCH", item, { body: { values: apiKey } });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.status, 400, JSON.stringify(saved.body));
+  assert.equal(saved.body.error.message, apiKeyRefusal);
+  await storeAsOlderRelease(apiKey);
   const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(
-    deployed.body.error.message,
-    setting(
-      "models.providers.openai.apiKey",
-      "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
-    ),
-  );
+  assert.equal(deployed.body.error.message, apiKeyRefusal);
+  await storeAsOlderRelease(valid);
   // Agent save checks what depends on the Agent: an embedded Agent cannot serve a channel. The
   // Installation's channel runtime and the channel's Secret bindings wait for deployment.
   const slack = {
@@ -1039,6 +1041,156 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       200,
       `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`,
     );
+  }
+});
+
+test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async () => {
+  // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
+  // for a fallback. The rules depend only on the Configuration, so no Agent is consulted.
+  const configurationDriver = createConfigurationBackend();
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-model-provider-save", ...configurationRules),
+  });
+  const valid = runtimeSelected;
+  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Model provider consumer",
+    secretName: "model-provider-key",
+  });
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+  const openai =
+    "must select openai/<model>, the provider of the Agent's Harness authentication binding";
+  const other = "anthropic/claude-opus-4";
+  const fallback = setting(
+    "agents.defaults.model.fallbacks",
+    "must use the primary model's provider",
+  );
+  const offProvider = [
+    [
+      { agents: { defaults: { ...runtimeDefaults, subagents: { model: other } } } },
+      setting("agents.defaults.subagents.model", openai),
+    ],
+    [
+      { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
+      setting("agents.defaults.imageModel", openai),
+    ],
+    [
+      { agents: { defaults: { ...runtimeDefaults, pdfModel: { primary: other } } } },
+      setting("agents.defaults.pdfModel.primary", openai),
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: {
+            anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "${ANTHROPIC_API_KEY}" },
+          },
+        },
+      },
+      setting(
+        "models.providers.anthropic.apiKey",
+        "must be unset: the Agent's Harness authentication binding serves only openai models",
+      ),
+    ],
+    [
+      {
+        agents: {
+          defaults: {
+            ...runtimeDefaults,
+            model: { primary: runtimeDefaults.model, fallbacks: [other] },
+          },
+        },
+      },
+      fallback,
+    ],
+  ];
+  for (const [values, message] of offProvider) {
+    const label = JSON.stringify(values);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
+    assert.equal(rejected.body.error.message, message, label);
+    // The console's Save Configuration sends this PATCH.
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, `${label}: ${JSON.stringify(replaced.body)}`);
+    assert.equal(replaced.body.error.message, message, label);
+    assert.ok(!replaced.body.error.message.includes("claude-opus-4"), label);
+    const unchanged = await request(context.app, "GET", item);
+    assert.deepEqual(unchanged.body.data, created.body.data, label);
+  }
+
+  // A row stored before the fallback rule still reads; Agent save and deployment name it.
+  await writePastOcc(configurationDriver, configurationId, offProvider.at(-1)[0]);
+  const agentSaved = await request(context.app, "PATCH", agentPath, { body: { configurationId } });
+  assert.equal(agentSaved.status, 400, JSON.stringify(agentSaved.body));
+  assert.equal(agentSaved.body.error.message, fallback);
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+  assert.equal(deployed.body.error.message, fallback);
+  await writePastOcc(configurationDriver, configurationId, valid);
+
+  // A Configuration whose model policy selects the Codex Harness runs as Dedicated Codex, which
+  // takes no provider apiKey at all.
+  const codexValues = {
+    agents: {
+      defaults: {
+        model: "codex/gpt-5",
+        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const codex = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: codexValues },
+  });
+  assert.equal(codex.status, 201, JSON.stringify(codex.body));
+  const codexKey = await request(context.app, "PATCH", `${collection}/${codex.body.data.id}`, {
+    body: {
+      values: { ...codexValues, models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } } },
+    },
+  });
+  assert.equal(codexKey.status, 400, JSON.stringify(codexKey.body));
+  assert.equal(
+    codexKey.body.error.message,
+    setting(
+      "models.providers.codex.apiKey",
+      "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+    ),
+  );
+
+  // Oracle: a caller who may update Configurations but not read Agents gets the same answer for
+  // the Configuration an Agent uses as for one no Agent uses, and nothing names the Agent.
+  const unused = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(unused.status, 201, JSON.stringify(unused.body));
+  const role = context.roles.find(({ id }) => id === "role-configuration-integration");
+  const answers = async (values) => {
+    const responses = [];
+    for (const path of [item, `${collection}/${unused.body.data.id}`]) {
+      const { status, body } = await request(context.app, "PATCH", path, { body: { values } });
+      responses.push({ status, error: body.error });
+    }
+    assert.deepEqual(responses[0], responses[1], JSON.stringify(values));
+    return responses[0];
+  };
+  role.permissions = [
+    { action: "read", resourceKind: "configuration" },
+    { action: "update", resourceKind: "configuration" },
+  ];
+  const memberAgentRead = await request(context.app, "GET", agentPath);
+  assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
+  const refused = await answers(offProvider[1][0]);
+  assert.equal(refused.status, 400);
+  assert.equal(refused.error.message, offProvider[1][1]);
+  assert.equal((await answers(valid)).status, 200);
+  // A zero-grant member gets the uniform 403, whatever the values.
+  role.permissions = [];
+  for (const values of [valid, offProvider[1][0]]) {
+    const denied = await answers(values);
+    assert.equal(denied.status, 403);
+    assert.equal(denied.error.code, "FORBIDDEN");
   }
 });
 
