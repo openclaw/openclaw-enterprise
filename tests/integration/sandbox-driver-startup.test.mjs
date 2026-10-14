@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import {
   OpenShellGateway,
@@ -16,7 +18,10 @@ import {
   KubernetesComputeDriver,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
-import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
@@ -40,6 +45,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -1657,6 +1663,148 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
 
   await driver.cleanup(context);
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
+});
+
+test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
+  const gatewayClient = workspaceGatewayClient();
+  let sandbox;
+  gatewayClient.createSandbox = async (request) => {
+    sandbox = {
+      ...structuredClone(request),
+      phase: "SANDBOX_PHASE_READY",
+      serviceUrls: { "": "http://codex.example.test" },
+    };
+    return sandbox;
+  };
+  gatewayClient.getSandbox = async () => sandbox;
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const transportToken = "withdrawn-harness-transport";
+  const port = await availablePort({ host: "0.0.0.0" });
+  requirements.loginMode = "chatgptAuthTokens";
+  requirements.command = harnessRuntimeCommand(AGENT_RUNTIME_ENTRYPOINT);
+  requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
+  requirements.environment.push(
+    { name: "CODEX_LOGIN_MODE", value: requirements.loginMode },
+    {
+      name: "OCE_CODEX_CHATGPT_ACCOUNT",
+      value: JSON.stringify({ accountId: "withdrawn-account", planType: "business" }),
+    },
+  );
+  requirements.environment.find(({ name }) => name === "APP_SERVER_PORT").value = String(port);
+  requirements.environment.find(({ name }) => name === "APP_TOKEN_SHA").value = createHash("sha256")
+    .update(transportToken)
+    .digest("hex");
+  await driver.provisionHarness({ ...context, revision, requirements });
+
+  const root = await mkdtemp(join(tmpdir(), "openshell-withdrawn-auth-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const codexHome = join(root, "codex");
+  await mkdir(codexHome);
+  const authPath = join(codexHome, "auth.json");
+  const previousAuth = JSON.stringify({
+    auth_mode: "chatgptAuthTokens",
+    OPENAI_API_KEY: null,
+    tokens: {
+      access_token: "withdrawn-placeholder",
+      id_token: "fixture-account-metadata",
+      refresh_token: "",
+      account_id: "withdrawn-account",
+    },
+    last_refresh: new Date().toISOString(),
+  });
+  await writeFile(authPath, previousAuth, { mode: 0o600 });
+
+  // Exercise the actual Driver command and launcher. The upstream client only
+  // captures provisioning; an absent child credential models OpenShell's withdrawn
+  // provider environment. Private paths substitute for the Sandbox's writable mounts.
+  const environment = {
+    ...sandbox.spec.environment,
+    PATH: dirname(process.execPath),
+    HOME: root,
+    CODEX_HOME: codexHome,
+    OPENCLAW_WORKSPACE_DIR: join(root, "workspace"),
+  };
+  const command = ["-e", ...sandbox.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length)];
+  const child = spawn(process.execPath, command, {
+    env: environment,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let errors = "";
+  child.stderr.on("data", (chunk) => {
+    errors += chunk;
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  t.after(async () => {
+    child.kill("SIGTERM");
+    await exited;
+  });
+  const deadline = Date.now() + 5_000;
+  while (!errors.includes("Harness model authentication probe failed.")) {
+    assert.equal(
+      child.exitCode,
+      null,
+      `Harness exited instead of holding authentication: ${errors}`,
+    );
+    assert.ok(Date.now() < deadline, `Harness did not publish authentication failure: ${errors}`);
+    await delay(20);
+  }
+  const statusUrl = `http://127.0.0.1:${port}/openclaw/runtime/status`;
+  assert.equal((await fetch(statusUrl)).status, 401);
+  const response = await fetch(statusUrl, {
+    headers: { Authorization: `Bearer ${transportToken}` },
+  });
+  assert.equal(response.status, 200);
+  const { runtimeFailure } = await response.json();
+  assert.equal(runtimeFailure.component, "agent");
+  assert.equal(runtimeFailure.check, "login");
+  assert.equal(runtimeFailure.code, "AUTHENTICATION_FAILED");
+  assert.equal(
+    child.exitCode,
+    null,
+    "A withdrawal must hold the Harness, not restart its canonical process.",
+  );
+  assert.equal(
+    await readFile(authPath, "utf8"),
+    previousAuth,
+    "Cached authentication must not be rewritten or used.",
+  );
+  assert.doesNotMatch(
+    errors,
+    /codex\.model_probe|withdrawn-placeholder|withdrawn-harness-transport/,
+  );
+
+  // Only absent material is recoverable by holding. A supplied unbound alias
+  // or invalid account metadata remains an explicit startup configuration error.
+  for (const [invalid, expected] of [
+    [
+      { CODEX_ACCESS_TOKEN: "openshell:resolve:env:CODEX_ACCESS_TOKEN" },
+      /refresh-managed credential binding/,
+    ],
+    [
+      {
+        CODEX_ACCESS_TOKEN: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
+        OCE_CODEX_CHATGPT_ACCOUNT: "{}",
+      },
+      /account metadata is unavailable/,
+    ],
+  ]) {
+    const rejected = spawnSync(process.execPath, command, {
+      env: { ...environment, ...invalid },
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, expected);
+    assert.equal(await readFile(authPath, "utf8"), previousAuth);
+  }
 });
 
 test("OpenShell delivers initial workspace files privately after supervisor readiness", async (t) => {

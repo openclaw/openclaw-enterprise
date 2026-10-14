@@ -281,6 +281,28 @@ test(
     assert.equal(failed.ready, false);
     assert.equal(failed.status.runtimeFailure.code, "LOGIN_FAILED");
     assert.deepEqual(failed.calls, []);
+
+    // A restart after withdrawal has account metadata but no provider material.
+    // Hold the launcher without writing authentication or calling native Codex.
+    const { CODEX_ACCESS_TOKEN: _accessToken, ...withdrawnAuth } = auth;
+    const withdrawn = await startLauncher(t, "external", false, withdrawnAuth);
+    await waitFor(
+      () => withdrawn.errors().includes("Harness model authentication probe failed."),
+      withdrawn.errors,
+    );
+    const unavailable = await withdrawn.snapshot();
+    assert.equal(unavailable.ready, false);
+    assert.equal(unavailable.status.runtimeFailure.check, "login");
+    assert.equal(unavailable.status.runtimeFailure.code, "AUTHENTICATION_FAILED");
+    assert.deepEqual(unavailable.calls, []);
+    const { stdout } = await execute("docker", [
+      "exec",
+      withdrawn.name,
+      "node",
+      "-e",
+      "console.log(require('node:fs').existsSync(process.env.CODEX_HOME + '/auth.json'))",
+    ]);
+    assert.equal(stdout.trim(), "false");
   },
 );
 

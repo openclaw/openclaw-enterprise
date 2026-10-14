@@ -3284,7 +3284,7 @@ if (loginMode === "api_key") {
     throw new Error("Codex service account token authentication configuration is invalid.");
   }
 } else if (loginMode === "chatgptAuthTokens") {
-  if (!nonempty(accessToken) || !nonempty(externalAccount) || apiKey !== undefined) {
+  if ((accessToken !== undefined && !nonempty(accessToken)) || !nonempty(externalAccount) || apiKey !== undefined) {
     throw new Error("Codex external authentication configuration is invalid.");
   }
 } else {
@@ -3322,6 +3322,7 @@ function codexAuthenticationRejected(message) {
 }
 const loginStartedAt = Date.now();
 let login;
+let externalAuthenticationUnavailable = false;
 if (loginMode === "chatgptAuthTokens") {
   let temporary;
   try {
@@ -3333,6 +3334,12 @@ if (loginMode === "chatgptAuthTokens") {
         (account.accountUserId !== undefined && !nonempty(account.accountUserId)) ||
         (account.isFedramp !== undefined && typeof account.isFedramp !== "boolean")) {
       throw new Error("Invalid external account metadata.");
+    }
+    // External custody can withhold material after withdrawal. Keep the failure
+    // observable without starting Codex or using authentication left by an earlier run.
+    if (accessToken === undefined) {
+      externalAuthenticationUnavailable = true;
+      throw new Error("External authentication material is unavailable.");
     }
     // The trusted egress layer owns the real tokens. This JWT carries local metadata only;
     // keep its access placeholder byte-for-byte so the provider can recognize and replace it.
@@ -3386,7 +3393,8 @@ logStartupPhase("codex-login", loginStartedAt, login.status !== 0 || login.error
 if (login.status !== 0 || login.error) {
   holdFailedAuthentication(
     "login",
-    login.error === undefined && codexAuthenticationRejected(login.stderr) ? "AUTHENTICATION_FAILED" : "LOGIN_FAILED",
+    externalAuthenticationUnavailable || (login.error === undefined && codexAuthenticationRejected(login.stderr))
+      ? "AUTHENTICATION_FAILED" : "LOGIN_FAILED",
   );
 } else {
 delete process.env.CODEX_ACCESS_TOKEN;

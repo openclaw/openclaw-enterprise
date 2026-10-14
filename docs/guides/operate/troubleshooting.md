@@ -222,7 +222,7 @@ CONSOLE_URL='<printed-HTTPS-browser-console-URL>'
 [local browser CA trust](#the-local-console-reports-a-certificate-error) on the
 browser computer using the local `BROWSER_CA` value above instead of the startup
 machine's CA path. Keep the printed hostname and port in `CONSOLE_URL`. Leave the
-CA private key and the state directory on the startup machine. Open the printed
+state directory, which holds the TLS key, on the startup machine. Open the printed
 URL. The console sign-in page loads. Stop the forward when you are done. Do
 not publish the console port on an address other than loopback. This name and
 certificate are for the private development installation.

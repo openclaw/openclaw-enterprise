@@ -52,11 +52,12 @@ locally available, provenance-verified digest whose revision label matches this
 checkout. For a selected controller/runtime pair, apply the same
 [image selection requirements](../quickstart.md#optional-use-matching-published-images).
 
-The launcher creates a private local CA and a TLS certificate for exactly
-`git.<platform-namespace>.svc.cluster.local`. It stores their keys and a copy of
-the App key in the private development state directory and sends only the
-public CA to repository consumers. The leaf expires after three months; the CA
-expires after one year. Automatic renewal is not configured. Recreate the
+The launcher creates a private local CA, name-constrained to exactly
+`git.<platform-namespace>.svc.cluster.local`, and a TLS certificate for that
+host. It discards the CA key after signing, stores the leaf key and a copy of
+the App key in the private development state directory, and sends only the
+public CA to repository consumers. The leaf and CA expire after three months.
+Automatic renewal is not configured. Recreate the
 disposable installation before expiry, or use the production procedure for a
 managed certificate lifecycle. Keep the input and state directories private.
 

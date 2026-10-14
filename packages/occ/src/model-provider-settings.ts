@@ -2,7 +2,7 @@ import type {
   ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 
 import {
   ConfigurationHarnessError,
@@ -82,10 +82,6 @@ function writesSchemeSlashes(literals: readonly string[]): boolean {
 const missesSchemeSlashes = (first: string): boolean =>
   /^[\0- ]*https?:(?![/\\]{2})/i.test(first.replaceAll(/[\t\n\r]/g, ""));
 
-// A host label that is a decimal or 0x number. When the last label (before one trailing dot) is one,
-// the URL parser reads the whole host as an IPv4 address.
-const NUMERIC_LABEL = /^(?:0x[0-9a-f]*|[0-9]+)$/i;
-
 /**
  * Whether a refused baseUrl fails only because its host ends in a numeric or 0x label, which the
  * URL parser reads as an IPv4 address and refuses unless the host is one (`https://api.123/v1`,
@@ -114,7 +110,7 @@ function refusedForNumericLastLabel(literals: readonly string[]): boolean {
   const name = host.endsWith(".") ? host.slice(0, -1) : host;
   const label = name.slice(name.lastIndexOf(".") + 1);
   return (
-    NUMERIC_LABEL.test(label) &&
+    numericLastLabel(host) &&
     isRuntimeUrl(
       `${before}${name.slice(0, name.length - label.length)}x${host.slice(name.length)}${text.slice(before.length + host.length)}`,
     )

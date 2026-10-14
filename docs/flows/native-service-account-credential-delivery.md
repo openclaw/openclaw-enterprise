@@ -238,6 +238,14 @@ There is no native-refresh or persistent-bundle fallback. Restarts reconstruct t
 same receiving state from a current attachment; sessions and workspace keep their
 independent persistence.
 
+After withdrawal, OpenShell omits the credential binding when the same Sandbox
+restarts. `OPENSHELL_CHATGPT_AUTH_BOOTSTRAP` lets that absence reach the Harness
+launcher, which holds `AUTHENTICATION_FAILED` at the `login` phase through its
+authenticated status endpoint. The process stays alive and unready; it does not
+write auth state, start Codex, or use an earlier auth file. A present but malformed
+binding still fails the bootstrap check. Recovery requires a new authorized
+deployment, as described in the [withdrawal reference](../reference/credential-sources/withdrawal.md).
+
 The [credential source lifecycle](credential-source-lifecycle.md) owns source
 registration, authorization, withdrawal and deletion. The experimental
 OpenShell source uses the paired Refresh Driver and upstream Gateway/Sandbox

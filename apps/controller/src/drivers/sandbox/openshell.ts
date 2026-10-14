@@ -1233,12 +1233,14 @@ try {
 // and withdrawal still revokes it. Account claims come from the trusted attachment.
 // Use OpenShell's documented alias format; the supervisor replaces the entire JWT
 // with the credential. Its claims provide local metadata, not injection authority.
+// Withdrawal omits the credential on restart. Let the Harness hold that failure
+// through its authenticated status endpoint instead of exiting before its loader.
 const OPENSHELL_CHATGPT_AUTH_BOOTSTRAP = String.raw`{
   const placeholder = process.env.CODEX_ACCESS_TOKEN;
   const binding = typeof placeholder === "string"
     ? /^openshell:resolve:env:(s[0-9a-f]{64}_CODEX_ACCESS_TOKEN)$/.exec(placeholder)
     : null;
-  if (binding === null) {
+  if (placeholder !== undefined && binding === null) {
     throw new Error("Codex OAuth requires an OpenShell refresh-managed credential binding.");
   }
   const account = JSON.parse(process.env.OCE_CODEX_CHATGPT_ACCOUNT ?? "null");
@@ -1246,19 +1248,21 @@ const OPENSHELL_CHATGPT_AUTH_BOOTSTRAP = String.raw`{
       typeof account.planType !== "string" || !account.planType) {
     throw new Error("Codex OAuth account metadata is unavailable.");
   }
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const claims = {
-    email: account.email,
-    "https://api.openai.com/auth": {
-      chatgpt_account_id: account.accountId,
-      chatgpt_plan_type: account.planType,
-      chatgpt_user_id: account.userId,
-      chatgpt_account_user_id: account.accountUserId,
-      chatgpt_account_is_fedramp: account.isFedramp ?? false,
-    },
-  };
-  process.env.CODEX_ACCESS_TOKEN = encode({ alg: "none", typ: "JWT" }) + "." +
-    encode(claims) + ".OPENSHELL-RESOLVE-ENV-" + binding[1];
+  if (binding !== null) {
+    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const claims = {
+      email: account.email,
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: account.accountId,
+        chatgpt_plan_type: account.planType,
+        chatgpt_user_id: account.userId,
+        chatgpt_account_user_id: account.accountUserId,
+        chatgpt_account_is_fedramp: account.isFedramp ?? false,
+      },
+    };
+    process.env.CODEX_ACCESS_TOKEN = encode({ alg: "none", typ: "JWT" }) + "." +
+      encode(claims) + ".OPENSHELL-RESOLVE-ENV-" + binding[1];
+  }
 }
 `;
 

@@ -17,7 +17,12 @@ import {
   CredentialSourceRevisionError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  isNonEmptyString,
+  numericLastLabel,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
@@ -151,9 +156,13 @@ const OAUTH2_CONFIG = Object.freeze([
   }),
 ]);
 
-/** A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. */
+/**
+ * A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. A host whose last label
+ * is a decimal or `0x` number (`10.0.0.5`, `0xa000005`, `0x7f.0x1`, `example.123`) is an IPv4
+ * address to the URL parser and to `inet_aton`-style resolvers, so it is refused (finding 1360).
+ */
 function exactDnsName(host: string): boolean {
-  return HOST.test(host) && !/^[0-9.]+$/.test(host);
+  return HOST.test(host) && !numericLastLabel(host);
 }
 
 /**
@@ -196,7 +205,10 @@ function tokenUrlHostMessage(type: string): string {
  *   `<x>.<y>.<namespace>`, and `<x>.<gateway Service>[-*]` (its peer Service).
  * Always refused: a `pod` zone name (`<a-b-c-d>.<namespace>.pod...`), which CoreDNS's default
  * `pods insecure` answers with the written address in any namespace, the Pod's own included.
- * In-cluster issuers in other namespaces keep their Service names.
+ * CoreDNS also answers it behind one or two leading labels (an endpoint, or a port and protocol)
+ * and ignores them, so any `pod` label after the second is refused, whatever precedes it and
+ * whatever cluster domain follows (finding 1359). In-cluster issuers in other namespaces keep
+ * their Service names.
  */
 function tokenUrlHostOutsideGateway(
   tokenUrl: string,
@@ -206,7 +218,7 @@ function tokenUrlHostOutsideGateway(
     return false;
   }
   const labels = new URL(tokenUrl).hostname.split(".");
-  if (labels[2] === "pod") {
+  if (labels.slice(2).includes("pod")) {
     return false;
   }
   if (gateway === undefined) {
@@ -305,6 +317,17 @@ function validateOAuth2Config(
     : Object.freeze({ ...config, token_url: tokenUrl });
 }
 
+/**
+ * Re-checks a stored source's protected `host` before its profile is written, first as at save.
+ * A source stored before the host rules (finding 1360) fails here until it is replaced
+ * (finding 1363).
+ */
+function checkStoredHost(type: string, config: Readonly<Record<string, string>>): void {
+  if (!exactDnsName(config.host ?? "")) {
+    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
+  }
+}
+
 /** A per-source profile that injects one bearer token at the protected endpoint. */
 function bearerProfile(
   sourceId: string,
@@ -354,6 +377,7 @@ function oauth2SourceType(
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
+      checkStoredHost(type, config);
       // A source stored before the token_url host rules fails here until it is replaced.
       if (!tokenUrlHostAllowed(config.token_url ?? "")) {
         throw new ScopeViolationError(tokenUrlHostMessage(type));
@@ -525,10 +549,12 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
-    profile: (sourceId, config, options) =>
-      bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
+    profile: (sourceId, config, options) => {
+      checkStoredHost("bearer-token", config);
+      return bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
         name: "token",
-      }),
+      });
+    },
   },
   oauth2SourceType(
     "oauth2-client-credentials",

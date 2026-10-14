@@ -75,7 +75,9 @@ The check also refuses names that reach the gateway Pod itself, which egress
 NetworkPolicy does not police (finding 1356):
 
 - A Pod DNS name (`10-42-0-5.idp.pod.cluster.local`) in any namespace: CoreDNS's
-  default `pods insecure` answers it with the written address.
+  default `pods insecure` answers it with the written address. CoreDNS ignores
+  one or two leading labels before it, so any `pod` label after the second is
+  refused, whatever the cluster domain (finding 1359).
 - When the OpenShell Backend names the gateway's namespace
   (`apps/controller/src/backends/openshell.ts:placement`), any name in that
   namespace's `svc` or `pod` zone, whatever the cluster domain, and the shorter
