@@ -3635,7 +3635,10 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
         models: [{ provider: "openai", model: "gpt-5", headers }],
         audio: {
           request: { auth: { mode: "authorization-bearer", token: "${MEDIA_TOKEN}" } },
-          providerOptions: { deepgram: { model: "nova-3", smart_format: true, key: "${DG_KEY}" } },
+          providerOptions: {
+            deepgram: { model: "nova-3", smart_format: true, key: "${DG_KEY}" },
+            openai: { max_tokens: 4096, maxOutputTokens: 512 },
+          },
         },
         image: { models: [{ request: { headers } }] },
       },

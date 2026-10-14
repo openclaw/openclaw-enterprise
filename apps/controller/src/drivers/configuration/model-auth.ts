@@ -83,6 +83,9 @@ const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
+// A media query option that counts tokens rather than carrying one.
+const TOKEN_COUNT_OPTION =
+  /(?:^|[-_.])(?:max|min|num|total|context|input|output|completion)[-_.]?tokens?$/i;
 const credentialOptionMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the option value a \${NAME} reference.`;
 
@@ -434,14 +437,15 @@ export function validateModelCredentialReferences(
     refuseUrlUserinfo([...path, "request", "proxy", "url"], proxy?.url);
     // A media entry's `providerOptions.<provider>` go into the request's query string, where a
     // provider such as Google reads its key: an option named as a credential, in any case or
-    // camelCase, holds a reference.
+    // camelCase, holds a reference. A token count (`max_tokens`, `maxOutputTokens`) names none,
+    // as OpenClaw's own sensitive-key rule allows.
     for (const [provider, settings] of Object.entries(asRecord(row?.providerOptions) ?? {})) {
       const optionsPath = [...path, "providerOptions", provider];
       for (const [option, value] of Object.entries(asRecord(settings) ?? {})) {
+        const words = option.replaceAll(/([a-z0-9])([A-Z])/g, "$1-$2");
         if (
-          [option, option.replaceAll(/([a-z0-9])([A-Z])/g, "$1-$2")].some((name) =>
-            isCredentialHeaderName(name, options, optionsPath),
-          )
+          !TOKEN_COUNT_OPTION.test(words) &&
+          (isCredentialHeaderName(option, options, optionsPath) || isCredentialHeaderName(words))
         ) {
           validateReference(value, pointer(...optionsPath, option), false, credentialOptionMessage);
         }
