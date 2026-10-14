@@ -441,6 +441,96 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   assert.equal(jobs, 2);
 });
 
+test("Dedicated Agent creation reports a first deployment stopped by the owner without a cause to correct", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision stopped", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeInstallationProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
+    }),
+  );
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const url = `/namespaces/${namespace.id}/agents/provision/work_stopped`;
+  const agentId = "agt_00000000-0000-4000-8000-00000000c0de";
+  const revisionId = "rev_00000000-0000-4000-8000-00000000c0de";
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          provisioning: {
+            workId: "work_stopped",
+            status: "queued",
+            phase: "accepted",
+            attemptCount: 0,
+            updatedAt,
+            url,
+          },
+        },
+        meta,
+      }),
+    }),
+  );
+  // Someone stopped the Agent while its first deployment was rolling out.
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_stopped`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          workId: "work_stopped",
+          status: "failed",
+          phase: "handoff",
+          attemptCount: 1,
+          updatedAt,
+          url,
+          agentId,
+          revisionId,
+          error: {
+            code: "REVISION_STOPPED",
+            message: "The Agent was stopped before its first deployment finished.",
+          },
+        },
+        meta,
+      }),
+    }),
+  );
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Stopped first deployment");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByText(
+      "The Agent was stopped before its first deployment finished. Open this Agent and deploy a new version when you want it running.",
+    )
+    .waitFor();
+  await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
+  assert.equal(await page.getByText("correct the cause").count(), 0);
+  assert.equal(await page.getByText("Provisioning failed.").count(), 0);
+  assert.equal(
+    await page
+      .getByRole("link", { name: "Open Agent and deployment details" })
+      .getAttribute("href"),
+    `/console/agents/${agentId}?revision=${revisionId}&namespace=${namespace.id}`,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+    false,
+  );
+});
+
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

@@ -1528,6 +1528,20 @@ export const scenarios = {
       "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
     ],
   },
+  createDeploymentStopped: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment stopped",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    provisionedDeploymentStopped: true,
+    description:
+      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair.",
+    steps: [
+      "Click Create Agent and wait for the stopped first deployment.",
+      "Confirm the message names the stop without asking to correct a cause, and open the existing Agent link.",
+    ],
+  },
   createUnsupportedProvisioning: {
     group: "Pages/Create Agent",
     name: "Unsupported provisioning",

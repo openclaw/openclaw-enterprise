@@ -95,22 +95,15 @@ function assertCustomMainOnlyPolicy(environmentName, environment, policies) {
 }
 
 export function validateEnvironmentPolicy(environmentName, environment, policies) {
+  const reviewers = requiredReviewersRule(environment);
+  if ((reviewers?.reviewers ?? []).length > 0) {
+    throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
+  }
   if (environmentName === providerAccountEnvironment) {
-    const reviewers = requiredReviewersRule(environment);
-    if ((reviewers?.reviewers ?? []).length > 0) {
-      throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
-    }
     assertCustomMainOnlyPolicy(environmentName, environment, policies);
     return;
   }
 
-  const requiredReviewers = requiredReviewersRule(environment);
-  if (!requiredReviewers) {
-    throw new Error(`Protected environment ${environmentName} has no required reviewers.`);
-  }
-  if (requiredReviewers.prevent_self_review !== true) {
-    throw new Error(`Protected environment ${environmentName} does not prevent self-review.`);
-  }
   const policy = environment.deployment_branch_policy;
   if (policy?.protected_branches === true) {
     return;

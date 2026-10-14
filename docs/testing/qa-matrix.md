@@ -207,7 +207,8 @@ selection requires an OpenAI API key accepted from hosted runners; a successful
 devbox request alone does not prove that access.
 
 **Full Integration**, dispatched with `lane: qa-matrix`, retains the complete
-selection and protected `integration-qa` approval. The `all` dispatch and `full`
+selection and branch-restricted `integration-qa` credentials without per-run
+approval. The `all` dispatch and `full`
 group exclude this lane. Its job runs after the focused Slack job to avoid
 competing Socket Mode consumers. Both workflows materialize only selected
 credentials and upload outcome JSON, not private state or raw command logs. Failed commands include bounded, redacted stderr for diagnosis.
@@ -223,7 +224,7 @@ fixture. Configure `QA_ISOLATED_REPOSITORY_REGISTRY_JSON` and
 `QA_ISOLATED_REPOSITORY_APP_KEY` as environment secrets in the protected
 `integration-qa` environment, never as repository-level secrets. Configure
 `QA_ISOLATED_REPOSITORY_FULL_NAME` as an `integration-qa` environment variable
-so it is protected by the same independent reviewer gate. That variable must
+under the same branch restrictions. That variable must
 name the one approved isolated fixture repository as lowercase
 `owner/repository`. The isolated path checks the registry's repository target
 before materializing credential files: the registry must contain exactly one

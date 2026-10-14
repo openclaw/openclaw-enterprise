@@ -250,13 +250,7 @@ function providerEnvironment(patch = {}) {
 function protectedEnvironment(patch = {}) {
   return {
     name: "integration-model",
-    protection_rules: [
-      {
-        type: "required_reviewers",
-        prevent_self_review: true,
-        reviewers: [{ type: "User", reviewer: { login: "reviewer" } }],
-      },
-    ],
+    protection_rules: [],
     deployment_branch_policy: {
       custom_branch_policies: false,
       protected_branches: true,
@@ -355,30 +349,34 @@ test("provider-account environment policy is main-only without required reviewer
   }
 });
 
-test("non-provider integration environments still require reviewers", () => {
-  assert.doesNotThrow(() =>
-    validateEnvironmentPolicy("integration-model", protectedEnvironment(), undefined),
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-model",
-        protectedEnvironment({ protection_rules: [] }),
-        undefined,
-      ),
-    /has no required reviewers/,
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-model",
-        protectedEnvironment({
-          protection_rules: [{ type: "required_reviewers", prevent_self_review: false }],
-        }),
-        undefined,
-      ),
-    /does not prevent self-review/,
-  );
+test("credentialed integration environments run without approval and retain branch restrictions", () => {
+  for (const name of requiredEnvironmentsForLane("all")
+    .filter((name) => name !== "integration-provider-account")
+    .concat("integration-qa")) {
+    assert.doesNotThrow(() => validateEnvironmentPolicy(name, protectedEnvironment(), undefined));
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          name,
+          protectedEnvironment({
+            protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "Team" }] }],
+          }),
+          undefined,
+        ),
+      /must not require reviewers/,
+    );
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          name,
+          protectedEnvironment({
+            deployment_branch_policy: null,
+          }),
+          undefined,
+        ),
+      /not restricted/,
+    );
+  }
 });
 
 test("preflight fetches only the provider environment for manual provider runs", async () => {
@@ -438,7 +436,7 @@ test("preflight rejects non-main sources before fetching environment metadata", 
   assert.deepEqual(fetched, []);
 });
 
-test("manual protected branch runs require an exact environment grant and independent review", async () => {
+test("manual protected branch runs require an exact environment grant without per-run approval", async () => {
   for (const { lane, environmentName, branch } of [
     {
       lane: "k3d-model",
@@ -499,17 +497,14 @@ test("manual protected branch runs require an exact environment grant and indepe
       );
     }
     await assert.rejects(() => run(env, protectedEnvironment()), /exact branch/);
-    await assert.rejects(
-      () => run(env, { ...environment, protection_rules: [] }),
-      /has no required reviewers/,
-    );
+    // Reintroducing a reviewer gate would prevent a maintainer from starting this run directly.
     await assert.rejects(
       () =>
         run(env, {
           ...environment,
-          protection_rules: [{ type: "required_reviewers", prevent_self_review: false }],
+          protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
         }),
-      /does not prevent self-review/,
+      /must not require reviewers/,
     );
     assert.deepEqual(await run(), { selectedLane: lane, runAll: false });
   }

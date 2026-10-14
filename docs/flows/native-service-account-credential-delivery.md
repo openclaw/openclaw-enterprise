@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-13
-last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
+updated: 2026-10-14
+last_updated_session: authoring-run/62007ef0-44a1-467c-b24d-a61d42878897
 ---
 
 # Harness Authentication Binding Flow
@@ -290,6 +290,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 21:28: Hold missing externally managed Codex authentication after a Sandbox restart in the accompanying fix. (authoring-run/62007ef0-44a1-467c-b24d-a61d42878897 - d4f744719e6e0b3bcb25f33bc13acf4aa81088ad)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 

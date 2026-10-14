@@ -163,11 +163,15 @@ async function waitForProvisioning({ request, status, first }) {
     const next = await request(current.url);
     current = next.provisioning ?? next;
   }
-  status.textContent = provisioningStatusText(current?.status);
+  status.textContent =
+    current?.status === "failed" && current.error?.code === "REVISION_STOPPED"
+      ? "Provisioning stopped."
+      : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
     error.provisioningAgentId = current?.agentId;
     error.provisioningRevisionId = current?.revisionId;
+    error.provisioningCode = current?.error?.code;
     error.provisioningTerminal = true;
     error.provisioningFailed = current?.status === "failed";
     error.canRetryProvisioning = error.provisioningFailed && canRetryFailedProvisioning(current);
@@ -1636,6 +1640,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = "Outcome unknown. Retry resubmits the same request ID and saved references.";
       } else if (error.provisioningTerminal && error.canRetryProvisioning) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
+      } else if (error.provisioningRevisionId && error.provisioningCode === "REVISION_STOPPED") {
+        // A stopped Agent needs a new deployment, not a repaired failure.
+        detail = `${error.message} Open this Agent and deploy a new version when you want it running.`;
       } else if (error.provisioningRevisionId) {
         detail = `${error.message} Open this Agent, correct the cause and deploy a new version.`;
       } else if (error.provisioningFailed) {

@@ -143,6 +143,9 @@ test("numericLastLabel follows the URL parser's ends-in-a-number rule", () => {
     "0X7F.0X1",
     "example.123",
     "example.123.",
+    // A one-label host keeps the rule: only the trailing dot is dropped.
+    "0x7f.",
+    "5.",
     "example.0x",
     "127.0.0.1",
   ]) {
@@ -161,6 +164,9 @@ test("numericLastLabel follows the URL parser's ends-in-a-number rule", () => {
     "123.example.com",
     "example.0xg",
     "example.1a",
+    "example.a1",
+    // Only one trailing dot is dropped: the last label here is empty, as the URL parser reads it.
+    "example.123..",
     "",
   ]) {
     assert.equal(numericLastLabel(host), false, host);

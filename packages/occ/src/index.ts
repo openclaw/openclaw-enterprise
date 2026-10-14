@@ -3612,7 +3612,15 @@ export class OpenClawController {
         });
         return Object.freeze({ outcome: "succeeded" as const, revisionId });
       }
-      const error = deploymentErrorForWork(work);
+      const deploymentError = deploymentErrorForWork(work);
+      // Stopping the first rollout is the owner's choice, not a fault to correct.
+      const error =
+        deploymentError?.code === "REVISION_STOPPED"
+          ? Object.freeze({
+              code: "REVISION_STOPPED",
+              message: "The Agent was stopped before its first deployment finished.",
+            })
+          : deploymentError;
       const pending = status !== "failed";
       const code = pending
         ? "PROVISIONING_DEPLOYMENT_PENDING"
