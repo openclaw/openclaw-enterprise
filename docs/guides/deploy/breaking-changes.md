@@ -34,8 +34,8 @@ Codex.
 binding`, `... must use the primary model's provider`, `... must be
 provider/model references`, or `... must be unset`.
 
-**Steps.** Use only the primary model's provider, remove the other provider's
-`apiKey`, then save and deploy again.
+**Steps.** Move or remove the setting the `400` names, keeping only the
+primary model's provider, then save and deploy again.
 
 ## 2026-10-14: observability URLs must not hide another host
 

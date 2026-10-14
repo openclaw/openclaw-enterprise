@@ -441,7 +441,8 @@ export function requireSelectedModelProvider(
 ): void {
   const requirement = `${provider}/<model>, the provider of the Agent's Harness authentication binding`;
   for (const { setting, path, reference, policy, capability } of modelSelections(configuration)) {
-    if (dedicatedCodex && capability !== undefined) {
+    // An empty value selects nothing, as an empty selection elsewhere.
+    if (dedicatedCodex && capability !== undefined && reference !== "") {
       throw createError(
         capability,
         "must be unset: Dedicated Codex serves chat models only, not media or voice models",

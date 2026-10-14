@@ -9696,6 +9696,8 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
           modelPolicy: { allow: ["codex/*", "codex/gpt-5"] },
           subagents,
           decisionModel: "",
+          // An empty media or voice model selects nothing, so Codex admits it.
+          voiceModel: "",
         },
       },
       channels: { modelByChannel: { slack: { C1: "codex/gpt-5" } } },
