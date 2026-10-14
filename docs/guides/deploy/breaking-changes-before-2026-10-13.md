@@ -21,7 +21,8 @@ model setting selects, that has:
   `cookie`, `credential`, `passcode`, `passphrase`, `password`, `secret`,
   `signature` or `token` (or a plural), or that ends in `key` or `keys` except
   an idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
-  `X-Auth-Key`, `x-auth-token` or `Cookie` (widened on 2026-10-13, below);
+  `X-Auth-Key`, `x-auth-token` or `Cookie`
+  ([widened on 2026-10-13](breaking-changes-archive.md#2026-10-13-more-model-credential-header-names-and-provider-models-lists));
 - a header name that is not a valid HTTP field name (spaces, zero-width or
   non-ASCII characters);
 - a `request.auth` other than exactly `{mode: "provider-default"}`.
