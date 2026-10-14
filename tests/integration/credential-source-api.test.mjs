@@ -49,9 +49,23 @@ function assertRefused(response, field, message, label = field) {
   }
 }
 
-/** The values of table rows whose check points (space-separated) include `point`. */
+/**
+ * Rule tables list each row's check points: `save` (refused through the API), `validate`
+ * (accepted by the Driver's validateSourceConfig) and `attach` (a source stored before the rule,
+ * with its provider, attached to a new revision). Returns the rows checked at `point`.
+ */
+const CHECK_POINTS = ["save", "validate", "attach"];
 const checkedAt = (rows, point) =>
-  rows.filter(([, points]) => points.split(" ").includes(point)).map(([value]) => value);
+  rows
+    .filter(([value, points]) => {
+      const list = points.split(" ");
+      assert.ok(
+        list.every((name) => CHECK_POINTS.includes(name)),
+        value + ": " + points,
+      );
+      return list.includes(point);
+    })
+    .map(([value]) => value);
 
 // Gateway storage and Compute placement are test doubles. Requests use the real
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
@@ -202,6 +216,7 @@ async function fixture(
     validate(type, config) {
       return driver.validateSourceConfig({ type, config: toolConfig(type, config) });
     },
+    /** No source listed, no Secret value read, nothing written to the gateway. */
     async assertNothingSaved() {
       assert.deepEqual((await app.request("GET", path)).data, []);
       assert.equal(
@@ -284,7 +299,7 @@ test("credential source HTTP admission rejects invalid endpoints without retaini
     const response = await f.create("invalid", { base_url });
     // Assert absence independently of the status: the original bug left a deleting row.
     assert.deepEqual((await f.request("GET", f.path)).data, [], base_url);
-    assertRefused(response, "base_url", new RegExp("HTTPS.*/v1"), base_url);
+    assertRefused(response, "base_url", /HTTPS.*\/v1/, base_url);
     if (base_url.startsWith("https://[")) {
       assert.match(response.body.error.message, /bracketed IPv6 hosts.*unsupported/);
     }
@@ -506,14 +521,14 @@ test("credential source endpoints require an exact DNS host name", async (t) => 
   // A source stored before the rule, with its provider, cannot be attached to a new revision.
   const { stored } = f.seedStored("openai", { base_url: "https://169.254.169.254/v1" });
   await assert.rejects(f.attach(stored), /DNS host name.*IP addresses/);
+  assert.equal(f.profiles.size, 0);
 });
 
 test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", async (t) => {
   const f = await fixture(t, { toolSources: true });
   // The URL parser and inet_aton-style resolvers (glibc's, the Sandbox proxy's) read a host whose
-  // last label is a decimal or 0x number as an IPv4 address (finding 1360). Each row lists its
-  // check points: `save` through the API, and `attach` of a source stored before the host rules,
-  // with its provider (finding 1363). Accepted hosts `validate`, and a stored one still attaches.
+  // last label is a decimal or 0x number as an IPv4 address (finding 1360). Stored sources are
+  // checked at attach too, and a stored DNS host still attaches (finding 1363).
   const refused = [
     ["0xa000005", "save attach"],
     ["0xa.0.0.5", "save"],
@@ -590,9 +605,7 @@ test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", asyn
 test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or localhost names", async (t) => {
   const f = await fixture(t, { toolSources: true });
   // The OpenShell gateway, not the Sandbox, posts the issuer material to token_url, so the
-  // protected host's rule applies to its parsed hostname, plus localhost (finding 1348). Rows
-  // list their check points: `save` through the API, and `attach` of a source stored before the
-  // rule, with its provider.
+  // protected host's rule applies to its parsed hostname, plus localhost (finding 1348).
   const refused = [
     ["https://10.0.0.5/token", "save"],
     ["https://127.0.0.1:8443/token", "save"],
@@ -847,7 +860,7 @@ test("OAuth2 token_url is stored as parsed", async (t) => {
   ]) {
     assert.deepEqual(
       f.validate("oauth2-client-credentials", { token_url: written }),
-      stored && { ...ISSUER, token_url: stored },
+      stored === undefined ? undefined : { ...ISSUER, token_url: stored },
       written,
     );
   }
