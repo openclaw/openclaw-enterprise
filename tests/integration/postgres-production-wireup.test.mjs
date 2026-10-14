@@ -704,11 +704,14 @@ test(
         "Standard OpenClaw",
         "default-codex",
       ]);
-      // A new Namespace receives the operator's template, not the bundled one.
-      assert.equal(
-        newPresets.data.find((preset) => preset.name === "default-codex").template.agent.name,
-        operatorCodexTemplate.agent.name,
+      // A new Namespace receives the operator's template, not the bundled one. The list
+      // returns summaries, so read the exact Preset for its template.
+      const newCodex = newPresets.data.find((preset) => preset.name === "default-codex");
+      const newCodexPreset = await request(
+        "GET",
+        `/namespaces/${newNamespace.data.id}/presets/${newCodex.id}`,
       );
+      assert.equal(newCodexPreset.data.template.agent.name, operatorCodexTemplate.agent.name);
       assert.notEqual(
         newPresets.data.find((preset) => preset.name === "Standard Codex").id,
         copied.id,

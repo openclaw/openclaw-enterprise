@@ -14,6 +14,24 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-14: Preset and revision lists return summaries; revisions page
+
+**What breaks.** `GET .../presets` items carry only `id`, `namespaceId`, `name`
+and `createdAt`, without `template`. `GET .../agents/{agentId}/revisions` items
+carry identity, `configurationId`, `configurationGeneration`, `harness` and
+`createdAt`, without the saved settings or `configurationReadError`. Revisions
+list newest first, 50 to a page (`limit` up to 100), and `meta.nextCursor`
+names the next page.
+
+**Who is affected.** API clients that read templates or saved settings from
+these lists, or expect every revision in one response.
+
+**How to tell.** List items lack `template` or `configuration`, and
+`meta.nextCursor` is set.
+
+**Steps.** Read one Preset or revision by ID for its document. Pass
+`meta.nextCursor` back as `cursor` until it is `null`.
+
 ## 2026-10-14: every model selection must use the Harness provider
 
 **What breaks.** On Kubernetes Compute, Configuration, Preset and Agent saves
@@ -293,23 +311,3 @@ list of model objects, or remove it. Remove the user name and password from
 the URL, or make the whole URL a `${NAME}` reference. Give a `baseUrl` its host
 and write `//` after its scheme, and use a string variable for a whole `baseUrl`
 or `api`.
-
-## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
-
-**What breaks.** `helm upgrade` fails when a saved `auth.github.egressCidrs`,
-`auth.google.egressCidrs`, `auth.oidc.egressCidrs`, or
-`repositoryCredentials.upstreamCidrs` entry has a leading-zero octet, such as
-`140.82.112.08/20`. That value used to render, and the apiserver accepted it
-with a warning. The upgrade now stops before it writes that policy.
-
-**Who is affected.** Saved releases that use a leading-zero octet in one of
-those lists. A canonical decimal such as `140.82.112.0/20` or `140.82.112.8/20`
-still upgrades.
-
-**How to tell.** Helm stops with
-`auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32`,
-or the same sentence for `auth.google.egressCidrs`, `auth.oidc.egressCidrs`, and
-`repositoryCredentials.upstreamCidrs`.
-
-**Steps.** Write the canonical decimal (`140.82.112.8/20` for
-`140.82.112.08/20`) and upgrade again.

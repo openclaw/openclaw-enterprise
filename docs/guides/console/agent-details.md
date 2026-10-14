@@ -78,7 +78,8 @@ Verify the runtime and a real response with
 An **AgentRevision** is an immutable version created by deployment. A
 **Configuration** is the reusable, mutable input for the next version.
 
-**Versions** marks the current version. **View version vN** shows creation time,
+**Versions** lists the newest 50 versions and marks the current one; **Show
+older versions** loads the next 50. **View version vN** shows creation time,
 Configuration generation, deployment status, and read-only settings, including
 native JSON. Activity follows the latest visible deployment. **Available versions**
 jumps to readable versions; `rev_…` identifies the version for API calls and

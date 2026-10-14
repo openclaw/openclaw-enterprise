@@ -1348,9 +1348,7 @@ test(
         limit: 100,
       }),
     );
-    const heavyRevisions = revisionPage.result.revisions.filter(
-      ({ revision }) => revision > 5000,
-    );
+    const heavyRevisions = revisionPage.result.revisions.filter(({ revision }) => revision > 5000);
     assert.deepEqual(
       heavyRevisions.slice(0, 2).map(({ revision }) => revision),
       [5064, 5063],
@@ -1922,9 +1920,25 @@ test(
     assert.equal(detail.status, 200);
     assert.deepEqual(detail.data, degradedAgent);
 
+    // The list carries summaries, newest first. It never decodes a snapshot, so the
+    // unreadable revision lists like any other; its exact read reports the error.
+    const revisionSummary = (item) => ({
+      id: item.id,
+      namespaceId: item.namespaceId,
+      agentId: item.agentId,
+      revision: item.revision,
+      backendId: item.backendId,
+      configurationId: item.configurationId,
+      configurationGeneration: item.configurationGeneration,
+      harness: item.harness,
+      createdAt: item.createdAt,
+    });
     const revisions = await request(api, "GET", revisionPath);
     assert.equal(revisions.status, 200);
-    assert.deepEqual(revisions.data, [healthyRevision.data, degradedRevision]);
+    assert.deepEqual(revisions.data, [
+      revisionSummary({ ...healthyRevision.data, id: malformedRevisionId, revision: 2 }),
+      revisionSummary(healthyRevision.data),
+    ]);
     const validDetail = await request(api, "GET", `${revisionPath}/${revision.id}`);
     assert.equal(validDetail.status, 200);
     assert.deepEqual(validDetail.data, healthyRevision.data);
@@ -1969,16 +1983,19 @@ test(
         ["agent", "revisions", agent.id],
       ]) {
         const table = await execute(cli, [...cliArguments, ...command]);
-        assert.match(table.stdout, /CONFIGURATION ERROR/u);
-        assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
         const structured = await execute(cli, [...cliArguments, ...command, "--output", "json"]);
         const decoded = JSON.parse(structured.stdout);
         const records = Array.isArray(decoded) ? decoded : [decoded];
-        assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
         if (command[1] === "revisions") {
+          // Revision summaries carry no saved settings, so no read error either.
+          assert.ok(table.stdout.includes(malformedRevisionId));
           assert.match(structured.stderr, /Agent saved configuration is unreadable/u);
           assert.ok(records.every((record) => record.deploymentStatus === null));
+          continue;
         }
+        assert.match(table.stdout, /CONFIGURATION ERROR/u);
+        assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+        assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
       }
       // A readable Agent can still have an unreadable historical snapshot. Keep
       // its healthy sibling and do not enrich the error variant through strict reads.
@@ -1987,7 +2004,10 @@ test(
         JSON.stringify(agent.plugins ?? {}),
       ]);
       const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
-      assert.match(history.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+      assert.match(
+        history.stderr,
+        new RegExp(`deployment status of revision ${malformedRevisionId} is unavailable`, "u"),
+      );
       assert.ok(history.stdout.includes(revision.id));
       assert.match(history.stdout, /queued/u);
       assert.ok(history.stdout.includes(malformedRevisionId));
@@ -2045,7 +2065,7 @@ test(
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
-        [healthyRevision.data],
+        [revisionSummary(healthyRevision.data)],
       ],
       ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {

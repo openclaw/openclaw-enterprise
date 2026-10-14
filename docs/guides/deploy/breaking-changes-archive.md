@@ -8,6 +8,26 @@ newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
 
+## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
+
+**What breaks.** `helm upgrade` fails when a saved `auth.github.egressCidrs`,
+`auth.google.egressCidrs`, `auth.oidc.egressCidrs`, or
+`repositoryCredentials.upstreamCidrs` entry has a leading-zero octet, such as
+`140.82.112.08/20`. That value used to render, and the apiserver accepted it
+with a warning. The upgrade now stops before it writes that policy.
+
+**Who is affected.** Saved releases that use a leading-zero octet in one of
+those lists. A canonical decimal such as `140.82.112.0/20` or `140.82.112.8/20`
+still upgrades.
+
+**How to tell.** Helm stops with
+`auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32`,
+or the same sentence for `auth.google.egressCidrs`, `auth.oidc.egressCidrs`, and
+`repositoryCredentials.upstreamCidrs`.
+
+**Steps.** Write the canonical decimal (`140.82.112.8/20` for
+`140.82.112.08/20`) and upgrade again.
+
 ## 2026-10-13: remote node CIDRs must be canonical
 
 **What breaks.** `helm upgrade` fails when a saved

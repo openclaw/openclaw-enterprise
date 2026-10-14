@@ -155,7 +155,10 @@ test("revision pages run newest first and a cursor continues below a deploy betw
     "Undeployed",
     createHarnessConfiguration("openclaw", "gpt-4.1"),
   );
-  const none = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${empty.id}/revisions`);
+  const none = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${empty.id}/revisions`,
+  );
   assert.equal(none.status, 200);
   assert.deepEqual([none.data, none.body.meta.nextCursor], [[], null]);
   // One revision fits one page.
@@ -179,16 +182,16 @@ test("revision pages run newest first and a cursor continues below a deploy betw
   // The default page is 50; 100 is the most a page holds.
   await seedRevisions(100);
   const byDefault = await page();
-  assert.deepEqual([byDefault.data.length, byDefault.numbers[0], byDefault.nextCursor], [
-    50,
-    106,
-    "v1.57",
-  ]);
+  assert.deepEqual(
+    [byDefault.data.length, byDefault.numbers[0], byDefault.nextCursor],
+    [50, 106, "v1.57"],
+  );
   const largest = await page("?limit=100");
   assert.deepEqual([largest.data.length, largest.nextCursor], [100, "v1.7"]);
-  assert.deepEqual((await page(`?limit=100&cursor=${largest.nextCursor}`)).numbers, [
-    6, 5, 4, 3, 2, 1,
-  ]);
+  assert.deepEqual(
+    (await page(`?limit=100&cursor=${largest.nextCursor}`)).numbers,
+    [6, 5, 4, 3, 2, 1],
+  );
   // Query strings are exact text: out-of-range sizes and foreign cursors are refused, not clamped.
   for (const query of [
     "?limit=101",

@@ -951,10 +951,11 @@ async function main(options) {
     }
 
     if (!record.revisionId) {
-      const revisions = (await api("GET", `${agentPath}/revisions`)).sort(
-        (left, right) => right.revision - left.revision,
-      );
-      const latest = revisions[0];
+      // Revisions list as summaries, newest first; the exact read carries the saved snapshot.
+      const [newest] = await api("GET", `${agentPath}/revisions?limit=1`);
+      const latest = newest
+        ? await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`)
+        : undefined;
       if (latest) {
         assertManagedRevision(latest, record, expectedConfiguration);
       }
