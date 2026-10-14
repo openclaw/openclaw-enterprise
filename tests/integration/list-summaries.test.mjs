@@ -350,7 +350,7 @@ test("a revision cursor needs a readable revision below it, and the scan reads i
   };
 
   // Finding 1334: a full page whose remaining revisions are all unreadable carries no cursor,
-  // so no cursor is issued when no older revision is readable during the request.
+  // so no cursor is issued when no older revision was found readable when checked.
   const onlyNewest = await reader("newest-reader", [newest]);
   const alone = await counted("?limit=1", { session: onlyNewest });
   assert.deepEqual([alone.numbers, alone.nextCursor], [[251], null]);

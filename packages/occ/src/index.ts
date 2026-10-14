@@ -3464,7 +3464,7 @@ export class OpenClawController {
    * One page of the Agent's revisions the principal may read, newest first, as summaries: a
    * list never decodes a saved snapshot (finding 1323). The page holds up to `limit` readable
    * revisions numbered below `before`; unreadable ones are skipped. `nextBefore` names the
-   * page's last revision, and only when a readable revision remains below it (finding 1334).
+   * page's last revision, and only when an older revision was found readable when checked.
    */
   async listRevisions(
     principalId: string,
@@ -3479,13 +3479,12 @@ export class OpenClawController {
       throw new ScopeViolationError("The revision page cursor is invalid.");
     }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
-    // Read checks stay per revision. Scanning on past unreadable revisions keeps the cursor on
-    // a readable one, so a page never names a revision the caller cannot read. The scan reads
-    // the store in batches of at least 100, whatever the page size, so a small page over many
-    // unreadable revisions costs few queries. A full page looks ahead for one more readable
-    // revision before it emits a cursor. Access can change before the next request, so that
-    // page may be empty. A batch one larger than the page lets a fully readable page find
-    // the next revision in the same query.
+    // Read checks stay per revision. The cursor names only a revision found readable when
+    // checked. The scan reads the store in batches of at least 100, whatever the page size,
+    // so a small page over many unreadable revisions costs few queries. A full page looks
+    // ahead for one more revision found readable when checked before it emits a cursor.
+    // Access can change before the next request, so that page may be empty. A batch one
+    // larger than the page lets a fully readable page find the next revision in one query.
     const batch = Math.max(page.limit + 1, 100);
     return this.read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];

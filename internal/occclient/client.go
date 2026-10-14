@@ -408,7 +408,7 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 }
 
 // LatestAgentRevision returns the newest revision summary the caller can read,
-// or nil when there is none. A cursor reflects access during its issuing request;
+// or nil when there is none. A cursor reflects a read check in its issuing request;
 // a later page may be empty if access changes. The loop also supports older servers.
 func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
 	cursor := ""
