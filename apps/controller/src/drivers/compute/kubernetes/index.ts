@@ -2287,6 +2287,8 @@ function isCredentialReference(value: unknown): boolean {
  * The Configuration without the fallbacks and `models` policy keys whose provider waits on an
  * unfilled Preset variable, which the Harness resolution would refuse as another provider
  * (switching every rule off); the rules check the rest and the launch checks them once filled.
+ * An agents.entries model whose own provider does is dropped too: the entry must select the
+ * defaults' primary once filled, so it resolves as the defaults do.
  */
 function withoutVariableProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -2307,6 +2309,14 @@ function withoutVariableProviders(
     ),
   ];
   for (const [at, scope] of scopes) {
+    if (
+      at[1] === "entries" &&
+      scope !== undefined &&
+      (providerWaitsOnVariable(options, [...at, "model"]) ||
+        providerWaitsOnVariable(options, [...at, "model", "primary"]))
+    ) {
+      delete scope.model;
+    }
     const model = asRecord(scope?.model);
     if (model !== undefined && Array.isArray(model.fallbacks)) {
       model.fallbacks = model.fallbacks.filter(

@@ -1317,6 +1317,16 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       },
       setting("agents.defaults.imageModel", openai),
     ],
+    // So does an Agent entry whose model's provider waits on one.
+    [
+      {
+        agents: {
+          defaults: { ...templated, imageModel: other },
+          entries: { main: { model: "{{ vars.provider }}/{{ vars.model }}" } },
+        },
+      },
+      setting("agents.defaults.imageModel", openai),
+    ],
     // A variable in another secrets source leaves the apiKey reference checked.
     [
       {
