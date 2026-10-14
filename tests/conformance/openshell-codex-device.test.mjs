@@ -2,6 +2,72 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import {
+  codexDeviceAuthorizationState,
+  pollCodexDeviceAuthorization,
+  startCodexDeviceAuthorization,
+} from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
+import { redirectProviderFetch, startProviderServer } from "../helpers/human-login-transport.mjs";
+
+test("Codex device authorization never follows issuer redirects", async (t) => {
+  const paths = [
+    "/api/accounts/deviceauth/usercode",
+    "/api/accounts/deviceauth/token",
+    "/oauth/token",
+  ];
+  for (const [phase, redirectPath] of paths.entries()) {
+    await t.test(redirectPath, async (t) => {
+      // Only the fixed issuer destinations are routed to loopback. Native fetch
+      // handles the real 307, so following it would forward a private grant.
+      const server = await startProviderServer(t, (request, response) => {
+        request.resume();
+        if (request.url === redirectPath) {
+          response.writeHead(307, { location: "/redirected-grant" }).end();
+          return;
+        }
+        if (request.url === "/redirected-grant") {
+          response.writeHead(503).end();
+          return;
+        }
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify(
+            request.url === paths[0]
+              ? { device_auth_id: "device-fixture", user_code: "USER-CODE", interval: 5 }
+              : { authorization_code: "synthetic-code", code_verifier: "synthetic-verifier" },
+          ),
+        );
+      });
+      redirectProviderFetch(
+        t,
+        new Set(paths.map((path) => `https://auth.openai.com${path}`)),
+        `http://127.0.0.1:${server.port}`,
+      );
+      const signal = AbortSignal.timeout(10_000);
+      if (phase === 0) {
+        await assert.rejects(startCodexDeviceAuthorization("source-owner", signal), {
+          name: "DeviceAuthorizationStartError",
+          reason: "unavailable",
+          failure: "fetch_failed",
+        });
+      } else {
+        const login = await startCodexDeviceAuthorization("source-owner", signal);
+        const state = codexDeviceAuthorizationState("source-owner", login.privateState);
+        if (phase === 1) {
+          // A refused pre-code request retains the existing pending behavior.
+          assert.equal(await pollCodexDeviceAuthorization(state, signal), undefined);
+        } else {
+          await assert.rejects(pollCodexDeviceAuthorization(state, signal));
+        }
+      }
+      assert.deepEqual(
+        server.requests,
+        paths.slice(0, phase + 1),
+        "no issuer redirect may send another request or forward the authorization grant",
+      );
+    });
+  }
+});
 
 function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;

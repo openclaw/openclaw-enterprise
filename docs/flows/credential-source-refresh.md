@@ -130,7 +130,9 @@ and both Driver selections before accepting completion. An uncertain exchange
 closes the handle without removing the source or replaying its grant.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-starts the issuer request from the API Pods. It preserves the existing
+starts the issuer request from the API Pods. The start, poll, and token-exchange
+requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
+material is never forwarded to a redirect target. It preserves the existing
 `DeviceAuthorizationStartError` distinction: connection failure or timeout is
 `unreachable`; HTTP rejection, malformed replies, and `AbortError` are
 `unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
@@ -237,6 +239,8 @@ the record `deleting` for retry.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 23:26: Restore issuer redirect refusal in all three moved device-login requests. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 6f0b9180125f80d9e490d77656d4919c574d5004)
 
 - 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366 - bc85338f2)
 

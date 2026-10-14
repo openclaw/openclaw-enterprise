@@ -277,13 +277,6 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   assert.equal(session.credentialGatewayId, gateway.id);
   assert.equal(session.credentialRefreshId, refresh.id);
   assert.equal(session.privateState, undefined);
-  const publicAndStored = JSON.stringify([
-    started.body,
-    completed.body,
-    sources.body,
-    agent,
-    session,
-  ]);
   // A transport failure after the token POST is a different boundary: cancel the
   // new login, erase its private state, and never redeem its code a second time.
   loseExchangeResponse = true;
@@ -302,11 +295,22 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   assert.equal(failedSession.privateState, undefined);
   assert.equal((await fixture.request("POST", interruptedPath, { body: {} })).status, 409);
   assert.equal(exchanges, 2, "an uncertain token exchange is never replayed");
+  const publicAndStored = JSON.stringify([
+    started.body,
+    completed.body,
+    sources.body,
+    agent,
+    session,
+    failed.body,
+    failedSession,
+  ]);
   for (const credential of [
     initialAccess,
     initialRefresh,
     managedAccess,
     "synthetic-device-handle",
+    "synthetic-code",
+    "synthetic-verifier",
   ]) {
     assert.equal(
       publicAndStored.includes(credential),

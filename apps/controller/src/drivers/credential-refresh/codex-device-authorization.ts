@@ -60,21 +60,20 @@ async function responseRecord(response: Response): Promise<Record<string, unknow
   throw new Error("Codex OAuth returned an invalid response.");
 }
 
-// A rejected fetch never received HTTP: retain only a bounded failure class, not
-// messages, addresses, provider text, or the nested transport error.
+// A connection code or timeout means the issuer could not answer. A refused
+// redirect reached it; retain no messages, addresses, provider text, or causes.
 function unreachable(error: unknown): DeviceAuthorizationStartError {
   if (error instanceof Error && error.name === "AbortError") {
     return new DeviceAuthorizationStartError("unavailable", "AbortError");
   }
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return new DeviceAuthorizationStartError("unreachable", "TimeoutError");
+  }
   const cause =
     error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
-  let failure = "fetch_failed";
-  if (typeof cause?.code === "string") {
-    failure = cause.code;
-  } else if (error instanceof Error && error.name !== "TypeError") {
-    failure = error.name;
-  }
-  return new DeviceAuthorizationStartError("unreachable", failure);
+  return typeof cause?.code === "string"
+    ? new DeviceAuthorizationStartError("unreachable", cause.code)
+    : new DeviceAuthorizationStartError("unavailable", "fetch_failed");
 }
 
 export async function startCodexDeviceAuthorization(
@@ -85,6 +84,7 @@ export async function startCodexDeviceAuthorization(
   try {
     reply = await fetch("https://auth.openai.com/api/accounts/deviceauth/usercode", {
       method: "POST",
+      redirect: "error",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_id: CODEX_OAUTH_CLIENT_ID }),
       signal,
@@ -144,6 +144,7 @@ export async function pollCodexDeviceAuthorization(
   try {
     response = await fetch("https://auth.openai.com/api/accounts/deviceauth/token", {
       method: "POST",
+      redirect: "error",
       headers: { "Content-Type": "application/json" },
       body,
       signal,
@@ -172,6 +173,7 @@ export async function pollCodexDeviceAuthorization(
   const token = await responseRecord(
     await fetch(CODEX_OAUTH_TOKEN_URL, {
       method: "POST",
+      redirect: "error",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "authorization_code",
