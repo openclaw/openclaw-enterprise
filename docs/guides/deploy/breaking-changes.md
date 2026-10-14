@@ -23,8 +23,8 @@ other `*Model` settings, `models` policy keys, hook models and
 `models.providers` entry. Dedicated Codex refuses one on every entry, and a
 `models` policy key without a provider.
 
-**Who is affected.** Configurations that select or key a second provider, or
-set a provider `apiKey` for Dedicated Codex.
+**Who is affected.** Configurations that select a second provider or give it
+an `apiKey`, or that set any provider `apiKey` for Dedicated Codex.
 
 **How to tell.** A `400` names the setting (a mismatched fallback used to get
 a fixed-text `409`): `... must select <provider>/<model>, the provider of the
