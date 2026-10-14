@@ -99,13 +99,6 @@ node scripts/generate-occ-api-reference.mjs --check
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
 replace an unmanaged hook and preserves `core.hooksPath`.
 
-## Standard Codex Preset
-
-Run `node --test tests/integration/presets-controller.test.mjs` for the API
-workflow. The browser preset suite covers the chooser and Secret creation; the
-[PostgreSQL suite](postgresql.md) checks persistence. These tests do not start a
-workload or model. For runtime proof, follow [Verify before use](../guides/topics/standard-codex-preset.md#verify-before-use).
-
 ## Metrics and observability tests
 
 ### Start the development dashboard
