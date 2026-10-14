@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1199,4 +1202,156 @@ test("QA log tails drop the body of an unregistered key that starts above the ta
     "[redacted credential-bearing line]",
     "after",
   ]);
+});
+
+test("failed native Gateway turns capture private bounded logs for the original revision", async (t) => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  for (const mode of ["capture", "read-unavailable", "write-unavailable", "success"]) {
+    await t.test(mode, async () => {
+      const credential = `private-runtime-fixture-${randomUUID()}`;
+      const password = `private-gateway-fixture-${randomUUID()}`;
+      const target = {
+        namespaceId: "ns_log_fixture",
+        agentId: "agt_log_fixture",
+        revisionId: "rev_original",
+      };
+      const agent = {
+        namespaceId: target.namespaceId,
+        id: target.agentId,
+        revision: { id: target.revisionId },
+      };
+      const reads = [];
+      const records = [];
+      let closed = false;
+      // A real HTTP error crosses normalGatewayTurn. The log reader substitutes only
+      // the external OCC response; this proves harness privacy, not a live model turn.
+      const server = createServer((request, response) => {
+        assert.equal(request.url, "/v1/chat/completions");
+        // Simulate the fixture advancing after request admission: diagnostics stay pinned.
+        agent.revision = { id: "rev_replaced" };
+        response.writeHead(mode === "success" ? 200 : 500, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(
+            mode === "success"
+              ? { choices: [{ message: { content: "expected reply" } }] }
+              : { error: { message: "internal error" } },
+          ),
+        );
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const fixture = createNativePluginAssertions({
+        gatewayUrl: async () => ({
+          url: `http://127.0.0.1:${server.address().port}`,
+          gatewayPassword: password,
+          close: async () => {
+            closed = true;
+          },
+        }),
+        execGateway: async () => ({
+          label: "fixture",
+          stdout: JSON.stringify({ chatCompletionsEnabled: true }),
+        }),
+        readRuntimeLogs: async (identity) => {
+          reads.push(identity);
+          if (mode === "read-unavailable" && identity.source === "agent") {
+            throw new Error(credential);
+          }
+          return {
+            records: [
+              ...Array.from({ length: 120 }, () => ({
+                type: "line",
+                level: "info",
+                message: "startup",
+              })),
+              {
+                type: "line",
+                level: "error",
+                message: `native review failed ${password} ${credential} ${Buffer.from(credential).toString("base64")}`,
+              },
+              {
+                type: "withheld",
+                reason: "unrecognised_structured",
+                count: 1,
+                message: credential,
+                fields: { raw: credential },
+              },
+            ],
+          };
+        },
+        recordRuntimeLogs: async (record) => {
+          if (mode === "write-unavailable") {
+            throw new Error(credential);
+          }
+          records.push(record);
+        },
+      });
+      try {
+        const run = () =>
+          fixture.normalGatewayTurn({
+            agent,
+            prompt: "fixture prompt",
+            expectedPatterns: ["expected reply"],
+            secrets: [credential],
+          });
+        if (mode === "success") {
+          assert.equal(await run(), "expected reply");
+          assert.deepEqual(reads, []);
+          assert.deepEqual(records, []);
+        } else {
+          await assert.rejects(run, (error) => {
+            assert.equal(error.name, "AssertionError");
+            assert.equal(
+              error.actual,
+              500,
+              "log collection failure must not replace the Gateway failure",
+            );
+            assert.equal(error.message.includes(credential), false);
+            return true;
+          });
+          assert.deepEqual(
+            reads,
+            ["gateway", "agent"].map((source) => ({ ...target, source })),
+          );
+          if (mode === "write-unavailable") {
+            assert.deepEqual(records, []);
+          } else {
+            assert.equal(records.length, 1);
+            const { sources, ...identity } = records[0];
+            assert.deepEqual(identity, target);
+            const text = JSON.stringify(records);
+            for (const secret of [
+              credential,
+              password,
+              Buffer.from(credential).toString("base64"),
+            ]) {
+              assert.equal(
+                text.includes(secret),
+                false,
+                "public artifacts must omit raw and encoded credentials",
+              );
+            }
+            assert.match(text, /native review failed/);
+            assert.match(text, /unrecognised_structured/);
+            assert.equal(
+              text.includes('"raw"'),
+              false,
+              "withheld API fields must not be resurrected",
+            );
+            assert.ok(
+              sources.every((source) => source.unavailable === true || source.lines.length <= 80),
+            );
+            assert.ok(text.length < 150_000);
+            if (mode === "read-unavailable") {
+              assert.deepEqual(sources[1], { source: "agent", unavailable: true });
+            }
+          }
+        }
+        assert.equal(closed, true, "diagnostics must run before normal gateway cleanup completes");
+      } finally {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  }
 });

@@ -745,6 +745,13 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     execCodex: (a, args) => f.execRole(a, "agent", args),
     waitFor,
     proofMode: codex ? "codex" : "openclaw",
+    readRuntimeLogs: ({ namespaceId, agentId, revisionId, source }) =>
+      f.api(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}/runtime/logs?source=${source}&tailLines=100`,
+      ),
+    recordRuntimeLogs: (record) =>
+      f.record(`${record.agentId}-${record.revisionId}-turn-failure-logs-${randomUUID()}`, record),
   });
   return agent;
 }
