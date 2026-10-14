@@ -143,6 +143,17 @@ packages:
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
   );
+  assert.equal(
+    provenance.openclawCodexMcpApprovalPatchSha256,
+    createHash("sha256")
+      .update(
+        await readFile(
+          new URL("../../deploy/runtime/openclaw-codex-mcp-approval-policy.patch", import.meta.url),
+        ),
+      )
+      .digest("hex"),
+    "runtime provenance must identify the applied approval-policy overlay",
+  );
   assert.equal(provenance.codex.version, "0.158.0");
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);

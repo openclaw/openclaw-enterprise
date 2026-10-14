@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-10
-last_updated_session: fix-987-988
+updated: 2026-10-14
+last_updated_session: 01a136ee-8824-7043-b9e2-49eccacac3bd
 ---
 
 # Agent Plugin Deployment Flow
@@ -141,6 +141,13 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 `on-failure`, because an omitted policy lets the Gateway pick one the startup
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
+
+The runtime overlay `deploy/runtime/openclaw-codex-mcp-approval-policy.patch`
+preserves `on-request` through the pinned plugin's
+`withMcpElicitationsApprovalPolicy`, called during attempt startup and side questions.
+Native Codex permits MCP elicitation under that named policy and still routes
+requests to the selected reviewer. This avoids a granular override rejected by
+managed requirements without altering approval decisions or requirements.
 
 The Kubernetes ConfigMap is immutable and per revision. A revision prepared
 by an earlier controller keeps its earlier `config.toml` (without
@@ -346,6 +353,8 @@ deadline.
 
 ## Changelog
 
+- 2026-10-14 02:40: Preserve configured on-request policy during native MCP startup. (01a136ee-8824-7043-b9e2-49eccacac3bd - 4237605ff)
+
 - 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
 
 - 2026-10-10 04:49: Preserve writable native configuration during Harness peer recovery and same-Pod container restarts. (codex/thirty-compute-07-oct10 - 8e5a06ce)
@@ -365,15 +374,5 @@ deadline.
 - 2026-10-04 05:00: Recheck Create Agent discovery grants after the Secret read. (bughunt-11)
 
 - 2026-10-01 00:57: Reconcile peer recovery with current runtime. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - e57e777238104b1de0d3bee5c6c631722c4af575)
-
-- 2026-09-30 13:32: Clarify readiness and routing propagation. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - a0ca6376)
-
-- 2026-09-30 02:10: Recheck the peer before replacement readiness. (authoring-run/fc09b5f8-3fc8-4144-ac80-8bfd8ef24f52 - ed69e6eee87ca004d2970069e8e18cf4cce29a32)
-
-- 2026-09-30 00:33: Propagate Gateway exits while awaiting peer recovery. (authoring-run/bf3b8146-9d72-42a4-84e5-2293581c890c - 0d72f6a4e4e3003d457c4498e81e7de414f85649)
-
-- 2026-09-28 21:26: Batch Codex metadata reads; preserve ordered writes and verification. (authoring-run/7c8bff1b-a2d1-48f6-a996-1be6a06719fa - 8352c0932bcbde43e88b44c6975496ca5431ff55)
-
-- 2026-09-28 10:46: Materialize inherited app policy; native proof pending. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 44ed2405)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

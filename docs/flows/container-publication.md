@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-08
-last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
+updated: 2026-10-14
+last_updated_session: 01a136ee-8824-7043-b9e2-49eccacac3bd
 ---
 
 # Container publication flow
@@ -91,10 +91,10 @@ source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive
-and applies three patches whose hashes it verifies and records in runtime provenance:
+and applies four patches whose hashes it verifies and records in runtime provenance:
 the stock Codex 0.163.0-alpha.2 dependency pin, before extracting frozen installation
-inputs, and the temporary read-only-paths and `connect --ephemeral` expired-setup
-bridge patches. The bridge forwards the bound
+inputs, and the temporary read-only-paths, MCP approval-policy preservation and
+`connect --ephemeral` expired-setup bridge patches. The bridge forwards the bound
 Agent's stock network settings without modifying Codex. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
@@ -238,6 +238,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-14 02:40: Record the native MCP approval-policy preservation overlay. (01a136ee-8824-7043-b9e2-49eccacac3bd - 4237605ff)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 

@@ -294,6 +294,8 @@ if (command === "inputs") {
         sourceArchiveSha256: "c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b",
         openclawBridgePatchSha256:
           "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
+        openclawCodexMcpApprovalPatchSha256:
+          "c4c738e0143277ce42f361aab402fdb66e01c60f0034a685a7c27dbd3295a168",
         openclawConnectPatchSha256:
           "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f",
         codexDependencyPinPatchSha256:

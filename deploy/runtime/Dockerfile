@@ -102,6 +102,10 @@ RUN --mount=type=secret,id=build-ca,required=false \
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-read-only-paths.patch
+# TODO: Remove this bridge when OpenClaw preserves on-request for MCP elicitation.
+COPY deploy/runtime/openclaw-codex-mcp-approval-policy.patch /tmp/openclaw-codex-mcp-approval-policy.patch
+RUN echo 'c4c738e0143277ce42f361aab402fdb66e01c60f0034a685a7c27dbd3295a168  /tmp/openclaw-codex-mcp-approval-policy.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-mcp-approval-policy.patch
 # TODO: Remove this bridge patch when OpenClaw `connect --ephemeral` accepts an expired
 # replayed setup code for a node whose saved device token can reconnect.
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
