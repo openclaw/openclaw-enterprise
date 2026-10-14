@@ -79,6 +79,85 @@ try {
   });
 });
 
+test("Docker Agent readiness handles interrupted status responses immediately", async () => {
+  // Execute the exact generated container healthcheck against a real loopback peer that
+  // sends headers and a partial body before resetting the response stream.
+  const source = String.raw`
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { readdirSync } from "node:fs";
+import http from "node:http";
+import { join } from "node:path";
+import { promisify } from "node:util";
+const { AGENT_READINESS_ENTRYPOINT } = await import(process.argv[1]);
+const wsStore = readdirSync(join(process.cwd(), "node_modules/.pnpm")).find((entry) =>
+  entry.startsWith("ws@"),
+);
+assert.ok(wsStore);
+const wsModules = join(process.cwd(), "node_modules/.pnpm", wsStore, "node_modules");
+const server = http.createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "application/json", "content-length": "100" });
+  response.write('{"phase":"ready",');
+  setTimeout(() => response.destroy(), 10);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_STATUS_PORT: String(server.address().port),
+        OPENCLAW_AGENT_REVISION_ID: "rev_interrupted_status",
+        APP_SERVER_TOKEN: "synthetic-token",
+        APP_SERVER_PORT: "1",
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin runtime status unavailable: ECONNRESET\n");
+      return true;
+    },
+  );
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_READY_MARKER: join(process.cwd(), ".missing-readiness-marker"),
+        OPENCLAW_RUNTIME_STATUS_PORT: String(server.address().port),
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin ready marker is missing\n");
+      return true;
+    },
+  );
+} finally {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const runtimeEntrypoints = new URL(
+    "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "-e", source, runtimeEntrypoints.href],
+    { cwd: process.cwd(), timeout: 10_000 },
+  );
+});
+
 test("Docker namespace delete treats a network that vanished before DELETE as removed", async () => {
   // A fake engine behind the real Driver and Node HTTP client: the network inspect
   // finds an owned network, then the network DELETE answers with each status below.
