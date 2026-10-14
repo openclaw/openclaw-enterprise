@@ -1419,7 +1419,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
     nativeProvider.disabled ||= Boolean(savedSecret) || hasBoundModelCredential;
-    authMethod.disabled ||= Boolean(savedSecret) || nativeProvider.value === "anthropic";
+    authMethod.disabled ||= Boolean(savedSecret);
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
     const patOption = authMethod.querySelector('[value="codex_pat"]');

@@ -2266,7 +2266,11 @@ export const scenarios = {
       ...createModelSecret("storybook-anthropic-key"),
     ],
     description:
-      "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
+      "Anthropic offers only the OpenClaw harness, with Embedded execution. Authentication method stays clickable with Anthropic API key as its only option. Its fixed model list is available before credential entry and starts without a selection.",
+    steps: [
+      "Open Authentication method and select Anthropic API key. It remains clickable even though it is the only available method.",
+      "Confirm the selected model credential Secret stays selected after choosing the authentication method.",
+    ],
   },
   createCodexPat: {
     group: "Pages/Create Agent",
