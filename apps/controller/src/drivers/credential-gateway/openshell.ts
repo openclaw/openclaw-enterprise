@@ -19,7 +19,7 @@ import {
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
-import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
+import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
 import {
   openShellProviderName,
@@ -61,7 +61,7 @@ const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_BASE_URL_CONFIG = "base_url";
 
 const SOURCE_ENDPOINT_REQUIREMENTS =
-  "The OpenShell endpoint requires HTTPS, a nonzero port, and a /v1 path. Wildcards, bracketed IPv6 hosts, empty hostname labels, braces, URL credentials, query, and fragment are unsupported.";
+  "The OpenShell endpoint requires HTTPS, a DNS host name, a nonzero port, and a /v1 path. Wildcards, IP addresses, bracketed IPv6 hosts, empty hostname labels, braces, URL credentials, query, and fragment are unsupported.";
 
 /** How the paired Credential Refresh Driver configures one `refresh` type. */
 export interface OpenShellRefreshSourceType {
@@ -74,8 +74,11 @@ interface OpenShellSourceType {
   readonly catalog: CredentialSourceType;
   /** Present for `refresh` types: the gateway stores no static value for them. */
   readonly refresh?: OpenShellRefreshSourceType;
-  /** Rejects invalid non-secret configuration before any gateway effect. */
-  validate(config: Readonly<Record<string, string>>): void;
+  /**
+   * Rejects invalid non-secret configuration before any gateway effect. Returns the
+   * configuration to store when it differs from the written one, such as a normalized URL.
+   */
+  validate(config: Readonly<Record<string, string>>): Readonly<Record<string, string>> | void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
   credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
   /** The source's own profile, named like its provider and removed with it. */
@@ -133,11 +136,16 @@ const OAUTH2_CONFIG = Object.freeze([
   }),
 ]);
 
+/** A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. */
+function exactDnsName(host: string): boolean {
+  return HOST.test(host) && !/^[0-9.]+$/.test(host);
+}
+
 /** Checks the protected endpoint and placeholder variable shared by every non-model type. */
 function validateEndpointConfig(type: string, config: Readonly<Record<string, string>>): void {
   const { host, port, path } = bearerTokenEndpoint(config);
   const name = config.env_var ?? "";
-  if (!HOST.test(host) || /^[0-9.]+$/.test(host)) {
+  if (!exactDnsName(host)) {
     throw new CredentialSourceConfigError("host", `The ${type} host must be an exact DNS name.`);
   }
   if ((config.port !== undefined && !/^[1-9][0-9]{0,4}$/.test(config.port)) || port > 65_535) {
@@ -278,9 +286,29 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "api_key" }),
     }),
     validate: (config) => {
-      if (normalizedSourceBaseUrl(config) === undefined) {
+      const written = config[OPENAI_BASE_URL_CONFIG];
+      const spelling =
+        written === undefined
+          ? undefined
+          : openAiBaseUrlSpellingMessage(`The openai ${OPENAI_BASE_URL_CONFIG}`, written);
+      if (spelling !== undefined) {
+        throw new CredentialSourceConfigError(OPENAI_BASE_URL_CONFIG, spelling);
+      }
+      const baseUrl = matchableSourceBaseUrl(config);
+      if (baseUrl === undefined) {
         throw new CredentialSourceConfigError(OPENAI_BASE_URL_CONFIG, SOURCE_ENDPOINT_REQUIREMENTS);
       }
+      if (!exactDnsName(new URL(baseUrl).hostname)) {
+        throw new CredentialSourceConfigError(
+          OPENAI_BASE_URL_CONFIG,
+          `The openai ${OPENAI_BASE_URL_CONFIG} host must be an exact DNS name.`,
+        );
+      }
+      // Store the endpoint the profile, the manifest and config.toml use, not the written
+      // spelling (finding 1292).
+      return written === undefined
+        ? undefined
+        : Object.freeze({ ...config, [OPENAI_BASE_URL_CONFIG]: baseUrl });
     },
     credentials: () => Object.freeze({ api_key: "OPENAI_API_KEY" }),
     profile: (sourceId, config, options) => {
@@ -480,7 +508,8 @@ function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean
   );
 }
 
-function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): string | undefined {
+/** The normalized endpoint when OpenShell's host matcher can use it, whatever names the host. */
+function matchableSourceBaseUrl(config: Readonly<Record<string, string>>): string | undefined {
   const baseUrl = normalizeOpenAiBaseUrl(config[OPENAI_BASE_URL_CONFIG] ?? OPENAI_DEFAULT_BASE_URL);
   if (baseUrl === undefined) {
     return undefined;
@@ -497,6 +526,16 @@ function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): stri
     return undefined;
   }
   return baseUrl;
+}
+
+/**
+ * The endpoint registration and attachment use. Like a `bearer-token` host, it must be an exact
+ * DNS name: no IP address (in any spelling the URL parser accepts), `_` or label edge `-`
+ * (finding 1293). A source stored before that rule fails here until it is replaced.
+ */
+function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): string | undefined {
+  const baseUrl = matchableSourceBaseUrl(config);
+  return baseUrl !== undefined && exactDnsName(new URL(baseUrl).hostname) ? baseUrl : undefined;
 }
 
 function sourceBaseUrl(config: Readonly<Record<string, string>>): string {
@@ -564,8 +603,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return catalogTypes(this.options, this.refresh).map((entry) => entry.catalog);
   }
 
-  validateSourceConfig(input: Pick<CredentialSourceInput, "type" | "config">): void {
-    sourceType(input.type, this.options, this.refresh).validate(input.config);
+  validateSourceConfig(
+    input: Pick<CredentialSourceInput, "type" | "config">,
+  ): Readonly<Record<string, string>> | void {
+    return sourceType(input.type, this.options, this.refresh).validate(input.config);
   }
 
   async registerSource(

@@ -1384,8 +1384,14 @@ export interface CredentialAttachmentStatus {
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
   listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
-  /** Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record. */
-  validateSourceConfig(input: Pick<CredentialSourceInput, "type" | "config">): void;
+  /**
+   * Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record.
+   * A returned configuration, with the same fields, is what OCC stores and registers instead of
+   * the written one, such as a URL in the normalized form the gateway uses.
+   */
+  validateSourceConfig(
+    input: Pick<CredentialSourceInput, "type" | "config">,
+  ): Readonly<Record<string, string>> | void;
   registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,
