@@ -57,7 +57,10 @@ disposal, identity-provisioning, or policy-mutation method.
 ### Native IAM behavior
 
 The native Driver reads controller-owned IAM state on every lookup and decision
-and accepts only an empty startup configuration. Lookup returns no identity for
+and accepts only an empty startup configuration. Within one PostgreSQL State unit
+of work, such as one list request, the State reads that policy once and the Driver
+validates and indexes it once; a later unit reads it again, so a revocation applies
+to the next request. Lookup returns no identity for
 an absent or ambiguous match, invalid scope, or invalid policy. Authorization
 denies invalid requests or policy, unknown identities, cross-Namespace identity
 use, and requests without an applicable grant. A storage error propagates instead
