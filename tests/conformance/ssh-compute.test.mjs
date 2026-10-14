@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
+  appendFile,
   chmod,
   mkdir,
   mkdtemp,
@@ -16,8 +17,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -131,29 +132,74 @@ function runtimeAccountName(namespace, agentId, prefix) {
   return `${prefix.slice(0, 19)}-${digest(`${namespace.id}:${agentId}`).slice(0, 12)}`;
 }
 
-async function freePortRange() {
+// The fixture owns its gateway port range for its whole life. Reserving free ports,
+// releasing them, and letting each fake gateway bind its port later raced every other
+// local process, including outgoing connections that take ephemeral ports (finding 1160).
+// Instead each port answers as the gateway of the one live unit configured for it, and
+// resets the connection otherwise, as a closed port would refuse it.
+async function gatewayPortRange(t, units, state) {
+  const port = (name) => `Environment=OPENCLAW_GATEWAY_PORT=${name}`;
+  async function served(gatewayPort) {
+    let live = 0;
+    for (const name of await readdir(units)) {
+      const unit = await readFile(join(units, name), "utf8").catch(() => "");
+      if (!unit.split("\n").includes(port(gatewayPort))) {
+        continue;
+      }
+      const pid = Number(await readFile(join(state, `${name}.pid`), "utf8").catch(() => ""));
+      try {
+        // Same liveness rule as the fixture systemctl: kill -0 on the unit's pid.
+        if (Number.isSafeInteger(pid) && pid > 0 && process.kill(pid, 0)) {
+          live++;
+        }
+      } catch {
+        // ESRCH: the unit's process has exited.
+      }
+    }
+    // Two live units on one port would have failed to bind on a real host.
+    return live === 1;
+  }
   // Reserve adjacent loopback ports together so the lowest-free-port assertion is meaningful.
   for (let attempt = 0; attempt < 100; attempt++) {
     const servers = [];
     try {
       let start;
       for (let offset = 0; offset < 3; offset++) {
-        const server = createServer();
+        let gatewayPort;
+        const server = createHttpServer(async (request, response) => {
+          try {
+            if (!(await served(gatewayPort))) {
+              request.socket.destroy();
+              return;
+            }
+            await appendFile(join(state, "readyz.log"), `${request.method} ${request.url}\n`);
+            response.writeHead(request.method === "GET" && request.url === "/readyz" ? 200 : 404);
+            response.end();
+          } catch {
+            request.socket.destroy();
+          }
+        });
         servers.push(server);
         await new Promise((resolve, reject) => {
           server.once("error", reject);
           server.listen(offset === 0 ? 0 : start + offset, "127.0.0.1", resolve);
         });
-        start ??= server.address().port;
+        gatewayPort = server.address().port;
+        start ??= gatewayPort;
       }
+      t.after(() => Promise.all(servers.map(close)));
       return { start, end: start + 2 };
     } catch {
       // Another local process can hold the adjacent port; try a different ephemeral range.
-    } finally {
-      await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+      await Promise.all(servers.map(close));
     }
   }
   throw new Error("Could not reserve a loopback port range.");
+}
+
+function close(server) {
+  server.closeAllConnections();
+  return new Promise((resolve) => server.close(resolve));
 }
 
 async function fixture(t, selection = {}) {
@@ -178,7 +224,7 @@ async function fixture(t, selection = {}) {
     writeFile(configured.ssh.identityFile, "fixture"),
     writeFile(configured.ssh.knownHostsFile, "fixture"),
   ]);
-  configured.network.gatewayPortRange = await freePortRange();
+  configured.network.gatewayPortRange = await gatewayPortRange(t, units, state);
   const children = [];
   const calls = [];
   const executor = {
@@ -224,7 +270,7 @@ async function fixture(t, selection = {}) {
   };
   const driver = createSshComputeDriver(configured, { executor, ...selection });
   t.after(async () => {
-    // Detached readiness listeners survive helper exit, as systemd services would.
+    // Detached unit processes survive helper exit, as systemd services would.
     for (const name of await readdir(state)) {
       if (!name.endsWith(".pid")) {
         continue;
