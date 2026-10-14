@@ -193,6 +193,9 @@ async function createNativeAdminFixture(t, options = {}) {
     authSecureCookies: options.authSecureCookies ?? true,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
+    ...(options.recordOperations === undefined
+      ? {}
+      : { recordOperations: options.recordOperations }),
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: options.nativeDomain ?? nativeDomain,
@@ -762,6 +765,86 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
     "authorization-denied proxy requests must not reach native gateway",
   );
 });
+test("native admin proxy resolves a host only to the live Agent it names", async (t) => {
+  const state = new InMemoryPlatformState();
+  const context = await createNativeAdminFixture(t, { state, recordOperations: true });
+  const { fixture, namespace, agent, upstream } = context;
+  trustLocalUpstreamCertificate(t, upstream.cert);
+  const installationId = fixture.controller.installation.id;
+  // The installation administrator's session administers every Agent, so each refusal below
+  // comes from host resolution, not from IAM.
+  const proxied = (namespaceId, agentId) => {
+    const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
+    return injectJson(fixture, "GET", "/settings/profile", {
+      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+    });
+  };
+
+  const own = await proxied(namespace.id, agent.id);
+  assert.equal(own.statusCode, 200, own.body);
+  assert.equal(upstream.requests.length, 1);
+
+  const other = await fixture.createNamespace("Native admin other", { ready: true });
+  const otherAgent = await fixture.createAgent(
+    other.id,
+    "Native admin other Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  for (const [label, namespaceId, agentId] of [
+    ["an Agent that does not exist", namespace.id, `agt_${randomUUID()}`],
+    ["this Agent under another Namespace", other.id, agent.id],
+    ["another Namespace's Agent under this Namespace", namespace.id, otherAgent.id],
+  ]) {
+    const denied = await proxied(namespaceId, agentId);
+    assert.equal(denied.statusCode, 403, `${label}: ${denied.body}`);
+  }
+  // Another Namespace's Agent resolves to itself alone; it has no active revision to serve.
+  const otherHost = await proxied(other.id, otherAgent.id);
+  assert.notEqual(otherHost.statusCode, 200, otherHost.body);
+  assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
+
+  // A deleted Agent's host names nothing.
+  const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(deleted.status, 202);
+  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const afterDeletion = await proxied(namespace.id, agent.id);
+  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("native admin status decodes only the revisions it uses", async (t) => {
+  // bughunt-69: status and proxy admission decoded every revision of the Agent to find the
+  // newest. Seed 64 later revisions of about 0.9 MB each; the newest is the only one read.
+  const state = new InMemoryPlatformState();
+  const context = await createNativeAdminFixture(t, { state });
+  const active = await state.read((view) =>
+    view.revisions.findRevision(context.namespace.id, context.agent.id, context.revision.id),
+  );
+  const large = Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"]));
+  await state.transact(async (transaction) => {
+    for (let number = 2; number <= 65; number += 1) {
+      await transaction.revisions.createRevision({
+        ...active,
+        id: `rev_${randomUUID()}`,
+        revision: number,
+        configuration: { ...active.configuration, env: { vars: large } },
+      });
+    }
+  });
+  const timings = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const started = performance.now();
+    const status = await nativeStatus(context);
+    timings.push(performance.now() - started);
+    assert.equal(status.status, 200);
+    assert.equal(status.data.status, "available");
+    assert.equal(status.data.activeRevisionId, context.revision.id);
+  }
+  // Decoding all 65 took about 2.5 s on two CPUs; decoding two takes well under a second.
+  const fastest = Math.min(...timings);
+  assert.ok(fastest < 1_000, `native admin status took ${Math.round(fastest)} ms`);
+});
+
 test("native Agent requests retain their own origin boundary", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);

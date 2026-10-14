@@ -301,7 +301,10 @@ export function cachedResponseSerializers(): SerializerSelector.SerializerFactor
     if (shared === undefined || !isContractSafeJsonValue(shared[SAFE_JSON_VALUE_ID])) {
       return externalSchemas;
     }
-    return { ...shared, [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID } } as typeof externalSchemas;
+    return {
+      ...shared,
+      [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID },
+    } as typeof externalSchemas;
   };
   const sharedSchemaIds = new WeakMap<object, number>();
   // Never pruned. That is safe only while every serializer is built at route registration,

@@ -48,7 +48,10 @@ function serializers(operationId, status = "200") {
   const route = occApiRoutes.find((candidate) => candidate.operationId === operationId);
   assert.ok(route, operationId);
   const compile = (factory) =>
-    factory(sharedSchemas(), undefined)({
+    factory(
+      sharedSchemas(),
+      undefined,
+    )({
       schema: JSON.parse(JSON.stringify(route.schema.response[status])),
       method: route.method,
       url: route.path,
@@ -58,13 +61,9 @@ function serializers(operationId, status = "200") {
 }
 
 const routes = Object.fromEntries(
-  [
-    "getConfiguration",
-    "getPreset",
-    "listPresets",
-    "getAgentRevision",
-    "listAgentRevisions",
-  ].map((operationId) => [operationId, serializers(operationId)]),
+  ["getConfiguration", "getPreset", "listPresets", "getAgentRevision", "listAgentRevisions"].map(
+    (operationId) => [operationId, serializers(operationId)],
+  ),
 );
 
 const revision = (configuration, number = 1) => ({
@@ -185,7 +184,10 @@ const oddNumbers = [0, -0, 1, -1.5, 1e21, 1e-7, 5e-324, 1.7976931348623157e308, 
 
 const corpus = [
   ["prototype keys", '{"__proto__":{"polluted":true},"constructor":{"prototype":{"x":1}}}'],
-  ["toJSON and Object.prototype names", '{"toJSON":"not a function","hasOwnProperty":1,"valueOf":[]}'],
+  [
+    "toJSON and Object.prototype names",
+    '{"toJSON":"not a function","hasOwnProperty":1,"valueOf":[]}',
+  ],
   ["integer-like key order", '{"b":1,"10":2,"2":3,"a":4,"1":5,"-1":6,"01":7}'],
   ["empty containers", '{"object":{},"array":[],"nested":[[],[{}],{"a":[]}]}'],
   ["scalars", JSON.stringify({ t: true, f: false, n: null, numbers: oddNumbers })],
@@ -196,7 +198,9 @@ const corpus = [
   [
     "a plugin-shaped configuration",
     JSON.stringify({
-      plugins: { entries: { x: { enabled: true, config: { list: [1, "2", null, { k: false }] } } } },
+      plugins: {
+        entries: { x: { enabled: true, config: { list: [1, "2", null, { k: false }] } } },
+      },
       gateway: { auth: { mode: "trusted-proxy" } },
     }),
   ],
@@ -290,10 +294,7 @@ test("the serializer keeps the walk for a different schema registered as SafeJso
     url: "/",
     httpStatus: "200",
   });
-  assert.equal(
-    serializer({ value: { kept: 1, dropped: true } }),
-    '{"value":{"kept":"1"}}',
-  );
+  assert.equal(serializer({ value: { kept: 1, dropped: true } }), '{"value":{"kept":"1"}}');
 });
 
 test("Preset and revision lists of 64 documents near 1 MiB serialize in bounded time", () => {
@@ -305,7 +306,9 @@ test("Preset and revision lists of 64 documents near 1 MiB serialize in bounded 
     JSON.stringify({
       plugins: {
         entries: {
-          x: { config: Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"])) },
+          x: {
+            config: Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"])),
+          },
         },
       },
     }),
