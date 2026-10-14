@@ -133,18 +133,27 @@ export async function restoreLaneImages(resource, { execFile, docker, log = cons
   }
   // What changed since preparation recorded the start, so a job that still commits
   // names why. Images pulled before preparation (setup actions) are not in this view.
-  let final;
+  let final = null;
   try {
     final = await imageInventory({ execFile, docker });
   } catch (error) {
     warnings.push(`final inventory: ${firstLine(error)}`);
-    final = {};
   }
-  const added = Object.keys(final).filter((reference) => !Object.hasOwn(baseline, reference));
-  const changed = Object.keys(final).filter(
-    (reference) => Object.hasOwn(baseline, reference) && baseline[reference] !== final[reference],
-  );
-  const missing = Object.keys(baseline).filter((reference) => !Object.hasOwn(final, reference));
+  const added =
+    final === null
+      ? null
+      : Object.keys(final).filter((reference) => !Object.hasOwn(baseline, reference));
+  const changed =
+    final === null
+      ? null
+      : Object.keys(final).filter(
+          (reference) =>
+            Object.hasOwn(baseline, reference) && baseline[reference] !== final[reference],
+        );
+  const missing =
+    final === null
+      ? null
+      : Object.keys(baseline).filter((reference) => !Object.hasOwn(final, reference));
   for (const warning of warnings) {
     log(`::warning::Lane image cleanup: ${warning}`);
   }

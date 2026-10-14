@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
@@ -1015,4 +1016,61 @@ if (args[0] === "tag" && !rows.some((row) => row[3] === args[1])) {
     missing: ["openclaw-enterprise-repository-credentials:kubernetes-quickstart"],
   });
   await assert.rejects(stat(statePath), { code: "ENOENT" });
+});
+
+test("QA image cleanup reports an unavailable final inventory without inventing changes", async () => {
+  const baselineId = `sha256:${"a".repeat(64)}`;
+  const rebuiltId = `sha256:${"b".repeat(64)}`;
+  const newId = `sha256:${"c".repeat(64)}`;
+  const baselineRef = "openclaw-enterprise-runtime:kubernetes-quickstart";
+  const newRef = "occ-dev-qa-k-example-controller:latest";
+  const calls = [];
+  const logs = [];
+  let listings = 0;
+  const execFile = async (_command, args) => {
+    calls.push(args);
+    if (args[0] === "image" && args[1] === "ls") {
+      listings += 1;
+      if (listings === 2) {
+        throw new Error("final image inventory unavailable");
+      }
+      return {
+        stdout: [
+          `openclaw-enterprise-runtime\tkubernetes-quickstart\t<none>\t${rebuiltId}`,
+          `occ-dev-qa-k-example-controller\tlatest\t<none>\t${newId}`,
+          "",
+        ].join("\n"),
+      };
+    }
+    return { stdout: "" };
+  };
+
+  const result = await restoreLaneImages(
+    { name: "qa-matrix", images: { [baselineRef]: baselineId } },
+    { execFile, docker: "docker", log: (line) => logs.push(line) },
+  );
+
+  assert.equal(listings, 2);
+  assert.deepEqual(calls.slice(1, 3), [
+    ["tag", baselineId, baselineRef],
+    ["image", "rm", newRef],
+  ]);
+  assert.deepEqual(result, {
+    restored: [baselineRef],
+    removed: [newRef],
+    added: null,
+    changed: null,
+    missing: null,
+    warnings: ["final inventory: final image inventory unavailable"],
+  });
+  assert.match(logs[0], /::warning::Lane image cleanup: final inventory:/);
+  assert.deepEqual(JSON.parse(logs[1]), {
+    stage: "lane-images",
+    lane: "qa-matrix",
+    restored: [baselineRef],
+    removed: [newRef],
+    added: null,
+    changed: null,
+    missing: null,
+  });
 });
