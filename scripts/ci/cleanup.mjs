@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
+import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -448,6 +449,13 @@ async function cleanupResource(resource, state) {
     case keycloakResourceKind:
       assertResourceOwner(resource, state);
       await cleanupKeycloak(resource, { execFile, docker: process.env.OCC_DOCKER_BIN ?? "docker" });
+      break;
+    case laneImagesResourceKind:
+      assertResourceOwner(resource, state);
+      await restoreLaneImages(resource, {
+        execFile,
+        docker: process.env.OCC_DOCKER_BIN ?? "docker",
+      });
       break;
     default:
       throw new Error(`Unknown cleanup resource kind: ${resource.kind}`);

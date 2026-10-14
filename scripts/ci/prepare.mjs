@@ -31,6 +31,7 @@ import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -3012,6 +3013,20 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     }
+    case "qa-matrix":
+      // On a hosted runner, record the starting images so cleanup can return the
+      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // launcher tags are the developer's own and stay as the run leaves them.
+      if (process.env.GITHUB_ACTIONS === "true") {
+        const images = await imageInventory({
+          execFile: (command, args) =>
+            execFile(command, args, { timeoutMs: imageCommandTimeoutMs }),
+          docker: process.env.OCC_DOCKER_BIN ?? "docker",
+        });
+        addResource(state, laneImagesResourceKind, { name, images, status: "ready" });
+        await writeState(resolvedStatePath, state);
+      }
+      break;
     case "helper-timeout":
       break;
   }
