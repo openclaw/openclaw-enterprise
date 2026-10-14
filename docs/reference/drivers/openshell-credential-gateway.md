@@ -105,17 +105,17 @@ reads attachment status.
 
 Codex PATs (personal or service-account) use `CODEX_ACCESS_TOKEN` at these HTTPS routes:
 
-- `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`: account metadata.
-- `chatgpt.com/backend-api/codex/**`: models and Responses.
-- `chatgpt.com/backend-api/wham/config/bundle`: required startup configuration.
-- `chatgpt.com/backend-api/wham/accounts/check`: selected-workspace routing before inference.
-- `chatgpt.com/backend-api/wham/settings/user`: per-turn attribution settings.
-- `chatgpt.com/backend-api/wham/usage`: Gateway usage-limit recovery.
+- `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`.
+- `chatgpt.com/backend-api/codex/**`.
+- `chatgpt.com/backend-api/wham/config/bundle`.
+- `chatgpt.com/backend-api/wham/accounts/check`.
+- `chatgpt.com/backend-api/wham/settings/user`.
+- `chatgpt.com/backend-api/wham/usage`.
 
-Profile, analytics, messaging, cloud-task and credit-mutation APIs remain denied.
+Other routes remain denied.
 
-The Harness stores only an opaque `personal_access_token`. Native validation and
-model execution gate readiness
+The Harness stores only an opaque `personal_access_token`. Readiness requires
+native login and model execution
 ([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
 
 `openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints may have a prefix such as `/api/v1` and must support Responses. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
