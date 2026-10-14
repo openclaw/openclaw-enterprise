@@ -717,6 +717,49 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
   }
 });
 
+test("ChatGPT Backend reads a response of exactly 4 MiB, declared or streamed", async () => {
+  // The cap refuses a body larger than 4 MiB; one at the cap is read whole, whether its length
+  // is declared or only counted as it streams.
+  const workspaceId = backend.configuration.workspaceId;
+  const limit = 4 * 1024 * 1024;
+  const empty = JSON.stringify({
+    id: "acct-exact",
+    workspace_id: workspaceId,
+    enabled: true,
+    pad: "",
+  });
+  const body = (bytes) => empty.replace('"pad":""', `"pad":"${"x".repeat(bytes - empty.length)}"`);
+  const original = globalThis.fetch;
+  try {
+    for (const [declared, bytes, accepted] of [
+      [true, limit, true],
+      [false, limit, true],
+      [false, limit + 1, false],
+    ]) {
+      const label = `${declared ? "declared" : "streamed"} ${bytes} bytes`;
+      const text = body(bytes);
+      assert.equal(Buffer.byteLength(text), bytes, label);
+      globalThis.fetch = async () =>
+        new Response(text, {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            ...(declared ? { "content-length": String(bytes) } : {}),
+          },
+        });
+      const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
+      const created = client.createServiceAccount({ name: "exact" });
+      if (accepted) {
+        assert.deepEqual(await created, { id: "acct-exact" }, label);
+      } else {
+        await assert.rejects(created, /invalid response/, label);
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 // An in-memory ChatGPT Admin API behind a replaced global fetch. Each fault applies the
 // request first (or not), then answers as the test asks.
 function fakeChatGPT(workspaceId) {

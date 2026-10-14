@@ -2760,6 +2760,8 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
       "https://127.1/v1",
       "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
     ],
+    // A spelling refusal comes first, whatever host the parser would read.
+    ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
   ]) {
     assertFieldRefusals("codex", codexInput(), field, [value], message);
     assert.throws(

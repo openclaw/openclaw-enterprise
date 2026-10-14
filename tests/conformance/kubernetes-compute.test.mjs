@@ -1547,6 +1547,8 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
               models: { [ref("entry-policy")]: {}, [ref("small")]: { alias: "entry-small" } },
               modelPolicy: { allow: [ref("gpt-5"), ref("entry-allow/*")] },
             },
+            // An entry whose only model setting is its policy map.
+            helper: { models: { [ref("helper-policy")]: {} } },
           },
         },
         tools: { exec: { reviewer: { model: ref("reviewer") } } },
@@ -1606,6 +1608,7 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       [qualified("entry-policy")]: {},
       [qualified("small")]: { alias: "entry-small" },
     });
+    assert.deepEqual(rendered.agents.entries.helper.models, { [qualified("helper-policy")]: {} });
     assert.equal(rendered.tools.exec.reviewer.model, qualified("reviewer"));
     assert.equal(rendered.hooks.gmail.model, qualified("gmail"));
     assert.equal(rendered.hooks.mappings[0].model, qualified("hook"));
@@ -5241,6 +5244,7 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://192.0.2.1/v1",
     "https://192.0.2.1\\v1",
     "https:\\\\192.0.2.1/v1",
+    "HTTPS://192.0.2.1/v1",
     // These concrete URL forms remain valid here; this does not prove provider
     // support or reachability through a deployment's network policy.
     "https://[2001:db8::1]/v1",
@@ -5269,10 +5273,6 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://%2A.example.test/v1",
     "https://ex%2aample.test/v1",
     "https://＊.example.test/v1",
-    "https://192.168.1/v1",
-    "https://2130706433/v1",
-    "https://0177.0.0.1/v1",
-    "https://127.1/v1",
     "https://models.example.test:0/v1",
     "https://models.example.test:000/v1",
     "https://models.example.test/v1?key=fixture",
@@ -5281,6 +5281,22 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
       /Codex model endpoint/,
+    );
+  }
+  // IPv4 hosts the URL parser rewrites to another address name the IPv4 rule.
+  for (const codexModelBaseUrl of [
+    "https://192.168.1/v1",
+    "https://2130706433/v1",
+    "https://0177.0.0.1/v1",
+    "https://127.1/v1",
+  ]) {
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      {
+        message:
+          "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+      },
+      codexModelBaseUrl,
     );
   }
   // Spellings the URL parser rewrites to https://models.example.test/v1 (finding 1292), refused

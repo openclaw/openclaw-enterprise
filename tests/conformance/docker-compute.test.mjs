@@ -87,13 +87,30 @@ import { syncBuiltinESMExports } from "node:module";
 let interval;
 let versionRequests = 0;
 let streamedBytes = 0;
+const limit = 4 * 1024 * 1024;
 const server = http.createServer((request, response) => {
   if (request.url === "/_ping") {
     response.end("OK");
     return;
   }
+  if (request.url.startsWith("/images/")) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+    return;
+  }
   assert.equal(request.url, "/version");
   versionRequests += 1;
+  if (versionRequests === 3) {
+    // Exactly at the cap, declared and sent: read whole.
+    const empty = JSON.stringify({ Version: "27.0.0", Pad: "" });
+    const body = empty.replace('"Pad":""', '"Pad":"' + "x".repeat(limit - empty.length) + '"');
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(body)),
+    });
+    response.end(body);
+    return;
+  }
   if (versionRequests === 1) {
     response.writeHead(200, {
       "content-type": "application/json",
@@ -122,6 +139,8 @@ try {
   await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
   assert.ok(streamedBytes > 4 * 1024 * 1024, String(streamedBytes));
   assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
+  clearInterval(interval);
+  await driver.preflight();
 } finally {
   clearInterval(interval);
   http.request = nativeRequest;

@@ -773,6 +773,30 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
     // An ownership no filling makes "explicit", or that a number variable fills.
     [withAgents({ ownership: "shared-{{ vars.ownership }}", entries: { main: {} } }), onlyExplicit],
     [withAgents({ ownership: "{{ vars.count }}", entries: { main: {} } }), onlyExplicit],
+    // Each written part is matched after the one before it, never overlapping it.
+    [
+      withAgents({ ownership: "expl{{ vars.ownership }}plicit", entries: { main: {} } }),
+      onlyExplicit,
+    ],
+    [
+      withAgents({
+        ownership: "exp{{ vars.ownership }}x{{ vars.ownership }}t",
+        entries: { main: {} },
+      }),
+      onlyExplicit,
+    ],
+    [
+      withAgents({
+        ownership: "ex{{ vars.ownership }}p{{ vars.ownership }}p{{ vars.ownership }}t",
+        entries: { main: {} },
+      }),
+      onlyExplicit,
+    ],
+    // Written text longer than 64 characters makes no valid Agent ID, whatever fills it.
+    [
+      withAgents({ entries: { [`${"a".repeat(65)}{{ vars.id }}`]: {} } }),
+      gatewayId(`agents.entries["${"a".repeat(65)}{{ vars.id }}"]`),
+    ],
     // Finding 1315: many adjacent variables are matched in linear time. Keep this case last.
     [
       withAgents({ ownership: `${"{{ vars.ownership }}".repeat(64)}x`, entries: { main: {} } }),
@@ -804,6 +828,8 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
       withAgents({ entries: { "agent-{{ vars.id }}": {} } }),
       withAgents({ ownership: "{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
       withAgents({ ownership: "ex{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
+      withAgents({ ownership: "ex{{ vars.ownership }}plicit", entries: { main: {}, helper: {} } }),
+      withAgents({ entries: { [`${"a".repeat(64)}{{ vars.id }}`]: {} } }),
     ];
     for (const [index, values] of accepted.entries()) {
       const saved = await savePreset(`Templated-${index}`, values);
@@ -1290,6 +1316,23 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       },
       setting("agents.defaults.modelPolicy.allow", openai),
     ],
+    // The provider with no model, a root model setting, and fallbacks that are not a list.
+    [
+      { agents: { defaults: { ...runtimeDefaults, subagents: { model: "openai/" } } } },
+      setting("agents.defaults.subagents.model", openai),
+    ],
+    [{ ...valid, tts: { summaryModel: other } }, setting("tts.summaryModel", openai)],
+    [
+      {
+        agents: {
+          defaults: {
+            ...runtimeDefaults,
+            subagents: { model: { primary: runtimeDefaults.model, fallbacks: other } },
+          },
+        },
+      },
+      setting("agents.defaults.subagents.model.fallbacks", "must be provider/model references"),
+    ],
     [
       {
         ...valid,
@@ -1622,6 +1665,15 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       },
       setting("agents.defaults.imageModel", openai),
     ],
+    [
+      {
+        agents: {
+          defaults: { ...templated, imageModel: other },
+          entries: { main: { model: { primary: "{{ vars.provider }}/{{ vars.model }}" } } },
+        },
+      },
+      setting("agents.defaults.imageModel", openai),
+    ],
     // A variable in another secrets source leaves the apiKey reference checked.
     [
       {
@@ -1716,6 +1768,31 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
           },
         },
       },
+      // An Agent entry's fallback, and an apiKey SecretRef whose default env alias, secrets source
+      // name or source body waits on a variable.
+      {
+        agents: {
+          defaults: templated,
+          entries: {
+            main: {
+              model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+            },
+          },
+        },
+      },
+      ...[
+        { defaults: { env: "{{ vars.key }}" } },
+        { providers: { "{{ vars.key }}": { source: "env" } } },
+        { providers: { "vault-env": { source: "{{ vars.key }}" } } },
+      ].map((secrets) => ({
+        agents: { defaults: templated },
+        secrets,
+        models: {
+          providers: {
+            openai: { apiKey: { source: "env", provider: "vault-env", id: "OPENAI_API_KEY" } },
+          },
+        },
+      })),
     ];
     for (const [index, values] of accepted.entries()) {
       const template = { variables, configuration: { values } };
@@ -1845,6 +1922,16 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
     withModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
     withModel({ primary: "openrouter:auto", fallbacks: ["openrouter:free", "openrouter/meta/m"] }),
     withModel({ primary: "openrouter/meta/m", fallbacks: [" OpenRouter:Auto "] }),
+    // Only the two selectors name openrouter: another bare name is an alias, as written.
+    {
+      agents: {
+        defaults: {
+          ...codex,
+          subagents: { model: "openrouter:auto-1" },
+          heartbeat: { model: "my-openrouter:free" },
+        },
+      },
+    },
   ];
   for (const [index, values] of accepted.entries()) {
     const label = JSON.stringify(values);
@@ -3461,12 +3548,28 @@ test("Configuration save refuses a document too large to store before its conten
   // to shrink it. The real Kubernetes Driver checks the values here; the simple substrate stands
   // in for its ConfigMap storage.
   const kubernetes = new KubernetesConfigurationDriver({ authentication: { mode: "inCluster" } });
+  const backend = createConfigurationBackend();
   const configurationDriver = {
-    ...createConfigurationBackend(),
+    ...backend,
     validate: (configuration) => kubernetes.validate(configuration),
     validateSize: (values) => kubernetes.validateSize(values),
+    // Agent provisioning needs exact create and inspect; nothing here is stored.
+    createExact: (configuration) => backend.create(configuration),
+    inspectExact: async () => undefined,
   };
-  const { namespace, collection, ...context } = await fixture({ configurationDriver });
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: createReadyComputeDriver("compute-oversized", {
+      agentProvisioning: { executionModes: ["dedicated"] },
+      validateAgentProvisioning() {},
+      async provisionAgentRuntimeCredentials() {
+        return { transportConfigured: true };
+      },
+      async getAgentRuntimeCredentialStatus() {
+        return { transportConfigured: false };
+      },
+    }),
+  });
   const contentRefusal =
     "Configuration setting models.providers.openai.models must be an array of model entries.";
   // A document that breaks a content rule, padded to `bytes` of JSON.
@@ -3503,6 +3606,26 @@ test("Configuration save refuses a document too large to store before its conten
       namespaceId: namespace.id,
       kind: "agent",
       values: over,
+    }),
+    { name: "ConfigurationSizeError", message: sizeRefusal },
+  );
+  // So is the Configuration Agent provisioning creates.
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const harnessSecret = await context.controller.createSecret(context.principal.id, {
+    namespaceId: namespace.id,
+    name: "oversized-agent-key",
+    value: "synthetic-configuration-key",
+  });
+  await assert.rejects(
+    context.controller.provisionAgent(context.principal.id, {
+      namespaceId: namespace.id,
+      requestId: "oversized-agent",
+      name: "Oversized",
+      executionMode: "dedicated",
+      configuration: { kind: "agent", values: over },
+      harnessAuth: { method: "api_key", source: harnessSecret.ref },
     }),
     { name: "ConfigurationSizeError", message: sizeRefusal },
   );
@@ -4127,6 +4250,19 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
       { tools: { media: { audio: { providerOptions: { deepgram: { accessToken: sentinel } } } } } },
       option("/tools/media/audio/providerOptions/deepgram/accessToken"),
     ],
+    // A name that only starts like a token count still names a key.
+    [
+      {
+        tools: {
+          media: { models: [{ providerOptions: { google: { max_tokens_key: sentinel } } }] },
+        },
+      },
+      option("/tools/media/models/0/providerOptions/google/max_tokens_key"),
+    ],
+    [
+      { tools: { media: { video: { headers: { Authorization: sentinel } } } } },
+      header("/tools/media/video/headers/Authorization"),
+    ],
     [
       { gateway: { remote: { edgeAuth: { "CF-Access-Client-Secret": sentinel } } } },
       header("/gateway/remote/edgeAuth/CF-Access-Client-Secret"),
@@ -4160,6 +4296,32 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
       }
     });
   }
+  // A Preset option name is matched as the text around its variable, as a header name is.
+  await t.test("refuses a Preset option name around a variable at save", async () => {
+    const field = "/tools/media/models/0/providerOptions/google/api_key{{ vars.suffix }}";
+    const response = await request(context.app, "POST", presets, {
+      body: {
+        name: "Refused",
+        template: {
+          variables: { suffix: { type: "string" } },
+          configuration: {
+            values: {
+              tools: {
+                media: {
+                  models: [
+                    { providerOptions: { google: { "api_key{{ vars.suffix }}": sentinel } } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.message, option(field));
+    assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+  });
   // Nothing refused was stored.
   assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
   assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
@@ -4193,6 +4355,16 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
           providerOptions: {
             deepgram: { model: "nova-3", smart_format: true, key: "${DG_KEY}" },
             openai: { max_tokens: 4096, maxOutputTokens: 512 },
+            // A count in each word the rule lists, singular or plural, names no credential.
+            vllm: {
+              min_tokens: 1,
+              num_tokens: 2,
+              total_tokens: 3,
+              context_tokens: 4,
+              input_tokens: 5,
+              max_completion_tokens: 6,
+              max_token: 7,
+            },
           },
         },
         image: { models: [{ request: { headers } }] },
@@ -4313,6 +4485,36 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
       },
       key("/channels/synology-chat/accounts/ops/webhookUrl"),
     ],
+    [
+      {
+        channels: {
+          "synology-chat": { webhookUrl: `https://chat.example.test/?token=${sentinel}` },
+        },
+      },
+      key("/channels/synology-chat/webhookUrl"),
+    ],
+    [
+      {
+        channels: {
+          "synology-chat": {
+            accounts: { ops: { incomingUrl: `https://chat.example.test/?token=${sentinel}` } },
+          },
+        },
+      },
+      key("/channels/synology-chat/accounts/ops/incomingUrl"),
+    ],
+    // Each word of the rule: a secret, an encryption key, a service account reference.
+    [{ channels: { line: { channelSecret: sentinel } } }, key("/channels/line/channelSecret")],
+    [{ channels: { feishu: { encryptKey: sentinel } } }, key("/channels/feishu/encryptKey")],
+    [
+      { channels: { googlechat: { serviceAccountRef: sentinel } } },
+      key("/channels/googlechat/serviceAccountRef"),
+    ],
+    // Two literals in one channel: the first in the document is named.
+    [
+      { channels: { telegram: { botToken: sentinel, webhookSecret: sentinel } } },
+      key("/channels/telegram/botToken"),
+    ],
     // Plugin settings: a key, an account's password, a list entry, a field only the manifest
     // marks sensitive and a headers map.
     [
@@ -4335,6 +4537,25 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
       plugin("codex", { appServer: { headers: { Authorization: `Bearer ${sentinel}` } } }),
       header("/plugins/entries/codex/config/appServer/headers/Authorization"),
     ],
+    // A snake_case API key, a private key, and a token whose name starts with "file".
+    [plugin("tavily", { api_key: sentinel }), key("/plugins/entries/tavily/config/api_key")],
+    [
+      plugin("github", { app: { privateKey: sentinel } }),
+      key("/plugins/entries/github/config/app/privateKey"),
+    ],
+    [
+      plugin("dropbox", { fileAccessToken: sentinel }),
+      key("/plugins/entries/dropbox/config/fileAccessToken"),
+    ],
+    // A Gateway password that is not a whole `${NAME}` reference or an env reference with an id.
+    ...[
+      `\${OPENCLAW_GATEWAY_PASSWORD}${sentinel}`,
+      "${9GATEWAY_PASSWORD}",
+      { source: "env", value: sentinel },
+    ].map((password) => [
+      { gateway: { auth: { password } } },
+      `${inline("/gateway/auth/password")} Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.`,
+    ]),
   ];
   for (const [values, message] of refused) {
     await t.test(`refuses ${message.split(" ")[2]}`, async () => {
@@ -4398,7 +4619,11 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
         accounts: { work: { botToken: secretRef("TELEGRAM_WORK_BOT_TOKEN") } },
       },
       line: { enabled: false, secretFile: "/run/secrets/line-channel-secret" },
-      googlechat: { enabled: false, serviceAccount: secretRef("GOOGLECHAT_SERVICE_ACCOUNT") },
+      googlechat: {
+        enabled: false,
+        serviceAccount: secretRef("GOOGLECHAT_SERVICE_ACCOUNT"),
+        serviceAccountEmail: "chat-bot@example.iam.gserviceaccount.com",
+      },
       slack: { enabled: false, channels: { "secret-launch": { requireMention: true } } },
     },
     plugins: {
@@ -4407,6 +4632,15 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
         firecrawl: { config: { webFetch: { apiKey: secretRef("FIRECRAWL_API_KEY") } } },
         "voice-call": { config: { telnyx: { publicKey: "${TELNYX_PUBLIC_KEY}" } } },
         "visitor-access": { config: { requireToken: true } },
+        // Where a secret is read from, and a name that only starts with "token".
+        "secret-reader": {
+          config: {
+            secretPath: "/run/secrets/reader",
+            secretsDir: "/run/secrets",
+            apiKeyEnv: "READER_API_KEY",
+            tokenizer: "o200k_base",
+          },
+        },
         acpx: {
           config: {
             mcpServers: { docs: { command: "docs-mcp", env: { DOCS_API_TOKEN: "env-value" } } },

@@ -38,6 +38,16 @@ test("proxy, channel, MCP and plugin URLs refuse an empty authority or a missing
       "/models/providers/gateway/request/proxy/url",
     ],
     [{ env: { vars: { HTTPS_PROXY: "https:/v1" } } }, "/env/vars/HTTPS_PROXY"],
+    // The URL parser reads backslashes as slashes, any scheme case, and drops leading spaces and
+    // controls and every tab or newline, so each spelling still parses as another host.
+    [{ proxy: { proxyUrl: "https:\\\\\\proxy" } }, "/proxy/proxyUrl"],
+    [{ proxy: { proxyUrl: " https:///proxy" } }, "/proxy/proxyUrl"],
+    [{ proxy: { proxyUrl: "\u0001https:/proxy" } }, "/proxy/proxyUrl"],
+    [{ proxy: { proxyUrl: "HTTPS:///proxy" } }, "/proxy/proxyUrl"],
+    [{ proxy: { proxyUrl: "HTTP:proxy" } }, "/proxy/proxyUrl"],
+    [{ proxy: { proxyUrl: "ht\ttps:/proxy" } }, "/proxy/proxyUrl"],
+    // A scheme alone, with no variable to finish it.
+    [{ proxy: { proxyUrl: "https:/" } }, "/proxy/proxyUrl"],
   ];
   for (const [values, field] of refused) {
     assert.throws(
@@ -56,6 +66,12 @@ test("proxy, channel, MCP and plugin URLs refuse an empty authority or a missing
     channels: { slack: { proxy: "https://proxy.example:3128" } },
     mcp: { servers: { demo: { url: "https://mcp.example.test/mcp" } } },
     models: { providers: { gateway: { baseUrl: "https:///v1" } } },
+    // Two backslashes read as the two slashes.
+    plugins: {
+      entries: {
+        codex: { config: { appServer: { networkProxy: { proxyUrl: "http:\\\\proxy:3128" } } } },
+      },
+    },
   });
 
   // The variable can supply `//host` or the second slash plus the host.
@@ -70,6 +86,12 @@ test("proxy, channel, MCP and plugin URLs refuse an empty authority or a missing
     { proxy: { proxyUrl: "https:/{{ vars.rest }}" } },
     {
       unresolved: (path) => (path.at(-1) === "proxyUrl" ? ["https:/", ""] : undefined),
+    },
+  );
+  validateModelCredentialReferences(
+    { proxy: { proxyUrl: "https:\\{{ vars.rest }}" } },
+    {
+      unresolved: (path) => (path.at(-1) === "proxyUrl" ? ["https:\\", ""] : undefined),
     },
   );
   // An empty authority is already in the literal, so a later variable cannot repair it.
