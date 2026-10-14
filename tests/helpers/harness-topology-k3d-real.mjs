@@ -3466,7 +3466,7 @@ async function holdGatewayOutboundTunnel(context, topology, proxyHost) {
     const report = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
     const finish = (reason) => {
       if (done) return; done = true; clearTimeout(deadline); clearInterval(refresh);
-      report({ event: "closed", reason, closedAt: Date.now() }); connection?.destroy(); socket.destroy();
+      report({ event: "closed", reason }); connection?.destroy(); socket.destroy();
     };
     const deadline = setTimeout(() => finish("deadline"), 180000);
     socket.on("error", () => finish(established ? "socket-closed" : "connection-error"));
@@ -3617,6 +3617,35 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
       "--patch",
       JSON.stringify([{ op: "replace", path: "/rules", value: rules }]),
     );
+  const finalizer = "openclaw.dev/test-outbound-withdrawal";
+  let finalizerHeld = false;
+  const setProxyFinalizer = async (held) => {
+    const current = await resource("pod", proxy.metadata.name, topology.gatewayPlacement);
+    assert.equal(
+      current.metadata.uid,
+      proxy.metadata.uid,
+      "only the observed proxy Pod may change",
+    );
+    const finalizers = (current.metadata.finalizers ?? []).filter((value) => value !== finalizer);
+    if (held) {
+      finalizers.push(finalizer);
+    }
+    await kubectl(
+      "patch",
+      "pod",
+      proxy.metadata.name,
+      "--namespace",
+      topology.gatewayPlacement,
+      "--type=json",
+      "--patch",
+      JSON.stringify([
+        { op: "test", path: "/metadata/uid", value: proxy.metadata.uid },
+        { op: "test", path: "/metadata/resourceVersion", value: current.metadata.resourceVersion },
+        { op: "add", path: "/metadata/finalizers", value: finalizers },
+      ]),
+    );
+    finalizerHeld = held;
+  };
   let restoredRole;
   const restoredTargets = new Set();
   const restoreBinding = async () => {
@@ -3675,6 +3704,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
   let bindingRestored = false;
   let roleRestored = false;
   let serviceWatch;
+  const failures = [];
   try {
     // Deny only the fixture worker's actual Deployment delete. No network or credential fence changes.
     await setRules(blockedRules);
@@ -3748,29 +3778,54 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     );
     assert.equal(unfinished.rows.length, 0, "failed withdrawal must not finalize the refusal");
 
+    // Keep the actual Pod object after its process exits: withdrawal must wait for Kubernetes deletion.
+    await setProxyFinalizer(true);
     await setRules(controllerRole.rules);
     roleRestored = true;
-    const closed = await tunnel.assertClosed();
-    const failure = await waitFor(
-      "permanent maintenance refusal after completed outbound withdrawal",
-      async () => {
-        const { rows } = await topology.observerPool.query(
-          `SELECT state, reason_code, completed_at
+    await tunnel.assertClosed();
+    await waitFor("terminated proxy container held by the owned Pod finalizer", async () => {
+      const current = await resource("pod", proxy.metadata.name, topology.gatewayPlacement);
+      assert.equal(current.metadata.uid, proxy.metadata.uid);
+      return (
+        current.metadata.deletionTimestamp !== undefined &&
+        current.status.containerStatuses?.find(({ name }) => name === "gateway-outbound")?.state
+          .terminated !== undefined
+      );
+    });
+    const maintenance = async () => {
+      const { rows } = await topology.observerPool.query(
+        `SELECT state, lease_expires_at FROM occ.controller_work WHERE idempotency_key = $1`,
+        [marker.work_id],
+      );
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].state, "claimed", "withdrawal must remain pending while its Pod exists");
+      return rows[0];
+    };
+    const lease = await maintenance();
+    await waitFor(
+      "a live withdrawal worker lease renewal while Pod deletion is blocked",
+      async () =>
+        (await maintenance()).lease_expires_at.getTime() > lease.lease_expires_at.getTime(),
+      45_000,
+    );
+    assert.equal(
+      (await resource("pod", proxy.metadata.name, topology.gatewayPlacement)).metadata.uid,
+      proxy.metadata.uid,
+      "the original terminated proxy Pod must still exist until its finalizer is removed",
+    );
+    await setProxyFinalizer(false);
+    await waitFor("permanent maintenance refusal after completed outbound withdrawal", async () => {
+      const { rows } = await topology.observerPool.query(
+        `SELECT state, reason_code, completed_at
          FROM occ.controller_work
         WHERE revision_id = $1 AND state = 'failed_permanent'
           AND reason_code = 'AUTHORIZATION_DENIED'
         ORDER BY completed_at DESC LIMIT 1`,
-          [topology.revision.id],
-        );
-        return rows[0];
-      },
-    );
+        [topology.revision.id],
+      );
+      return rows[0];
+    });
     await assertProxyResourcesAbsent(topology, topology.revision.id);
-    // The Gateway probe and worker share the cluster's clock: close must precede final refusal.
-    assert.ok(
-      closed.closedAt <= failure.completed_at.getTime(),
-      "the established tunnel must close before maintenance reports the permanent denial",
-    );
     for (const [namespace, pod] of [
       [topology.gatewayPlacement, topology.gatewayPod],
       [topology.placement, topology.harnessPod],
@@ -3788,17 +3843,30 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     );
     await assertModelRuntimeProjection(topology.harnessPod, modelStorage);
     await serviceWatch.assertNoRepair();
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await serviceWatch?.close();
-    if (!roleRestored) {
-      await setRules(controllerRole.rules);
-    }
-    if (bindingRemoved && !bindingRestored) {
-      await restoreBinding();
+    for (const operation of [
+      () => serviceWatch?.close(),
+      () => (roleRestored ? undefined : setRules(controllerRole.rules)),
+      () => (finalizerHeld ? setProxyFinalizer(false) : undefined),
+      () => (bindingRemoved && !bindingRestored ? restoreBinding() : undefined),
+    ]) {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
     }
   }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Gateway withdrawal scenario and owned cleanup failed.");
+  }
   context.diagnostic(
-    "Native Gateway outbound: durable actor withdrawal survived real RBAC denial, missing Service, restored actor and worker restart; CONNECT closed before final refusal with runtime/model projection intact.",
+    "Native Gateway outbound: durable actor withdrawal survived real RBAC denial, missing Service, restored actor and worker restart; live work waited for the finalized proxy Pod after CONNECT closed, with runtime/model projection intact.",
   );
   topology.request = topology.adminRequest;
 }
