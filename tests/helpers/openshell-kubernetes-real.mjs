@@ -12,8 +12,6 @@ import {
   createRealKubernetesFixture,
 } from "./kubernetes-real.mjs";
 
-import { failureSecrets, redactOutputLines } from "../../scripts/ci/failure-redaction.mjs";
-
 const execute = promisify(execFile);
 const sandboxApiResource = "sandboxes.agents.x-k8s.io";
 const harnessPort = 18790;
@@ -1054,90 +1052,17 @@ export function createOpenShellKubernetesFixture({
           ? "process.env.APP_SERVER_TOKEN"
           : `require("node:fs").readFileSync(${JSON.stringify(appServerTokenPath)}, "utf8")`
       };
-      const timeout = setTimeout(() => fail("timeout"), 300000);
+      const timeout = setTimeout(() => fail(new Error("Codex harness turn timed out")), 300000);
       const pending = new Map();
       const items = [];
       let nextId = 1;
       let assistant = "";
       let finished = false;
 
-      const eventTail = [];
-      const unhandledRequests = new Map();
-      const observedSignals = new Set();
-      let eventCount = 0;
-      // Native payloads may contain prompts, tool output, config and credentials. Retain only
-      // protocol metadata and fixed error signals; never copy arbitrary text into diagnostics.
-      const methods = new Set([
-        "thread/started", "turn/started", "turn/completed", "error",
-        "item/started", "item/completed", "item/commandExecution/outputDelta",
-        "item/agentMessage/delta", "item/reasoning/summaryTextDelta",
-        "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
-        "item/tool/requestUserInput", "item/tool/call", "mcpServer/elicitation/request",
-        "account/chatgptAuthTokens/refresh",
-      ]);
-      function errorSignals(value) {
-        const text = typeof value === "string" ? value.slice(0, 16384) : "";
-        return [
-          [/bubblewrap|bwrap/i, "bubblewrap"],
-          [/user namespace|new namespace|unshare|CLONE_NEWUSER/i, "namespace"],
-          [/operation not permitted|permission denied/i, "permission_denied"],
-          [/filesystem-restricted execution requires bubblewrap/i, "restricted_requires_bubblewrap"],
-          [/invalid thread settings override|not in the allowed set/i, "managed_settings_rejected"],
-          [/landlock|seccomp/i, "kernel_sandbox"],
-          [/approval required|awaiting approval|waiting for approval/i, "approval_wait"],
-        ].filter(([pattern]) => pattern.test(text)).map(([, label]) => label);
-      }
-      function remember(message) {
-        eventCount += 1;
-        let method = "response";
-        if (methods.has(message.method)) {
-          method = message.method;
-        } else if (typeof message.method === "string") {
-          method = "unrecognized_method";
-        }
-        const serverRequest = message.id !== undefined && typeof message.method === "string";
-        if (serverRequest) {
-          unhandledRequests.set(method, (unhandledRequests.get(method) ?? 0) + 1);
-        }
-        const item = message.params?.item;
-        const status = item?.status ?? message.params?.turn?.status;
-        const signals = [...new Set([
-          message.error?.message, message.params?.error?.message,
-          message.params?.turn?.error?.message,
-          item?.type === "commandExecution" ? item.aggregatedOutput : undefined,
-          method === "item/commandExecution/outputDelta" ? message.params?.delta : undefined,
-        ].flatMap(errorSignals))];
-        for (const signal of signals) {
-          observedSignals.add(signal);
-        }
-        const record = {
-          sequence: eventCount, method,
-          ...(serverRequest ? { unhandledServerRequest: true } : {}),
-          ...(item ? { itemType: ["commandExecution", "agentMessage", "reasoning", "mcpToolCall", "dynamicToolCall"].includes(item.type) ? item.type : "other" } : {}),
-          ...(["inProgress", "completed", "failed", "declined", "interrupted"].includes(status) ? { status } : {}),
-          ...(Number.isSafeInteger(item?.exitCode) ? { exitCode: item.exitCode } : {}),
-          ...(Number.isSafeInteger(message.error?.code) ? { rpcErrorCode: message.error.code } : {}),
-          ...(signals.length ? { signals } : {}),
-        };
-        eventTail.push(record);
-        if (eventTail.length > 24) {
-          eventTail.shift();
-        }
-      }
-      function fail(reason) {
-        if (finished) {
-          return;
-        }
-        finished = true;
+      function fail(error) {
         clearTimeout(timeout);
-        // Use an explicit failure envelope so execFile cannot echo the script/prompt in its
-        // command-failed error. The host always turns this envelope into a test failure.
-        process.stdout.write(JSON.stringify({ failure: {
-          reason, eventCount, omittedEvents: eventCount - eventTail.length,
-          signals: [...observedSignals],
-          unhandledServerRequests: [...unhandledRequests].map(([method, count]) => ({ method, count })),
-          events: eventTail,
-        } }), () => process.exit(0));
+        process.stderr.write(error?.stack || String(error));
+        process.exit(1);
       }
 
       function request(method, params = {}) {
@@ -1175,16 +1100,13 @@ export function createOpenShellKubernetesFixture({
               excludeTmpdirEnvVar: false, excludeSlashTmp: false,
             },
           });
-        } catch {
-          fail("rpc_failure");
+        } catch (error) {
+          fail(error);
         }
       });
 
       socket.addEventListener("message", ({ data }) => {
-        let message;
-        try { message = JSON.parse(String(data)); } catch { fail("invalid_json"); return; }
-        if (message === null || typeof message !== "object") { fail("invalid_message"); return; }
-        remember(message);
+        const message = JSON.parse(String(data));
         items.push(message);
         if (message.id !== undefined) {
           const entry = pending.get(message.id);
@@ -1198,7 +1120,7 @@ export function createOpenShellKubernetesFixture({
           if (item?.type === "agentMessage") assistant = item.text ?? "";
         } else if (message.method === "turn/completed") {
           if (message.params?.turn?.status !== "completed") {
-            fail("turn_failed");
+            fail(new Error("Codex harness turn did not complete successfully"));
             return;
           }
           finished = true;
@@ -1209,49 +1131,30 @@ export function createOpenShellKubernetesFixture({
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
           // and turn/completed still requires a completed status.
-          fail("native_error");
+          fail(new Error(message.params?.error?.message || "Codex harness turn failed"));
         }
       });
       socket.addEventListener("error", () => {
-        if (!finished) fail("websocket_error");
+        if (!finished) fail(new Error("Codex harness connection failed"));
       });
       socket.addEventListener("close", () => {
-        if (!finished) fail("websocket_closed");
+        if (!finished) fail(new Error("Codex harness connection closed before completion"));
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];
-    let result;
-    try {
-      result = JSON.parse(
-        await kubectl(
-          "exec",
-          pod,
-          "--namespace",
-          namespace,
-          ...containerArguments,
-          "--",
-          "node",
-          "-e",
-          script,
-        ),
-      );
-    } catch {
-      // exec errors include command arguments; never publish the embedded model prompt.
-      throw new Error("Codex harness probe transport failed without a diagnostic result.");
-    }
-    if (result.failure) {
-      const { events, unhandledServerRequests, ...summary } = result.failure;
-      const lines = [
-        JSON.stringify(summary),
-        ...unhandledServerRequests.map((request) =>
-          JSON.stringify({ unhandledServerRequest: request }),
-        ),
-        ...events.map((event) => JSON.stringify(event)),
-      ];
-      const safe = redactOutputLines(lines, failureSecrets([process.env]), "", 900);
-      throw new Error("Codex harness turn failed; native event summary:\n" + safe.join("\n"));
-    }
-    return result;
+    return JSON.parse(
+      await kubectl(
+        "exec",
+        pod,
+        "--namespace",
+        namespace,
+        ...containerArguments,
+        "--",
+        "node",
+        "-e",
+        script,
+      ),
+    );
   }
 
   async function requestCodexTurnFromGatewayPod({ namespace, gatewayPod, providerModel, prompt }) {

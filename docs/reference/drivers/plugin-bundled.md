@@ -188,8 +188,7 @@ For an explicit app reviewer, startup reads `configRequirements/read`, compares
 app/link reviewer values, and checks `allowedApprovalsReviewers`. Automatic review
 requires current approval policy `on-request` or `granular`. Compute writes the
 policy the Gateway runs into native startup configuration: the configured
-`appServer.approvalPolicy`, with `on-failure` as `on-request`. Native MCP
-elicitation preserves `on-request`; it does not require granular policy. Omission keeps
+`appServer.approvalPolicy`, with `on-failure` as `on-request`. Omission keeps
 native defaults, so the Codex Driver's `validateAgentConfiguration` refuses
 automatic review at Agent save, provisioning and deployment unless the policy is
 `on-request` or `on-failure`. Human review fails

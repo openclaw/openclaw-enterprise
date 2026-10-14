@@ -111,11 +111,6 @@ printed URL opens the OCE Agent console, not an OpenClaw dashboard.
 
 ## Inspect without exposing credentials
 
-If the first command fails, the integration tests capture bounded Gateway, Agent
-and Sandbox logs through the saved revision's authorized OCC log API before
-teardown. CI applies its credential redaction again before publishing diagnostics;
-an unavailable source is reported without replacing the original failure.
-
 The generated kubeconfig already selects the owned cluster:
 
 ```bash

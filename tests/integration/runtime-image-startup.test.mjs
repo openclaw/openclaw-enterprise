@@ -1140,65 +1140,6 @@ function run(args, env, readinessUrl) {
 );
 
 test(
-  "runtime image preserves on-request for native MCP approval delegation",
-  imageTestOptions,
-  async () => {
-    // Exercise the shipped plugin code: managed OnRequest need not admit a different
-    // Granular policy merely to deliver a Calendar approval to its selected reviewer.
-    const granular = {
-      granular: {
-        sandbox_approval: false,
-        rules: true,
-        skill_approval: false,
-        request_permissions: false,
-        mcp_elicitations: false,
-      },
-    };
-    const script = String.raw`
-import { readdirSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-const root = "/app/node_modules/openclaw/dist";
-const chunk = readdirSync(root).find((name) => /^config-security-.*\.mjs$/.test(name));
-if (!chunk) throw new Error("Bundled Codex security configuration was not found");
-const exports = await import(pathToFileURL(root + "/" + chunk));
-const preserve = Object.values(exports).find((value) =>
-  typeof value === "function" && value.name === "withMcpElicitationsApprovalPolicy");
-if (!preserve) throw new Error("Bundled Codex MCP approval adapter was not found");
-process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).map(preserve)));
-`;
-    const { stdout } = await runDocker([
-      "run",
-      "--rm",
-      "--network",
-      "none",
-      "--workdir",
-      "/app",
-      "--entrypoint",
-      "node",
-      image,
-      "--input-type=module",
-      "-e",
-      script,
-      JSON.stringify(["on-request", "untrusted", "never", granular]),
-    ]);
-    assert.deepEqual(JSON.parse(stdout), [
-      "on-request",
-      "untrusted",
-      {
-        granular: {
-          mcp_elicitations: true,
-          rules: false,
-          sandbox_approval: false,
-          request_permissions: false,
-          skill_approval: false,
-        },
-      },
-      { granular: { ...granular.granular, mcp_elicitations: true } },
-    ]);
-  },
-);
-
-test(
   "runtime image Gateway preserves OpenShell Codex managed workspace restrictions",
   imageTestOptions,
   async () => {

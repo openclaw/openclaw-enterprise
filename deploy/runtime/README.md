@@ -37,10 +37,6 @@ after enrollment cannot reconnect. The patch lets that path decode an expired
 code and hands the expiry to the node host. The node host then reconnects with
 the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
-`openclaw-codex-mcp-approval-policy.patch` preserves configured `on-request`
-when the Codex plugin enables MCP elicitation. Native Codex already permits those
-prompts under `on-request`; changing it to granular can violate managed allowed
-policies. Reviewer selection and approval decisions remain native-owned.
 The source archive and patch hashes identify the resulting custom build.
 
 The Codex adapter preserves namespaced IDs with an explicit native
