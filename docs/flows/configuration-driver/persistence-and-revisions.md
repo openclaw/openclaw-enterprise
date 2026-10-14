@@ -24,8 +24,12 @@ refuse a Codex approval policy the Gateway refuses and a literal
 [`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
 Kubernetes refuses unsupported channels, model credentials outside the Harness
 authentication binding, and model selections or provider `apiKey`s off the
-primary model's provider. A stored row that predates a rule still reads and an
-edit can replace it: a bundled Driver checks a stored document only against
+primary model's provider. Configuration create and update, Agent provisioning and
+Preset save run this one set (`validateConfigurationContent` in
+[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+variable is checked as far as its written text goes, and in full once filled.
+A stored row that predates a rule still reads and an edit can replace it: a
+bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
 deployment against all of them. Those include a `${NAME}` reference or SecretRef
 in every slot OpenClaw marks sensitive, channel and plugin secrets included

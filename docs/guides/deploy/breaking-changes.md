@@ -33,7 +33,9 @@ HTTP field name. It also refuses a literal secret in the other slots OpenClaw
 marks sensitive: Gateway, hooks, sandbox SSH and storage secrets, and channel
 and plugin settings such as `botToken` or `webSearch.apiKey`
 ([list](../../reference/configuration/secrets.md#secret-boundaries)). Preset
-saves also refuse a literal `gateway.auth.password`.
+saves also refuse a literal `gateway.auth.password` or invalid `approvalPolicy`;
+provisioning checks `agents` rosters; `openrouter:auto` and `openrouter:free`
+name `openrouter`.
 
 **Who is affected.** Configurations and Presets that select a second provider
 or give it an `apiKey`, set an `apiKey`, media or voice model for Dedicated

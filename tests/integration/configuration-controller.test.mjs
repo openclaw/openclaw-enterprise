@@ -781,10 +781,13 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
   for (const [index, [values, message]] of refused.entries()) {
     await t.test(`refuses Preset ${index}: ${message}`, async () => {
       const label = JSON.stringify(values);
+      const started = Date.now();
       const saved = await savePreset(`Roster-${index}`, values);
       assert.equal(saved.status, 400, `${label}: ${JSON.stringify(saved.body)}`);
       assert.equal(saved.body.error.code, "INVALID_REQUEST", label);
       assert.equal(saved.body.error.message, message, label);
+      // A save blocks the controller while it checks, so it must stay fast.
+      assert.ok(Date.now() - started < 5_000, label);
     });
   }
   assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
