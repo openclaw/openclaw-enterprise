@@ -1301,6 +1301,36 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       { agents: { defaults: { ...runtimeDefaults, pdfModel: "{{ vars.count }}" } } },
       setting("agents.defaults.pdfModel", "must be provider/model references"),
     ],
+    // A fallback and a policy key whose provider waits on a variable leave the rest checked.
+    [
+      {
+        agents: {
+          defaults: {
+            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+            models: {
+              ...templated.models,
+              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
+            },
+            imageModel: other,
+          },
+        },
+      },
+      setting("agents.defaults.imageModel", openai),
+    ],
+    // A variable in another secrets source leaves the apiKey reference checked.
+    [
+      {
+        agents: { defaults: templated },
+        secrets: { providers: { other: { source: "env", allowlist: ["{{ vars.key }}"] } } },
+        models: {
+          providers: { openai: { apiKey: { source: "env", provider: "default", id: "KEY" } } },
+        },
+      },
+      setting(
+        "models.providers.openai.apiKey",
+        "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
+      ),
+    ],
     // As the standard Codex Preset, plus an apiKey Dedicated Codex never takes.
     [
       {
@@ -1318,9 +1348,9 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       ),
     ],
   ];
-  for (const [values, message] of refused) {
+  for (const [index, [values, message]] of refused.entries()) {
     const label = JSON.stringify(values);
-    await t.test(`refuses a Preset: ${message}`, async () => {
+    await t.test(`refuses Preset ${index}: ${message}`, async () => {
       const template = { variables, configuration: { values } };
       const saved = await request(context.app, "POST", presets, {
         body: { name: "Refused", template },
@@ -1347,7 +1377,6 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
         agents: {
           defaults: {
             ...templated,
-            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
             imageModel: "{{ vars.provider }}/gpt-image-1",
             subagents: { model: "{{ vars.model }}" },
           },
@@ -1356,6 +1385,17 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
           providers: {
             "{{ vars.provider }}": { apiKey: "${ANTHROPIC_API_KEY}" },
             openai: { apiKey: { source: "env", provider: "default", id: "{{ vars.key }}" } },
+          },
+        },
+      },
+      {
+        agents: {
+          defaults: {
+            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+            models: {
+              ...templated.models,
+              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
+            },
           },
         },
       },
@@ -1382,7 +1422,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     const launched = await request(context.app, "POST", configurations, {
       body: {
         kind: "agent",
-        ...renderPresetTemplate({ variables, configuration: { values: accepted[1] } }, inputs)
+        ...renderPresetTemplate({ variables, configuration: { values: accepted[2] } }, inputs)
           .configuration,
       },
     });

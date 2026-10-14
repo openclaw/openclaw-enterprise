@@ -345,6 +345,19 @@ export function rewriteModelSelections(
 }
 
 /**
+ * Whether the provider of the model reference at `path` (a policy key: `key`) waits on an
+ * unfilled Preset variable: no `/` precedes the first one.
+ */
+export function providerWaitsOnVariable(
+  options: ConfigurationValidationOptions | undefined,
+  path: SettingLocation,
+  key = false,
+): boolean {
+  const literals = options?.unresolved?.(path, key);
+  return literals !== undefined && !literals[0]?.includes("/");
+}
+
+/**
  * Every model selection names `provider`, the one the Agent's Harness authentication binding
  * serves (finding 1291): a reference elsewhere would make the Gateway request another provider
  * directly. A bare name passes: OpenClaw resolves it through an alias on a policy key checked
@@ -369,9 +382,7 @@ export function requireSelectedModelProvider(
     if (typeof reference !== "string" || (type !== undefined && type !== "string")) {
       throw createError(setting, "must be provider/model references");
     }
-    // The provider waits on a variable when no `/` precedes the first one.
-    const literals = options?.unresolved?.(path, policy === true);
-    if (literals !== undefined && !literals[0]?.includes("/")) {
+    if (providerWaitsOnVariable(options, path, policy === true)) {
       continue;
     }
     const separator = reference.indexOf("/");

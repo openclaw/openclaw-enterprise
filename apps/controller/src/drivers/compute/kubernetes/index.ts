@@ -145,6 +145,7 @@ import {
   requireChannelTopology,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
+  providerWaitsOnVariable,
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
   requireWorkspaceNodePlugins,
@@ -2191,19 +2192,28 @@ function requireProviderApiKeys(
         `must be unset: the Agent's Harness authentication binding serves only ${authentication.providerId} models`,
       );
     }
-    if (
-      config.apiKey === `\${${authentication.environmentName}}` ||
-      waitsOnVariable(config.apiKey, ["models", "providers", provider, "apiKey"], options) ||
-      waitsOnVariable(configuration.secrets, ["secrets"], options)
-    ) {
+    if (config.apiKey === `\${${authentication.environmentName}}`) {
       continue;
     }
     const ref = asRecord(config.apiKey);
     const secrets = asRecord(configuration.secrets);
+    const sources = asRecord(secrets?.providers);
+    // A string apiKey here is `${NAME}`, which holds no variable; a SecretRef, its secrets source
+    // and the default env alias may wait on one (a source key that does may become ref.provider).
+    if (
+      waitsOnVariable(ref, ["models", "providers", provider, "apiKey"], options) ||
+      waitsOnVariable(asRecord(secrets?.defaults)?.env, ["secrets", "defaults", "env"], options) ||
+      Object.keys(sources ?? {}).some(
+        (name) =>
+          options?.unresolved?.(["secrets", "providers", name], true) !== undefined ||
+          (name === ref?.provider &&
+            waitsOnVariable(sources?.[name], ["secrets", "providers", name], options)),
+      )
+    ) {
+      continue;
+    }
     const source =
-      typeof ref?.provider === "string"
-        ? asRecord(asRecord(secrets?.providers)?.[ref.provider])
-        : undefined;
+      typeof ref?.provider === "string" ? asRecord(sources?.[ref.provider]) : undefined;
     // OpenClaw reads an env ref on its default env provider alias (secrets.defaults.env, else
     // "default") from the process environment, unless that name is configured as an env provider
     // (isBuiltInDefaultSecretProviderRef), so such a ref needs no secrets.providers entry.
@@ -2274,6 +2284,49 @@ function isCredentialReference(value: unknown): boolean {
 }
 
 /**
+ * The Configuration without the fallbacks and `models` policy keys whose provider waits on an
+ * unfilled Preset variable, which the Harness resolution would refuse as another provider
+ * (switching every rule off); the rules check the rest and the launch checks them once filled.
+ */
+function withoutVariableProviders(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options: ConfigurationValidationOptions | undefined,
+): Readonly<OpenClawConfigurationDocument> {
+  if (options?.unresolved === undefined) {
+    return configuration;
+  }
+  const copy = structuredClone(configuration) as OpenClawConfigurationDocument;
+  const agents = asRecord(copy.agents);
+  const scopes: [readonly string[], Record<string, unknown> | undefined][] = [
+    [["agents", "defaults"], asRecord(agents?.defaults)],
+    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
+      ([id, entry]): [readonly string[], Record<string, unknown> | undefined] => [
+        ["agents", "entries", id],
+        asRecord(entry),
+      ],
+    ),
+  ];
+  for (const [at, scope] of scopes) {
+    const model = asRecord(scope?.model);
+    if (model !== undefined && Array.isArray(model.fallbacks)) {
+      model.fallbacks = model.fallbacks.filter(
+        (_: unknown, index: number) =>
+          !providerWaitsOnVariable(options, [...at, "model", "fallbacks", index]),
+      );
+    }
+    const policies = asRecord(scope?.models);
+    if (scope !== undefined && policies !== undefined) {
+      scope.models = Object.fromEntries(
+        Object.entries(policies).filter(
+          ([key]) => !providerWaitsOnVariable(options, [...at, "models", key], true),
+        ),
+      );
+    }
+  }
+  return copy;
+}
+
+/**
  * The model provider rules of finding 1291 depend only on the Configuration: the provider is
  * its primary model's (harnessModelAuthentication), and the Harness, Dedicated Codex or
  * OpenClaw, is the one its model policy selects. Every deployment applies them, so Configuration
@@ -2291,8 +2344,9 @@ function requireConfiguredModelProviders(
   let harnessId: string;
   let authentication: ReturnType<typeof harnessModelAuthentication>;
   try {
-    harnessId = resolveConfiguredHarnessId(configuration);
-    authentication = harnessModelAuthentication(configuration);
+    const resolvable = withoutVariableProviders(configuration, options);
+    harnessId = resolveConfiguredHarnessId(resolvable);
+    authentication = harnessModelAuthentication(resolvable);
   } catch (error) {
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
