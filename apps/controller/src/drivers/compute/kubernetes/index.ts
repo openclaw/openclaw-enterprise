@@ -8853,7 +8853,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           options,
         );
       } catch (error) {
-        // Not retried: the next read would be just as large.
+        // An oversized 2xx is not retried: the next read would be just as large.
         if (error instanceof RuntimeStatusOversized) {
           return oversized;
         }

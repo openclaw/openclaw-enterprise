@@ -12,9 +12,9 @@ import {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   DriverSelectionError,
+  InMemoryPlatformState,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
-  InMemoryPlatformState,
   NativeWorkerSupportError,
   OpenClawController,
   ScopeViolationError,
@@ -731,6 +731,7 @@ test("deployment refuses with 503 and creates nothing when an earlier revision i
     (error) => error,
   );
   assert.ok(refusal instanceof DependencyUnavailableError);
+  assert.equal(refusal.message, "Persisted saved configuration is invalid.");
   assert.equal(requestFailure(refusal).status, 503);
   assert.deepEqual(
     { revisions: await metadata(), work: controller.pendingOperations().length },

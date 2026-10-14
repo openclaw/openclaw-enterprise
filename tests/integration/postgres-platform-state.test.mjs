@@ -2323,6 +2323,7 @@ test(
         .then(({ rows }) => rows[0]);
     const before = await counts();
     assert.equal(before.revisions, 2);
+    assert.ok(before.work > 0, "the first deployment queued its work");
 
     // The worker decodes every earlier revision to stop or retire it, so admission must too.
     const refusal = await deploy().then(
@@ -2330,6 +2331,8 @@ test(
       (error) => error,
     );
     assert.equal(refusal.name, "DependencyUnavailableError");
+    assert.equal(refusal.field, "plugins");
+    assert.equal(refusal.message, "Persisted saved configuration is invalid.");
     assert.equal(requestFailure(refusal).status, 503);
     assert.deepEqual(await counts(), before);
   },
