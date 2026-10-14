@@ -10,7 +10,7 @@ import {
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
 } from "@openclaw-enterprise/occ";
-import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
+import { asRecord } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
 
 /**
@@ -245,28 +245,12 @@ function modelSelections(configuration: Readonly<OpenClawConfigurationDocument>)
 }
 
 /**
- * Providers of every model selection (`modelSelections`). The credential rules below walk
- * every configured provider instead, since `/model` switches with an unset model allowlist
- * reach any configured provider.
- */
-export function selectedModelProviders(
-  configuration: Readonly<OpenClawConfigurationDocument>,
-): Set<string> {
-  const providers = new Set<string>();
-  for (const { reference } of modelSelections(configuration)) {
-    if (typeof reference === "string") {
-      providers.add(splitModelRef(reference).provider);
-    }
-  }
-  return providers;
-}
-
-/**
  * Every model selection names `provider`, the one the Agent's Harness authentication binding
  * serves (finding 1291): a reference elsewhere would make the Gateway request another provider
- * directly. A bare name is an alias or the default provider's model, so it passes, except as a
- * policy key where `qualifiedPolicyKeys` (Dedicated Codex qualifies each key) asks for
- * provider/model. Refusals name the setting, never the reference.
+ * directly. A bare name passes: OpenClaw resolves it through an alias on a policy key checked
+ * here, or to a configured provider's model, whose apiKey Harness admission refuses. As a policy
+ * key, `qualifiedPolicyKeys` (Dedicated Codex qualifies each key) asks for provider/model.
+ * Refusals name the setting, never the reference.
  */
 export function requireSelectedModelProvider(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -305,7 +289,7 @@ export function requireSelectedModelProvider(
  * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked with a
  * stand-in for it, matched as a credential header as the text around it, and checked again once
  * filled, as on every Compute. (The provider apiKey rule depends on the Harness, so it stays in
- * Harness authentication admission: every provider on Dedicated Codex, selected ones on OpenClaw.)
+ * Harness authentication admission, on every provider.)
  */
 export function requireHarnessCredentialBinding(
   configuration: Readonly<OpenClawConfigurationDocument>,

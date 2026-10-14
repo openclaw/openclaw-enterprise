@@ -147,7 +147,6 @@ import {
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
   requireWorkspaceNodePlugins,
-  selectedModelProviders,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -3498,8 +3497,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const authentication = harnessModelAuthentication(configuration);
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
-    // Codex qualifies each models policy key, so a bare one cannot deploy. Whether that
-    // provider suits the topology is the rule below.
+    // Codex qualifies models policy keys, so it refuses every bare key, a little more than the
+    // projection fails on. Whether that provider suits the topology is the rule below.
     requireSelectedModelProvider(
       configuration,
       authentication.providerId,
@@ -3548,13 +3547,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
-    // Dedicated Codex refuses an apiKey on every provider, selected or not: the Gateway makes no
-    // model request of its own (finding 1291).
+    // Every provider is checked, selected or not: a bare model name or a `/model` switch can
+    // still reach one (finding 1291), as the credential header rule assumes. Dedicated Codex
+    // makes no model request from its Gateway, so it refuses every apiKey; OpenClaw accepts
+    // one only on the binding's provider, referencing the binding's environment.
     const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
-    for (const provider of openclaw
-      ? selectedModelProviders(configuration)
-      : Object.keys(providers)) {
-      const config = asRecord(providers[provider]);
+    for (const [provider, value] of Object.entries(providers)) {
+      const config = asRecord(value);
       if (config?.apiKey === undefined) {
         continue;
       }
@@ -3563,6 +3562,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw callerSettingError(
           setting,
           "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+        );
+      }
+      if (provider !== authentication.providerId) {
+        throw callerSettingError(
+          setting,
+          `must be unset: the Agent's Harness authentication binding serves only ${authentication.providerId} models`,
         );
       }
       if (config.apiKey === `\${${authentication.environmentName}}`) {

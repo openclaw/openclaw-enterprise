@@ -19,19 +19,20 @@ real Installation.
 refuse a model selection on another provider than the Agent's primary model:
 fallbacks, Agent entries, `subagents.model`, `imageModel`, `pdfModel` and the
 other `*Model` settings, `models` policy keys, hook models and
-`channels.modelByChannel`. Dedicated Codex also refuses an `apiKey` on any
-`models.providers` entry, and a `models` policy key without a provider.
+`channels.modelByChannel`. They also refuse an `apiKey` on any other
+`models.providers` entry. Dedicated Codex refuses one on every entry, and a
+`models` policy key without a provider.
 
-**Who is affected.** Configurations that select a second provider anywhere, or
+**Who is affected.** Configurations that select or key a second provider, or
 set a provider `apiKey` for Dedicated Codex.
 
-**How to tell.** The refusal names the setting: `... must select
-<provider>/<model>, the provider of the Agent's Harness authentication binding`,
-`... must be provider/model references`, or `models.providers.<name>.apiKey
-must be unset`.
+**How to tell.** A `400` names the setting (a mismatched fallback used to get
+a fixed-text `409`): `... must select <provider>/<model>, the provider of the
+Agent's Harness authentication binding`, `... must be provider/model
+references`, or `models.providers.<name>.apiKey must be unset`.
 
-**Steps.** Select the primary model's provider (bare aliases still pass) and
-remove the provider `apiKey`, then save and deploy again.
+**Steps.** Select only the primary model's provider and remove the other
+provider's `apiKey`, then save and deploy again.
 
 ## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
 
