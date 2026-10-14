@@ -155,9 +155,7 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
         } catch {
           // Plain exec output already has the diagnostic line.
         }
-        const line = output
-          .split(/\r?\n/)
-          .find((line) => line.startsWith(toolPrefix));
+        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));
         assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
