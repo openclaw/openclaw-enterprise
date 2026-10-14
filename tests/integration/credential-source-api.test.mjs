@@ -505,6 +505,66 @@ test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", asyn
     false,
   );
   assert.deepEqual(f.mutations, []);
+  // A source stored before the host rules, with its provider, cannot be attached to a new
+  // revision and its profile is not written; a stored DNS host still attaches (finding 1363).
+  const workspace = openShellWorkspaceName(f.namespace);
+  const attach = (type, secretField, host) => {
+    const stored = {
+      id: "cs_" + randomUUID(),
+      namespaceId: f.namespace.id,
+      name: "stored-host",
+      type,
+      config: { ...(type === "bearer-token" ? { env_var: "TOOL_TOKEN" } : oauth), host },
+      secrets: { [secretField]: secret.ref },
+      driverId: f.driver.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const name = openShellProviderName(stored.id);
+    f.providers.set(workspace + "/" + name, {
+      workspace,
+      name,
+      type: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/credential-source-id": stored.id,
+        "openclaw.dev/namespace-id": f.namespace.id,
+      },
+      credentials: {},
+    });
+    return {
+      sourceId: stored.id,
+      name,
+      attached: f.driver.attachForRevision({
+        namespace: f.namespace,
+        sources: [stored],
+        revision: { harness: { id: "codex", mode: "dedicated" } },
+        signal: AbortSignal.timeout(5000),
+      }),
+    };
+  };
+  for (const [type, secretField] of [
+    ["bearer-token", "token"],
+    ["oauth2-client-credentials", "client_secret"],
+    ["oauth2-refresh-token", "refresh_token"],
+  ]) {
+    for (const host of ["0xa000005", "0x7f.0x1", "example.123", "10.0.0.5", "169.254.169.254"]) {
+      await assert.rejects(attach(type, secretField, host).attached, (error) => {
+        assert.equal(error.name, "ScopeViolationError", host);
+        assert.equal(error.message, `The ${type} host must be an exact DNS name.`, host);
+        return true;
+      });
+    }
+    assert.equal(f.profiles.size, 0, type);
+    const { sourceId, name, attached } = attach(type, secretField, "api.example.com");
+    assert.deepEqual(await attached, [{ sourceId, ref: name }], type);
+    assert.deepEqual(
+      f.profiles.get(workspace + "/" + name).endpoints.map(({ host }) => host),
+      ["api.example.com"],
+      type,
+    );
+    f.profiles.clear();
+  }
 });
 
 test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or localhost names", async (t) => {

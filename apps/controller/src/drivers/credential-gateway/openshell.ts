@@ -310,12 +310,17 @@ function validateOAuth2Config(
 
 /** A per-source profile that injects one bearer token at the protected endpoint. */
 function bearerProfile(
+  type: string,
   sourceId: string,
   config: Readonly<Record<string, string>>,
   options: OpenShellCredentialGatewayOptions,
   displayName: string,
   credential: Pick<OpenShellProviderProfile["credentials"][number], "name" | "refresh">,
 ): Omit<OpenShellProviderProfile, "annotations"> {
+  // A source stored before the host rules (finding 1360) fails here until it is replaced.
+  if (!exactDnsName(config.host ?? "")) {
+    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
+  }
   return {
     id: openShellProviderName(sourceId),
     displayName,
@@ -367,19 +372,26 @@ function oauth2SourceType(
       if (!tokenUrlPortAllowed(config.token_url ?? "")) {
         throw new ScopeViolationError(tokenUrlPortMessage(type));
       }
-      return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
-        name: "access_token",
-        refresh: {
-          strategy,
-          tokenUrl: config.token_url ?? "",
-          scopes: [],
-          material: [
-            { name: "client_id", required: true, secret: false },
-            { name: "scope", required: false, secret: false },
-            ...material,
-          ],
+      return bearerProfile(
+        type,
+        sourceId,
+        config,
+        options,
+        `OAuth2 ${type} (OpenClaw Enterprise)`,
+        {
+          name: "access_token",
+          refresh: {
+            strategy,
+            tokenUrl: config.token_url ?? "",
+            scopes: [],
+            material: [
+              { name: "client_id", required: true, secret: false },
+              { name: "scope", required: false, secret: false },
+              ...material,
+            ],
+          },
         },
-      });
+      );
     },
   };
 }
@@ -483,9 +495,16 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
     profile: (sourceId, config, options) =>
-      bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
-        name: "token",
-      }),
+      bearerProfile(
+        "bearer-token",
+        sourceId,
+        config,
+        options,
+        "Bearer token (OpenClaw Enterprise)",
+        {
+          name: "token",
+        },
+      ),
   },
   oauth2SourceType(
     "oauth2-client-credentials",
