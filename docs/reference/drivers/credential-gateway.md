@@ -42,7 +42,9 @@ method below. Startup rejects a Driver that omits one.
 
 `validateSourceConfig({ type, config })` checks nonsecret values synchronously,
 without network calls or other effects. OCC calls it after catalog field checks,
-before reading Secrets or creating a record. Invalid values throw
+before reading Secrets or creating a record. It may return the configuration
+with the same fields in the form the gateway uses, such as a normalized URL;
+OCC then stores and registers that instead of the written values. Invalid values throw
 `CredentialSourceConfigError` with a safe field name and message; HTTP reports
 `400 INVALID_REQUEST`. Do not include submitted values in the error.
 

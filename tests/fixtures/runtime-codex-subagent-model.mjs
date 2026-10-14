@@ -160,12 +160,28 @@ try {
       { modelProvider: native.params.modelProvider, model: native.params.model },
       { modelProvider: "openai-compatible", model: scenario.model },
     );
+    // Every Agent maps to the same remote root. Settle this run, including its
+    // configured fallbacks, before the next case observes native requests.
+    const completed = await callGatewayFromCli(
+      "agent.wait",
+      {
+        url: "ws://127.0.0.1:8080",
+        password: process.env.OPENCLAW_GATEWAY_PASSWORD,
+        timeout: "45000",
+      },
+      { runId: receipt.runId, timeoutMs: 30000 },
+    );
+    assert.equal(completed.runId, receipt.runId);
+    assert.equal(completed.status, "error", JSON.stringify(completed));
+    assert.notEqual(completed.pendingError, true);
+    assert.equal(typeof completed.endedAt, "number");
     observed.push({
       agentId: scenario.agentId,
       childSessionKey: receipt.childSessionKey,
       modelProvider: native.params.modelProvider,
       model: native.params.model,
       cwd: native.params.cwd,
+      terminalStatus: completed.status,
     });
   }
   console.log(JSON.stringify({ commit: provenance.commit, observed }));

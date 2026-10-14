@@ -17,8 +17,13 @@ const selectedHarness = process.env.OCC_TEST_LOCAL_FIRST_AGENT_HARNESS ?? "openc
 assert.match(selectedHarness, /^(?:openclaw|codex)$/);
 const selectedSandboxDriver = process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER ?? "none";
 assert.match(selectedSandboxDriver, /^(?:none|openshell)$/);
+const selectedControlUi = process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_UI === "1";
 if (selectedSandboxDriver === "openshell") {
   assert.equal(selectedHarness, "codex", "OpenShell first-Agent proof requires dedicated Codex.");
+}
+if (selectedControlUi) {
+  assert.equal(selectedSandboxDriver, "openshell");
+  assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE, "compose");
 }
 const execFileAsync = promisify(execFile);
 const maxOutputLength = 32_768;
@@ -44,8 +49,12 @@ function runFirstAgent({
   signal,
   timeout = commandTimeout,
   harness = selectedHarness,
+  controlUi = selectedControlUi,
 }) {
   const args = [firstAgentScript, name, "--harness", harness];
+  if (controlUi) {
+    args.push("--control-ui");
+  }
   if (prompt !== undefined) {
     args.push("--prompt", prompt);
   }
@@ -126,7 +135,7 @@ function runFirstAgent({
   });
 }
 
-function readResult({ stdout, stderr }, expectedReply) {
+function readResult({ stdout, stderr }, expectedReply, { apiOrigin, browserOrigin }) {
   const diagnostic = `First-Agent command output:\n${stdout}\n${stderr}`;
   const agent = /^Agent ID: (agt_[A-Za-z0-9_-]+)\r?$/m.exec(stdout);
   const revision = /^Revision: (rev_[A-Za-z0-9_-]+)\r?$/m.exec(stdout);
@@ -134,6 +143,7 @@ function readResult({ stdout, stderr }, expectedReply) {
   const model = /^Model: ((?:openai|codex)\/[A-Za-z0-9._-]+)\r?$/m.exec(stdout);
   const proof = /^Model response verified: (FIRST_AGENT_[A-Fa-f0-9-]+)\r?$/m.exec(stdout);
   const consoleLine = /^Console: ([^\r\n]+)\r?$/m.exec(stdout);
+  const controlUiLine = /^Control UI: ([^\r\n]+)\r?$/m.exec(stdout);
   const replyHeading = /(?:^|\n)Agent response:\r?\n/.exec(stdout);
 
   assert.ok(agent, `Missing Agent ID.\n${diagnostic}`);
@@ -152,14 +162,9 @@ function readResult({ stdout, stderr }, expectedReply) {
   } catch {
     throw new Error("First-Agent command returned an invalid Console URL.");
   }
-  assert.ok(
-    consoleUrl.protocol === "http:" &&
-      ["127.0.0.1", "localhost", "[::1]"].includes(consoleUrl.hostname) &&
-      !consoleUrl.username &&
-      !consoleUrl.password &&
-      !consoleUrl.hash,
-    "The Console URL must be an unauthenticated local HTTP origin",
-  );
+  assert.equal(consoleUrl.origin, browserOrigin ?? apiOrigin);
+  assert.equal(consoleUrl.protocol, browserOrigin === undefined ? "http:" : "https:");
+  assert.ok(!consoleUrl.username && !consoleUrl.password && !consoleUrl.hash);
   assert.ok(
     consoleUrl.pathname === `/console/agents/${agent[1]}`,
     "The Console URL must identify the returned Agent",
@@ -169,11 +174,21 @@ function readResult({ stdout, stderr }, expectedReply) {
     namespaces.length === 1 && /^ns_[A-Za-z0-9_-]+$/.test(namespaces[0]),
     "The Console URL must identify one Namespace",
   );
+  let controlUiOrigin;
+  if (selectedControlUi) {
+    assert.ok(controlUiLine, `Missing Control UI URL.\n${diagnostic}`);
+    controlUiOrigin = new URL(controlUiLine[1]).origin;
+    assert.equal(new URL(controlUiLine[1]).pathname, "/");
+    assert.equal(new URL(controlUiOrigin).protocol, "https:");
+  } else {
+    assert.equal(controlUiLine, null, `Unexpected Control UI URL.\n${diagnostic}`);
+  }
   return {
     identity: { agentId: agent[1], revisionId: revision[1] },
     proofNonce: proof[1],
     model: model[1],
-    origin: consoleUrl.origin,
+    origin: apiOrigin,
+    controlUiOrigin,
     namespaceId: namespaces[0],
   };
 }
@@ -411,11 +426,16 @@ test(
     const env = { ...stack.environment, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" };
     delete env.OPENAI_API_KEY_FILE;
     const promptFor = (reply) => `Reply with exactly ${reply} and no other text.`;
+    const resultOrigins = {
+      apiOrigin: env.OCC_URL,
+      browserOrigin: recorded.browserOrigin,
+    };
 
     // The unique Agent remains until the fixture or the owner destroys the selected disposable stack.
     const first = readResult(
       await runFirstAgent({ name, prompt: promptFor(firstReply), env, signal: context.signal }),
       firstReply,
+      resultOrigins,
     );
 
     const expectedModel = env.OPENCLAW_FIRST_AGENT_MODEL || "gpt-6-astra";
@@ -524,6 +544,7 @@ test(
         signal: context.signal,
       }),
       secondReply,
+      resultOrigins,
     );
 
     assert.deepEqual(
@@ -636,6 +657,18 @@ test(
       original.values?.tools?.deny?.includes("*"),
       "The native Configuration must deny tools before the regression check",
     );
+    if (selectedControlUi) {
+      assert.equal(original.generation, 2);
+      assert.equal(original.values.gateway.publicOrigin, first.controlUiOrigin);
+      assert.deepEqual(original.values.gateway.controlUi, {
+        enabled: true,
+        allowedOrigins: [first.controlUiOrigin],
+      });
+      assert.equal(original.values.gateway.auth.mode, "trusted-proxy");
+      assert.deepEqual(original.values.gateway.auth.identityScopes, {
+        "occ-workspace-files": ["operator.admin"],
+      });
+    }
     try {
       const changed = await requestLocalApi(first.origin, serviceKey, "PATCH", configurationPath, {
         ...original.values,

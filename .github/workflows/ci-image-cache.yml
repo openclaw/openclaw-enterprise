@@ -2,8 +2,9 @@ name: CI Image Cache
 
 # Writes main's BuildKit cache for the controller and runtime images that the CI
 # image lanes restore; it is the only writer. This run starts on every image
-# input change and is never cancelled once started, and runs queue in push
-# order, so the newest commit's export lands last.
+# input change (and on a schedule, from main's newest commit) and is never
+# cancelled once started, and runs queue in order, so the newest commit's export
+# lands last.
 # GitHub scopes cache writes to the run's ref: pull_request runs read main's
 # entries but write only their own merge ref.
 on:
@@ -34,13 +35,20 @@ on:
       - scripts/lib/**
       - tsconfig.base.json
       - tsconfig.json
+  # The kept runtime image reaches Blacksmith's shared Docker store only if this
+  # job's store commit wins against concurrent jobs' commits from the same
+  # snapshot, and on 10-14 one of five did. A run whose store already holds
+  # main's image builds from cache and commits nothing, so retrying on a
+  # schedule costs about two minutes.
+  schedule:
+    - cron: "7,27,47 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# One export at a time, never cancelled; a newer push replaces only the pending
-# run, which the Actions list then shows as cancelled.
+# One export at a time, never cancelled; a newer push or scheduled run replaces
+# only the pending run, which the Actions list then shows as cancelled.
 concurrency:
   group: ci-image-cache-${{ github.ref }}
   cancel-in-progress: false

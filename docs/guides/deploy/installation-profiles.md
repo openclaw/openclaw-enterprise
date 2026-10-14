@@ -151,6 +151,9 @@ For the `codex` profile, add the reviewed Codex seccomp profile to the base inpu
 }
 ```
 
+The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
+preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
+
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
 ChatGPT Backend admin credential path:
@@ -189,7 +192,7 @@ optional `port` (default 443).
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
-and rejects URLs the controller would reject at startup, including any `@` before the host.
+and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
 ### Hosted discovery egress
 

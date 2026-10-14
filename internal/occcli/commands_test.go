@@ -45,6 +45,14 @@ func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		_, _ = writer.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"not found"}}`))
 		return
 	}
+	if raw, ok := strings.CutPrefix(data, "raw:"); ok {
+		// "raw:<status> <body>" answers with that status and body, unwrapped.
+		status, _ := strconv.Atoi(raw[:3])
+		writer.Header().Set("content-type", "application/json")
+		writer.WriteHeader(status)
+		_, _ = writer.Write([]byte(raw[4:]))
+		return
+	}
 	if data == "" {
 		// An empty response stands for a bodyless 204, as OCC answers a delete.
 		writer.WriteHeader(http.StatusNoContent)
@@ -70,6 +78,25 @@ func runOCC(t *testing.T, responses map[string]string, args ...string) (string, 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	return out.String(), append([]string(nil), fake.requested...), err
+}
+
+// runOCCWithNotices is runOCC that also returns what the command wrote to stderr.
+func runOCCWithNotices(t *testing.T, responses map[string]string, args ...string) (string, string, []string, error) {
+	t.Helper()
+	fake := &fakeOCC{responses: responses}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	command := New(&out, &errOut)
+	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
+	err := command.Execute()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return out.String(), errOut.String(), append([]string(nil), fake.requested...), err
 }
 
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
@@ -762,23 +789,49 @@ func TestAgentBrowsingShowsUnreadableSavedSettings(t *testing.T) {
 	}
 }
 
+// List items are summaries, so a revision whose saved settings are unreadable is
+// found only when its deployment status read fails (503). The listing keeps the
+// other revisions' status and names the unreadable one instead of failing.
 func TestAgentRevisionBrowsingKeepsHealthyStatusBesideUnreadableSnapshot(t *testing.T) {
 	responses := agentRevisionResponses()
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/revisions"] = `[{"id":"` + testRevision2ID + `","revision":2,"configurationReadError":{"code":"SAVED_CONFIGURATION_UNREADABLE","field":"plugins"}},{"id":"` + testRevision1ID + `","revision":1}]`
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Persisted AgentRevision plugin state is invalid."}}`
 	for _, format := range []string{"table", "json", "yaml"} {
-		out, requested, err := runOCC(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
+		out, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, "SAVED_CONFIGURATION_UNREADABLE") || !strings.Contains(out, "succeeded") {
-			t.Fatalf("%s must preserve error and healthy status: %s", format, out)
+		if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
+			t.Fatalf("%s must list both revisions and the healthy status: %s", format, out)
 		}
-		if slices.Contains(requested, "GET "+agentPath+"/deployments/"+testRevision2ID) {
-			t.Fatal("error variant must not undergo strict deployment enrichment")
+		if !strings.Contains(notices, "deployment status of revision "+testRevision2ID+" is unavailable") {
+			t.Fatalf("%s must name the revision whose status is unavailable: %q", format, notices)
 		}
-		if !slices.Contains(requested, "GET "+agentPath+"/deployments/"+testRevision1ID) {
-			t.Fatal("healthy revision must retain enrichment")
+	}
+}
+
+// The revisions command shows one page; it passes --limit and --cursor through
+// and prints how to read the next page.
+func TestAgentRevisionsPagesWithCursor(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	out, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1", "--cursor", "v1.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(requested, "GET "+agentPath+"/revisions?cursor=v1.3&limit=1") {
+		t.Fatalf("limit and cursor must reach OCC: %v", requested)
+	}
+	if !strings.Contains(out, testRevision2ID) || strings.Contains(out, testRevision1ID) {
+		t.Fatalf("expected only the page's revision:\n%s", out)
+	}
+	if !strings.Contains(notices, "occ agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
+		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
+	}
+	for _, limit := range []string{"0", "101"} {
+		if _, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", limit); err == nil {
+			t.Fatalf("--limit %s must be refused locally", limit)
 		}
 	}
 }

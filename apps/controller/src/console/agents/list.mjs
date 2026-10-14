@@ -27,6 +27,43 @@ export const NAMESPACE_NOT_READY_MESSAGE =
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
 
+// The controller ends a version's deployment work with one of these codes when a newer version
+// took over before this one became current. The API records that as failed, but nothing went
+// wrong with this version, so the console shows a neutral outcome instead (finding 1353). The
+// record never names the newer version, so neither does the console.
+const SUPERSEDED_DEPLOYMENT_CODES = new Set([
+  "REVISION_SUPERSEDED",
+  "REPOSITORY_REVISION_SUPERSEDED",
+]);
+
+export function supersededDeployment(status) {
+  return status?.status === "failed" && SUPERSEDED_DEPLOYMENT_CODES.has(status.error?.code);
+}
+
+// The recorded outcome to show: the API's status, except that superseded work is not a failure.
+export function deploymentOutcome(status) {
+  return supersededDeployment(status) ? "superseded" : status.status;
+}
+
+export const SUPERSEDED_DEPLOYMENT_NOTE = "Superseded by a newer version";
+
+// Revisions list newest first, one page at a time (finding 1323). A page can be empty when
+// its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
+async function latestReadableRevision(context, path) {
+  let cursor = null;
+  do {
+    const page = await context.request(
+      cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
+      { includeMeta: true },
+    );
+    if (page.data.length > 0) {
+      return page.data[0];
+    }
+    cursor = page.meta?.nextCursor ?? null;
+  } while (cursor);
+  return null;
+}
+
 export function message(error, mutation = false) {
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const field = {
@@ -139,20 +176,18 @@ export function renderAgentList(context) {
       if (!deployments.has(item.id)) {
         deployments.set(
           item.id,
-          context
-            .request(
-              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
-            )
-            .then(async (revisions) => {
-              const latest = [...revisions].sort((a, b) => b.revision - a.revision)[0];
-              if (!latest) {
-                return null;
-              }
-              const status = await context.request(
-                `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
-              );
-              return { revision: latest, status };
-            }),
+          latestReadableRevision(
+            context,
+            `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
+          ).then(async (latest) => {
+            if (!latest) {
+              return null;
+            }
+            const status = await context.request(
+              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
+            );
+            return { revision: latest, status };
+          }),
         );
       }
       void deployments
@@ -167,12 +202,16 @@ export function renderAgentList(context) {
           }
           deployment.replaceChildren(
             link(
-              `v${result.revision.revision} · ${result.status.status}`,
+              `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
               `agents/${item.id}?revision=${result.revision.id}`,
               context,
             ),
           );
-          if (result.status.status === "failed") {
+          if (supersededDeployment(result.status)) {
+            deployment.append(
+              element("span", { className: "resource-id" }, `${SUPERSEDED_DEPLOYMENT_NOTE}.`),
+            );
+          } else if (result.status.status === "failed") {
             deployment.append(
               element(
                 "span",

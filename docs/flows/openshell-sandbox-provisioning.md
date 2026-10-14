@@ -106,6 +106,10 @@ Both verify the pinned archive, package charts and import digest-pinned
 Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports them
 with PostgreSQL and resolves in-cluster digests.
 
+Both profiles import larger OCE images before pinned OpenShell Sandbox and
+supervisor images, then install OpenShell workloads. This prevents k3s image
+garbage collection during platform-image imports from removing idle OpenShell images.
+
 After Agent Sandbox rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
 once before returning the original error for rollback. Synchronous capture
@@ -237,43 +241,43 @@ first-Agent path.
 
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createSandbox`
 
-The client sends the Sandbox identity, spec, Namespace Workspace scope, and a
-`request_id`: the revision UUID first. OpenShell keeps a `request_id` whose create
-errored server-side unresolved forever, so when the Gateway refuses one
-(`REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH`, or
-`REQUEST_REPLAY_UNAVAILABLE`) and `getSandbox` finds no Sandbox, the Driver tries
-the next of 16 IDs: the revision UUID, then 15 derived from it. Each failing pass
-spends one ID; the Workspace-unique Sandbox name prevents duplicates. Unresolved
-IDs never expire. Once the controller
-identity holds 1000 unresolved or unexpired admission records, OpenShell rejects
-every new `request_id` with `RESOURCE_EXHAUSTED`, so repeated server-side create
-failures count against that quota. Completed records expire after 24 hours.
-`unary` maps that exact refusal to `OpenShellAdmissionLimitError`, a
-`TransientDependencyError` (`SANDBOX_ADMISSION_LIMIT_REACHED`): revision
-provisioning waits for it until the convergence deadline without spending
-attempts; Namespace work retries it. Codex requires one unnamed bearer-passthrough
-exposure for `APP_SERVER_PORT` in both `service_urls` and `GetService`. Native
-OpenClaw connects outbound and rejects returned exposure URLs. After `getSandbox`,
-the Driver creates only an absent Sandbox. It adopts existing or `ALREADY_EXISTS`
-Sandboxes only when Workspace, labels, annotations, and full spec match and the
-Sandbox is neither deleting nor stopped. Workspace `sandbox:write` is the trust
-boundary: its holder can replace the Sandbox.
+The client sends the Sandbox identity, spec, Workspace scope, and one of 16
+`request_id` values: the revision UUID, then 15 derived IDs. After
+`REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH`, or
+`REQUEST_REPLAY_UNAVAILABLE`, the Driver uses the next ID only when `getSandbox`
+finds nothing. Unresolved IDs do not expire; completed records expire after 24
+hours. The Workspace-unique Sandbox name prevents duplicates. At 1,000 live or
+unresolved records, `RESOURCE_EXHAUSTED` maps to the transient
+`SANDBOX_ADMISSION_LIMIT_REACHED`: revision provisioning waits until its convergence deadline without spending
+attempts, while Namespace work retries normally. Codex requires one unnamed
+bearer-passthrough exposure for `APP_SERVER_PORT`. Native OpenClaw requests no
+exposure and rejects any returned URL. The Driver
+calls `getSandbox` first and creates only an absent Sandbox; it adopts an
+existing or `ALREADY_EXISTS` Sandbox only when its Workspace, labels,
+annotations, and full spec match the request and it is not deleting or stopped.
+For Codex, `GetService` must also return the unnamed bearer-passthrough endpoint
+on the admitted port. Workspace `sandbox:write` is the trust boundary because a
+holder can replace the Sandbox.
 
-The Backend shares one client per endpoint and retries failed setup. Unary calls
-check cancellation after setup and credential preparation, before dispatch.
-Setup cancellation waits for the pending step; it cannot bound stalled
-initialization or file reads. After dispatch, cancellation rejects the caller and
-cancels local gRPC, not necessarily the remote mutation. The lifecycle must
-recover uncertain effects.
+The Backend reuses endpoint clients and retries failed setup. Cancellation is
+checked after setup/credential preparation, so stalled initialization/file reads
+remain unbounded. After dispatch, cancellation stops local gRPC; remote mutations
+may continue and require recovery.
 
-`GetService` keeps a normalized control URL and advertised workload host/port.
-`harnessEndpoint` requires the unnamed bearer-passthrough app-server exposure and
-returns its WebSocket origin and configured `sandboxDataMount.mountPath`
-(default `/sandbox/enterprise`). Compute derives native-hook storage from
-`harnessHome`; the launcher creates it with mode `0700`. Invalid/changed exposure
-fails closed. Provider files use their reported absolute paths; Gateway failure
-prevents readiness. Revision providers survive uncertain creates; cleanup deletes
-their Sandbox first.
+`GetService` separates the control URL from advertised workload host/port.
+`harnessEndpoint` returns its WebSocket origin and configured
+`sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native-hook storage
+uses `harnessHome` with mode `0700`. Invalid or changed exposure fails closed.
+
+`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` probes the
+authenticated WebSocket handshake before reading a held-failure document.
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
+destroys HTTP refusal responses immediately, so unfinished bodies cannot retain
+connections after the probe returns.
+
+Provider files use their reported absolute paths; Gateway failure prevents
+readiness. Revision providers survive uncertain creates; cleanup deletes their
+Sandbox first.
 
 OpenShell's supervisor opens the node connection. Kubernetes-only uses the
 in-cluster WSS route; Compose uses the Agent Gateway Service URL. In both cases,
@@ -347,9 +351,13 @@ networking. Native OpenClaw remains verification-only.
 
 ## Changelog
 
+- 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
+
 - 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 
 - 2026-10-13 14:11: Reconcile setup-Secret ordering and preserve service-IPv6 history alongside credential endpoint safeguards. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
+
+- 2026-10-13 13:57: Reconciled development image import order with upstream rollout diagnostics. (authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868 - 96272fa0a5e4f359ed354abb1918e44986c19e76)
 
 - 2026-10-10 13:04: Reconcile native hook HOME/CA flow with endpoint safeguards; trim repeated narration. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 
@@ -370,6 +378,8 @@ networking. Native OpenClaw remains verification-only.
 - 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds; tighten setup prose. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
+
+- 2026-10-06 15:57: Recorded the development image-import order that keeps pinned OpenShell images available until their workloads start. (authoring-run/473c1419-a5a2-4774-ac8d-33d6a265ae06 - 99641a7ab00ad8fdd987e27e9ee838814e5f535a)
 
 - 2026-10-06 11:17: Reconciled endpoint flow with current namespace and provider provisioning; condensed repeated prose. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - b6dc6b87a461ad33374e133d15cc739d8e074fea)
 

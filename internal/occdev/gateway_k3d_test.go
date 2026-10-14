@@ -9,6 +9,24 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+func TestComposeRoutingEnablesTheClusterScopedNativeAdminHosts(t *testing.T) {
+	state := &developmentState{
+		Cluster:       "occ-dev-example",
+		BrowserOrigin: "https://console.occ-dev-example.oce.localhost:8443",
+	}
+	values := composeDevelopmentRoutingValues(state, &composeDevelopmentRouting{}, nil)
+	auth := values["auth"].(map[string]string)
+	if auth["baseUrl"] != state.BrowserOrigin {
+		t.Fatalf("auth base URL = %q, want browser origin %q", auth["baseUrl"], state.BrowserOrigin)
+	}
+	nativeAdmin := values["agentNativeAdmin"].(map[string]any)
+	if nativeAdmin["enabled"] != true ||
+		nativeAdmin["domain"] != "agents.occ-dev-example.oce.localhost" ||
+		nativeAdmin["sharedCookieDomain"] != "occ-dev-example.oce.localhost" {
+		t.Fatalf("unexpected native admin routing values: %#v", nativeAdmin)
+	}
+}
+
 func TestConfigureDevelopmentRoutingUsesHybridEndpoint(t *testing.T) {
 	directory := t.TempDir()
 	state := &developmentState{directory: directory}

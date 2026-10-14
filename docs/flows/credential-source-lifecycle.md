@@ -8,11 +8,10 @@ last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 
 ## Overview
 
-OCC authorizes Namespace credential sources, binds them to Agents, and freezes
-identities in revisions. The worker resolves sources for paired Gateway/Sandbox
-attachment. OCC stores metadata and Secret references, never values. This flow
-covers registration through removal; [refresh](credential-source-refresh.md) and
-[Sandbox provisioning](openshell-sandbox-provisioning.md) own their internal steps.
+OCC authorizes Namespace sources and freezes Agent bindings in revisions. The
+worker resolves them for paired Gateway/Sandbox attachment. OCC stores metadata
+and Secret references, never values. See [refresh](credential-source-refresh.md)
+and [Sandbox provisioning](openshell-sandbox-provisioning.md) for their internal steps.
 
 ## Entry Points
 
@@ -46,7 +45,7 @@ graph TD
   I -- "ready" --> J["<b>Compute receives source</b><br/>Attachment handoff"]
   J --> P{"<b>Source login mode</b>"}
   P -- "api_key" --> Q["<b>Sandbox provisions Harness</b><br/>API-key placeholder"]
-  P -- "chatgptAuthTokens: custom OpenShell" --> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
+  P -- "chatgptAuthTokens: paired OpenShell" --> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
   T --> U["<b>Codex entrypoint</b><br/>Ephemeral external-mode auth.json"]
   U --> V["<b>Native model probe</b><br/>Then app-server startup"]
   E --> K["<b>DELETE</b><br/>refused while referenced"]
@@ -67,16 +66,20 @@ intermediate State record before calling `registerSource` or `removeSource`.
 `packages/occ/src/index.ts:createCredentialSource`
 
 The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`.
-One transaction authorizes `credential_source:create`, locks a ready Namespace,
-requires a selected gateway (`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`), and reads
-`listSourceTypes`. Before effects, an unoffered type returns
-`CredentialSourceTypeNotOfferedError` (`409`); unknown/missing fields return
-`ScopeViolationError` (`404`). Side-effect-free `validateSourceConfig` rejects
-invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`).
+One transaction authorizes `credential_source:create`, locks the Namespace,
+requires a selected gateway (`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`) and a
+ready Namespace, then reads `listSourceTypes`. Before effects, an unoffered type
+returns `CredentialSourceTypeNotOfferedError` (`409`); unknown or missing fields
+return `ScopeViolationError` (`404`). Side-effect-free `validateSourceConfig`
+rejects invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`)
+before Secret reads, record creation, or gateway writes. OCC checks any returned
+normalized configuration against the catalog and stores it in the source record.
+
 `apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` and
 OpenShell's `normalizedSourceBaseUrl` enforce the
 [endpoint restrictions](../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
-Registration/attachment validate endpoints; cleanup uses owned identity.
+OpenShell requires an exact DNS host; Compute also accepts IP hosts.
+Registration and attachment validate endpoints; cleanup uses owned identity.
 
 ### 2. Read Secret values
 
@@ -111,11 +114,10 @@ possible. If concurrent DELETE won, OCC repeats remote cleanup and returns `409`
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-Device authorization registers an empty source, then paired Refresh start/poll
-fences the private session. Gateway `withSourceToken` may refresh for an authorized
-callback.
-The [refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
-owns exchange, retrieval, and cancellation.
+Device authorization registers an empty source; paired Refresh fences the private
+session. Gateway `withSourceToken` may refresh for an authorized callback. The
+[refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
+traces exchange and cancellation.
 
 ### 4. Bind the source to an Agent
 

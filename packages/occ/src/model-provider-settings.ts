@@ -82,6 +82,45 @@ function writesSchemeSlashes(literals: readonly string[]): boolean {
 const missesSchemeSlashes = (first: string): boolean =>
   /^[\0- ]*https?:(?![/\\]{2})/i.test(first.replaceAll(/[\t\n\r]/g, ""));
 
+// A host label that is a decimal or 0x number. When the last label (before one trailing dot) is one,
+// the URL parser reads the whole host as an IPv4 address.
+const NUMERIC_LABEL = /^(?:0x[0-9a-f]*|[0-9]+)$/i;
+
+/**
+ * Whether a refused baseUrl fails only because its host ends in a numeric or 0x label, which the
+ * URL parser reads as an IPv4 address and refuses unless the host is one (`https://api.123/v1`,
+ * `https://999.1.2.3/v1`), so its refusal can say so (finding 1346): with that label a name, the
+ * same text is accepted. `literals` is the text around a Preset's unfilled variables, each filled
+ * as `fillsAsRuntimeUrl` fills it with a name. Other refusals keep the general message.
+ */
+function refusedForNumericLastLabel(literals: readonly string[]): boolean {
+  const [first = "", ...rest] = literals.map((literal) => literal.replaceAll(/[\t\n\r]/g, ""));
+  const start = first.slice(first.search(/[^\0- ]|$/));
+  const scheme = /^https?:/i.exec(start)?.[0];
+  if (scheme === undefined) {
+    return false;
+  }
+  // The URL parser also trims trailing C0 controls and spaces.
+  let text = scheme + fillUrl([start.slice(scheme.length), ...rest], "x");
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) <= 0x20) {
+    end -= 1;
+  }
+  text = text.slice(0, end);
+  // An http(s) authority ends at a slash, backslash, query or fragment; its host follows the last
+  // `@` and ends at the port's colon.
+  const [, before = "", host = ""] =
+    /^(https?:[/\\]{2}(?:[^/\\?#]*@)?)([^/\\?#:]*)/i.exec(text) ?? [];
+  const name = host.endsWith(".") ? host.slice(0, -1) : host;
+  const label = name.slice(name.lastIndexOf(".") + 1);
+  return (
+    NUMERIC_LABEL.test(label) &&
+    isRuntimeUrl(
+      `${before}${name.slice(0, name.length - label.length)}x${host.slice(name.length)}${text.slice(before.length + host.length)}`,
+    )
+  );
+}
+
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
 // for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
 // address (the whole bracketed address, whatever literal text surrounds the variable in it), or
@@ -333,7 +372,13 @@ function validateSettings(
       const [first = typeof baseUrl === "string" ? baseUrl : ""] = literals ?? [];
       throw new ModelProviderSettingError(
         pointer(...path, "baseUrl"),
-        missesSchemeSlashes(first) ? "baseUrlSlashes" : "baseUrl",
+        missesSchemeSlashes(first)
+          ? "baseUrlSlashes"
+          : typeof baseUrl === "string" &&
+              !environment(baseUrl) &&
+              refusedForNumericLastLabel(literals ?? [baseUrl])
+            ? "baseUrlNumericHost"
+            : "baseUrl",
       );
     }
   }

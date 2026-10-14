@@ -467,7 +467,61 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   }
 
   await store.read(async (state) => {
-    assert.deepEqual(await state.revisions.listRevisions(namespace.id, agent.id), [revision]);
+    const listed = await state.revisions.listRevisions(namespace.id, agent.id);
+    assert.deepEqual(listed, [revision]);
+    // Revision metadata lists the same revisions, in the same order, without saved settings.
+    assert.deepEqual(
+      await state.revisions.listRevisionMetadata(namespace.id, agent.id),
+      listed.map(({ id, namespaceId, agentId, revision, backendId, createdAt }) => ({
+        id,
+        namespaceId,
+        agentId,
+        revision,
+        backendId,
+        createdAt,
+      })),
+    );
+    assert.deepEqual(await state.revisions.listRevisionMetadata(identifier("ns"), agent.id), []);
+    // A summary page carries metadata plus the fields that tell revisions apart, never the
+    // saved settings; `before` excludes the revision it names and everything newer.
+    assert.deepEqual(
+      await state.revisions.pageRevisionSummaries(namespace.id, agent.id, { limit: 1 }),
+      {
+        revisions: listed.map((item) => ({
+          id: item.id,
+          namespaceId: item.namespaceId,
+          agentId: item.agentId,
+          revision: item.revision,
+          backendId: item.backendId,
+          configurationId: item.configurationId,
+          configurationGeneration: item.configurationGeneration,
+          harness: item.harness,
+          createdAt: item.createdAt,
+        })),
+      },
+    );
+    assert.deepEqual(
+      await state.revisions.pageRevisionSummaries(namespace.id, agent.id, {
+        before: revision.revision,
+        limit: 1,
+      }),
+      { revisions: [] },
+    );
+    assert.deepEqual(
+      await state.revisions.pageRevisionSummaries(identifier("ns"), agent.id, { limit: 1 }),
+      { revisions: [] },
+    );
+    // Agent references carry only the identity of each Agent in a live Namespace.
+    const references = (await state.agents.listAgentReferences()).filter(
+      ({ namespaceId }) => namespaceId === namespace.id,
+    );
+    assert.deepEqual(
+      references.sort((left, right) => left.id.localeCompare(right.id)),
+      (await state.agents.listAgents(namespace.id))
+        .map(({ id, namespaceId }) => ({ id, namespaceId }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    assert.ok(references.some(({ id }) => id === agent.id));
   });
 
   await store.transact(async (transaction) => {
@@ -1229,6 +1283,22 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     );
   });
 
+  // Revision summary pages run newest first; `nextBefore` continues below the page's last
+  // revision and is absent on the last page.
+  await store.read(async (state) => {
+    const page = (options) =>
+      state.revisions.pageRevisionSummaries(accountNamespace.id, accountAgent.id, options);
+    const numbers = (result) => result.revisions.map(({ revision }) => revision);
+    const first = await page({ limit: 1 });
+    assert.deepEqual([numbers(first), first.nextBefore], [[2], 2]);
+    assert.equal(Object.hasOwn(first.revisions[0], "configuration"), false);
+    assert.deepEqual(first.revisions[0].harness, accountRevision.harness);
+    const second = await page({ before: first.nextBefore, limit: 1 });
+    assert.deepEqual([numbers(second), Object.hasOwn(second, "nextBefore")], [[1], false]);
+    const whole = await page({ limit: 5 });
+    assert.deepEqual([numbers(whole), Object.hasOwn(whole, "nextBefore")], [[2, 1], false]);
+  });
+
   const accountOnlyNamespace = {
     id: identifier("ns"),
     name: "Account-only " + randomUUID(),
@@ -1511,6 +1581,22 @@ async function verifyDuplicateNameContract(store) {
     await transaction.presets.createPreset(otherPreset);
     await transaction.serviceAccounts.createServiceAccount(account);
     await transaction.credentialSources.createCredentialSource(source);
+  });
+  // Preset summaries list the same Presets in the same order, without their templates.
+  await store.read(async (state) => {
+    assert.deepEqual(
+      await state.presets.listPresetSummaries(namespace.id),
+      (await state.presets.listPresets(namespace.id)).map(
+        ({ id, namespaceId, name, createdAt }) => ({
+          id,
+          namespaceId,
+          name,
+          createdAt,
+        }),
+      ),
+    );
+    assert.equal((await state.presets.listPresetSummaries(namespace.id)).length, 2);
+    assert.deepEqual(await state.presets.listPresetSummaries(identifier("ns")), []);
   });
 
   const nameConflict = (message) => ({ name: "ResourceStateConflictError", message });

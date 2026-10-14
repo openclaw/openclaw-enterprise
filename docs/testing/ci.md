@@ -31,7 +31,12 @@ Hosted image builds use separate controller/runtime caches. Packaging, model pro
 
 Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases and Actions timestamps for slow setup or tests. [k3d image preparation](ci-k3d-images.md) covers how images reach the cluster nodes.
 
-`static-checks` runs `pnpm docs:check` and the [dependency policy](repository-boundaries.md). Pages above 1,500 visible words require review; above 2,500 fail except the approved [API reference](../reference/api.md) and `AGENTS.md` files. The generated API, site build, navigation, and links must pass. The [specification check](../contributing/specifications.md#status-and-review) also validates non-archived RFC metadata and spec link targets. Run `pnpm docs:check-length` for word counts alone.
+`static-checks` runs [dependency policy](repository-boundaries.md) and
+`pnpm docs:check`: word limits, generated API, site navigation/links and
+[spec metadata/links](../contributing/specifications.md#status-and-review).
+Pages above 1,500 visible words need review; above 2,500 fail, except the approved
+[API reference](../reference/api.md) and `AGENTS.md`. `pnpm docs:check-length`
+checks word counts alone.
 
 CI Impact and Suite Audit start independently. Full mode runs the twenty-two-lane matrix and `runtime-image-fixture`; `CI Required` requires their outcomes and same-source artifacts. Runtime image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs; Kubernetes fixture and observability lanes for its NetworkPolicy-enforcing kernel. `runtime-image-fixture` and `CI Required` use `ubuntu-22.04`; `ci.yml` names each lane's runner. Other lanes except `keycloak-oidc`, Static Checks and the audit use `blacksmith-16vcpu-ubuntu-2404` (4 CPUs; 8vcpu exposes 2).
 
@@ -114,17 +119,16 @@ redacts environment values and secret shapes in lines and event messages, and
 adds the record to the same report under `containerLogs`. The platform recovery
 test follows its fixture gateway, which logs its drain, across Agent stop.
 
-The job log and results keep 600 characters of a failure message. In every lane,
-the runner adds each failed file's whole messages and stacks (16 KiB each, 20
-cases) and its last 400 stdout, stderr and diagnostic lines to the same report
-under `failures`, for the first 8 failed files (`omittedFailureFiles` counts the rest). They get the failure-message
-redaction, and lines naming a credential are dropped whole. Test output reaches an
-artifact only here; a runtime-minted value without a known shape is not redacted,
-so tests must not print secrets. Each record has a `reason`. A file stopped at the
-runner timeout gets `timeout`, its elapsed time, the running tests and the output tail
-so far (a long tail can lose its oldest lines; `omittedLines` counts them). A
-preparation failure gets `prepare` with the redacted error message, which can quote a
-command's output, and stack.
+Job logs and results retain 600 characters per failure message. In every lane,
+the diagnostics report's `failures` includes each failed file's messages and
+stacks (16 KiB each, 20 cases), plus its last 400 stdout, stderr and diagnostic
+lines. It retains eight files; `omittedFailureFiles` counts the rest. Messages
+receive failure redaction; lines naming credentials are dropped. This is the
+only test-output artifact path. Tests must not print secrets: runtime-minted
+values without known shapes are not redacted. Each record has a `reason`.
+Timeouts include elapsed time, running tests and the output tail, with dropped
+lines counted by `omittedLines`. Preparation failures use `prepare` and retain
+the redacted message, which may quote command output, and stack.
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 
@@ -150,29 +154,50 @@ for proof boundaries and live gaps.
 
 Each lane runs whole test files. The runner validates Node case results and required names; skips, TODOs, missing results, zero cases, failures and cleanup errors fail the selected lane. The aggregate checks required job and lane results at the same source commit without repeating case validation. Ordinary `pull_request` jobs may save pnpm-store caches within the PR merge-ref scope; protected jobs use the approved event commit and do not promote PR build artifacts.
 
-Prepare infrastructure only on a disposable host or through reviewed CI helpers.
-Each run owns its Compose project, databases, cluster and temp files. CI writes
-private cleanup state under `RUNNER_TEMP` and uploads sanitized results and
-bootstrap diagnostics; hosted-runner state disappears after the job.
-The images-packaging lane attempts to retain sanitized cleanup records for its
-prepared controller and runtime tags, but not the separate runtime-images test tag.
-A planned record does not prove an image exists; export or upload failure or
-runner loss can prevent retention. Missing state or an empty inventory does not
-prove cleanup; a tag name is metadata, not authentication or deletion authority.
-Results include source commit, case outcomes, cleanup status and available image
-digests by role, excluding private registry names and prepared environment values.
-Local failures can retain cleanup state while the host and state path exist. On
-Docker Desktop or similar VM-backed hosts, run one Kubernetes lane at a time when
-measured disk or network pressure has caused instability; the GitHub matrix remains
-parallel. Model/service tests require the approved credentials and spend policy in
-the [implementation specification](../../specs/plans/19-github-actions-test-coverage/index.md).
+Prepare infrastructure on disposable hosts or through reviewed CI helpers.
+Each run owns its Compose project, databases, cluster and temporary files.
+CI keeps private cleanup state under `RUNNER_TEMP`, which disappears after the
+hosted job, and uploads sanitized results and bootstrap diagnostics.
+The images-packaging lane attempts to retain sanitized records for its prepared
+controller/runtime tags, excluding the separate runtime-images test tag. Planned
+records do not prove creation; export, upload or runner failure can prevent
+retention. Missing state and empty inventories do not prove cleanup; tag names
+confer no authentication or deletion authority. Results include source commit,
+case outcomes, cleanup status and available image digests by role, excluding
+private registry names and prepared environment values.
 
-See the [execution flow](../flows/github-actions-testing.md) for entrypoints, result accounting, cleanup and failures. Use the [suite-specific guides](README.md#integration-tests) to reproduce runs locally.
+Local failures can retain cleanup state while that host and path exist. After
+measured disk/network pressure on Docker Desktop or similar VM-backed hosts,
+run Kubernetes lanes individually; the GitHub matrix remains parallel.
+Model/service tests require approved credentials and the
+[spend policy](../../specs/plans/19-github-actions-test-coverage/index.md).
+See the [execution flow](../flows/github-actions-testing.md) for accounting and
+cleanup, [suite guides](README.md#integration-tests) for reproduction, and
+[browser diagnostics](local.md#browser-failure-diagnostics) for failed UI tests.
 
-Failed browser tests upload
-[diagnostics](local.md#browser-failure-diagnostics).
+Retries replace their lane's result artifact; other lanes keep theirs.
+`attempt-<run attempt>-<artifact-prefix>-<lane>` preserves each attempt's results,
+and its job log keeps redacted failed-case messages. The
+`k3d-fixture-configuration` lane logs minute memory summaries and uploads
+`memory-<artifact-prefix>-<lane>-attempt-<run attempt>`; see the
+[execution flow](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result).
+Full-mode reruns require every selected lane and aggregate to pass.
 
-A retry replaces its lane result artifact; other lanes keep theirs. Each attempt's results also remain as `attempt-<run attempt>-<artifact-prefix>-<lane>`, and each failed case's redacted message is in that attempt's job log. The `k3d-fixture-configuration` lane also logs a memory summary about once a minute and uploads its memory samples as `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`; see the [execution flow](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result). Full-mode reruns require every selected lane and aggregate to pass.
+### Cleanup command deadlines
+
+A cleanup timeout fails the lane, retains failed resources in private state,
+and permits subsequent cleanup. Inspect failures and state before retrying on
+the same host.
+
+| Variable                                 | Default                 | Scope                                                                                                      |
+| ---------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS` | `300000` (five minutes) | Each cleanup container-engine or k3d command. Database drops use the smaller of this value and 60 seconds. |
+| `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`      | `5000` (five seconds)   | Maximum grace between TERM and KILL, then for pipe closure. Also used by preparation.                      |
+
+Scope overrides per invocation; invalid values use defaults. Deadlines include
+pipe drain. POSIX groups remain owned through caller cancellation or exit.
+See [termination and ownership](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result).
+Bounded waiting does not prove external resource deletion.
 
 ### Select immutable images for local preparation
 

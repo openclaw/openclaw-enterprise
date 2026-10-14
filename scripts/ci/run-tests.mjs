@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
+import { stopCleanupCommands } from "./cleanup.mjs";
 import {
   failureInputLimit,
   failureSecrets,
@@ -1746,6 +1747,9 @@ function processParents() {
 // Every process this runner started that is still running, with their descendants. The whole
 // tree is listed before any is killed: a killed parent's children move to another parent.
 function killDescendants() {
+  // Stop owned cleanup groups before the snapshot can kill their supervisors
+  // alone. A command's already-orphaned descendants are absent from this tree.
+  stopCleanupCommands();
   const children = new Map();
   for (const [pid, ppid] of processParents()) {
     children.set(ppid, [...(children.get(ppid) ?? []), pid]);

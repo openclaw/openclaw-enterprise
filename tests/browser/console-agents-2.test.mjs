@@ -800,7 +800,10 @@ test("Agent creation accepts a manual model outside the static list and saves th
   const namespace = await fixture.createNamespace("Manual model override", { ready: true });
   const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
   const starter = presets.data.find((preset) => preset.name === "default-codex");
-  const template = structuredClone(starter.template);
+  const template = structuredClone(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/presets/${starter.id}`)).data
+      .template,
+  );
   template.configuration.values.browser = { enabled: false };
   assert.equal(
     (

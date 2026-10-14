@@ -50,6 +50,8 @@ export async function callControl(
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
           if (bytes > 16 * 1024) {
+            // destroy() without an error emits neither "end" nor "error": settle first.
+            fail();
             response.destroy();
             outgoing.destroy();
             return;

@@ -1796,6 +1796,26 @@ test("profiles pass an optional observability URL to Installation startup YAML",
   ]) {
     assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
   }
+  const rewrittenHostChars =
+    /controlPlane\.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./;
+  for (const raw of [
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+    "http://good.example\revil.com/x",
+  ]) {
+    assertObservabilityPreflight(raw, rewrittenHostChars, genericObservabilityUrl);
+  }
+  const queryBackslash = render(
+    "openclaw",
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        observabilityUrl: "https://grafana.example.test/d/operations?var-pattern=\\d+",
+      },
+    }),
+  );
+  assert.equal(queryBackslash.summary.ok, true);
 
   // URL parsing trims C0 controls and spaces and lowercases the scheme, so this is the
   // written address 192.0.2.10. Preflight and the startup parser must both accept it.
@@ -2672,6 +2692,88 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
   const installation = loadYaml(accepted.installation);
   KubernetesComputeDriver.validateConfiguration(installation.drivers.compute.configuration);
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
+});
+
+test("the codex profile carries a Codex model endpoint under Compute startup's rule", () => {
+  const field = "runtime.codexModelBaseUrl";
+  assertFieldRefusals(
+    "openclaw",
+    baseInput(),
+    field,
+    ["https://models.example.com/v1"],
+    "is only consumed by the codex profile",
+  );
+  const accepted = render(
+    "codex",
+    codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
+  );
+  const compute = loadYaml(accepted.installation).drivers.compute.configuration;
+  // Written as Compute normalizes it, and accepted by Compute startup.
+  assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
+  const backslashScheme = render(
+    "codex",
+    codexInput({ runtime: { codexModelBaseUrl: "https:\\\\192.0.2.1/v1" } }),
+  );
+  assert.equal(
+    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
+    "https://192.0.2.1/v1",
+  );
+  KubernetesComputeDriver.validateConfiguration(compute);
+  assert.equal(
+    loadYaml(render("codex", codexInput()).installation).drivers.compute.configuration.runtime
+      .codexModelBaseUrl,
+    undefined,
+  );
+  // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
+  const general =
+    "requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.";
+  for (const [value, message] of [
+    ["", "must be a nonempty string."],
+    [7, "must be a nonempty string."],
+    ["https://models.example.com/v1 ", "must not contain spaces or control characters."],
+    ["https://models.example.com/\tv1", "must not contain spaces or control characters."],
+    [
+      "https:models.example.com/v1",
+      "must start with https:// (the // after the scheme is missing).",
+    ],
+    ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
+    [
+      "https://user:pass@models.example.com/v1",
+      "must not contain user info or an @ before the host.",
+    ],
+    ["http://models.example.com/v1", general],
+    ["https://models.example.com/v2", general],
+    ["https://models.example.com/v1/responses", general],
+    ["https://*.example.com/v1", general],
+    ["https://models.example.com:0/v1", general],
+    ["https://models.example.com/v1?key=1", general],
+    ["https://models.example.com/v1#v1", general],
+    [
+      "https://192.168.1/v1",
+      "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    ],
+    [
+      "https://2130706433/v1",
+      "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    ],
+    [
+      "https://127.1/v1",
+      "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    ],
+    // A spelling refusal comes first, whatever host the parser would read.
+    ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
+  ]) {
+    assertFieldRefusals("codex", codexInput(), field, [value], message);
+    assert.throws(
+      () =>
+        KubernetesComputeDriver.validateConfiguration({
+          ...compute,
+          runtime: { ...compute.runtime, codexModelBaseUrl: value },
+        }),
+      undefined,
+      JSON.stringify(value),
+    );
+  }
 });
 
 test("profile transport Secret prefixes agree with controller startup admission", async (t) => {

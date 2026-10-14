@@ -457,6 +457,42 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
   );
 });
 
+test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
+  let socket;
+  let closed = false;
+  const gateway = createServer();
+  gateway.on("upgrade", (_request, peer) => {
+    socket = peer;
+    peer.resume();
+    peer.once("end", () => peer.end());
+    peer.once("close", () => {
+      closed = true;
+    });
+    // Headers already prove refusal; the peer never finishes its advertised body.
+    peer.write(
+      "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial",
+    );
+  });
+  const port = await listen(gateway);
+  try {
+    const client = new GrpcOpenShellGatewayClient({
+      endpoint: `http://127.0.0.1:${port}`,
+      requestTimeoutMs: 1_000,
+    });
+    assert.equal(
+      await client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000)),
+      false,
+    );
+    // Disposal must happen even though send() clears the completed request's timer.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    assert.equal(closed, true, "a completed refusal must not retain its HTTP socket");
+  } finally {
+    // Complete the base implementation's held response without manufacturing a reset.
+    socket?.end("x".repeat(93));
+    await close(gateway);
+  }
+});
+
 test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async () => {
   const server = createServer();
   const port = await listen(server);

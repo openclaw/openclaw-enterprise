@@ -547,7 +547,10 @@ test("Secret binding admission fails closed for missing selection and backend id
       error instanceof DependencyUnavailableError &&
       error.message === "The Harness Secret backend identity changed.",
   );
-  assert.deepEqual(await controller.listRevisions(administrator, namespace.id, agent.id), []);
+  assert.deepEqual(
+    (await controller.listRevisions(administrator, namespace.id, agent.id)).revisions,
+    [],
+  );
 });
 
 test("bound Secrets block deletion across current Configuration and admitted deployment dependencies", async () => {

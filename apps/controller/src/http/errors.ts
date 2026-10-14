@@ -10,6 +10,7 @@ import {
   ChannelDirectoryError,
   ChannelCredentialError,
   ConfigurationHarnessError,
+  ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
@@ -783,6 +784,10 @@ export function requestFailure(error: unknown): RequestFailure {
     // The message names only the field; other Configuration validation stays generic.
     // The field's path includes a submitted provider name, so it is capped like other
     // messages that name submitted object keys.
+    return failure(400, "INVALID_REQUEST", capped(error.message));
+  }
+  if (error instanceof ConfigurationSizeError) {
+    // The message names the Driver's limit and what to change, never the content.
     return failure(400, "INVALID_REQUEST", capped(error.message));
   }
   if (error instanceof ConfigurationValidationError) {

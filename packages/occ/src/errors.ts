@@ -394,6 +394,32 @@ export function modelProviderMessage(key: string, message: (path: string) => str
   return keyedSettingMessage("models.providers", key, message);
 }
 
+const MEBIBYTE = 1024 * 1024;
+
+const byteSize = (bytes: number): string =>
+  bytes % MEBIBYTE === 0
+    ? `${bytes / MEBIBYTE} MiB`
+    : bytes % 1024 === 0
+      ? `${bytes / 1024} KiB`
+      : `${bytes} bytes`;
+
+/**
+ * Configuration values whose stored JSON reaches the Configuration Driver's size limit. The
+ * message names the limit and never the content, so HTTP returns it.
+ */
+export class ConfigurationSizeError extends Error {
+  readonly limitBytes: number;
+
+  /** `limitBytes` is the first refused size: stored JSON must be smaller. */
+  constructor(limitBytes: number) {
+    super(
+      `Configuration values are too large: stored as JSON they must be smaller than ${byteSize(limitBytes)}. Remove or shorten settings, then save again.`,
+    );
+    this.name = "ConfigurationSizeError";
+    this.limitBytes = limitBytes;
+  }
+}
+
 const inlineCredentialMessage =
   (instead: string) =>
   (path: string): string =>
@@ -433,6 +459,9 @@ const modelProviderSettingMessages = {
   // An http(s) scheme followed by one or no slash, which the URL parser accepts (finding 1285).
   baseUrlSlashes: (path: string): string =>
     `Configuration field ${path} must start with https:// or http:// (the // after the scheme is missing).`,
+  // A host with a numeric or 0x last label, which the URL parser reads as IPv4 (finding 1346).
+  baseUrlNumericHost: (path: string): string =>
+    `Configuration field ${path} must be an absolute http or https URL. A numeric or 0x last label parses as IPv4; use four decimal octets from 0 to 255 without leading zeros.`,
   api: (path: string): string =>
     `Configuration field ${path} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`,
 } as const;

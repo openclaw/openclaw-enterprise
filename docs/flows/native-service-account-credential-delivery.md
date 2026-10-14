@@ -156,11 +156,11 @@ indefinitely; drafts, active revisions, and pending deployments block source del
 One workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
-from the immutable native model Configuration; admission requires all selected
-models and fallbacks to use the same supported provider. Dedicated Codex receives
-the key or account token through a revision-owned DP projection. Both managed
-and directly supplied service account tokens deliver only `CODEX_ACCESS_TOKEN`
-as the model credential; the separate Gateway receives none.
+from the immutable native model Configuration; admission requires every model
+selection, including fallbacks, to use the same supported provider. Dedicated
+Codex receives the key or account token through a revision-owned DP projection.
+Managed and directly supplied service account tokens deliver only
+`CODEX_ACCESS_TOKEN` as the model credential; the separate Gateway receives none.
 Neither gateway-only Configuration secret bindings nor initial runtime
 provisioning, which creates only transport/channel groups, can supply model auth.
 

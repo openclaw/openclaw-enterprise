@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-13
-last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
+updated: 2026-10-14
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Agent Plugin Deployment Flow
@@ -68,41 +68,36 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
-transient PATs, same-Namespace Secrets or CredentialSources, and supported
-credential-free access. OCC checks Namespace Agent `create` and exact source
-`operate` before credential access, and rechecks before calling the Plugin
-Driver. Cross-Namespace references fail with `400 INVALID_REQUEST`; a source the
-Namespace does not hold is `404`. Unsupported discovery reads no credential.
+transient PATs, same-Namespace Secrets/CredentialSources, or credential-free access.
+OCC checks Namespace Agent `create` and source `operate` before credential access
+and again before the Plugin Driver call. Cross-Namespace references return
+`400 INVALID_REQUEST`; missing sources return `404`. Unsupported discovery reads
+no credential.
 
 Existing-Agent discovery requires active Agent `read`/`update`. Hosted discovery
-resolves a bound Secret PAT through
-[`SecretDriver.withValue`](../reference/drivers/secret.md), or asks the selected
-Credential Gateway's `withSourceToken` for a usable access token and account metadata.
-The token service may refresh before returning it; see the
-[credential-source lifecycle](credential-source-lifecycle.md#device-authorization-and-configuration).
-OCC rechecks the binding and caller/Agent source `operate` inside the callback.
-CredentialSource discovery remains available after its login session closes; the
-[CredentialSource flow](credential-source-lifecycle.md) owns that lifecycle.
-Curated discovery needs no credential. Missing, denied, or unavailable sources
-fail before discovery. Nontransactional reads may precede rotation; discovery
-persists neither state nor credentials; provider refresh belongs to the token service.
+uses a bound PAT through [`SecretDriver.withValue`](../reference/drivers/secret.md)
+or Credential Gateway `withSourceToken`, which may refresh before returning an
+access token and account metadata. The callback rechecks binding and
+caller/Agent source `operate`. Stored sources outlive
+[login sessions](credential-source-lifecycle.md#device-authorization-and-configuration).
+Curated discovery needs no credential; missing, denied or unavailable sources
+fail before discovery. Nontransactional reads may precede rotation. Discovery
+persists neither state nor credentials.
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
-hosted identity, searches `q`, and pages GLOBAL entries with opaque cursors.
+identity and searches `q`, paging GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
-preloads page one for Create Agent credentials and saved sources in editable
-Agent Plugins tabs. The picker reuses prefetch; credential changes clear discovery, preserving
-selections. Search marks loading and invalidates old responses before the
-[delay](../reference/drivers/plugin-bundled.md#selection-and-catalogs);
-Enter/paging bypass it. Closing, configured view, credential changes, and view
-cancellation abort requests. Tools (`null`: unknown) load on demand; supported
-entries then become selectable. Unsupported releases remain unavailable.
-Curated catalogs filter bundled entries without verifying tools/account access.
+prefetches Create Agent and editable Agent Plugin catalogs. Credential changes
+clear results, preserving selections. Search invalidates stale responses before
+its [delay](../reference/drivers/plugin-bundled.md#selection-and-catalogs);
+Enter/paging bypass it. Closing, configured view, credential changes and
+cancellation abort requests. Tools (`null`: unknown) load before selection;
+unsupported releases stay unavailable. Curated catalogs do not verify tools or
+account access.
 
-Bounded hosted reads forbid redirects. OCC returns `no-store` metadata, rejects
-credential echoes, and suppresses upstream errors/artifacts. Selections exclude
-Driver links/setup guidance. Connections remain unverified; HTTPS logos omit
-referrers and default to initials.
+Bounded hosted reads forbid redirects. Responses are `no-store`, reject credential
+echoes, and omit upstream errors/artifacts and Driver links/setup guidance.
+Connections remain unverified. HTTPS logos omit referrers and default to initials.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -244,9 +239,14 @@ authentication. Transport loss, timeouts, signals, malformed responses,
 discovery failures, and policy failures retain ordinary startup failure
 behavior. Provider-owned Harnesses keep their existing startup path.
 
-After verification, runtime exposes private startup status. Kubernetes Compute
-validates workload, revision, startup instance, selection keys, and warning
-codes for readiness; restart recomputes status.
+Private startup status drives readiness. Kubernetes caps streaming bodies at
+65,536 bytes; oversized 2xx fails without retry:
+`Runtime status returned oversized data.` It discards oversized error bodies;
+404/503 mean not serving.
+Readiness validates workload, revision, startup instance, selection keys and warning
+codes; restart recomputes status. Docker Codex healthchecks fail immediately on
+interrupted plugin/runtime-status bodies. Plugin status failures retain transport codes;
+interrupted status enrichment preserves the original reason.
 
 Dedicated Codex runs separately and receives runtime-binary reads even without
 plugins. Startup symlinks
@@ -348,6 +348,10 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 12:23: Document runtime-status streaming limits and oversized error responses. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
+
+- 2026-10-14 17:46: Preserve Docker Codex readiness reasons and transport codes when a loopback status response is interrupted. (issue-2403 - 944068b35b5a9bd86a3b1cf7361038a12b3de71a)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 

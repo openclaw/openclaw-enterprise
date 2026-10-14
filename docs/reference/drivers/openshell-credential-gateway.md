@@ -101,10 +101,12 @@ reach the gateway.
 | `oauth2-client-credentials`  | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 | `oauth2-refresh-token`       | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 
-`openai` defaults to `https://api.openai.com/v1`; custom HTTPS Responses endpoints
-may include prefixes such as `/api/v1`. Before effects, `400 INVALID_REQUEST`
-rejects hostname/path wildcards, port `0`, URL credentials/query/fragment, bracketed
-IPv6, braces, and empty hostname labels. Endpoint changes require a new source.
+`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS Responses endpoints
+must end in `/v1`, optionally after a prefix such as `/api`. Before Secret reads
+or persistence, `400 INVALID_REQUEST` rejects hostname/path wildcards, port `0`,
+an `@` before the host, spaces, controls, missing `//`, queries, fragments, and hosts
+that are not exact DNS names. OCC stores a supplied endpoint in normalized form;
+the endpoint is immutable, so register a new source to change it.
 
 Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
 reads or persistence:
@@ -112,15 +114,16 @@ reads or persistence:
 - `host` is an exact lowercase DNS name, not an IP address or wildcard.
 - `port` is 1 to 65535 and defaults to `443`.
 - `path` is an absolute path pattern and defaults to `/**`.
-- `env_var` names the Sandbox variable that holds the placeholder. It is upper
-  case and cannot be `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, or
-  `LANG`, or start with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
-- `token_url` is an absolute `https` URL without credentials, query, or
-  fragment. OpenShell refuses a plain-HTTP token endpoint.
-- `client_id` is 1 to 256 visible characters, and `scope` is space-separated
+- `env_var` is the upper-case Sandbox variable holding the placeholder, not
+  `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, or a name starting
+  with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
+- `token_url` is an `https` URL without credentials, query, or fragment. Its
+  host follows the `host` rule, has a dot, and is not a `localhost` or
+  `localdomain` name. An explicit port must be 1 to 65535.
+- `client_id` is 1 to 256 visible characters; `scope` is space-separated
   OAuth2 scopes.
 
-The workload sends the placeholder itself, for example
+The workload sends the placeholder itself:
 `curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com/v1/items`.
 The proxy substitutes the token only on requests from `toolBinaries` to the
 source's endpoint. Never put a placeholder, or its `openshell:resolve:env:` prefix, into the model conversation:

@@ -718,6 +718,11 @@ select:not([multiple])[size="1"] {
   border-color: var(--danger);
   background: var(--danger);
 }
+/* Superseded by a newer version: neutral, neither success nor failure (finding 1353). */
+.deployment-step-superseded .deployment-step-marker {
+  border-color: var(--muted);
+  background: var(--muted);
+}
 .deployment-outcome {
   font-weight: 600;
 }
@@ -778,6 +783,10 @@ select:not([multiple])[size="1"] {
 .version-item small {
   color: var(--muted);
   font-size: 12px;
+}
+.version-older {
+  color: var(--muted);
+  text-align: center;
 }
 .version-item[aria-current="page"],
 .revision-create[aria-current="page"] {

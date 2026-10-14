@@ -1268,12 +1268,17 @@ test("Agent detail saves plugin changes for the next revision without changing a
   );
   assert.equal(revisions.status, 200);
   assert.equal(revisions.data.length, 2);
+  // The list carries summaries; each revision's plugin snapshot is on its exact read.
+  const pluginSnapshot = async (id) =>
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+      )
+    ).data.plugins?.plugins;
+  assert.deepEqual(await pluginSnapshot(first.revision.id), originalPlugins);
   assert.deepEqual(
-    revisions.data.find(({ id }) => id === first.revision.id)?.plugins?.plugins,
-    originalPlugins,
-  );
-  assert.deepEqual(
-    revisions.data.find(({ id }) => id !== first.revision.id)?.plugins?.plugins,
+    await pluginSnapshot(revisions.data.find(({ id }) => id !== first.revision.id).id),
     editedPlugins,
   );
 
