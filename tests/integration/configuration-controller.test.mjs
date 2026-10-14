@@ -3237,6 +3237,170 @@ test("Configuration and Preset saves refuse a literal credential in an MCP serve
   assert.equal(templated.status, 201, JSON.stringify(templated.body));
 });
 
+test("Configuration and Preset saves refuse a literal key in the other key and header slots the Gateway sends", async (t) => {
+  // Finding 1307: memory search, media understanding, speech and Talk providers, web fetch,
+  // OpenTelemetry export, skills and the cron webhook carry keys the Gateway sends, most marked
+  // sensitive by OpenClaw, but a literal value saved in each and reached the ConfigMap.
+  const root = await mkdtemp(join(tmpdir(), "occ-gateway-key-slots-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-gateway-key-slots");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-gateway-key-${randomUUID()}`;
+  const inline = (field) =>
+    `Configuration field ${field} holds a credential value inline, where a reference is required.`;
+  const key = (field) => `${inline(field)} Make the value a \${NAME} reference or a SecretRef.`;
+  const header = (field) =>
+    `${inline(field)} Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
+  const userinfo = (field) =>
+    `Configuration field ${field} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
+  const refused = [
+    [{ memory: { search: { remote: { apiKey: sentinel } } } }, key("/memory/search/remote/apiKey")],
+    [
+      {
+        agents: {
+          entries: {
+            main: { memory: { search: { remote: { headers: { Authorization: sentinel } } } } },
+          },
+        },
+      },
+      header("/agents/entries/main/memory/search/remote/headers/Authorization"),
+    ],
+    [
+      { memory: { search: { remote: { baseUrl: `https://u:${sentinel}@emb.example.test` } } } },
+      userinfo("/memory/search/remote/baseUrl"),
+    ],
+    [
+      {
+        tools: { media: { models: [{ provider: "openai", headers: { "X-Api-Key": sentinel } }] } },
+      },
+      header("/tools/media/models/0/headers/X-Api-Key"),
+    ],
+    [
+      {
+        tools: {
+          media: {
+            audio: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
+          },
+        },
+      },
+      key("/tools/media/audio/request/auth/token"),
+    ],
+    [
+      {
+        tools: {
+          media: {
+            image: { models: [{ request: { headers: { Authorization: `Bearer ${sentinel}` } } }] },
+          },
+        },
+      },
+      header("/tools/media/image/models/0/request/headers/Authorization"),
+    ],
+    [{ tts: { providers: { openai: { apiKey: sentinel } } } }, key("/tts/providers/openai/apiKey")],
+    [
+      { tts: { personas: { narrator: { providers: { elevenlabs: { apiKey: sentinel } } } } } },
+      key("/tts/personas/narrator/providers/elevenlabs/apiKey"),
+    ],
+    [
+      { agents: { entries: { main: { tts: { providers: { openai: { apiKey: sentinel } } } } } } },
+      key("/agents/entries/main/tts/providers/openai/apiKey"),
+    ],
+    [
+      { talk: { providers: { openai: { apiKey: sentinel } } } },
+      key("/talk/providers/openai/apiKey"),
+    ],
+    [
+      { talk: { realtime: { providers: { openai: { apiKey: 12345 } } } } },
+      key("/talk/realtime/providers/openai/apiKey"),
+    ],
+    [
+      { tools: { web: { fetch: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
+      header("/tools/web/fetch/headers/Authorization"),
+    ],
+    [
+      { diagnostics: { otel: { headers: { "x-api-key": sentinel } } } },
+      header("/diagnostics/otel/headers/x-api-key"),
+    ],
+    [
+      { skills: { entries: { weather: { apiKey: sentinel } } } },
+      key("/skills/entries/weather/apiKey"),
+    ],
+    [{ cron: { webhookToken: sentinel } }, key("/cron/webhookToken")],
+  ];
+  for (const [values, message] of refused) {
+    await t.test(`refuses ${message.split(" ")[2]}`, async () => {
+      for (const [path, body] of [
+        [configurations, { kind: "agent", values }],
+        [presets, { name: "Refused", template: { configuration: { values } } }],
+      ]) {
+        const response = await request(context.app, "POST", path, { body });
+        assert.equal(response.status, 400, `${path}: ${JSON.stringify(response.body)}`);
+        assert.equal(response.body.error.message, message, path);
+        assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+      }
+    });
+  }
+  // Nothing refused was stored.
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+  assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
+
+  // `${NAME}` and SecretRef references, and headers that name no credential, still save.
+  const secretRef = (id) => ({ source: "env", provider: "default", id });
+  const headers = {
+    Authorization: "Bearer ${EMBED_TOKEN}",
+    "X-Api-Key": "${EMBED_KEY}",
+    Accept: "application/json",
+  };
+  const accepted = {
+    memory: {
+      search: {
+        remote: { baseUrl: "https://emb.example.test/v1", apiKey: "${EMBED_KEY}", headers },
+      },
+    },
+    agents: {
+      entries: {
+        main: {
+          memory: { search: { remote: { apiKey: secretRef("EMBED_KEY") } } },
+          tts: { providers: { openai: { apiKey: "${TTS_KEY}" } } },
+        },
+      },
+    },
+    tools: {
+      media: {
+        models: [{ provider: "openai", model: "gpt-5", headers }],
+        audio: { request: { auth: { mode: "authorization-bearer", token: "${MEDIA_TOKEN}" } } },
+        image: { models: [{ request: { headers } }] },
+      },
+      web: { fetch: { headers: { Authorization: "Bearer ${FETCH_TOKEN}", "User-Agent": "oce" } } },
+    },
+    tts: {
+      providers: { openai: { apiKey: secretRef("TTS_KEY"), voice: "alloy" } },
+      personas: { narrator: { providers: { elevenlabs: { apiKey: "${ELEVENLABS_API_KEY}" } } } },
+    },
+    talk: {
+      providers: { openai: { apiKey: "${TALK_KEY}" } },
+      realtime: { providers: { openai: { apiKey: secretRef("TALK_KEY") } } },
+    },
+    diagnostics: { otel: { headers: { "x-api-key": "${OTEL_KEY}", "x-tenant": "oce" } } },
+    skills: { entries: { weather: { apiKey: secretRef("WEATHER_KEY") } } },
+    cron: { webhookToken: "${CRON_WEBHOOK_TOKEN}" },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: { name: "Templated", template: { configuration: { values: accepted } } },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
   // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is

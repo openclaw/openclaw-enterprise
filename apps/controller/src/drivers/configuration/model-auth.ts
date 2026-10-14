@@ -74,8 +74,12 @@ function gitConfigParameters(text: string): [string, string][] {
   });
 }
 
-const mcpHeaderMessage = (path: string): string =>
+// A credential header outside `models.providers` (MCP servers, memory search, media models, web
+// fetch, OpenTelemetry export) and a key outside it: neither is the Agent's model credential.
+const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
+const credentialKeyMessage = (path: string): string =>
+  `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
 
 const urlCostMessage = (path: string): string =>
   `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
@@ -232,7 +236,9 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
  * channel proxies, MCP server URLs, a URL in any environment value of any environment map, Codex's
  * network proxy and speech and Talk provider proxies. MCP server credential headers hold references
- * too (writes only).
+ * too, and so do the other key and header slots the Gateway sends: memory search, media
+ * understanding requests, speech and Talk provider keys, web fetch and OpenTelemetry headers, skill
+ * keys and the cron webhook token (writes only).
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -362,6 +368,54 @@ export function validateModelCredentialReferences(
     }
   };
 
+  // Each credential header in the headers object at `headersPath` must hold a reference.
+  const refuseCredentialHeaders = (
+    headersPath: SettingPath,
+    headers: unknown,
+    message?: (path: string) => string,
+  ): void => {
+    for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
+      const credential = credentialHeader(headersPath, name);
+      if (credential) {
+        validateReference(value, pointer(...headersPath, name), credential.authorization, message);
+      }
+    }
+  };
+  // The credential slots of a provider request OpenClaw sends: a model provider's and each of its
+  // models', and a media understanding entry's (`tools.media`), which share the request shape.
+  // Outside `models.providers` the refusals name no model credential (`headerMessage`,
+  // `keyMessage`).
+  const refuseRequestCredentials = (
+    path: SettingPath,
+    row: Record<string, unknown> | undefined,
+    headerMessage?: (path: string) => string,
+    keyMessage?: (path: string) => string,
+  ): void => {
+    const request = asRecord(row?.request);
+    refuseCredentialHeaders([...path, "headers"], row?.headers, headerMessage);
+    refuseCredentialHeaders([...path, "request", "headers"], request?.headers, headerMessage);
+    // OpenClaw's request.auth credential slots: the authorization-bearer token and the header
+    // mode's value.
+    const auth = asRecord(request?.auth);
+    validateReference(auth?.token, pointer(...path, "request", "auth", "token"), false, keyMessage);
+    validateReference(auth?.value, pointer(...path, "request", "auth", "value"), false, keyMessage);
+    // The client certificate, key and passphrase for the endpoint and for its proxy.
+    const proxy = asRecord(request?.proxy);
+    for (const [tlsPath, tls] of [
+      [[...path, "request", "tls"], asRecord(request?.tls)],
+      [[...path, "request", "proxy", "tls"], asRecord(proxy?.tls)],
+    ] as const) {
+      for (const field of ["cert", "key", "passphrase"]) {
+        validateReference(tls?.[field], pointer(...tlsPath, field), false, keyMessage);
+      }
+    }
+    // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and so
+    // is an endpoint's (fetch refuses a URL that holds one), even where a variable or an
+    // environment reference fills its host or port (finding 1250).
+    refuseUrlUserinfo([...path, "baseUrl"], row?.baseUrl);
+    refuseUrlUserinfo([...path, "request", "proxy", "url"], proxy?.url);
+  };
+
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
     const config = asRecord(provider);
@@ -390,38 +444,7 @@ export function validateModelCredentialReferences(
       ),
     ];
     for (const [path, row] of rows) {
-      const request = asRecord(row?.request);
-      for (const [headersPath, headers] of [
-        [[...path, "headers"], row?.headers],
-        [[...path, "request", "headers"], request?.headers],
-      ] as const) {
-        for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
-          const credential = credentialHeader(headersPath, name);
-          if (credential) {
-            validateReference(value, pointer(...headersPath, name), credential.authorization);
-          }
-        }
-      }
-      // OpenClaw's request.auth credential slots: the authorization-bearer token and the
-      // header mode's value.
-      const auth = asRecord(request?.auth);
-      validateReference(auth?.token, pointer(...path, "request", "auth", "token"));
-      validateReference(auth?.value, pointer(...path, "request", "auth", "value"));
-      // The client certificate, key and passphrase for the model endpoint and for its proxy.
-      const proxy = asRecord(request?.proxy);
-      for (const [tlsPath, tls] of [
-        [[...path, "request", "tls"], asRecord(request?.tls)],
-        [[...path, "request", "proxy", "tls"], asRecord(proxy?.tls)],
-      ] as const) {
-        for (const field of ["cert", "key", "passphrase"]) {
-          validateReference(tls?.[field], pointer(...tlsPath, field));
-        }
-      }
-      // A proxy URL with userinfo is a credential (undici sends it as Proxy-Authorization), and
-      // so is a model endpoint's (fetch refuses a URL that holds one), even where a variable
-      // or an environment reference fills its host or port (finding 1250).
-      refuseUrlUserinfo([...path, "baseUrl"], row?.baseUrl);
-      refuseUrlUserinfo([...path, "request", "proxy", "url"], proxy?.url);
+      refuseRequestCredentials(path, row);
     }
   }
   const env = asRecord(values.env);
@@ -457,18 +480,11 @@ export function validateModelCredentialReferences(
         refuseUrlUserinfo([...at, "servers", server, "url"], asRecord(settings)?.url);
         // An MCP server's credential headers hold references, as a model provider's do (finding
         // 1278): OpenClaw marks these headers sensitive.
-        const headersPath = [...at, "servers", server, "headers"];
-        for (const [name, value] of Object.entries(asRecord(asRecord(settings)?.headers) ?? {})) {
-          const credential = credentialHeader(headersPath, name);
-          if (credential) {
-            validateReference(
-              value,
-              pointer(...headersPath, name),
-              credential.authorization,
-              mcpHeaderMessage,
-            );
-          }
-        }
+        refuseCredentialHeaders(
+          [...at, "servers", server, "headers"],
+          asRecord(settings)?.headers,
+          credentialHeaderMessage,
+        );
         environments.push([[...at, "servers", server, "env"], asRecord(asRecord(settings)?.env)]);
       }
     }
@@ -523,8 +539,67 @@ export function validateModelCredentialReferences(
     for (const [path, block] of providerBlocks) {
       for (const [provider, settings] of Object.entries(at(block, ["providers"]) ?? {})) {
         refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
+        // The speech or Talk provider's key, which OpenClaw marks sensitive (finding 1307).
+        validateReference(
+          asRecord(settings)?.apiKey,
+          pointer(...path, "providers", provider, "apiKey"),
+          false,
+          credentialKeyMessage,
+        );
       }
     }
+    // The other key and header slots OpenClaw sends a provider (finding 1307): the memory search
+    // embedding endpoint's (the Gateway's and each Agent's), every media understanding entry's
+    // request (`tools.media.models`, each capability's defaults and the older per-capability
+    // `models` lists), web fetch and OpenTelemetry export headers, a skill's key and the cron
+    // webhook's bearer token. These hold references, as a model provider's do.
+    const searches: [SettingPath, unknown][] = [
+      [["memory", "search"], get(values, ["memory", "search"])],
+      ...keyed(["agents", "entries"], ["memory", "search"]),
+    ];
+    for (const [path, search] of searches) {
+      const remote = at(search, ["remote"]);
+      validateReference(
+        remote?.apiKey,
+        pointer(...path, "remote", "apiKey"),
+        false,
+        credentialKeyMessage,
+      );
+      refuseCredentialHeaders(
+        [...path, "remote", "headers"],
+        remote?.headers,
+        credentialHeaderMessage,
+      );
+      refuseUrlUserinfo([...path, "remote", "baseUrl"], remote?.baseUrl);
+    }
+    const entries = (path: SettingPath, list: unknown): [SettingPath, unknown][] =>
+      Array.isArray(list) ? list.map((row, index) => [[...path, index], row]) : [];
+    const media = ["tools", "media"];
+    const mediaRequests: [SettingPath, unknown][] = [
+      ...entries([...media, "models"], get(values, [...media, "models"])),
+      ...["image", "audio", "video"].flatMap((capability): [SettingPath, unknown][] => [
+        [[...media, capability], get(values, [...media, capability])],
+        ...entries([...media, capability, "models"], get(values, [...media, capability, "models"])),
+      ]),
+    ];
+    for (const [path, row] of mediaRequests) {
+      refuseRequestCredentials(path, asRecord(row), credentialHeaderMessage, credentialKeyMessage);
+    }
+    for (const path of [
+      ["tools", "web", "fetch", "headers"],
+      ["diagnostics", "otel", "headers"],
+    ]) {
+      refuseCredentialHeaders(path, get(values, path), credentialHeaderMessage);
+    }
+    for (const [path, apiKey] of keyed(["skills", "entries"], ["apiKey"])) {
+      validateReference(apiKey, pointer(...path), false, credentialKeyMessage);
+    }
+    validateReference(
+      get(values, ["cron", "webhookToken"]),
+      pointer("cron", "webhookToken"),
+      false,
+      credentialKeyMessage,
+    );
     // Every other environment map OpenClaw starts a process with (findings 1260, 1261): a
     // skill's, an internal hook's, a provider's local service, an exec secret provider's, the
     // Docker sandbox's (default and per Agent) and the install policy's exec check.

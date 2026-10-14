@@ -485,6 +485,12 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
         },
       },
     },
+    // The other key and header slots the Gateway sends (finding 1307), refused since the
+    // 2026-10-14 notice.
+    { memory: { search: { remote: { apiKey: sentinel } } } },
+    { tools: { media: { models: [{ headers: { Authorization: `Bearer ${sentinel}` } }] } } },
+    { tts: { providers: { openai: { apiKey: sentinel } } } },
+    { talk: { providers: { openai: { apiKey: sentinel } } } },
   ];
   for (const values of [...refusedWhenStored, ...refusedOnWrite]) {
     const unsafe = { ...configuration, values };
