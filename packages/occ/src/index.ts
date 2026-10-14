@@ -3480,9 +3480,9 @@ export class OpenClawController {
     }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
     // Read checks stay per revision. The cursor names only a revision found readable when
-    // checked. The scan reads the store in batches of at least 100, whatever the page size,
-    // so a small page over many unreadable revisions costs few queries. A full page looks
-    // ahead for one more revision found readable when checked before it emits a cursor.
+    // checked. The scan reads the store in batches of at least 100, reducing queries for
+    // small pages, but it may still scan all older revisions. A full page looks ahead for
+    // one more revision found readable when checked before it emits a cursor.
     // Access can change before the next request, so that page may be empty. A batch one
     // larger than the page lets a fully readable page find the next revision in one query.
     const batch = Math.max(page.limit + 1, 100);
