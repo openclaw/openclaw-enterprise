@@ -42,7 +42,8 @@ function isModelReference(selected: unknown): selected is string {
 }
 
 // OpenClaw's `openrouter:auto` or `openrouter:free`, which `splitModelRef` reads as the openrouter
-// provider's, though it has no slash.
+// provider's, though it has no slash. A reference with a slash is isModelReference's to judge:
+// `splitModelRef` gives `codex/` an id too.
 function isOpenRouterSelector(selected: unknown): selected is string {
   return (
     isNonEmptyString(selected) &&
@@ -65,9 +66,11 @@ function requirePrimaryProvider(models: readonly string[], setting: SelectionMes
  * The fallback rule of resolveConfiguredHarnessId alone, over every well-formed selection. Every
  * deployment refuses a fallback on another provider, so Configuration save (through
  * requireDeployableRoster), Preset save and Agent save refuse it too, even where another model
- * policy rule leaves the rest to deployment (finding 1298). On a Preset save
+ * policy rule leaves the rest to deployment (finding 1298). OpenClaw's `openrouter:auto` and
+ * `openrouter:free` count as openrouter references (finding 1320). On a Preset save
  * (`options.unresolved`), a reference whose provider waits on an unfilled variable (no `/` before
- * the first one) is checked once filled, on the Configuration a launch creates (finding 1305).
+ * the first one, as in `openrouter:{{ vars.kind }}`) is checked once filled, on the Configuration
+ * a launch creates (finding 1305).
  */
 export function requireFallbackProviders(
   values: Readonly<OpenClawConfigurationDocument>,

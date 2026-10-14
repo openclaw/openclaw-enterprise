@@ -651,8 +651,6 @@ export function validateModelCredentialReferences(
         asRecord(asRecord(settings)?.env),
       ]);
     }
-    // TTS blocks: the Gateway's, each Agent's, Discord voice's (and its accounts'), voice-call's
-    // and its numbers'. Each holds `providers` and personas that hold them too.
     // The entries of the keyed map at `path`, listed once: several rules below read each Agent in
     // agents.entries, and a large roster must not be listed for each (finding 1321).
     const listed = new Map<string, [string, unknown][]>();
@@ -677,6 +675,8 @@ export function validateModelCredentialReferences(
       }
       return found;
     };
+    // TTS blocks: the Gateway's, each Agent's, Discord voice's (and its accounts'), voice-call's
+    // and its numbers'. Each holds `providers` and personas that hold them too.
     const voiceCall = ["plugins", "entries", "voice-call", "config"];
     const discord = ["channels", "discord"];
     const tts: [SettingPath, unknown][] = [

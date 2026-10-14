@@ -325,7 +325,8 @@ function modelSelections(
       );
     }
   };
-  // The model settings of agents.defaults or one agents.entries entry, `scope`.
+  // The model settings of agents.defaults or one agents.entries entry, `scope`. A key read here
+  // belongs in SCOPE_MODEL_KEYS, or an entry that holds only it is skipped.
   const addScope = (path: string, at: SettingLocation, scope: Record<string, unknown>): void => {
     for (const keys of AGENT_MODEL_SETTINGS) {
       addAt(path, at, scope, keys);
