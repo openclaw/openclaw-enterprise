@@ -26,8 +26,12 @@ const ACCEPTED_POLICIES = 'must be "never", "on-request" or "on-failure"';
  * exponentially on many adjacent variables.
  */
 export function canSpell(literals: readonly string[], value: string): boolean {
+  // No variable: the text must be the value itself.
+  if (literals.length < 2) {
+    return literals.length === 1 && value === literals[0];
+  }
   const first = literals[0] ?? "";
-  const last = literals.length > 1 ? (literals[literals.length - 1] ?? "") : "";
+  const last = literals[literals.length - 1] ?? "";
   if (!value.startsWith(first)) {
     return false;
   }

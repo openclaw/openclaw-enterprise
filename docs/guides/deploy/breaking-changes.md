@@ -21,9 +21,10 @@ and deployment refuse a model selection off the primary model's provider:
 fallbacks, Agent entries, `subagents.model` and the other `*Model` settings,
 `models` policy keys, `modelPolicy.allow`, hook models,
 `channels.modelByChannel`, and an `apiKey` on another `models.providers`
-entry. Dedicated Codex refuses every `apiKey`, `mediaModels` and `voiceModel`,
-and unqualified policy entries. Every Compute refuses another-provider
-fallbacks at save. A Preset variable's provider is checked at launch; a number
+entry (`openrouter:auto` and `openrouter:free` count as `openrouter`).
+Dedicated Codex refuses every `apiKey`, `mediaModels` and `voiceModel`, and
+unqualified policy entries. Every Compute refuses another-provider fallbacks at
+save. A Preset variable's provider is checked at launch; a number
 or boolean model variable is refused. Preset saves also check `agents` rosters.
 Every Compute also refuses a literal key in `memory.search.remote` (also per
 Agent), `tools.media` requests, speech and Talk provider `apiKey`s, web fetch,
@@ -34,8 +35,7 @@ marks sensitive: Gateway, hooks, sandbox SSH and storage secrets, and channel
 and plugin settings such as `botToken` or `webSearch.apiKey`
 ([list](../../reference/configuration/secrets.md#secret-boundaries)). Preset
 saves also refuse a literal `gateway.auth.password` or invalid `approvalPolicy`;
-provisioning checks `agents` rosters; `openrouter:auto` and `openrouter:free`
-name `openrouter`.
+provisioning checks `agents` rosters.
 
 **Who is affected.** Configurations and Presets that select a second provider
 or give it an `apiKey`, set an `apiKey`, media or voice model for Dedicated
