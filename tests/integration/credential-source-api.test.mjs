@@ -505,6 +505,96 @@ test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", asyn
     false,
   );
   assert.deepEqual(f.mutations, []);
+  // A source stored before the host rules, with its provider, cannot be attached to a new
+  // revision or have its value updated, and its profile is not written; a stored DNS host still
+  // attaches (finding 1363).
+  const workspace = openShellWorkspaceName(f.namespace);
+  const seed = (type, secretField, host, extra = {}) => {
+    const stored = {
+      id: "cs_" + randomUUID(),
+      namespaceId: f.namespace.id,
+      name: "stored-host",
+      type,
+      config: { ...(type === "bearer-token" ? { env_var: "TOOL_TOKEN" } : oauth), host, ...extra },
+      secrets: { [secretField]: secret.ref },
+      driverId: f.driver.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const name = openShellProviderName(stored.id);
+    f.providers.set(workspace + "/" + name, {
+      workspace,
+      name,
+      type: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/credential-source-id": stored.id,
+        "openclaw.dev/namespace-id": f.namespace.id,
+      },
+      credentials: {},
+    });
+    return { stored, name };
+  };
+  const attach = (stored) =>
+    f.driver.attachForRevision({
+      namespace: f.namespace,
+      sources: [stored],
+      revision: { harness: { id: "codex", mode: "dedicated" } },
+      signal: AbortSignal.timeout(5000),
+    });
+  const refusal = (type, host) => (error) => {
+    assert.equal(error.name, "ScopeViolationError", host);
+    assert.equal(error.message, `The ${type} host must be an exact DNS name.`, host);
+    return true;
+  };
+  f.mutations.length = 0;
+  for (const [type, secretField] of [
+    ["bearer-token", "token"],
+    ["oauth2-client-credentials", "client_secret"],
+    ["oauth2-refresh-token", "refresh_token"],
+  ]) {
+    for (const host of [
+      "0xa000005",
+      "0x7f.0x1",
+      "example.123",
+      "example.123.",
+      "example.0x",
+      "10.0.0.5",
+      "169.254.169.254",
+    ]) {
+      await assert.rejects(attach(seed(type, secretField, host).stored), refusal(type, host));
+    }
+    if (type === "bearer-token") {
+      // Rotating the value of such a source fails the same way; deleting it still works.
+      const { stored } = seed(type, secretField, "0x7f.0x1");
+      await assert.rejects(
+        f.driver.updateSource(
+          { namespace: f.namespace, source: stored, signal: AbortSignal.timeout(5000) },
+          { type, config: stored.config, secrets: { token: "synthetic-replacement" } },
+        ),
+        refusal(type, "update"),
+      );
+    } else {
+      // As at save, the host is checked before token_url.
+      const { stored } = seed(type, secretField, "0x7f.0x1", {
+        token_url: "https://169.254.169.254/token",
+      });
+      await assert.rejects(attach(stored), refusal(type, "with token_url"));
+    }
+    assert.equal(f.profiles.size, 0, type);
+    assert.deepEqual(f.mutations, [], type);
+    for (const host of ["api.example.com", "0xdead.example.com", "123.example.com"]) {
+      const { stored, name } = seed(type, secretField, host);
+      assert.deepEqual(await attach(stored), [{ sourceId: stored.id, ref: name }], host);
+      assert.deepEqual(
+        f.profiles.get(workspace + "/" + name).endpoints.map((endpoint) => endpoint.host),
+        [host],
+        host,
+      );
+    }
+    f.profiles.clear();
+    f.mutations.length = 0;
+  }
 });
 
 test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or localhost names", async (t) => {

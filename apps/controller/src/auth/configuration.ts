@@ -76,3 +76,35 @@ export function validHttpBaseURL(value: string): boolean {
     return false;
   }
 }
+
+const DEVELOPMENT_LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+// The development browser origin rule in docs/reference/settings/development.md. server.mjs
+// refuses a development OCC_AUTH_BASE_URL that breaks it before startup does any other work, and
+// createFastifyApp applies it again to the development browser origin it admits.
+export const DEVELOPMENT_BROWSER_ORIGIN_RULE =
+  "loopback HTTP(S) (localhost, 127.0.0.1 or [::1]) or an HTTPS localhost subdomain, written as an origin with no path, query, fragment or user info";
+
+export function isDevelopmentBrowserOrigin(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  // URL.origin drops user info, a path (even "/"), a query, a fragment and a default port, so an
+  // exact match admits only a value already written as an origin.
+  if (parsed.origin !== value || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    return false;
+  }
+  if (DEVELOPMENT_LOOPBACK_HOSTNAMES.has(parsed.hostname)) {
+    return true;
+  }
+  const labels = parsed.hostname.split(".");
+  return (
+    parsed.protocol === "https:" &&
+    labels.length > 1 &&
+    labels.at(-1) === "localhost" &&
+    labels.every((label) => label.length > 0)
+  );
+}
