@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.mjs";
 import {
-  GATEWAY_READINESS_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -16,6 +16,7 @@ import {
   commandOutput,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
+  failureTail,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
@@ -24,125 +25,143 @@ import {
 // during a peer status outage or a replacement peer changes. Split from
 // runtime-image-startup.test.mjs by measured case durations.
 
-test(
-  "runtime image Gateway respawns OpenClaw in place when its Harness peer changes",
-  imageTestOptions,
-  async (t) => {
-    // A dedicated Codex Gateway with a plugin selection follows its Harness
-    // peer status and holds a workspace node binding, as after a first deploy.
-    const workspaceNodeId = randomBytes(32).toString("hex");
-    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const configurationPath = join(directory, "openclaw.json");
-    await writeFile(
-      configurationPath,
-      JSON.stringify(createAdmittedRuntimeImageConfiguration("codex")),
-    );
-    const bindingPath = join(directory, "workspace-node.json");
-    await writeFile(
-      bindingPath,
-      JSON.stringify({ revisionId: "revision-peer-respawn", deviceId: workspaceNodeId }),
-    );
-    const manifest = {
-      kind: "codex",
-      selections: {
-        "codex-plugin:linear@openai-curated-remote": {
-          enabled: true,
-          toolDefaults: { approval: "provider_default" },
-        },
-      },
-    };
-    const { containerName } = await runGatewaySmoke(t, "codex", {
-      configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      volumes: [
-        `${configurationPath}:/etc/openclaw/openclaw.json:ro`,
-        `${bindingPath}:/etc/openclaw-workspace-node/workspace-node.json:ro`,
-      ],
-      extraEnvironment: [
-        // This isolated fixture uses synthetic credentials; retain startup causes.
-        "OPENCLAW_DEBUG=1",
-        "APP_SERVER_URL=ws://[::1]:4500",
-        `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
-        "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
-        "OPENCLAW_PLUGIN_STATUS_PORT=18791",
-        "OPENCLAW_RUNTIME_STATUS_PORT=18791",
-        "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
-        "OPENCLAW_WORKSPACE_NODE_PATH=/etc/openclaw-workspace-node/workspace-node.json",
-        "OPENCLAW_AGENT_REVISION_ID=revision-peer-respawn",
-        "OPENCLAW_POD_UID=pod-peer-respawn",
-        "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
-      ],
-      // The wrapper waits for the Harness status, which the fixture serves.
-      waitUntilReady: false,
-    });
-    const fixture = await readFile(
-      new URL("../fixtures/runtime-gateway-peer-respawn.mjs", import.meta.url),
-      "utf8",
-    );
-    let stdout;
-    try {
-      ({ stdout } = await runDocker(
-        [
-          "exec",
-          "-e",
-          `OCC_TEST_WORKSPACE_NODE_ID=${workspaceNodeId}`,
-          "-e",
-          `OCC_TEST_GATEWAY_READINESS=${GATEWAY_READINESS_ENTRYPOINT}`,
-          "-e",
-          `OCC_TEST_TOKEN_DOMAIN=${PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN}`,
-          containerName,
-          "node",
-          "--input-type=module",
-          "-e",
-          fixture,
-        ],
-        { timeout: 780_000 * imageSmokeTimeoutMultiplier },
-      ));
-    } catch (error) {
-      const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-      // CI truncates error messages; preserve complete container logs separately.
-      t.diagnostic(commandOutput(logs));
-      const runtimeErrors = jsonLogEntries(commandOutput(logs))
-        .filter((entry) => entry.level === "error")
-        .map((entry) => entry.message)
-        .join("\n");
-      throw new Error(
-        `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${runtimeErrors || commandOutput(error).trim() || "no fixture output"}`,
-        { cause: error },
+for (const writableConfig of [false, true]) {
+  test(
+    writableConfig
+      ? "runtime image Gateway preserves native edits while recovering a peer with writable configuration"
+      : "runtime image Gateway respawns OpenClaw in place when its Harness peer changes",
+    imageTestOptions,
+    async (t) => {
+      // A dedicated Codex Gateway with a plugin selection follows its Harness
+      // peer status and holds a workspace node binding, as after a first deploy.
+      const workspaceNodeId = randomBytes(32).toString("hex");
+      const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const configurationPath = join(directory, "openclaw.json");
+      await writeFile(
+        configurationPath,
+        JSON.stringify(createAdmittedRuntimeImageConfiguration("codex")),
       );
-    }
-    const result = JSON.parse(stdout.trim().split("\n").at(-1));
-    assert.ok(result.samePeerOutageResponses >= 2);
-    assert.ok(result.samePeerUnreadySamples >= 2);
-    assert.ok(result.samePeerRecoveryResponses >= 1);
-    assert.notDeepEqual(result.after, result.before);
-    // The container, and the wrapper that is its main process, never restarted.
-    const inspect = await runDocker([
-      "inspect",
-      containerName,
-      "--format",
-      "{{.State.Running}} {{.RestartCount}}",
-    ]);
-    assert.equal(inspect.stdout.trim(), "true 0");
-    const logs = await runDocker(["logs", containerName]);
-    const entries = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
-    const phases = entries
-      .filter((entry) => entry.event === "runtime.startup_phase")
-      .map((entry) => `${entry.phase}:${entry.outcome}`);
-    assert.equal(phases.filter((phase) => phase === "native-spawn:ok").length, 1);
-    assert.equal(phases.filter((phase) => phase === "runtime-assets:ok").length, 1);
-    assert.ok(phases.includes("peer-status-changed:ok"), phases.join(", "));
-    const respawn = entries.find(
-      (entry) => entry.event === "runtime.startup_phase" && entry.phase === "gateway-respawn",
-    );
-    assert.equal(respawn?.outcome, "ok", phases.join(", "));
-    const timeline = entries
-      .filter((entry) => entry.event === "runtime.startup_phase")
-      .map((entry) => `${entry.phase} ${entry.ms}/${entry.sinceStartMs} ms`);
-    t.diagnostic(`in-place Gateway respawn took ${respawn.ms} ms: ${JSON.stringify(result)}`);
-    t.diagnostic(`wrapper phases (duration/since start): ${timeline.join(", ")}`);
-  },
+      const bindingPath = join(directory, "workspace-node.json");
+      await writeFile(
+        bindingPath,
+        JSON.stringify({ revisionId: "revision-peer-respawn", deviceId: workspaceNodeId }),
+      );
+      const manifest = {
+        kind: "codex",
+        selections: {
+          "codex-plugin:linear@openai-curated-remote": {
+            enabled: true,
+            toolDefaults: { approval: "provider_default" },
+          },
+        },
+      };
+      const managedPath = writableConfig
+        ? "/etc/openclaw-managed/openclaw.json"
+        : "/etc/openclaw/openclaw.json";
+      // Mirror the native-admin producer's Pod-local init copy without changing
+      // the wrapper: its initial source then aliases its generated write target.
+      const initializeWritableConfig = writableConfig
+        ? `require("node:fs").mkdirSync("/home/node/.openclaw", { recursive: true });\n` +
+          `require("node:fs").copyFileSync(${JSON.stringify(managedPath)}, "/home/node/.openclaw/openclaw.json");\n`
+        : "";
+      const { containerName } = await runGatewaySmoke(t, "codex", {
+        configurationPath: writableConfig ? "/home/node/.openclaw/openclaw.json" : managedPath,
+        entrypoint: initializeWritableConfig + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        volumes: [
+          `${configurationPath}:${managedPath}:ro`,
+          `${bindingPath}:/etc/openclaw-workspace-node/workspace-node.json:ro`,
+        ],
+        extraEnvironment: [
+          // This isolated fixture uses synthetic credentials; retain startup causes.
+          "OPENCLAW_DEBUG=1",
+          "APP_SERVER_URL=ws://[::1]:4500",
+          `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
+          "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
+          "OPENCLAW_PLUGIN_STATUS_PORT=18791",
+          "OPENCLAW_RUNTIME_STATUS_PORT=18791",
+          "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
+          "OPENCLAW_WORKSPACE_NODE_PATH=/etc/openclaw-workspace-node/workspace-node.json",
+          "OPENCLAW_AGENT_REVISION_ID=revision-peer-respawn",
+          "OPENCLAW_POD_UID=pod-peer-respawn",
+          "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
+        ],
+        // The wrapper waits for the Harness status, which the fixture serves.
+        waitUntilReady: false,
+      });
+      const fixture = await readFile(
+        new URL("../fixtures/runtime-gateway-peer-respawn.mjs", import.meta.url),
+        "utf8",
+      );
+      let stdout;
+      try {
+        ({ stdout } = await runDocker(
+          [
+            "exec",
+            ...(writableConfig ? ["-e", "OCC_TEST_WRITABLE_INITIAL_CONFIG=true"] : []),
+            "-e",
+            `OCC_TEST_WORKSPACE_NODE_ID=${workspaceNodeId}`,
+            "-e",
+            `OCC_TEST_TOKEN_DOMAIN=${PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN}`,
+            containerName,
+            "node",
+            "--input-type=module",
+            "-e",
+            fixture,
+          ],
+          { timeout: 780_000 * imageSmokeTimeoutMultiplier },
+        ));
+      } catch (error) {
+        const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
+        // CI truncates error messages; preserve complete container logs separately.
+        t.diagnostic(commandOutput(logs));
+        const runtimeErrors = jsonLogEntries(commandOutput(logs))
+          .filter((entry) => entry.level === "error")
+          .map((entry) => entry.message)
+          .join("\n");
+        throw new Error(
+          `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${failureTail(runtimeErrors || commandOutput(error).trim() || "no fixture output")}`,
+          { cause: error },
+        );
+      }
+      const result = JSON.parse(stdout.trim().split("\n").at(-1));
+      assert.ok(result.samePeerOutageResponses >= 2);
+      assert.ok(result.samePeerUnreadySamples >= 2);
+      assert.ok(result.samePeerRecoveryResponses >= 1);
+      assert.notDeepEqual(result.after, result.before);
+      // The container, and the wrapper that is its main process, never restarted.
+      const inspect = await runDocker([
+        "inspect",
+        containerName,
+        "--format",
+        "{{.State.Running}} {{.RestartCount}}",
+      ]);
+      assert.equal(inspect.stdout.trim(), "true 0");
+      const logs = await runDocker(["logs", containerName]);
+      const entries = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
+      const phases = entries
+        .filter((entry) => entry.event === "runtime.startup_phase")
+        .map((entry) => `${entry.phase}:${entry.outcome}`);
+      assert.equal(phases.filter((phase) => phase === "native-spawn:ok").length, 1);
+      assert.equal(phases.filter((phase) => phase === "runtime-assets:ok").length, 1);
+      assert.ok(phases.includes("peer-status-changed:ok"), phases.join(", "));
+      const respawn = entries.find(
+        (entry) => entry.event === "runtime.startup_phase" && entry.phase === "gateway-respawn",
+      );
+      assert.equal(respawn?.outcome, "ok", phases.join(", "));
+      const timeline = entries
+        .filter((entry) => entry.event === "runtime.startup_phase")
+        .map((entry) => `${entry.phase} ${entry.ms}/${entry.sinceStartMs} ms`);
+      t.diagnostic(`in-place Gateway respawn took ${respawn.ms} ms: ${JSON.stringify(result)}`);
+      t.diagnostic(`wrapper phases (duration/since start): ${timeline.join(", ")}`);
+    },
+  );
+}
+
+test(
+  "runtime image Gateway preserves writable peer recovery across container restarts",
+  imageTestOptions,
+  runWritableGatewayRestart,
 );
 
 async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) {
@@ -175,7 +194,7 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
       "OPENCLAW_POD_UID=pod-peer-respawn",
       "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
       // The stale-replacement fixture answers its verification read only after
-      // checking the replacement (a readiness command and two local reads), so
+      // checking the replacement (an HTTP readiness request and two local reads), so
       // the wrapper's peer read must outlast that work on a slow runner.
       `OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS=${30_000 * imageSmokeTimeoutMultiplier}`,
     ],
@@ -193,8 +212,6 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
         "-e",
         `OCC_TEST_GATEWAY_SCENARIO=${scenario}`,
         "-e",
-        `OCC_TEST_GATEWAY_READINESS=${GATEWAY_READINESS_ENTRYPOINT}`,
-        "-e",
         `OCC_TEST_TOKEN_DOMAIN=${PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN}`,
         containerName,
         "node",
@@ -211,7 +228,7 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
   if (!(failure.stdout ?? "").includes(`"phase":"${expectedPhase}"`)) {
     const logs = await runDocker(["logs", containerName]).catch((error) => error);
     assert.fail(
-      `Expected ${expectedPhase} was not observed.\n${commandOutput(failure)}\n${commandOutput(logs)}`,
+      `Expected ${expectedPhase} was not observed.\n${failureTail(commandOutput(failure), 4096)}\n${failureTail(commandOutput(logs), 8192)}`,
     );
   }
   // The fixture fails on its own only when the wrapper outlives its deadline;
@@ -226,7 +243,9 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
     timeout: 30_000 * imageSmokeTimeoutMultiplier,
   }).catch(async (error) => {
     const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-    assert.fail(`The Gateway container did not exit.\n${error.message}\n${commandOutput(logs)}`);
+    assert.fail(
+      `The Gateway container did not exit.\n${error.message}\n${failureTail(commandOutput(logs))}`,
+    );
   });
   assert.equal(exited.stdout.trim(), "1");
   const inspect = await runDocker(["inspect", containerName, "--format", "{{json .State}}"]);

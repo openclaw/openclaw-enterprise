@@ -168,6 +168,11 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 
 	var installation struct {
 		Drivers struct {
+			CredentialGateway struct {
+				Configuration struct {
+					Binaries []string `yaml:"binaries"`
+				} `yaml:"configuration"`
+			} `yaml:"credential_gateway"`
 			Sandbox struct {
 				Configuration struct {
 					StartupDelayMs int `yaml:"startupDelayMs"`
@@ -182,11 +187,6 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 					} `yaml:"gateway"`
 				} `yaml:"configuration"`
 			} `yaml:"sandbox"`
-			CredentialGateway struct {
-				Configuration struct {
-					Binaries []string `yaml:"binaries"`
-				} `yaml:"configuration"`
-			} `yaml:"credential_gateway"`
 			Compute struct {
 				Configuration struct {
 					Network struct {
@@ -201,17 +201,16 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	if err := yaml.Unmarshal(data, &installation); err != nil {
 		t.Fatal(err)
 	}
-	// Native OpenClaw inference is a Node child; Codex still needs its exact
-	// executable. The rendered profile must grant both, never an empty allowlist.
-	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
-		openShellCodexBinary,
-		"/usr/local/bin/node",
-	}) {
-		t.Fatalf("unexpected model-credential binaries: %v", installation.Drivers.CredentialGateway.Configuration.Binaries)
-	}
 	sandbox := installation.Drivers.Sandbox.Configuration
 	if sandbox.StartupDelayMs != 30_000 {
 		t.Fatalf("unexpected OpenShell startup delay: %d", sandbox.StartupDelayMs)
+	}
+	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"/usr/local/bin/node",
+	}) {
+		t.Fatalf("unexpected OpenShell credential binary allowlist: %#v", installation.Drivers.CredentialGateway.Configuration.Binaries)
 	}
 	// Only OpenShell supervisors may use the tenant callback egress rule.
 	if len(sandbox.Gateway.NetworkPolicyResources) == 0 || !reflect.DeepEqual(

@@ -15,6 +15,7 @@ import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInWithEmailPassword,
+  signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
@@ -156,6 +157,121 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
     name: "Allowed tenant",
     status: "ready",
     createdAt: "2026-08-19T00:00:00.000Z",
+  });
+});
+
+test("IAM decision reasons must be strings before an installation-admin read", async (t) => {
+  const authFixture = await createTestAuthPrincipal({
+    installationId,
+    mode: "production",
+    baseURL: "http://127.0.0.1",
+  });
+  let restrictions = [];
+  const native = new NativeIAMDriver({
+    loadNativeIAMState: async () => ({
+      identities: [authFixture.seed.principal],
+      groups: [],
+      memberships: [],
+      roles: authFixture.seed.roles,
+      bindings: authFixture.seed.bindings,
+      restrictions,
+    }),
+  });
+  let transform = (decision) => decision;
+  const iam = {
+    id: native.id,
+    capability: native.capability,
+    implementation: native.implementation,
+    lookupIdentity: (input) => native.lookupIdentity(input),
+    authorize: async (request) => transform(await native.authorize(request)),
+  };
+  const controller = new OpenClawController({
+    id: installationId,
+    name: "Decision validation",
+    createdAt: "2026-08-19T00:00:00.000Z",
+  });
+  controller.registerDriver(iam);
+  controller.selectDriver("iam", iam.id);
+  let protectedReads = 0;
+  const app = createFastifyApp({
+    controller,
+    iamDriver: iam,
+    auditSink: new InMemoryAuditSink(),
+    development: { enabled: false, installationId },
+    auth: authFixture.auth,
+    get observabilityUrl() {
+      protectedReads += 1;
+      return "https://metrics.example.test";
+    },
+  });
+  t.after(() => app.close());
+  const session = await signInToControllerApp(app, authFixture);
+  const read = () =>
+    app.inject({
+      method: "GET",
+      url: "/observability",
+      headers: { ...authenticatedHeaders(session), host: "127.0.0.1" },
+      remoteAddress: "127.0.0.1",
+    });
+
+  for (const [name, reason] of [
+    ["omitted", undefined],
+    ["null", null],
+    ["number", 42],
+    ["object", {}],
+  ]) {
+    await t.test(name, async () => {
+      transform = (decision) => {
+        const result = { ...decision, reason };
+        if (reason === undefined) {
+          delete result.reason;
+        }
+        return result;
+      };
+      const before = protectedReads;
+      const response = await read();
+      assert.equal(response.statusCode, 503);
+      assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(
+        protectedReads,
+        before,
+        "a malformed decision must not read the protected setting",
+      );
+    });
+  }
+  for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
+    await t.test(reason === "" ? "empty string remains valid" : "valid string", async () => {
+      transform = (decision) => ({ ...decision, reason });
+      const before = protectedReads;
+      const response = await read();
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(response.json().data, { url: "https://metrics.example.test" });
+      assert.equal(protectedReads, before + 1);
+    });
+  }
+  await t.test("wrong Driver and malformed evidence remain unavailable", async () => {
+    for (const invalid of [
+      (decision) => ({ ...decision, driverId: "another-driver" }),
+      (decision) => ({ ...decision, evidence: { ...decision.evidence, roleIds: null } }),
+    ]) {
+      transform = invalid;
+      const before = protectedReads;
+      const response = await read();
+      assert.equal(response.statusCode, 503);
+      assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(protectedReads, before);
+    }
+  });
+  await t.test("a genuine Restriction remains forbidden", async () => {
+    transform = (decision) => decision;
+    restrictions = [
+      { id: "deny-admin-read", action: "administer", resourceKind: "installation", effect: "deny" },
+    ];
+    const before = protectedReads;
+    const response = await read();
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().error.code, "FORBIDDEN");
+    assert.equal(protectedReads, before);
   });
 });
 

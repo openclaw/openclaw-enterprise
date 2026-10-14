@@ -3,7 +3,17 @@ import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -11,10 +21,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
-import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
+import {
+  ANSI_COLOR,
+  captureK3dDiagnostics,
+  k3dHostMetrics,
+  redactCredentialLine,
+} from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
+import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -42,11 +58,28 @@ const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
   "k3d-fixture-plugins",
+  "k3d-fixture-oauth",
 ]);
+// These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
+// Gateway API, so their clusters skip K3s's Traefik, ServiceLB and
+// metrics-server add-ons, which would otherwise pull and start on every node
+// while the lane imports its images. Lanes that set up gateway routing need
+// Traefik: K3s installs the Gateway API CRDs with it, and prepareGatewayRouting
+// refuses a cluster without it (routing.mjs). Every lane here runs in PR CI;
+// full-integration lanes keep K3s's defaults.
+const lanesWithoutK3sAddons = new Set([
+  ...fixtureLanes,
+  "images-runtime-startup",
+  "repository-credentials-platform",
+  "k3d-observability",
+]);
+const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
 // it deliberately to a newer v1.35 patch; OPENCLAW_CI_K3S_IMAGE still
-// overrides it with another immutable reference.
+// overrides it with another immutable reference. The QA workflows pass the same
+// image to the Compose launcher as OCC_DEVELOPMENT_K3S_IMAGE (ci-prepare.test.mjs
+// checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
 const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
@@ -350,6 +383,13 @@ async function markResourceReady(statePath, state, resource) {
   await writeState(statePath, state);
 }
 
+// A timed-out command gets SIGTERM, SIGKILL after this grace, and after the same
+// grace again its held output pipes are abandoned. Tests shorten it.
+const commandKillGraceMs =
+  Number(process.env.OPENCLAW_CI_COMMAND_KILL_GRACE_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_COMMAND_KILL_GRACE_MS)
+    : 5_000;
+
 function execFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -414,8 +454,8 @@ function execFile(command, args, options = {}) {
             child.stdout?.destroy();
             child.stderr?.destroy();
             finish(() => reject(timedOutError(child.exitCode, child.signalCode)));
-          }, 5_000);
-        }, 5_000);
+          }, commandKillGraceMs);
+        }, commandKillGraceMs);
       }, options.timeoutMs);
     }
     let stdout = "";
@@ -839,20 +879,66 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
   }
 }
 
-// Lanes that may restore the hosted BuildKit cache. Only images-packaging
-// exports it, on main pushes, and the main-only warm job (ci-image-cache.yml)
-// builds with that lane's state. The repository platform lane loads its
-// runtime image into the Docker engine so a default-builder fixture build can
-// derive from it.
+// Lanes that restore the hosted BuildKit cache. Only the main-only warm job
+// (ci-image-cache.yml) exports it, building with images-packaging's state. The
+// repository platform lane loads its runtime image into the Docker engine so a
+// default-builder fixture build can derive from it.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
   ["images-model-probes", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
+  ["images-runtime-startup-3", { localStore: false }],
   ["repository-credentials-platform", { localStore: true }],
 ]);
 
-function imageBuildArgs(state, role, localStore, cacheWarm = false) {
+function imageCache(role) {
+  return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
+}
+
+// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
+// image input change, in order and never cancelled, so the newest commit's export
+// lands last. CI lanes only restore: a lane export on main could land after a
+// newer commit's warm export and replace it, and on a pull request it cost about
+// 40 s and filled only the merge ref's scope. The warm job exports in a second
+// build after the image is built and loaded: the same arguments without --load or
+// the tag, so BuildKit reuses the steps it just ran and only uploads the cache.
+function imageCacheExportArgs(role, buildArgs) {
+  if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
+    throw new Error("Only a hosted cache build can export the image cache.");
+  }
+  const rest = [];
+  for (let index = 3; index < buildArgs.length; index += 1) {
+    if (buildArgs[index] === "-t") {
+      index += 1;
+    } else {
+      rest.push(buildArgs[index]);
+    }
+  }
+  return [
+    "buildx",
+    "build",
+    "--output",
+    "type=cacheonly",
+    "--cache-to",
+    `${imageCache(role)},mode=max,timeout=10m`,
+    ...rest,
+  ];
+}
+
+// The warm job's limit for one image's cache export. Exports that reuse the
+// OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
+// or install step) uploads them all again, one at a time: 513-817 s on the warm
+// runner. Those layers are not byte-reproducible, so a cut-off export's uploads
+// never help the next run, and a 5 min limit left the image lanes rebuilding
+// them on every run (finding 1275). One upload once stalled for 17 min (finding
+// 1219); this still bounds that. Tests shorten it.
+const imageCacheExportTimeoutMs =
+  Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS)
+    : 20 * 60_000;
+
+function imageBuildArgs(state, role, localStore) {
   if (process.env.OCC_CI_IMAGE_CACHE === "1") {
     if (
       process.env.GITHUB_ACTIONS !== "true" ||
@@ -862,28 +948,18 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
     ) {
       throw new Error("Image caching requires the hosted image lane and its cache credentials.");
     }
-    const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
     return [
       "buildx",
       "build",
       "--load",
+      // An image ID covers each history entry's creation time. A fixed epoch lets
+      // builders that write the same layers agree on the ID, so reuseEngineImage
+      // can match an image another job built. It sets the config and history
+      // timestamps and WORKDIR directory mtimes; RUN steps do not see it.
+      "--build-arg",
+      "SOURCE_DATE_EPOCH=0",
       "--cache-from",
-      `${cache},timeout=60s`,
-      // One writer per image among the parallel image lanes; on main the warm job
-      // writes the same scope too (the last index wins). The warm job exists to
-      // export, so each cache transfer may take longer and a failed export fails
-      // the job instead of being ignored. Pull request runs only restore: their
-      // export cost Images and Packaging about 40 s and filled only their own
-      // merge ref's scope. Main pushes keep the lane's export as a backstop.
-      ...(state.lane === "images-packaging" &&
-      (cacheWarm || process.env.GITHUB_EVENT_NAME === "push")
-        ? [
-            "--cache-to",
-            cacheWarm
-              ? `${cache},mode=max,timeout=10m`
-              : `${cache},mode=max,ignore-error=true,timeout=60s`,
-          ]
-        : []),
+      `${imageCache(role)},timeout=60s`,
     ];
   }
   return [
@@ -892,6 +968,90 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       ? ["--builder", "default", "--load"]
       : []),
   ];
+}
+
+// A restored build otherwise downloads every cached layer (about 20 s for the
+// runtime image) only to load an image the engine often already holds: the
+// hosted runners' Docker data comes from a shared image cache. Resolve the
+// image from the BuildKit cache without exporting its layers, then tag the
+// engine's image if it has the same ID. The ID is the digest of a config that
+// names every layer's content digest, so the tagged image is the one the build
+// would load. The warm job, which builds every step for its export, and any probe
+// failure (a timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
+// says "absent" only when the engine reports no such image, "different" when it
+// holds another image under that reference, and "probe-failed" otherwise.
+async function reuseEngineImage(state, role, args, tag) {
+  if (args[0] !== "buildx" || !args.includes("--load")) {
+    return false;
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const started = performance.now();
+  let directory;
+  let outcome = "unresolved";
+  let image;
+  try {
+    directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
+    const metadata = join(directory, "metadata.json");
+    await execFile(
+      docker,
+      [
+        "buildx",
+        "build",
+        "--output",
+        "type=image,push=false,store=false",
+        "--provenance=false",
+        "--metadata-file",
+        metadata,
+        ...args.slice(2).filter((arg) => arg !== "--load"),
+      ],
+      // A cache miss builds the image here; the build below then reuses those
+      // steps from the same builder and only exports and loads.
+      { timeoutMs: 20 * 60_000 },
+    );
+    const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
+    if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
+      return false;
+    }
+    image = id;
+    // Under Docker's containerd image store the engine reports a manifest
+    // digest here instead, so the comparison fails safe, the log says
+    // "different", and the lane builds.
+    let held;
+    try {
+      held = (
+        await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", id])
+      ).stdout.trim();
+    } catch (error) {
+      if (!/No such (?:image|object)|image not known/i.test(error.stderr ?? "")) {
+        throw error;
+      }
+      outcome = "absent";
+      return false;
+    }
+    if (held !== id) {
+      outcome = "different";
+      return false;
+    }
+    await boundedImageCommand(["tag", id, tag]);
+    outcome = "reused";
+    return true;
+  } catch {
+    outcome = "probe-failed";
+    return false;
+  } finally {
+    if (directory !== undefined) {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+    progress(
+      state.lane,
+      JSON.stringify({
+        stage: `${role}-image-reuse`,
+        outcome,
+        ...(image ? { image } : {}),
+        elapsedMs: Math.round(performance.now() - started),
+      }),
+    );
+  }
 }
 
 async function buildRuntimeImages(
@@ -906,25 +1066,57 @@ async function buildRuntimeImages(
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
-  // prints it per image once the build ends (parallel builds stay readable), also
-  // when the build fails or overruns its own deadline inside the job's.
-  const progress = cacheWarm ? ["--progress=plain"] : [];
-  const build = async (role, args) => {
-    if (!cacheWarm) {
-      return execFile(process.env.OCC_DOCKER_BIN ?? "docker", args);
-    }
+  // prints it per image and command once that ends (parallel builds stay
+  // readable), also when it fails or overruns its own deadline inside the job's.
+  const plainProgress = cacheWarm ? ["--progress=plain"] : [];
+  const warmCommand = async (heading, args, timeoutMs) => {
     let output = "";
     try {
-      const built = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
-        timeoutMs: 20 * 60_000,
-      });
-      output = built.stderr;
-      return built;
+      const done = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs });
+      output = done.stderr;
+      return done;
     } catch (error) {
       output = error.stderr ?? "";
       throw error;
     } finally {
-      process.stderr.write(`[image-cache-warm] ${role} build\n${output}\n`);
+      process.stderr.write(`[image-cache-warm] ${heading}\n${output}\n`);
+    }
+  };
+  const build = async (role, args) => {
+    if (!cacheWarm) {
+      return execFile(process.env.OCC_DOCKER_BIN ?? "docker", args);
+    }
+    const exportArgs = imageCacheExportArgs(role, args);
+    // A failed or overrunning build fails the job and keeps nothing.
+    await warmCommand(`${role} build`, args, 20 * 60_000);
+    // The export is best effort with its own limit. Without it, image lanes restore
+    // the previous cache: content-addressed steps that still match are reused and
+    // the rest rebuild, so a missed export makes builds slower, never wrong.
+    // BuildKit writes the cache manifest after the layers, so an interrupted
+    // export leaves lanes the previous cache.
+    const started = performance.now();
+    let outcome = "exported";
+    try {
+      await warmCommand(`${role} cache export`, exportArgs, imageCacheExportTimeoutMs);
+    } catch (error) {
+      outcome = error.timedOut ? "timed-out" : "failed";
+      const reason =
+        outcome === "timed-out"
+          ? `did not finish within ${imageCacheExportTimeoutMs} ms`
+          : "failed";
+      process.stdout.write(
+        `::warning title=Image cache export::The ${role} image built, but its cache export ` +
+          `${reason}; image lanes restore the previous cache until the next warm run.\n`,
+      );
+    } finally {
+      progress(
+        "image-cache-warm",
+        JSON.stringify({
+          stage: `${role}-cache-export`,
+          outcome,
+          elapsedMs: Math.round(performance.now() - started),
+        }),
+      );
     }
   };
   await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
@@ -942,79 +1134,97 @@ async function buildRuntimeImages(
           .slice(0, 17)
       : state.prefix;
   const tagBase = `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
+  const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
+  }
+  if (openclawSource !== undefined) {
+    if (!isAbsolute(openclawSource) || !(await stat(join(openclawSource, "Dockerfile"))).isFile()) {
+      throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
+    }
+    if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
+      throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
+    }
+  }
+  const builds = [];
+  if (controller) {
     const tag = `${tagBase}/controller:local`;
-    const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
-    resources.push(resource);
-    await writeState(statePath, state);
-    await build("controller", [
-      ...imageBuildArgs(state, "controller", localStore, cacheWarm),
-      ...progress,
-      "--pull=false",
-      "--target",
-      "runtime",
-      "--build-arg",
-      `NODE_BASE_IMAGE=${nodeBaseImage}`,
-      "-t",
+    builds.push({
+      role: "controller",
       tag,
-      ".",
-    ]);
-    await markResourceReady(statePath, state, resource);
-    env.OCC_TEST_PRODUCTION_IMAGE = tag;
-    env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = tag;
+      args: [
+        ...imageBuildArgs(state, "controller", localStore),
+        ...plainProgress,
+        "--pull=false",
+        "--target",
+        "runtime",
+        "--build-arg",
+        `NODE_BASE_IMAGE=${nodeBaseImage}`,
+        "-t",
+        tag,
+        ".",
+      ],
+      env: { OCC_TEST_PRODUCTION_IMAGE: tag, OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: tag },
+    });
   }
   if (runtime) {
-    const openclawSource = process.env.OCC_K3D_OPENCLAW_SOURCE;
-    if (openclawSource !== undefined) {
-      if (
-        !isAbsolute(openclawSource) ||
-        !(await stat(join(openclawSource, "Dockerfile"))).isFile()
-      ) {
-        throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
-      }
-      if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
-        throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
-      }
-    }
     const tag = `${tagBase}/runtime:local`;
-    const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
-    resources.push(resource);
-    await writeState(statePath, state);
-    await build(
-      "runtime",
-      openclawSource === undefined
-        ? [
-            ...imageBuildArgs(state, "runtime", localStore, cacheWarm),
-            ...progress,
-            "--pull=false",
-            "-f",
-            runtimeDockerfile,
-            "-t",
-            tag,
-            repositoryRoot,
-          ]
-        : [
-            "build",
-            ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-              ? ["--builder", "default", "--load"]
-              : []),
-            "--build-arg",
-            "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
-            "-t",
-            tag,
-            openclawSource,
-          ],
-    );
-    await markResourceReady(statePath, state, resource);
-    env.OCC_TEST_RUNTIME_IMAGE = tag;
-    env.OCC_DOCKER_RUNTIME_IMAGE = tag;
-    env.OCC_DOCKER_GATEWAY_IMAGE = tag;
-    env.OCC_DOCKER_AGENT_IMAGE = tag;
-    env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = tag;
-    if (openclawSource !== undefined) {
-      env.OCC_K3D_OPENCLAW_COMMIT = process.env.OCC_K3D_OPENCLAW_COMMIT;
-    }
+    builds.push({
+      role: "runtime",
+      tag,
+      args:
+        openclawSource === undefined
+          ? [
+              ...imageBuildArgs(state, "runtime", localStore),
+              ...plainProgress,
+              "--pull=false",
+              "-f",
+              runtimeDockerfile,
+              "-t",
+              tag,
+              repositoryRoot,
+            ]
+          : [
+              "build",
+              ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+                ? ["--builder", "default", "--load"]
+                : []),
+              "--build-arg",
+              "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
+              "-t",
+              tag,
+              openclawSource,
+            ],
+      env: {
+        OCC_TEST_RUNTIME_IMAGE: tag,
+        OCC_DOCKER_RUNTIME_IMAGE: tag,
+        OCC_DOCKER_GATEWAY_IMAGE: tag,
+        OCC_DOCKER_AGENT_IMAGE: tag,
+        OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
+        ...(openclawSource === undefined
+          ? {}
+          : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
+      },
+    });
+  }
+  // Record every tag before any build starts. The builds are independent, so
+  // they run together and take as long as the slower one instead of their sum.
+  for (const entry of builds) {
+    entry.resource = addResource(state, "image-tag", { name: entry.tag, owner: state.prefix });
+    resources.push(entry.resource);
+  }
+  await writeState(statePath, state);
+  await prepareTogether(
+    builds.map((entry) => async () => {
+      // The warm job builds every step so its export has them all.
+      if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
+        await build(entry.role, entry.args);
+      }
+      await markResourceReady(statePath, state, entry.resource);
+    }),
+  );
+  for (const entry of builds) {
+    Object.assign(env, entry.env);
   }
   return { env, resourceIds: resources.map((resource) => resource.id) };
 }
@@ -1075,6 +1285,8 @@ async function ensureK3dCluster(statePath, state) {
     // A digest-pinned image bypasses k3d's online release-channel lookup. The
     // running API server must still satisfy the ordinary Kubernetes 1.35 gate.
     ...(!openShell ? { nodeImage: process.env.OPENCLAW_CI_K3S_IMAGE || defaultK3sImage } : {}),
+    // Recorded so gateway routing can refuse a cluster created without Traefik.
+    ...(lanesWithoutK3sAddons.has(state.lane) ? { disabledK3sAddons } : {}),
   });
   await writeState(statePath, state);
   if (openShell) {
@@ -1114,6 +1326,15 @@ async function ensureK3dCluster(statePath, state) {
       `127.0.0.1:${apiPort}`,
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
+      // One server needs no load balancer: agents join k3d-<cluster>-server-0
+      // directly, so k3d's serverlb (nginx) only proxied the host's API port.
+      // Its entrypoint sleeps 6 s before nginx starts, and k3d waited for it on
+      // every create. Without it, server-0 publishes the API port itself, and
+      // the nginx connection limit behind finding 682 is gone too.
+      "--no-lb",
+      ...(resource.disabledK3sAddons
+        ? ["--k3s-arg", `--disable=${resource.disabledK3sAddons.join(",")}@server:*`]
+        : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
       ...(crossNodePluginStatus ? ["--no-rollback"] : []),
@@ -1128,19 +1349,20 @@ async function ensureK3dCluster(statePath, state) {
       await chmod(kubeconfig, 0o600);
       await validateLoopbackKubeconfig(kubeconfig, resource.context, resource.kubectl);
     });
-    await k3dStage(state, "k3d-nodes-ready", () =>
-      execFile(resource.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-        "--kubeconfig",
-        kubeconfig,
-        "--context",
-        resource.context,
+    await k3dStage(state, "k3d-nodes-ready", async () => {
+      const kubectl = resource.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl";
+      const kubectlArgs = ["--kubeconfig", kubeconfig, "--context", resource.context];
+      // `wait nodes --all` covers only the nodes registered when it starts.
+      await waitForK3dNodesRegistered(kubectl, kubectlArgs, resource.nodes);
+      await execFile(kubectl, [
+        ...kubectlArgs,
         "wait",
         "--for=condition=Ready",
         "nodes",
         "--all",
         "--timeout=120s",
-      ]),
-    );
+      ]);
+    });
     if (!openShell) {
       resource.kubernetesVersion = await k3dStage(state, "k3d-version", async () => {
         const version = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
@@ -1199,14 +1421,74 @@ async function ensureK3dCluster(statePath, state) {
   return resource;
 }
 
+const k3dNodeRegistrationTimeoutMs = 120_000;
+
+// Wait until every node this cluster owns is registered, so the Ready wait
+// cannot pass on the server alone while a worker is still joining. This is
+// hardening: in finding 1006 the worker was registered, and its containerd
+// stopped answering later.
+async function waitForK3dNodesRegistered(kubectl, kubectlArgs, nodes) {
+  const deadline = performance.now() + k3dNodeRegistrationTimeoutMs;
+  for (;;) {
+    let missing = nodes;
+    let lastError;
+    try {
+      const listed = await execFile(kubectl, [...kubectlArgs, "get", "nodes", "-o", "name"], {
+        timeoutMs: 30_000,
+      });
+      const registered = new Set(listed.stdout.split(/\r?\n/).map((line) => line.trim()));
+      missing = nodes.filter((node) => !registered.has(`node/${node}`));
+      if (missing.length === 0) {
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (performance.now() >= deadline) {
+      throw new Error(
+        lastError
+          ? `Unable to list k3d nodes within ${k3dNodeRegistrationTimeoutMs} ms: ${lastError.message}`
+          : `k3d node ${missing.join(", ")} did not register within ${k3dNodeRegistrationTimeoutMs} ms.`,
+        { cause: lastError },
+      );
+    }
+    await delay(1_000);
+  }
+}
+
 // Hosted CI creates a cluster, node image pull included, in 26-48 s (284 runs,
 // 2026-10-08: p50 27 s, p99 44 s). A create that never returns once held a lane
 // for 44 minutes until the job timeout (finding 840).
-const k3dCreateTimeoutMs =
-  Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS) > 0
-    ? Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS)
-    : 5 * 60_000;
-const k3dCreateAttempts = 2;
+// A hung first attempt once held a lane for its full five minutes before a 12 s
+// retry (finding 1174), so the first attempt gets two minutes, still well over
+// the p99, and the retry keeps five for a slow runner.
+// OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS sets both attempts.
+const k3dCreateTimeoutOverrideMs = Number(process.env.OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS);
+const k3dCreateTimeoutsMs =
+  k3dCreateTimeoutOverrideMs > 0
+    ? [k3dCreateTimeoutOverrideMs, k3dCreateTimeoutOverrideMs]
+    : [2 * 60_000, 5 * 60_000];
+const k3dCreateAttempts = k3dCreateTimeoutsMs.length;
+
+// Print k3d's own progress lines as they arrive. The job log timestamps each
+// line, so a slow create shows which k3d step it spent its time in.
+function forwardK3dOutput(lane, child) {
+  for (const stream of [child.stdout, child.stderr]) {
+    let pending = "";
+    stream?.on("data", (chunk) => {
+      const lines = (pending + chunk.toString()).split(/\r?\n/);
+      pending = lines.pop();
+      lines.forEach(print);
+    });
+    stream?.on("end", () => print(pending));
+  }
+  function print(line) {
+    const text = line.replace(ANSI_COLOR, "").trimEnd();
+    if (text.trim()) {
+      progress(lane, `k3d: ${redactCredentialLine(text).slice(0, 400)}`);
+    }
+  }
+}
 
 // Bound each create. After a timeout, keep diagnostics, delete what the
 // attempt created, and try once more with the same owned name and directory.
@@ -1214,9 +1496,14 @@ const k3dCreateAttempts = 2;
 async function createK3dCluster(statePath, state, resource, args) {
   const k3d = process.env.OPENCLAW_CI_K3D_BIN ?? "k3d";
   for (let attempt = 1; ; attempt += 1) {
+    const timeoutMs = k3dCreateTimeoutsMs[attempt - 1];
     try {
       await k3dStage(state, "k3d-create", () =>
-        execFile(k3d, args, { timeoutMs: k3dCreateTimeoutMs, processGroup: true }),
+        execFile(k3d, args, {
+          timeoutMs,
+          processGroup: true,
+          onSpawn: (child) => forwardK3dOutput(state.lane, child),
+        }),
       );
       return;
     } catch (error) {
@@ -1224,7 +1511,7 @@ async function createK3dCluster(statePath, state, resource, args) {
         throw error;
       }
       const summary =
-        `k3d cluster create ${resource.name} did not finish within ${k3dCreateTimeoutMs} ms ` +
+        `k3d cluster create ${resource.name} did not finish within ${timeoutMs} ms ` +
         `(attempt ${attempt} of ${k3dCreateAttempts})`;
       progress(state.lane, summary);
       await captureK3dDiagnostics({
@@ -1233,6 +1520,7 @@ async function createK3dCluster(statePath, state, resource, args) {
         lane: state.lane,
         statePath,
         failure: summary,
+        k3dOutput: error,
       }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
       if (attempt >= k3dCreateAttempts) {
         const failure = new Error(
@@ -1598,9 +1886,14 @@ const imageCommandTimeoutMs =
     ? Number(process.env.OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS)
     : 30_000;
 
-async function boundedImageCommand(args, what = "The container engine", shown = args) {
+async function boundedImageCommand(
+  args,
+  what = "The container engine",
+  shown = args,
+  docker = process.env.OCC_DOCKER_BIN ?? "docker",
+) {
   try {
-    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+    return await execFile(docker, args, {
       timeoutMs: imageCommandTimeoutMs,
     });
   } catch (error) {
@@ -1614,18 +1907,13 @@ async function boundedImageCommand(args, what = "The container engine", shown = 
   }
 }
 
-async function dockerImageHasRepoDigest(image) {
+async function dockerImageHasRepoDigest(image, docker) {
   const expected = immutableDigest(image);
   if (!expected) {
     return false;
   }
-  const inspected = await boundedImageCommand([
-    "image",
-    "inspect",
-    "--format",
-    "{{json .RepoDigests}}",
-    image,
-  ]);
+  const args = ["image", "inspect", "--format", "{{json .RepoDigests}}", image];
+  const inspected = await boundedImageCommand(args, "The container engine", args, docker);
   const repoDigests = JSON.parse(inspected.stdout.trim() || "[]");
   if (!Array.isArray(repoDigests)) {
     return false;
@@ -1633,8 +1921,9 @@ async function dockerImageHasRepoDigest(image) {
   return repoDigests.some((reference) => reference.toLowerCase().endsWith(`@sha256:${expected}`));
 }
 
-async function dockerImageId(image) {
-  const inspected = await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", image]);
+async function dockerImageId(image, docker) {
+  const args = ["image", "inspect", "--format", "{{.Id}}", image];
+  const inspected = await boundedImageCommand(args, "The container engine", args, docker);
   const value = inspected.stdout.trim();
   const id = /^[a-f0-9]{64}$/i.test(value) ? `sha256:${value}` : value;
   assertDockerImageId(id, `Docker image ${image}`);
@@ -1647,15 +1936,21 @@ function assertDockerImageId(id, description) {
   }
 }
 
-async function ensureDockerSourceImage(state, image, envName) {
+async function ensureDockerSourceImage(
+  state,
+  image,
+  envName,
+  docker = process.env.OCC_DOCKER_BIN ?? "docker",
+) {
   if (stateOwnsImageTag(state, image)) {
-    await boundedImageCommand(["image", "inspect", image]);
-    return dockerImageId(image);
+    const args = ["image", "inspect", image];
+    await boundedImageCommand(args, "The container engine", args, docker);
+    return dockerImageId(image, docker);
   }
   assertImmutableImageReference(image, envName);
   try {
-    if (await dockerImageHasRepoDigest(image)) {
-      return await dockerImageId(image);
+    if (await dockerImageHasRepoDigest(image, docker)) {
+      return await dockerImageId(image, docker);
     }
   } catch (error) {
     // A locally built immutable image may have no reachable registry. Reuse
@@ -1664,11 +1959,27 @@ async function ensureDockerSourceImage(state, image, envName) {
       throw error;
     }
   }
-  await pullImage(image, { execFile, docker: process.env.OCC_DOCKER_BIN ?? "docker" });
-  if (!(await dockerImageHasRepoDigest(image))) {
+  await pullImage(image, { execFile, docker });
+  if (!(await dockerImageHasRepoDigest(image, docker))) {
     throw new Error(`${envName} pull did not materialize the requested registry digest.`);
   }
-  return dockerImageId(image);
+  return dockerImageId(image, docker);
+}
+
+// This deliberately unrelated release exercises the launcher's source-revision guard.
+// Registry images remain in the engine cache; preparation owns no tag or cluster.
+export const devUpUnrelatedImage =
+  "rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
+
+export async function prepareDevUpImage(
+  docker = process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE || "docker",
+) {
+  await ensureDockerSourceImage(
+    { resources: [] },
+    devUpUnrelatedImage,
+    "Dev-up rejection image",
+    docker,
+  );
 }
 
 // containerd's CRI plugin answers `crictl inspecti` only from its in-memory image
@@ -1716,6 +2027,74 @@ async function assertK3dImageReference(lane, cluster, reference, envName) {
       throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
     }
     await inspectK3dCriImage(lane, node, reference, envName);
+  }
+}
+
+// A Ready node's containerd can still refuse connections: a worker import once
+// failed with "connect: connection refused" 6 s after every node was Ready
+// (finding 1006). Probe each node's containerd before streaming an image to it.
+// A probe that hangs is final; any other failure is retried until the deadline.
+const k3dContainerdWaitMs =
+  Number(process.env.OPENCLAW_CI_K3D_CONTAINERD_WAIT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_CONTAINERD_WAIT_MS)
+    : 60_000;
+
+async function waitForK3dContainerd(lane, cluster) {
+  // The first failed node ends the wait; the others stop polling.
+  let failed = false;
+  await Promise.all(
+    cluster.nodes.map(async (node) => {
+      const deadline = performance.now() + k3dContainerdWaitMs;
+      for (let attempt = 1; !failed; attempt += 1) {
+        try {
+          await k3dNodeImageCheck(node, ["ctr", "-n", "k8s.io", "version"], "containerd");
+          return;
+        } catch (error) {
+          const remainingMs = deadline - performance.now();
+          if (error.cause?.timedOut === true || remainingMs <= 0) {
+            failed = true;
+            throw error.cause?.timedOut === true
+              ? error
+              : new Error(
+                  `containerd on ${node} did not answer within ${k3dContainerdWaitMs} ms: ${error.message}`,
+                  { cause: error },
+                );
+          }
+          if (failed) {
+            return;
+          }
+          progress(
+            lane,
+            `containerd on ${node} is not answering yet (attempt ${attempt}); retrying.`,
+          );
+          await delay(Math.min(250 * attempt, 2_000, remainingMs));
+        }
+      }
+    }),
+  );
+}
+
+const containerdSocketUnavailable =
+  /\/run\/k3s\/containerd\/containerd\.sock: connect: (?:connection refused|no such file or directory)/;
+
+// k3d tools-node mode can exit successfully after a per-node import failure, so
+// stream the export into each owned node's containerd directly and propagate
+// both export and node-local containerd errors. A containerd that stops
+// answering during the import gets one more wait and import; ctr import is
+// idempotent, so nodes that already imported the image are unaffected.
+async function importImageIntoK3dNodes(lane, cluster, saveArgs) {
+  for (let attempt = 1; ; attempt += 1) {
+    await waitForK3dContainerd(lane, cluster);
+    try {
+      return await timedPreparation(lane, "image-stream-import", () =>
+        streamImageIntoK3dNodes(cluster, saveArgs),
+      );
+    } catch (error) {
+      if (attempt > 1 || !containerdSocketUnavailable.test(error.stderr ?? "")) {
+        throw error;
+      }
+      progress(lane, "A node's containerd refused the image import; waiting for it to retry once.");
+    }
   }
 }
 
@@ -1824,17 +2203,26 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   // k3d can exit successfully after containerd rejects missing index content.
   // Export only the platform pulled locally, then verify the imported reference.
   const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  await timedPreparation(state.lane, "image-stream-import", () =>
-    // k3d tools-node mode can exit successfully after a per-node import
-    // failure, so stream the export into each owned node's containerd directly
-    // and propagate both export and node-local containerd errors.
-    streamImageIntoK3dNodes(cluster, [
+  try {
+    await importImageIntoK3dNodes(state.lane, cluster, [
       "image",
       "save",
       ...(basename(containerEngine) === "podman" ? [] : ["--platform", platform]),
       importReference,
-    ]),
-  );
+    ]);
+  } catch (error) {
+    // Keep node state and logs, so a containerd outage shows its cause (finding 1006).
+    if (fixtureLanes.has(state.lane)) {
+      await captureK3dDiagnostics({
+        execFile,
+        cluster,
+        lane: state.lane,
+        statePath,
+        failure: `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`,
+      }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+    }
+    throw error;
+  }
 
   const listed = await k3dNodeImageCheck(
     `k3d-${cluster.name}-server-0`,
@@ -1989,6 +2377,12 @@ async function prepareRuntimeSmokeCodexSeccompProfile(statePath, state, env, cre
   await writeState(statePath, state);
 }
 
+async function prepareNativeWorkspaceEnvoyImage(state, env) {
+  const image = effectiveLaneEnv("images-runtime-startup", env).OCC_TEST_WORKSPACE_ENVOY_IMAGE;
+  await ensureDockerSourceImage(state, image, "OCC_TEST_WORKSPACE_ENVOY_IMAGE");
+  env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
+}
+
 export async function prepareRuntimeImageSmoke({ image, statePath }) {
   assertDockerImageId(image, "Runtime smoke image");
   const path = normalizeStatePath(statePath);
@@ -2004,6 +2398,7 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
     // Import the caller's exact loaded config ID without rebuilding or pulling.
     await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["tag", image, tag]);
     await markResourceReady(path, state, resource);
+    await prepareNativeWorkspaceEnvoyImage(state, env);
     await prepareRuntimeSmokeCodexSeccompProfile(path, state, env);
     await saveLaneEnv(path, state, env);
     return { env, cleanup: () => cleanupResourceIds(path) };
@@ -2125,6 +2520,7 @@ async function prepareLane({ lane, statePath }) {
     case "postgres-application":
     case "postgres-auth":
     case "postgres-platform":
+    case "keycloak-oidc": // Browser sign-in composes the production API on PostgreSQL.
       await ensurePostgresServer(resolvedStatePath, state);
       break;
     case "runtime-image-fixture":
@@ -2146,10 +2542,11 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     case "images-runtime-startup":
-    case "images-runtime-startup-2": {
-      // Runtime image smoke tests run apart from packaging, in two lanes, to
+    case "images-runtime-startup-2":
+    case "images-runtime-startup-3": {
+      // Runtime image smoke tests run apart from packaging, in three lanes, to
       // shorten CI wall time. Only the lane whose tests run the Codex sandbox
-      // sets codexSeccomp; the other skips the k3d cluster it needs. The
+      // sets codexSeccomp; the others skip the k3d cluster it needs. The
       // cluster needs no image, so it is created while the image builds.
       const codexSeccomp = lanePrepare(name).codexSeccomp;
       const [built, cluster] = await timedPreparation(name, "runtime-image-build-cluster", () =>
@@ -2169,6 +2566,11 @@ async function prepareLane({ lane, statePath }) {
         ]),
       );
       Object.assign(env, built.env);
+      if (name === "images-runtime-startup") {
+        await timedPreparation(name, "workspace-envoy-image", () =>
+          prepareNativeWorkspaceEnvoyImage(state, env),
+        );
+      }
       if (codexSeccomp) {
         await prepareRuntimeSmokeCodexSeccompProfile(resolvedStatePath, state, env, cluster);
       }
@@ -2218,7 +2620,8 @@ async function prepareLane({ lane, statePath }) {
       break;
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
-    case "k3d-fixture-plugins": {
+    case "k3d-fixture-plugins":
+    case "k3d-fixture-oauth": {
       // PostgreSQL, the cluster and the fixture build are independent; the
       // fixture is imported only after the cluster passed its readiness gates.
       const [, cluster, built] = await timedPreparation(
@@ -2243,29 +2646,39 @@ async function prepareLane({ lane, statePath }) {
       const fixture = await timedPreparation(name, "fixture-image-import", () =>
         importFixtureImage(resolvedStatePath, state, cluster, built),
       );
-      // Fixture suites use the same local-only image. Keep it active on
-      // every node so kubelet image garbage collection cannot remove it.
-      await timedPreparation(name, "fixture-image-pin", () =>
-        pinFixtureImageInK3d(cluster, fixture.image),
+      // The pin and the storage check are independent; both wait on rollouts.
+      await timedPreparation(name, "fixture-pin-storage-verify", () =>
+        prepareTogether([
+          // Fixture suites use the same local-only image. Keep it active on
+          // every node so kubelet image garbage collection cannot remove it.
+          () =>
+            timedPreparation(name, "fixture-image-pin", () =>
+              pinFixtureImageInK3d(cluster, fixture.image),
+            ),
+          // The suites restart this controller when enabling shared storage. Verify
+          // replacement scheduling after image imports consume the runner's disk.
+          async () => {
+            await execFile(
+              process.env.OCC_KUBECTL_BIN ?? "kubectl",
+              [
+                "--kubeconfig",
+                cluster.kubeconfig,
+                "--context",
+                cluster.context,
+                "--namespace",
+                "kube-system",
+                "rollout",
+                "restart",
+                "deployment/local-path-provisioner",
+              ],
+              { timeoutMs: 10_000 },
+            );
+            await timedPreparation(name, "fixture-storage-verify", () =>
+              verifyFixtureStorage(cluster),
+            );
+          },
+        ]),
       );
-      // The suites restart this controller when enabling shared storage. Verify
-      // replacement scheduling after image imports consume the runner's disk.
-      await execFile(
-        process.env.OCC_KUBECTL_BIN ?? "kubectl",
-        [
-          "--kubeconfig",
-          cluster.kubeconfig,
-          "--context",
-          cluster.context,
-          "--namespace",
-          "kube-system",
-          "rollout",
-          "restart",
-          "deployment/local-path-provisioner",
-        ],
-        { timeoutMs: 10_000 },
-      );
-      await timedPreparation(name, "fixture-storage-verify", () => verifyFixtureStorage(cluster));
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
@@ -2560,6 +2973,19 @@ async function prepareLane({ lane, statePath }) {
             ),
         }),
       );
+      // The OAuth2 refresh proof's Keycloak: pulled here with pullImage's retry and
+      // imported, so the cluster never pulls it from the registry.
+      env.OCC_TEST_KEYCLOAK_IMAGE = (
+        await timedPreparation(name, "keycloak-image-import", async () =>
+          registerImageInK3d(
+            resolvedStatePath,
+            state,
+            cluster,
+            effectiveLaneEnv(name, env).OCC_TEST_KEYCLOAK_IMAGE || (await readKeycloakImage()),
+            "OCC_TEST_KEYCLOAK_IMAGE",
+          ),
+        )
+      ).reference;
       break;
     }
     case "logging-collector": {
@@ -2589,6 +3015,27 @@ async function prepareLane({ lane, statePath }) {
       break;
   }
 
+  if (lanePrepare(name).keycloak) {
+    const keycloak = await timedPreparation(name, "keycloak-start", () =>
+      prepareKeycloak({
+        stateDirectory: dirname(resolvedStatePath),
+        name: ownedName("openclaw-ci-kc", state.prefix, { maxLength: 63 }),
+        execFile,
+        docker: process.env.OCC_DOCKER_BIN ?? "docker",
+        ensureImage: (image) => ensureDockerSourceImage(state, image, "Keycloak image"),
+        reservePort: reserveLoopbackPort,
+        registerResource: async (details) => {
+          const resource = addResource(state, keycloakResourceKind, details);
+          await writeState(resolvedStatePath, state);
+          return resource;
+        },
+        saveState: () => writeState(resolvedStatePath, state),
+      }),
+    );
+    Object.assign(env, keycloak.env);
+    await markResourceReady(resolvedStatePath, state, keycloak.resource);
+  }
+
   applyLaneEnv(name, env);
   await saveLaneEnv(resolvedStatePath, state, env);
   return { env, cleanup: async () => cleanupResourceIds(resolvedStatePath) };
@@ -2616,8 +3063,8 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 
 // `template` (optional) is an OCC_TEST_DATABASE_URL that an earlier prepareFile call
 // returned for this state. The file's database is then a copy of that database
-// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. A suite that
-// prepares a database per test uses it to migrate once per file.
+// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. The worker revision
+// suite copies the database the runner prepared for its file, one copy per test.
 async function prepareFile({ lane, file, statePath, template }) {
   const name = assertLane(lane);
   if (!file) {
@@ -2731,12 +3178,17 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
 
   applyLaneEnv(name, env);
 
+  if (name === "dev-up-k3d") {
+    await prepareDevUpImage(env.OCC_TEST_DEV_UP_CONTAINER_ENGINE);
+  }
+
   if (state) {
     await writeState(resolvedStatePath, effectiveState);
   }
   return {
     env,
-    cleanup: async () => {
+    // `lockTimeoutMs` limits the wait for the CI state lock (cleanupResourceIds).
+    cleanup: async ({ lockTimeoutMs } = {}) => {
       try {
         if (fixtureLanes.has(name)) {
           const cluster = effectiveState.resources.find(
@@ -2753,11 +3205,15 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
           }
         }
       } finally {
-        await cleanupResourceIds(resolvedStatePath, resourceIds);
+        await cleanupResourceIds(resolvedStatePath, resourceIds, { lockTimeoutMs });
       }
     },
   };
 }
+
+// Repository of main's runtime images left tagged in the runners' shared image
+// cache (see warmImageCache). It is outside cleanup's owned names and is never pushed.
+const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
 
 // Builds the Images and Packaging controller and runtime images only to write
 // main's hosted BuildKit cache (ci-image-cache.yml). It uses that lane's state,
@@ -2780,16 +3236,39 @@ async function warmImageCache({ statePath }) {
   await writeState(resolvedStatePath, state);
   const nodeBaseImage = effectiveLaneEnv(lane).NODE_BASE_IMAGE;
   // The two builds are independent; in parallel their exports land sooner.
-  await timedPreparation("image-cache-warm", "controller-runtime-image-build", () =>
-    prepareTogether([
-      () =>
-        buildRuntimeImages(resolvedStatePath, state, {
-          controller: true,
-          nodeBaseImage,
-          cacheWarm: true,
-        }),
-      () => buildRuntimeImages(resolvedStatePath, state, { runtime: true, cacheWarm: true }),
-    ]),
+  const [, runtime] = await timedPreparation(
+    "image-cache-warm",
+    "controller-runtime-image-build",
+    () =>
+      prepareTogether([
+        () =>
+          buildRuntimeImages(resolvedStatePath, state, {
+            controller: true,
+            nodeBaseImage,
+            cacheWarm: true,
+          }),
+        () => buildRuntimeImages(resolvedStatePath, state, { runtime: true, cacheWarm: true }),
+      ]),
+  );
+  // The hosted runners' Docker data comes from a shared image cache, which keeps
+  // the images a job leaves tagged. Cleanup removes this run's owned tag, so also
+  // tag main's runtime image under a local name that no cleanup owns: image lanes
+  // then find the ID their restored cache resolves to (reuseEngineImage) instead
+  // of downloading and loading it. The tag names the image ID, so each new image
+  // gets its own tag instead of moving one; the shared cache evicts images unused
+  // for 8 days. Nothing is pushed.
+  const owned = runtime.env.OCC_TEST_RUNTIME_IMAGE;
+  const id = (
+    await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", owned])
+  ).stdout.trim();
+  if (!/^sha256:[a-f0-9]{64}$/u.test(id)) {
+    throw new Error("The warm runtime image has no image ID to keep.");
+  }
+  const kept = `${warmRuntimeImageRepository}:${id.slice("sha256:".length, "sha256:".length + 12)}`;
+  await boundedImageCommand(["tag", owned, kept]);
+  progress(
+    "image-cache-warm",
+    JSON.stringify({ stage: "runtime-image-kept", image: id, tag: kept }),
   );
 }
 
@@ -2823,7 +3302,7 @@ async function main() {
   );
 }
 
-export { defaultK3sImage, prepareFile, prepareLane };
+export { defaultK3sImage, imageCacheLanes, lanesWithoutK3sAddons, prepareFile, prepareLane };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

@@ -287,16 +287,42 @@ const controlledMetricsRow = Object.freeze({
   oldestPendingAgeSeconds: 0,
 });
 
-test("metrics owns checked-out transport errors until the rejected query settles", async (t) => {
+// Starts a collection on a controlled pool client and waits for its query.
+// `settle` ends that query at cleanup so the pool can close.
+async function startCollection(t, settle) {
   const f = controlledMetricsPool();
   const operation = new PostgresMetricsSnapshot(f.pool).collect();
   operation.catch(() => {});
   await f.started;
   t.after(async () => {
-    f.client.rejectQuery(new Error("test cleanup"));
+    settle(f.client);
     await operation.catch(() => {});
     await f.pool.end();
   });
+  return { f, operation };
+}
+
+// The collection discarded its only client and the pool saw no error.
+function assertDiscarded(f) {
+  assert.deepEqual(f.releases, [true]);
+  assert.equal(f.pool.totalCount, 0);
+  assert.deepEqual(f.poolErrors, []);
+}
+
+// A collector whose pool hands out `client` directly.
+function directCollector(client) {
+  return new PostgresMetricsSnapshot({
+    async connect() {
+      return client;
+    },
+    async end() {},
+  });
+}
+
+test("metrics owns checked-out transport errors until the rejected query settles", async (t) => {
+  const { f, operation } = await startCollection(t, (client) =>
+    client.rejectQuery(new Error("test cleanup")),
+  );
   const transport = Object.assign(new Error("controlled transport event"), { code: "ECONNRESET" });
   const query = new Error("controlled query rejection");
   f.client.emit("error", transport);
@@ -304,48 +330,30 @@ test("metrics owns checked-out transport errors until the rejected query settles
   assert.equal(f.releases.length, 0, "the in-flight query still owns its client");
   f.client.rejectQuery(query);
   await assert.rejects(operation, (error) => error === query);
-  assert.deepEqual(f.releases, [true]);
-  assert.equal(f.pool.totalCount, 0);
-  assert.deepEqual(f.poolErrors, []);
+  assertDiscarded(f);
 });
 
 test("metrics discards a transport-failed client even if its pending query later succeeds", async (t) => {
-  const f = controlledMetricsPool();
-  const operation = new PostgresMetricsSnapshot(f.pool).collect();
-  operation.catch(() => {});
-  await f.started;
-  t.after(async () => {
-    f.client.resolveQuery({ rows: [controlledMetricsRow] });
-    await operation.catch(() => {});
-    await f.pool.end();
-  });
+  const { f, operation } = await startCollection(t, (client) =>
+    client.resolveQuery({ rows: [controlledMetricsRow] }),
+  );
   const transport = new Error("controlled transport event before apparent success");
   f.client.emit("error", transport);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(f.releases.length, 0, "do not return a client with an unsettled query");
   f.client.resolveQuery({ rows: [controlledMetricsRow] });
   await assert.rejects(operation, (error) => error === transport);
-  assert.deepEqual(f.releases, [true]);
-  assert.equal(f.pool.totalCount, 0);
-  assert.deepEqual(f.poolErrors, []);
+  assertDiscarded(f);
 });
 
 test("metrics preserves ordinary query rejection and discards its client", async (t) => {
-  const f = controlledMetricsPool();
-  const operation = new PostgresMetricsSnapshot(f.pool).collect();
-  operation.catch(() => {});
-  await f.started;
-  t.after(async () => {
-    f.client.rejectQuery(new Error("test cleanup"));
-    await operation.catch(() => {});
-    await f.pool.end();
-  });
+  const { f, operation } = await startCollection(t, (client) =>
+    client.rejectQuery(new Error("test cleanup")),
+  );
   const failure = new Error("controlled ordinary query rejection");
   f.client.rejectQuery(failure);
   await assert.rejects(operation, (error) => error === failure);
-  assert.deepEqual(f.releases, [true]);
-  assert.equal(f.pool.totalCount, 0);
-  assert.deepEqual(f.poolErrors, []);
+  assertDiscarded(f);
 });
 
 test("metrics returns a healthy client with only the pool's idle listener retained", async (t) => {
@@ -371,13 +379,7 @@ test("metrics rejects a transport event during pool handoff instead of returning
     client.on("error", (error) => poolErrors.push(error));
     client.emit("error", transport);
   };
-  const collector = new PostgresMetricsSnapshot({
-    async connect() {
-      return client;
-    },
-    async end() {},
-  });
-  await assert.rejects(collector.collect(), (error) => error === transport);
+  await assert.rejects(directCollector(client).collect(), (error) => error === transport);
   assert.deepEqual(releases, [false]);
   assert.deepEqual(poolErrors, [transport]);
   assert.equal(client.listenerCount("error"), 1);
@@ -391,13 +393,7 @@ test("metrics preserves a release failure and keeps error ownership when transfe
   client.release = () => {
     throw failure;
   };
-  const collector = new PostgresMetricsSnapshot({
-    async connect() {
-      return client;
-    },
-    async end() {},
-  });
-  await assert.rejects(collector.collect(), (error) => error === failure);
+  await assert.rejects(directCollector(client).collect(), (error) => error === failure);
   assert.equal(client.listenerCount("error"), 1);
   assert.doesNotThrow(() => client.emit("error", new Error("late client transport event")));
   client.removeAllListeners();
@@ -413,13 +409,7 @@ test("metrics preserves release error precedence when query and release both fai
   client.release = () => {
     throw releaseFailure;
   };
-  const collector = new PostgresMetricsSnapshot({
-    async connect() {
-      return client;
-    },
-    async end() {},
-  });
-  await assert.rejects(collector.collect(), (error) => error === releaseFailure);
+  await assert.rejects(directCollector(client).collect(), (error) => error === releaseFailure);
   assert.equal(client.listenerCount("error"), 1);
   assert.doesNotThrow(() => client.emit("error", new Error("late client transport event")));
   client.removeAllListeners();

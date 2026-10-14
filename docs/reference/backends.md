@@ -74,6 +74,11 @@ required member Drivers. A ChatGPT workspace UUID identifies the upstream worksp
 Inline keys and configurable upstream URLs are unsupported. Credential TTL
 accepts 1–2,592,000 seconds and defaults to 2,592,000 (30 days); changing it does
 not renew issued credentials. Retired `integrations` and `adminKeyPath` keys fail.
+The production chart's `backend.chatgpt.secretName` must be a lowercase
+DNS-subdomain Kubernetes resource name of at most 253 characters. Its
+`backend.chatgpt.key` accepts letters, digits, `-`, `_` and `.`, up to 253
+characters, but cannot be `.` or start with `..`; the unchanged default is
+`admin-key`.
 
 `backend[].drivers` declares required membership. The ChatGPT Backend and its
 selected `service_account` Driver must be configured together with matching IDs.
@@ -137,9 +142,14 @@ backend:
 
 Its closed `configuration` accepts:
 
-- `endpoint`: `host:port`, or an `http` or `https` origin without credentials,
+- `endpoint`: `host:port` (bracket IPv6 literals, such as `[2001:db8::1]:8080`),
+  or an `http` or `https` origin without credentials,
   path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
   `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
+  Either form refuses an IPv6 zone ID (`[fe80::1%eth0]`), which URL parsing
+  cannot carry. The port, explicit or the scheme default, must be 1 to 65535,
+  and a bare value must also parse as `http://<value>`, as both gateway clients
+  read it.
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
@@ -162,8 +172,11 @@ Its closed `configuration` accepts:
 Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
 `drivers.credential_gateway` are required and must match the selected bundled
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). One
-OpenShell Backend is supported. Composition builds one gateway client object
+[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). The
+optional `drivers.credential_refresh` member must match the selected
+[Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
+refresh state on the gateway's provider records, so the two roles share this
+Backend. One OpenShell Backend is supported. Composition builds one gateway client object
 and injects it into both members, which cache one client per resolved endpoint.
 The API and the worker each construct it, so both need the token file and gateway access.
 

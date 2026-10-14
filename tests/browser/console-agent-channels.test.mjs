@@ -432,7 +432,6 @@ test("Channel drawer grants only the final selected Slack Secret", async (t) => 
     name: "Final Slack Grant Agent",
     slug: "final-slack-grant",
     slack: { channels: { CFINAL123: { requireMention: true } } },
-    harnessAuth: { method: "runtime" },
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);

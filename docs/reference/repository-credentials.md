@@ -293,7 +293,9 @@ unsupported. Other links, human text and unrelated metadata remain unchanged.
 
 Ordinary Git uses `/usr/bin/git`, which owns commands, identity, hooks, aliases,
 remotes, push URLs, worktrees and native user settings. The client neither parses
-Git arguments nor creates a temporary HOME.
+Git arguments nor creates a temporary HOME. The shared Git/gh executor preserves
+numeric exit codes; signal termination returns `128 + signal number`, including
+130 for SIGINT and 143 for SIGTERM.
 
 For each generation, native preparation validates public manifest/session metadata,
 identities, paths and file custody, then writes private aggregate `gitconfig`
@@ -311,10 +313,13 @@ workflows are unsupported.
 
 The generated defaults scope helper reset, `credential.useHttpPath=true`, verified
 TLS, optional CA trust and disabled redirects to the exact gateway HTTPS origin.
-The helper checks effective protocol, host/port, username and repository path;
-escaped paths, dot segments, extra components and unmatched names receive no
-bearer. A literal name ending in `.git` can overlap another admitted identity;
-the helper compares both spellings and refuses ambiguity or alternate grants.
+The helper checks effective protocol, host/port, username and repository path.
+Git decodes percent-escapes in the host, username and path first, so an escaped
+spelling of an admitted gateway host and repository receives a bearer; it can
+reach no other host, and the gateway refuses any `%` in a request path. Dot
+segments, extra components and unmatched names receive no bearer. A literal
+name ending in `.git` can overlap another admitted identity; the helper compares
+both spellings and refuses ambiguity or alternate grants.
 
 Duplicate repository bindings remain valid. Select one with `OCE_REPOSITORY_REF`;
 gh also propagates `OCE_REPOSITORY_SELECTION` containing generation, repository

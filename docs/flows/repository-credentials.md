@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-10-03"
-last_updated_session: authoring-run/41ba3c72-c44a-4a26-8285-7d4724f24352
+updated: "2026-10-13"
+last_updated_session: fix-1196-1197
 ---
 
 # Repository credential service flow
@@ -107,7 +107,10 @@ journal reserves the exact attempt before bearer delivery; recovery durably fenc
 a missing admission. The broker opens the session before reserving, so a capacity
 or shutdown refusal leaves no receipt and the same admission can retry or be
 fenced. When the broker refuses a reserved admission as invalid, or cannot record
-its session, it fences its own reservation. Known nondelivery closes the session.
+its session, it fences its own reservation. A fence that does not commit stays
+with that admission, and the next open or recovery fences it; past the admission
+window a sweep retries it and forgets it once the fence commits, so it stops
+counting toward capacity. Known nondelivery closes the session.
 Reconciliation cannot recover a bearer, change its binding or replay provider work.
 
 Factory failure or an invalid binding closes construction admission before
@@ -155,7 +158,9 @@ configuration. `apps/controller/src/drivers/repo/github/credentials/client/comma
 checks gh 2.100.0 and the canonical host/port profile.
 `apps/controller/src/drivers/repo/github/credentials/client/launch.ts:launchClient`
 provides single-session stock Git execution, signal forwarding and original child
-exit status, without Git command parsing or temporary-HOME cleanup. The
+exit status. `executeClientCommand` preserves numeric exits and maps signal
+termination to `128 + signal number` (SIGINT 130; SIGTERM 143), without Git
+command parsing or temporary-HOME cleanup. The
 [reference](../reference/repository-credentials.md#client-routing-and-limits)
 owns configuration overrides and generation limits.
 
@@ -346,6 +351,12 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 07:40: Past its window, a sweep fences a refused admission's reservation again and forgets it once the fence commits. (fix-1196-1197)
+
+- 2026-10-12 07:39: A refused admission keeps a reservation whose fence did not commit, and the next open or recovery fences it. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
+
+- 2026-10-06 19:36: Preserve native child signal exit statuses in the shared client executor. (authoring-run/6fa93358-8fd9-4675-9684-511f79da8969 - 86bf3dd99470b86d4c46568f48455f695daabde5)
 
 - 2026-10-03: Refuse GraphQL bodies that select the provider clone credential before dispatch.
 

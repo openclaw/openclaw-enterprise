@@ -10,6 +10,7 @@ import {
   type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
+  type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
   NotImplementedError,
@@ -25,6 +26,7 @@ import {
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
+import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -406,6 +408,13 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     ) {
       throw new PluginPolicyValidationError("approvers");
     }
+  }
+
+  validateAgentConfiguration(
+    selections: PluginDesiredState,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    validateCodexAutomaticReviewerPolicy(selections, configuration);
   }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";

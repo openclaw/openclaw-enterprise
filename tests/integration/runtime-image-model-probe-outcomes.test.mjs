@@ -11,6 +11,7 @@ import {
   runEmbeddedGatewayProbe,
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
+import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
 
 // The embedded Gateway's startup model probe on the real runtime image at a 500m
 // CPU limit (setup: tests/helpers/runtime-image-model-probe.mjs). The CPU
@@ -35,6 +36,7 @@ test(
     });
     const { events, phases, output } = run.snapshot;
     const detail = `\n${output}\n${JSON.stringify(events)}`;
+    recordModelProbeMeasurement(t, "gateway-500m-answer", run);
     assert.equal(runtimeFailure(events), undefined, `startup failed${detail}`);
     assert.equal(phaseAt(phases, "model-probe")?.outcome, "ok", detail);
     assert.ok(
@@ -74,6 +76,7 @@ test(
     });
     const { events, phases, output } = run.snapshot;
     const detail = `\n${output}\n${JSON.stringify(events)}`;
+    recordModelProbeMeasurement(t, "gateway-500m-hang", run);
     assert.equal(runtimeFailure(events), "MODEL_PROBE_TIMEOUT", detail);
     assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
     assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);

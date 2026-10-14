@@ -21,6 +21,8 @@ const controllerCommand =
 const interruption = new AbortController();
 
 class IncompatibleImageError extends Error {}
+// A local setup problem the operator can fix; its message names no secrets.
+class ProbeEnvironmentError extends Error {}
 
 async function run(command, args, timeout = 30000, cleanup = false) {
   const result = await execute(command, args, {
@@ -152,6 +154,15 @@ async function main() {
   }
   assert.equal(target, native, "the probe must run on the target's native architecture");
   assert.equal(process.getuid?.(), 1000, "the fixture must run as the broker's UID 1000");
+  // Check before Docker runs or anything is created. mkdtemp adds six characters, and
+  // receipt.sock and control.sock have the same length; 103 bytes binds on Linux and macOS.
+  const receiptSocket = join(tmpdir(), "oce-pair-XXXXXX", "control", "receipt.sock");
+  if (Buffer.byteLength(receiptSocket) > 103) {
+    throw new ProbeEnvironmentError(
+      `socket path ${receiptSocket} is ${Buffer.byteLength(receiptSocket)} bytes, over the ` +
+        "103-byte Unix socket limit; set TMPDIR to a shorter directory",
+    );
+  }
   const daemon = (await run("docker", ["info", "--format", "{{.OSType}}/{{.Architecture}}"]))
     .trim()
     .replace("linux/x86_64", "linux/amd64")
@@ -177,7 +188,6 @@ async function main() {
   let cleanupError;
   try {
     await mkdir(control, { mode: 0o700 });
-    assert.ok(Buffer.byteLength(join(control, "receipt.sock")) <= 103);
     await run("openssl", [
       "genpkey",
       "-algorithm",
@@ -453,7 +463,10 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    const detail = error instanceof IncompatibleImageError ? `: ${error.message}` : "";
+    const detail =
+      error instanceof IncompatibleImageError || error instanceof ProbeEnvironmentError
+        ? `: ${error.message}`
+        : "";
     process.stderr.write(`repository image-pair probe failed${detail}\n`);
     process.exitCode = 1;
   });

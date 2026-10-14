@@ -26,7 +26,7 @@ const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // control endpoint's listener and routes it by Host. Compute reaches a service the
 // way its workload client would, without depending on the advertised name resolving
 // from the controller: connect to the control endpoint, name the service in Host.
-function serviceTarget(
+export function serviceTarget(
   options: ServiceTransportOptions,
   serviceUrl: string,
 ): {

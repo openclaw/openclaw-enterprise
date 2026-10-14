@@ -1,7 +1,8 @@
 # Operators must select an approved, immutable Node 24 base image explicitly.
 ARG NODE_BASE_IMAGE
-ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 FROM ${NODE_BASE_IMAGE} AS dependencies
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 RUN node -e "if (Number(process.versions.node.split('.')[0]) !== 24) throw new Error('The approved production base image must use Node.js 24.')"
@@ -42,6 +43,7 @@ ENTRYPOINT ["node"]
 CMD ["apps/controller/src/server.mjs"]
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 WORKDIR /app
 

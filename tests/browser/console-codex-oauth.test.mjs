@@ -284,6 +284,7 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
     namespace.id,
     "OAuth save guard",
     nativeValues("oauth-save-guard", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);

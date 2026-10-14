@@ -585,6 +585,81 @@ test("service API keys authenticate scoped automation without replacing sessions
       /failed to create key file/,
     );
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // An explicit zero is invalid, not the API's omitted 30-day default.
+    const zeroExpiryFile = join(directory, "zero-expiry-key.json");
+    await assert.rejects(
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          "zero-expiry",
+          "--out",
+          zeroExpiryFile,
+          "--expires-in-days=0",
+        ],
+        { env: installationEnv },
+      ),
+      { stderr: /between 1 and 365/ },
+    );
+    await assert.rejects(open(zeroExpiryFile), { code: "ENOENT" });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    for (const days of [1, 365]) {
+      const before = Date.now();
+      const created = JSON.parse(
+        (
+          await run(
+            occCli,
+            [
+              "service-key",
+              "create",
+              "--service-principal",
+              installationPrincipal.id,
+              "--name",
+              `expiry-${days}`,
+              "--out",
+              join(directory, `expiry-${days}.json`),
+              `--expires-in-days=${days}`,
+              "-o",
+              "json",
+            ],
+            { env: installationEnv },
+          )
+        ).stdout,
+      );
+      assert.ok(Math.abs(Date.parse(created.expiresAt) - before - days * 86_400_000) < 10_000);
+      await run(occCli, ["service-key", "revoke", created.id], { env: adminEnv });
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // The CLI counts the name as the API does: 32 emoji are issued, 33 never leave the CLI.
+    const emojiKeyFile = join(directory, "emoji-key.json");
+    const emojiCreate = (name, out) =>
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          name,
+          "--out",
+          out,
+          "-o",
+          "json",
+        ],
+        { env: installationEnv },
+      );
+    const emoji = JSON.parse((await emojiCreate("😀".repeat(32), emojiKeyFile)).stdout);
+    assert.equal(emoji.name, "😀".repeat(32));
+    await assert.rejects(emojiCreate("😀".repeat(33), join(directory, "emoji-33.json")), {
+      stderr: /1 to 32 characters/,
+    });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber + 1);
+    await run(occCli, ["service-key", "revoke", emoji.id], { env: adminEnv });
     const revokedRotated = await run(
       occCli,
       ["service-key", "revoke", rotatedDetails.id, "-o", "json"],
@@ -1021,6 +1096,42 @@ test("service API keys authenticate scoped automation without replacing sessions
       (await request("DELETE", `/api/auth/service-keys/${shortLived.data.id}`)).status,
       200,
     );
+  });
+
+  await t.test("key names count code points, as the schema and the CLI do", async () => {
+    const tooLong =
+      "The request does not match the operation contract: body /name is too long (expected at most 32 characters).";
+    // 32 code points that are 64 UTF-16 units still fit, and the name round-trips.
+    for (const name of ["😀".repeat(32), "\u{20000}".repeat(32), `${"a".repeat(31)}😀`]) {
+      const named = await request("POST", "/api/auth/service-keys", { body: { ...body, name } });
+      assert.equal(named.status, 201, name);
+      assert.equal(named.data.name, name);
+      assert.equal(
+        (await request("DELETE", `/api/auth/service-keys/${named.data.id}`)).status,
+        200,
+      );
+    }
+    const keysBefore = memoryDatabase.apikey.length;
+    const over = await request("POST", "/api/auth/service-keys", {
+      body: { ...body, name: "😀".repeat(33) },
+    });
+    assert.equal(over.status, 400);
+    assert.equal(over.error.message, tooLong);
+    assert.deepEqual(over.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    // Should Better Auth still refuse a name the schema admitted, the caller gets the
+    // schema's 400, not a dependency 503, and no key is stored.
+    const createServiceKey = auth.createServiceKey;
+    auth.createServiceKey = (input) => createServiceKey({ ...input, name: "a".repeat(65) });
+    try {
+      const refused = await issue();
+      assert.equal(refused.status, 400);
+      assert.equal(refused.error.code, "INVALID_REQUEST");
+      assert.equal(refused.error.message, tooLong);
+      assert.deepEqual(refused.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    } finally {
+      auth.createServiceKey = createServiceKey;
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBefore);
   });
 
   await t.test(

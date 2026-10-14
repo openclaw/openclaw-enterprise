@@ -296,6 +296,8 @@ if (command === "inputs") {
           "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
         openclawConnectPatchSha256:
           "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2",
+        codexDependencyPinPatchSha256:
+          "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9",
         openclawRequiredWorkerAuthorityPatchSha256:
           "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8",
         artifactKind: "assembled-runtime-root",

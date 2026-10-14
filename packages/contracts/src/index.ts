@@ -1,4 +1,16 @@
 import type { WorkspaceSetup } from "./workspace-setup.ts";
+
+export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
+export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
+import type {
+  AgentRuntimeDescription,
+  AgentRuntimeDescribeOptions,
+  AgentRuntimeLogRequest,
+  AgentRuntimeLogChunk,
+  SandboxLogContext,
+  SandboxLogRequest,
+  SandboxLogChunk,
+} from "./runtime-logs.ts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   PluginDesiredSelectionSchema,
@@ -16,6 +28,31 @@ import type {
   RepositoryCredentialRuntimeBinding,
   RepositoryRevisionState,
 } from "./repo.ts";
+
+export type {
+  RuntimeLogContentClass,
+  RuntimeLogContainerSourceId,
+  RuntimeLogSourceId,
+  RuntimeLogLevel,
+  RuntimeLogKind,
+  RuntimeLogGapReason,
+  RuntimeLogWithheldReason,
+  RuntimeLogStream,
+  RuntimeLogRecord,
+  AgentRuntimeContainerStatus,
+  AgentRuntimeEvent,
+  AgentRuntimePodStatus,
+  AgentRuntimeLogSource,
+  AgentRuntimeHarnessStatus,
+  AgentRuntimeDescription,
+  AgentRuntimeDescribeOptions,
+  AgentRuntimeLogRequest,
+  AgentRuntimeLogChunk,
+  SandboxLogContext,
+  SandboxLogRequest,
+  SandboxLogLine,
+  SandboxLogChunk,
+} from "./runtime-logs.ts";
 
 export {
   LOGGING_LEVELS,
@@ -55,6 +92,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "channel",
   "repo",
   "credential_gateway",
+  "credential_refresh",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -108,7 +146,12 @@ export interface OpenShellBackendDefinition {
   readonly id: string;
   readonly type: "openshell";
   readonly configuration: OpenShellBackendConfiguration;
-  readonly drivers: { readonly sandbox: string; readonly credential_gateway: string };
+  readonly drivers: {
+    readonly sandbox: string;
+    readonly credential_gateway: string;
+    /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
+    readonly credential_refresh?: string;
+  };
 }
 
 export type BackendDefinition =
@@ -297,6 +340,12 @@ export interface CredentialSourceFieldSpec {
   readonly name: string;
   readonly required: boolean;
   readonly description?: string;
+  /**
+   * The issuer may replace this value each time the gateway uses it (a rotating OAuth2 refresh
+   * token), so the gateway's copy can be newer than the Secret that supplied it. An update must
+   * reference a different Secret for the field; re-sending the recorded one would be stale.
+   */
+  readonly issuerRotated?: boolean;
 }
 
 /** One entry in a Credential Gateway implementation's catalog. */
@@ -304,7 +353,8 @@ export interface CredentialSourceType {
   readonly type: string;
   readonly config: readonly CredentialSourceFieldSpec[];
   readonly secrets: readonly CredentialSourceFieldSpec[];
-  readonly rotation: "none" | "external" | "gateway";
+  /** `refresh` types need the Backend's Credential Refresh Driver to mint their tokens. */
+  readonly rotation: "none" | "external" | "refresh";
   readonly harnessAuth?: {
     readonly modelProvider: string;
     readonly loginMode: CredentialSourceLoginMode;
@@ -1075,6 +1125,29 @@ export type SandboxHarnessStatus =
   | { readonly state: "serving" }
   | { readonly state: "failed"; readonly runtimeFailure: unknown };
 
+/** Why a provisioned Harness Sandbox can no longer serve its revision. */
+export type SandboxHarnessLostCode =
+  "SANDBOX_MISSING" | "SANDBOX_DELETING" | "SANDBOX_STOPPED" | "SANDBOX_FAILED" | "HARNESS_EXITED";
+
+/**
+ * The provider restarts an exited Harness process itself: `exitCode` is the last exit and
+ * `restarts` its restart number in the current crash loop (1 for a first restart).
+ */
+export interface SandboxHarnessRestart {
+  readonly state: "starting";
+  readonly code: "HARNESS_RESTARTING";
+  readonly exitCode: number;
+  readonly restarts: number;
+}
+
+/** The provider's own lifecycle record of a revision's Harness Sandbox. */
+export type SandboxHarnessObservation =
+  | { readonly state: "running" }
+  | { readonly state: "starting" }
+  | SandboxHarnessRestart
+  | { readonly state: "unknown" }
+  | { readonly state: "lost"; readonly code: SandboxHarnessLostCode };
+
 export interface ComputeLifecycleHooks {
   afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
@@ -1270,6 +1343,8 @@ export interface CredentialSourceInput {
 export interface CredentialSourceStatus {
   readonly state: "ready" | "pending" | "failed" | "absent";
   readonly reason?: string;
+  /** Present for a `refresh` type: the Credential Refresh Driver's view of its tokens. */
+  readonly refresh?: CredentialRefreshStatus;
 }
 
 export interface CredentialRevisionContext extends CredentialGatewayContext {
@@ -1311,6 +1386,8 @@ export interface CredentialAttachmentStatus {
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
   listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
+  /** Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record. */
+  validateSourceConfig(input: Pick<CredentialSourceInput, "type" | "config">): void;
   registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,
@@ -1319,7 +1396,6 @@ export interface CredentialGatewayDriver extends Driver {
     context: CredentialSourceContext,
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus>;
-  rotateSource(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   /** Idempotent; an already-absent source counts as removed. */
   removeSource(context: CredentialSourceContext): Promise<void>;
@@ -1337,10 +1413,52 @@ export interface CredentialGatewayDriver extends Driver {
   withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus>;
 }
 
+export interface CredentialRefreshInput {
+  readonly config: Readonly<Record<string, string>>;
+  /** Resolved refresh material keyed by catalog field; never persisted by OCC. */
+  readonly secrets: Readonly<Record<string, string>>;
+  /** A UUID, stable per source and configuration attempt, so a replay is not applied twice. */
+  readonly requestId: string;
+}
+
+export interface CredentialRefreshStatus {
+  readonly state: "pending" | "ready" | "failed";
+  readonly expiresAt?: string;
+  readonly nextRefreshAt?: string;
+  readonly lastRefreshAt?: string;
+  /** Implementation-owned identifier, never provider-controlled text. */
+  readonly failureCode?: string;
+  readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
+}
+
+/**
+ * Mints and re-mints tokens for the paired Credential Gateway's `refresh` sources. OCC drives
+ * only setup, incident rotation, and status; the implementation refreshes before expiry.
+ */
+export interface CredentialRefreshDriver extends Driver {
+  readonly capability: "credential_refresh";
+  /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
+  configureRefresh(
+    context: CredentialSourceContext,
+    input: CredentialRefreshInput,
+  ): Promise<CredentialRefreshStatus>;
+  /** Forces one refresh; it does not revoke the previous token at the issuer. */
+  rotate(context: CredentialSourceContext, requestId: string): Promise<CredentialRefreshStatus>;
+  refreshStatus(context: CredentialSourceContext): Promise<CredentialRefreshStatus>;
+  /** Idempotent; deletes the stored refresh material. */
+  removeRefresh(context: CredentialSourceContext): Promise<void>;
+}
+
 export interface SandboxDriver extends Driver {
   readonly capability: "sandbox";
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
+  /**
+   * Absolute HOME of the Harness user inside this provider's Sandbox. Compute places
+   * Harness-local paths it renders into the Agent Gateway configuration, such as the native
+   * hook credential directory, under it. Defaults to the Compute-owned Harness Pod's HOME.
+   */
+  readonly harnessHome?: string;
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
@@ -1366,6 +1484,15 @@ export interface SandboxDriver extends Driver {
   harnessResource?(
     context: Pick<SandboxHarnessContext, "namespace" | "revision">,
   ): SandboxResourceRef;
+  /**
+   * Exact Pod labels of the provider Pods that open this revision's workspace-node connection to
+   * its Agent Gateway, in the Sandbox namespace, or `undefined` while the revision has no Sandbox.
+   * Compute admits only Pods with these labels to that Gateway's port, so they must select this
+   * revision's Sandbox alone, never another Sandbox in the namespace.
+   */
+  workspaceNodePeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */
   cleanup(
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
@@ -1379,6 +1506,14 @@ export interface SandboxDriver extends Driver {
     context: SandboxLogContext,
     request: SandboxLogRequest,
   ): Promise<SandboxLogChunk>;
+  /**
+   * The provider's lifecycle record of the dedicated revision's Harness Sandbox, read-only.
+   * `lost` means the Sandbox is not serving the revision and OCC will not restart it
+   * (deleted, stopped, failed, or its Harness process exited); a new deployment replaces it.
+   * `starting` with `HARNESS_RESTARTING` is a Harness process the provider is restarting
+   * after it exited, as opposed to a first start.
+   */
+  observeHarness?(context: SandboxLogContext): Promise<SandboxHarnessObservation>;
 }
 
 export interface PluginDriverContext {
@@ -1400,6 +1535,15 @@ export interface PluginDriver extends Driver {
   readonly policyCapabilities: PluginPolicyCapabilities;
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
+  /**
+   * Side-effect-free check of admitted selections against the Agent's Configuration values,
+   * at Agent save, provisioning and deployment. Throws ConfigurationHarnessError, naming the setting but
+   * never its value, for a combination the Driver's runtime cannot enforce.
+   */
+  validateAgentConfiguration?(
+    selections: PluginDesiredState,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
   /** Pre-Agent discovery defaults to requiring a transient credential. Results are not persisted. */
   readonly discoveryCredential?: "required" | "none";
@@ -1501,7 +1645,8 @@ export interface RuntimeFailureEvidence {
  * Why an unready revision is still pending, when Compute knows: its Pods cannot be
  * scheduled, or its workloads are ready but the workspace node has not connected.
  */
-export type ComputePendingReason = "WORKLOAD_UNSCHEDULABLE" | "WORKSPACE_NODE_PENDING";
+export type ComputePendingReason =
+  "WORKLOAD_UNSCHEDULABLE" | "WORKSPACE_NODE_PENDING" | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
 
 export interface ComputeReadiness extends Scope {
   readonly namespaceId: string;
@@ -1570,189 +1715,6 @@ export interface ComputeAgentRevisionBinding extends ComputeAgentBinding {
   readonly revision: Readonly<AgentRevision>;
 }
 
-/**
- * Runtime log classes. OCC classifies every record; a source never sets the class.
- * `content` (message text, prompts, tool output) is reserved and has no producer.
- */
-export type RuntimeLogContentClass = "operational" | "activity" | "content";
-/** Container sources are Pods the Compute Driver lists; `sandbox` is the Sandbox Driver's log. */
-export type RuntimeLogContainerSourceId = "gateway" | "agent";
-export type RuntimeLogSourceId = RuntimeLogContainerSourceId | "sandbox";
-export type RuntimeLogLevel = "error" | "warn" | "info" | "debug" | "unknown";
-export type RuntimeLogKind = "wrapper" | "openclaw" | "codex" | "sandbox" | "text";
-export type RuntimeLogGapReason =
-  "stream_replaced" | "window_exceeded" | "cursor_expired" | "truncated" | "buffer_lost";
-export type RuntimeLogWithheldReason = "unrecognised_structured" | "oversized" | "malformed";
-
-/** One container instance or sandbox, keyed on server-observed identity only. */
-export interface RuntimeLogStream {
-  readonly source: RuntimeLogSourceId;
-  readonly pod?: string;
-  readonly podUid?: string;
-  readonly container?: string;
-  readonly restartCount?: number;
-  /** Sandbox source: the OCC-derived Sandbox name of this revision. */
-  readonly sandbox?: string;
-}
-
-export type RuntimeLogRecord =
-  | {
-      readonly type: "line";
-      readonly time: string | null;
-      readonly stream: RuntimeLogStream;
-      readonly contentClass: RuntimeLogContentClass;
-      readonly kind: RuntimeLogKind;
-      readonly level: RuntimeLogLevel;
-      readonly message: string;
-      readonly subsystem?: string;
-      readonly fields?: Readonly<Record<string, string | number | boolean>>;
-      readonly truncated?: true;
-    }
-  | {
-      readonly type: "gap";
-      readonly time: string | null;
-      readonly stream: RuntimeLogStream;
-      readonly reason: RuntimeLogGapReason;
-      readonly remedy: string;
-    }
-  | {
-      readonly type: "withheld";
-      readonly time: string | null;
-      readonly stream: RuntimeLogStream;
-      readonly count: number;
-      readonly reason: RuntimeLogWithheldReason;
-    };
-
-export interface AgentRuntimeContainerStatus {
-  readonly name: string;
-  readonly state: "waiting" | "running" | "terminated" | "unknown";
-  readonly reason: string | null;
-  readonly ready: boolean;
-  readonly restartCount: number;
-  readonly startedAt: string | null;
-  readonly lastTermination: {
-    readonly reason: string | null;
-    readonly exitCode: number | null;
-    readonly finishedAt: string | null;
-  } | null;
-}
-
-export interface AgentRuntimeEvent {
-  readonly type: "Normal" | "Warning";
-  /** Container the Event concerns (from `involvedObject.fieldPath`), or null for the Pod. */
-  readonly container: string | null;
-  readonly reason: string;
-  readonly message: string;
-  readonly count: number;
-  readonly lastObservedAt: string | null;
-}
-
-export interface AgentRuntimePodStatus {
-  readonly role: RuntimeLogContainerSourceId;
-  /** `execution` only when the Pod runs on a separately configured execution cluster. */
-  readonly cluster: "control" | "execution";
-  readonly name: string;
-  readonly uid: string;
-  readonly phase: string;
-  readonly ready: boolean;
-  readonly createdAt: string | null;
-  readonly containers: readonly AgentRuntimeContainerStatus[];
-  /** Pod-scoped Events, newest first, at most 100. */
-  readonly events: readonly AgentRuntimeEvent[];
-}
-
-export interface AgentRuntimeLogSource {
-  readonly id: RuntimeLogSourceId;
-  /** `sandbox` sources list no Pods; OCC derives the Sandbox from the revision. */
-  readonly kind: "container" | "sandbox";
-  readonly pods: readonly {
-    readonly name: string;
-    readonly uid: string;
-    readonly container: string;
-    readonly restartCount: number;
-  }[];
-  readonly available: boolean;
-  readonly unavailableCode?: "NO_POD";
-  /** Fixed notice for loss the API cannot observe. */
-  readonly retention: string;
-}
-
-export interface AgentRuntimeDescription {
-  readonly revisionId: string;
-  readonly observedAt: string;
-  readonly pods: readonly AgentRuntimePodStatus[];
-  readonly sources: readonly AgentRuntimeLogSource[];
-}
-
-/** Narrows a description for a log read, which needs one source's Pods and no Events. */
-export interface AgentRuntimeDescribeOptions {
-  /** Describe only this source's Pods; other sources are omitted. */
-  readonly source?: RuntimeLogContainerSourceId;
-  /** `false` skips Pod Event lists; each Pod then carries no Events. */
-  readonly events?: boolean;
-}
-
-export interface AgentRuntimeLogRequest {
-  readonly source: RuntimeLogContainerSourceId;
-  readonly pod: string;
-  readonly podUid: string;
-  readonly container: string;
-  readonly previous: boolean;
-  readonly tailLines: number;
-  readonly sinceSeconds?: number;
-  readonly limitBytes: number;
-  readonly signal: AbortSignal;
-}
-
-/** Raw lines as the runtime wrote them; OCC classifies and redacts every line. */
-export interface AgentRuntimeLogChunk {
-  /** Stream identity re-read after the log read. */
-  readonly stream: RuntimeLogStream;
-  readonly observedAt: string;
-  readonly lines: readonly { readonly time: string | null; readonly raw: string }[];
-  /** The byte limit cut the output; the final line may be partial. */
-  readonly truncated: boolean;
-}
-
-/** Where a Sandbox Driver finds one revision's Sandbox; the Namespace is Compute's placement. */
-export interface SandboxLogContext {
-  readonly namespace: Readonly<Namespace>;
-  readonly revision: Readonly<AgentRevision>;
-  readonly signal: AbortSignal;
-}
-
-export interface SandboxLogRequest {
-  /** Most recent lines to return, 1 to 1000. */
-  readonly lines: number;
-  /** Only lines at or after this RFC 3339 time. */
-  readonly sinceTime?: string;
-}
-
-/** One raw Sandbox log line as the Sandbox runtime reported it; OCC sanitizes every field. */
-export interface SandboxLogLine {
-  readonly time: string | null;
-  readonly sandboxId: string;
-  readonly level: string;
-  readonly target: string;
-  readonly message: string;
-  /** Where the line was produced, for example `gateway` or `sandbox`. */
-  readonly source: string;
-  readonly fields: Readonly<Record<string, string>>;
-}
-
-/** Raw, bounded Sandbox log lines in chronological order. */
-export interface SandboxLogChunk {
-  /** The Sandbox name the Driver read; OCC checks it against the revision. */
-  readonly sandbox: string;
-  readonly observedAt: string;
-  readonly lines: readonly SandboxLogLine[];
-  /**
-   * Lines the source examined before applying `sinceTime`: the requested line count
-   * when the buffer held at least that many, otherwise the whole buffer.
-   */
-  readonly bufferTotal: number;
-}
-
 /** Observed workload image identity; missing provenance must never be inferred from a tag. */
 export interface RuntimeImage {
   readonly workload: string;
@@ -1783,6 +1745,28 @@ export interface HarnessDeviceAuthorization {
 
 export type HarnessDeviceAuthorizationResult =
   { readonly status: "pending" } | { readonly status: "ready"; readonly credential: string };
+
+/**
+ * Options for Configuration rules that also run on Preset defaults. `unresolved` locates text its
+ * writer fills in later (an unfilled Preset variable): for the string at `path` in the values (an
+ * object key: `key` true, `path` ending in the key), the literal text around each unfilled
+ * variable, or undefined. A rule checks that text with a stand-in for each variable, and the
+ * Configuration the filled Preset creates is checked like any other. Text is located by path, so
+ * literal text that reads the same elsewhere (an escaped token) is checked as written.
+ */
+export interface ConfigurationValidationOptions {
+  readonly unresolved?: (
+    path: readonly (string | number)[],
+    key?: boolean,
+  ) => readonly string[] | undefined;
+  /**
+   * The declared type of an unfilled variable that is the whole value at `path`, or undefined:
+   * a number or boolean fills a field that takes text with no string.
+   */
+  readonly unresolvedType?: (
+    path: readonly (string | number)[],
+  ) => "string" | "number" | "boolean" | "password" | undefined;
+}
 
 export interface ComputeDriver extends Driver {
   readonly supportsWorkspaceSetup?: true;
@@ -1824,11 +1808,40 @@ export interface ComputeDriver extends Driver {
    * every preparation attempt would refuse; other refusals stay with preparation.
    */
   validateGatewaySettings?(configuration: Readonly<OpenClawConfigurationDocument>): void;
+  /**
+   * Side-effect-free check of Configuration values against rules the Driver applies on every
+   * topology, at Configuration create and update, Agent provisioning and Preset save (on the
+   * values rendered with defaults). Throws ConfigurationHarnessError, naming the setting but
+   * never its value. validateHarnessAuth applies the same rules at deployment. Preset saves pass
+   * `options.unresolved`, which names their unfilled variables.
+   */
+  validateConfiguration?(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void;
+  /**
+   * Side-effect-free check that the first deployment of an Agent with initial workspace files
+   * can deliver them on this Harness topology, at Agent create and update while the setup is
+   * pending, at deployment and at provisioning. `sandboxDriverId` names the Sandbox Driver the
+   * revision would be pinned to, if any. Throws ConfigurationHarnessError, naming the setting,
+   * for Configuration content preparation would refuse; any other error is an Installation
+   * refusal.
+   */
+  validateWorkspaceSetup?(
+    harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    sandboxDriverId?: string,
+  ): void;
   validateHarnessAuth?(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
-    secretBindings?: SecretBindings,
+    /**
+     * The Configuration's Secret bindings. Agent save passes `null` and expects only the rules
+     * that depend on the Agent: a Configuration may stage its bindings after its values, and
+     * Installation-wide facts about the Configuration wait for deployment.
+     */
+    secretBindings?: SecretBindings | null,
     /** Catalog entry for a `credential_source` binding; absent for every other method. */
     credentialSourceType?: CredentialSourceType,
   ): void;
@@ -1863,6 +1876,15 @@ export interface ComputeDriver extends Driver {
     request: AgentRuntimeLogRequest,
   ): Promise<AgentRuntimeLogChunk>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
+  /**
+   * Removes a ServiceAccount's account-owned access-token Secret. A force-delete with no
+   * ServiceAccount Driver left calls it so no copy of the unrevoked token stays behind.
+   */
+  deleteServiceAccountCredential?(input: {
+    readonly namespaceId: string;
+    readonly serviceAccountId: string;
+    readonly secretRef: ServiceAccountCredential["secretRef"];
+  }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
@@ -1875,7 +1897,9 @@ export interface ComputeDriver extends Driver {
    * Revokes `source` from the revision's paired Sandbox through the selected Credential
    * Gateway. Returns `revoked` only after the gateway confirms revocation, and `absent` when
    * the revision has no Sandbox or attachment left to revoke. Required for withdrawal.
-   * `options.recheck` is passed through to the gateway's withdrawal context.
+   * `options.recheck` is passed through to the gateway's withdrawal context. Throws OCC's
+   * CredentialWithdrawalRefusedError when retrying cannot help: a configuration that cannot
+   * reach the revision's Sandbox, or an object the Driver does not own.
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
@@ -1883,6 +1907,10 @@ export interface ComputeDriver extends Driver {
     signal: AbortSignal,
     options?: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus>;
+  /**
+   * Throws OCC's ComputePreparationFailedError when initialization is terminal.
+   * The worker durably fails deployment and schedules stopRevision for cleanup.
+   */
   prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
@@ -1899,8 +1927,14 @@ export interface ComputeDriver extends Driver {
 
 export interface ConfigurationDriver extends Driver {
   readonly capability: "configuration";
-  /** Side-effect-free admission of partial native values before Preset storage. */
-  validateValues?(values: OpenClawConfigurationDocument): Promise<void>;
+  /**
+   * Side-effect-free admission of partial native values before Preset storage. `unresolved`
+   * locates the text that waits on a Preset variable without a default.
+   */
+  validateValues?(
+    values: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;
   createExact?(configuration: Configuration): Promise<Configuration>;
   inspectExact?(configuration: Configuration): Promise<Configuration | undefined>;
@@ -1926,10 +1960,12 @@ export {
 export type { Preset, PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
 export { normalizePresetTemplate } from "./presets.ts";
 export {
+  PRESET_JSON_MAX_BYTES,
   PresetValidationError,
   renderPresetTemplate,
   validatePresetTemplate,
   presetTemplateDefaults,
+  presetTemplateDefaultsWithPlaceholders,
 } from "./preset-variables.mjs";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";

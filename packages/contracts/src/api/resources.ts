@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
   AgentId,
@@ -533,6 +534,29 @@ export const SecretDetailSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const CredentialRefreshStatusSchema = Type.Object(
+  {
+    state: Type.Union([Type.Literal("pending"), Type.Literal("ready"), Type.Literal("failed")]),
+    expiresAt: Type.Optional(Type.String({ format: "date-time" })),
+    nextRefreshAt: Type.Optional(Type.String({ format: "date-time" })),
+    lastRefreshAt: Type.Optional(Type.String({ format: "date-time" })),
+    failureCode: Type.Optional(Type.String({ maxLength: 128 })),
+    recoveryAction: Type.Optional(
+      Type.Union([
+        Type.Literal("retry"),
+        Type.Literal("reauthorize"),
+        Type.Literal("fix_configuration"),
+        Type.Literal("investigate"),
+      ]),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+  },
+);
+
 export const CredentialSourceStatusSchema = Type.Object(
   {
     state: Type.Union([
@@ -542,6 +566,7 @@ export const CredentialSourceStatusSchema = Type.Object(
       Type.Literal("absent"),
     ]),
     reason: Type.Optional(Type.String({ maxLength: 512 })),
+    refresh: Type.Optional(CredentialRefreshStatusSchema),
   },
   {
     additionalProperties: false,
@@ -857,6 +882,29 @@ export const ServiceAccountResponse = Type.Object(
   { additionalProperties: false },
 );
 
+export const ServiceAccountForceDeletionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        id: ServiceAccountId,
+        namespaceId: NamespaceId,
+        revocation: Type.Literal("skipped", {
+          description:
+            "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+        }),
+        backendId: Type.Optional(BackendId),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+  },
+);
+
 export const ServiceAccountListResponse = Type.Object(
   { data: Type.Array(ServiceAccountSchema), meta: Meta },
   { additionalProperties: false },
@@ -1071,6 +1119,24 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    cleanup: Type.Union(
+      [
+        Type.Null(),
+        Type.Object(
+          {
+            status: Type.Union(
+              ["queued", "running", "succeeded", "failed"].map((status) => Type.Literal(status)),
+            ),
+            nextAttemptAt: Type.Union([Timestamp, Type.Null()]),
+          },
+          { additionalProperties: false },
+        ),
+      ],
+      {
+        description:
+          "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed.",
+      },
+    ),
     progress: Type.Union(
       [
         Type.Null(),
@@ -1115,6 +1181,10 @@ export const AgentDeploymentStatusSchema = Type.Object(
             message: Type.String({ minLength: 1 }),
             data: Type.Optional(
               Type.Union([
+                Type.Object(
+                  { preparation: ComputePreparationFailureEvidenceSchema },
+                  { additionalProperties: false },
+                ),
                 Type.Object(
                   {
                     timeoutMs: Type.Integer({ minimum: 1 }),
@@ -1403,7 +1473,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
               },
               { additionalProperties: false },
             ),
-            { maxItems: 16 },
+            { maxItems: 256 },
           ),
           available: Type.Boolean(),
           unavailableCode: Type.Optional(Type.Literal("NO_POD")),
@@ -1412,6 +1482,50 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
         { additionalProperties: false },
       ),
       { maxItems: 4 },
+    ),
+    harness: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Union([
+            Type.Literal("running"),
+            Type.Literal("starting"),
+            Type.Literal("lost"),
+            Type.Literal("unknown"),
+          ]),
+          code: Type.Optional(
+            Type.Union([
+              Type.Literal("SANDBOX_MISSING"),
+              Type.Literal("SANDBOX_DELETING"),
+              Type.Literal("SANDBOX_STOPPED"),
+              Type.Literal("SANDBOX_FAILED"),
+              Type.Literal("HARNESS_EXITED"),
+              Type.Literal("HARNESS_RESTARTING"),
+              Type.Literal("UNAVAILABLE"),
+            ]),
+          ),
+          exitCode: Type.Optional(
+            Type.Integer({
+              minimum: -2147483648,
+              maximum: 2147483647,
+              description:
+                "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+            }),
+          ),
+          restarts: Type.Optional(
+            Type.Integer({
+              minimum: 1,
+              maximum: 4294967295,
+              description:
+                "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+            }),
+          ),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+        },
+      ),
     ),
   },
   { additionalProperties: false },
@@ -1509,6 +1623,9 @@ export type CredentialWithdrawalWire = Type.Static<typeof CredentialWithdrawalSc
 export type CredentialWithdrawalResponse = Type.Static<typeof CredentialWithdrawalResponse>;
 export type SecretListResponse = Type.Static<typeof SecretListResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
+export type ServiceAccountForceDeletionResponse = Type.Static<
+  typeof ServiceAccountForceDeletionResponse
+>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
 export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;

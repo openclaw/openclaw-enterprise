@@ -169,6 +169,47 @@ export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableErro
   }
 }
 
+/**
+ * Node and OpenSSL codes for a server certificate that failed identity or chain validation.
+ */
+const CERTIFICATE_ERROR_CODES = new Set([
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_REVOKED",
+  "CERT_SIGNATURE_FAILURE",
+  "CERT_UNTRUSTED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+
+/**
+ * The database server's TLS certificate was refused. `reason` is only the TLS error code,
+ * never the certificate or the connection URL, so startup can log it.
+ */
+export class PostgresCertificateRejectedError extends DependencyUnavailableError {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super("The platform persistence repository is unavailable.");
+    this.name = "PostgresCertificateRejectedError";
+    this.reason = reason;
+  }
+}
+
+function checkoutFailure(error: unknown): Error {
+  if (error instanceof ScopeViolationError || error instanceof DependencyUnavailableError) {
+    return error;
+  }
+  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && CERTIFICATE_ERROR_CODES.has(code)
+    ? new PostgresCertificateRejectedError(code)
+    : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+}
+
 interface TransactionContext {
   readonly lifetime: RepositoryTransactionLifetime;
   readonly client: PostgresClient;
@@ -1381,9 +1422,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     try {
       client = await this.pool.connect();
     } catch (error) {
-      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
-        ? error
-        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+      throw checkoutFailure(error);
     }
     let transportError: Error | undefined;
     const onTransportError = (error: Error) => {
@@ -1559,6 +1598,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "recoverStale",
       "findWork",
       "findWorkAttempt",
+      "countRefusedStopWaits",
     ]);
   }
 
@@ -1573,9 +1613,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     } catch (error) {
       // No statement has run yet, so any checkout failure (DNS, routing, TLS,
       // credentials or a password callback) is unavailability, not a server verdict.
-      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
-        ? error
-        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+      throw checkoutFailure(error);
     }
 
     // Checked-out pg clients emit transport errors independently of query rejection.
@@ -2732,14 +2770,31 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? findCredentialSource(namespaceId, credentialSourceId)
           : undefined;
       },
-      hasReferences: async (namespaceId, credentialSourceId) => {
+      hasReferences: async (namespaceId, credentialSourceId) =>
+        (await credentialSources.findBlockingReference(namespaceId, credentialSourceId)) !==
+        undefined,
+      findBlockingReference: async (namespaceId, credentialSourceId) => {
         if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
-          return false;
+          return undefined;
         }
+        // Withdrawal work is reported only when nothing else references the source, so the
+        // refusal can name the way out that applies.
         const found = rows(
           (
             await client.query(
-              `SELECT EXISTS (
+              `WITH held_work AS (
+                 -- Outstanding work for a revision admitted with the source.
+                 SELECT w.agent_target IS NOT DISTINCT FROM $3 AS withdrawal
+                 FROM occ.controller_work AS w
+                 JOIN occ.agent_revisions AS r ON r.namespace_id = w.namespace_id
+                   AND r.agent_id = w.agent_id AND r.id = w.revision_id
+                 WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
+                   AND ((r.admitted_spec #>> '{harness_auth,method}' = 'credential_source'
+                         AND r.admitted_spec #>> '{harness_auth,sourceId}' = $2)
+                     OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
+                          jsonb_build_object('sourceId', $2::text)))
+               )
+               SELECT EXISTS (
                  SELECT 1 FROM occ.agents
                  WHERE namespace_id = $1 AND harness_auth_credential_source_id = $2
                ) OR EXISTS (
@@ -2755,26 +2810,21 @@ export class PostgresPlatformState implements PlatformStateStore {
                      OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
                           jsonb_build_object('sourceId', $2::text)))
                ) OR EXISTS (
-                 SELECT 1 FROM occ.controller_work AS w
-                 JOIN occ.agent_revisions AS r ON r.namespace_id = w.namespace_id
-                   AND r.agent_id = w.agent_id AND r.id = w.revision_id
-                 WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
-                   AND ((r.admitted_spec #>> '{harness_auth,method}' = 'credential_source'
-                         AND r.admitted_spec #>> '{harness_auth,sourceId}' = $2)
-                     OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
-                          jsonb_build_object('sourceId', $2::text)))
-               ) OR EXISTS (
                  -- Before an Agent exists, its queued plan still holds the model source.
                  SELECT 1 FROM occ.agent_provisioning_work AS p
                  WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
                    AND p.plan #>> '{harnessAuth,method}' = 'credential_source'
                    AND p.plan #>> '{harnessAuth,sourceId}' = $2
-               ) AS present`,
-              [namespaceId, credentialSourceId],
+               ) OR EXISTS (SELECT 1 FROM held_work WHERE NOT withdrawal) AS referenced,
+               EXISTS (SELECT 1 FROM held_work WHERE withdrawal) AS withdrawal_work`,
+              [namespaceId, credentialSourceId, CREDENTIAL_WITHDRAWAL_TARGET],
             )
           ).rows,
         )[0];
-        return found?.present === true;
+        if (found?.referenced === true) {
+          return "reference";
+        }
+        return found?.withdrawal_work === true ? "withdrawal_work" : undefined;
       },
       deleteCredentialSource: async (namespaceId, credentialSourceId) => {
         if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
@@ -2940,6 +2990,28 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await deleteResourceAccessBindings("service_account", serviceAccountId);
         return true;
+      },
+      findIssuedCredentialBinding: async (namespaceId, serviceAccountId) => {
+        const found = rows(
+          (
+            await client.query(
+              `SELECT b.backend_id, b.workspace_id, b.external_account_id, b.external_credential_id
+               FROM occ.service_account_driver_bindings AS b
+               JOIN occ.namespaces AS n ON n.id = b.namespace_id AND n.deleted_at IS NULL
+               WHERE b.namespace_id = $1 AND b.service_account_id = $2
+                 AND b.external_credential_id IS NOT NULL`,
+              [namespaceId, serviceAccountId],
+            )
+          ).rows,
+        )[0];
+        return found === undefined
+          ? undefined
+          : immutableCopy({
+              backendId: text(found, "backend_id"),
+              workspaceId: text(found, "workspace_id"),
+              externalAccountId: text(found, "external_account_id"),
+              credentialId: text(found, "external_credential_id"),
+            });
       },
     };
 
@@ -3406,10 +3478,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (!validPluginApprovers(revision.pluginApprovers)) {
           throw new ScopeViolationError("The AgentRevision plugin approvers are invalid.");
         }
-        await client.query(
+        // The database clock stamps admission, as it stamps controller work, so a stop or
+        // deletion orders this revision against its own creation without controller clock
+        // skew (finding 1195). The caller's createdAt is replaced, not stored.
+        const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, clock_timestamp())
+           RETURNING admitted_at`,
           [
             revision.id,
             revision.namespaceId,
@@ -3442,13 +3518,17 @@ export class PostgresPlatformState implements PlatformStateStore {
                 ? {}
                 : { credential_sources: revision.credentialSources }),
             }),
-            revision.createdAt,
           ],
         );
+        const [stamped] = rows(admitted.rows);
+        if (stamped === undefined) {
+          throw new DependencyUnavailableError("The AgentRevision admission was not recorded.");
+        }
         const { secretBindings: _providedSecretBindings, ...withoutSecretBindings } = revision;
         return immutableCopy({
           ...withoutSecretBindings,
           ...(secretBindings === undefined ? {} : { secretBindings }),
+          createdAt: timestamp(stamped, "admitted_at"),
         });
       },
     };
@@ -3793,10 +3873,16 @@ export class PostgresPlatformState implements PlatformStateStore {
         findWithWork: async (workId) => {
           // One statement, one snapshot: separate reads under READ COMMITTED can pair a
           // job with a queue row from a later commit (a failed queue row, a running job).
+          // PostgreSQL judges lease liveness on its own clock, as findWork does; a missing
+          // queue row stays null because NULL || jsonb is NULL.
           const found = rows(
             (
               await client.query(
-                `SELECT provisioning.*, to_jsonb(work) AS controller_work
+                `SELECT provisioning.*,
+                        to_jsonb(work) || jsonb_build_object(
+                          'lease_active',
+                          work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()
+                        ) AS controller_work
                  FROM occ.agent_provisioning_work AS provisioning
                  LEFT JOIN occ.controller_work AS work
                    ON work.idempotency_key = provisioning.work_id
@@ -3976,7 +4062,14 @@ export class PostgresPlatformState implements PlatformStateStore {
                  ), updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET status = 'running',
-                       progress = $3::jsonb,
+                       -- The database clock stamps the effect, so a later attempt on any
+                       -- replica can age it against updated_at (finding 911).
+                       progress = jsonb_set(
+                         $3::jsonb,
+                         '{pendingEffect,startedAt}',
+                         to_jsonb(to_char(clock_timestamp() AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+                       ),
                        updated_at = clock_timestamp()
                    FROM owner
                    WHERE provisioning.work_id = owner.idempotency_key
@@ -4189,6 +4282,15 @@ export class PostgresPlatformState implements PlatformStateStore {
           }
           if (failed.disposition === "permanent") {
             await queue.fail(claim, { code: failed.code });
+            return provisioningRecordFromRow(checkpointed[0]);
+          }
+          if (failed.disposition === "defer") {
+            // The provisioning failure audit the caller appends already records this wait.
+            await queue.defer(
+              claim,
+              { code: failed.code },
+              { delayMs: failed.delayMs!, recordEvidence: false },
+            );
             return provisioningRecordFromRow(checkpointed[0]);
           }
           await queue.retry(claim, { code: failed.code });
@@ -4689,6 +4791,17 @@ export class PostgresPlatformState implements PlatformStateStore {
             [namespaceId, revisionId, CREDENTIAL_WITHDRAWAL_TARGET],
           );
           return found.rowCount === 1;
+        },
+        expediteCredentialWithdrawalWork: async (namespaceId, revisionId) => {
+          await this.requireInitialized(context);
+          const expedited = await client.query(
+            `UPDATE occ.controller_work
+             SET available_at = clock_timestamp(), updated_at = clock_timestamp()
+             WHERE namespace_id = $1 AND revision_id = $2 AND agent_target = $3
+               AND state = 'queued' AND available_at > clock_timestamp()`,
+            [namespaceId, revisionId, CREDENTIAL_WITHDRAWAL_TARGET],
+          );
+          return (expedited.rowCount ?? 0) > 0;
         },
       },
     };

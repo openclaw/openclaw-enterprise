@@ -19,7 +19,7 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
-- The Agent must be running, have an active revision, and expose a `ComputeDriver.getGatewayEndpoint` value that can be mapped from private `wss:` to private `https:`.
+- The Agent must be running with an active revision owned by the selected Compute Driver: both Driver ID and implementation must match the revision. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
 ## Authorization and availability
@@ -37,6 +37,17 @@ The response reports:
 | `available`   | The caller may open the returned `url` for the current active revision.                                        |
 
 A stopped Agent with no active revision returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its active revision. A stopped Agent with a selectable active revision still includes its target fields. If a desired-running Agent has no active revision, OCC returns `unavailable` in the success envelope so the console can show a retryable state. A dependency outage, the IAM Driver included, returns `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, denied IAM access and missing sessions also use the normal protected-route error envelope.
+
+Changing the selected Compute Driver does not migrate existing revisions. After
+lifecycle and native-configuration checks, OCC compares the selected Driver's ID
+and implementation with the active revision's recorded owner. A mismatch returns
+`503 DEPENDENCY_UNAVAILABLE` from the availability API before endpoint resolution,
+private gateway-key lookup or transport. Agent-host HTTP retains its existing
+`403` refusal. WebSocket admission destroys the client socket without an HTTP
+response, before gateway-key lookup or connection; a mismatch during a WebSocket
+lease closes the connection through the existing failed-lease path. Matching ownership retains
+normal access. Earlier stopped, replacing and unsupported-configuration outcomes
+keep their precedence.
 
 ## Agent host identity
 
@@ -75,6 +86,16 @@ from the managed snapshot when the Pod is recreated or the Agent is redeployed.
 See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
 for the opt-in predicate, mounts, and copy lifecycle.
 
+Do not change `gateway.bind`, `gateway.customBindHost`, or
+`gateway.tailscale.mode` in that copy. OCE checks these listener settings in the
+managed Configuration at deployment, not after a native edit. The edit
+survives same-Pod restarts. With `loopback`, the Gateway stays Ready, because its
+readiness check uses loopback, but refuses traffic to the Pod IP: the native
+admin UI goes dark and cannot undo the edit. With Tailscale `serve` or `funnel`
+and the rendered `lan` bind, native startup fails and the container restarts in
+a loop. To
+recover, delete the Pod or redeploy the Agent.
+
 Redeployment does not imply a factory reset of native files, conversations,
 device state, plugins, or other persistent gateway data.
 
@@ -103,6 +124,11 @@ device state, plugins, or other persistent gateway data.
 
 ## Changelog
 
+- 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
+
+- 2026-10-13 23:57: Documented native-admin refusal when selected Compute ownership differs from the active revision. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
+
+- 2026-10-10 09:20: Documented that native listener edits are not re-checked and how to recover. (docs-1014)
 - 2026-09-21 21:20: Documented status-only stopped results before deployment and after stop reconciliation. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Replaced the temporary exchange launch description with the shared OCE session cookie model, cookie-domain trust boundary, host-to-Agent admission, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)

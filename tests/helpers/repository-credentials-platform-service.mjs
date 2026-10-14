@@ -10,6 +10,7 @@ import { createRegistryMaterial } from "../fixtures/repository-credentials/regis
 import { startRegistryProviderFixtures } from "../fixtures/repository-credentials/registry/provider.mjs";
 import { appModule, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { availablePort } from "./available-port.mjs";
+import { socketDirectory } from "./socket-directory.mjs";
 
 // The gateway port is probed, released, then bound by the child, so another listener can
 // take it first. The child names that failure and the first start retries on a new port.
@@ -180,13 +181,14 @@ export async function startRepositoryPlatformService(context, options = {}) {
         credentialDriverModule("configuration"),
         appModule("backends/repository-credentials/control-client"),
       ]);
+    const controlDirectory = await socketDirectory(resources, "rcs-control-");
     const { host, ...gateway } = options.gateway;
     const configure = (port) =>
       validateServiceConfig(
         serviceConfigurationData({
           gateway: {
             publicOrigin: "https://credentials.example.test",
-            controlSocket: join(material.directory, "control.sock"),
+            controlSocket: join(controlDirectory, "control.sock"),
             ...gateway,
             listen: `${host}:${port}`,
           },

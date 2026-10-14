@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { setTimeout } from "node:timers/promises";
-import { promisify } from "node:util";
 
 // Runs inside a runtime image Gateway container started by the Kubernetes
 // Gateway wrapper for a dedicated Codex Harness with a plugin selection. It
 // stands in for the Harness plugin status endpoint, replaces the Harness (a new
 // startup, pod and plugin result), and checks that the wrapper respawns only
-// the OpenClaw process: readiness, judged by the production readiness command,
+// the OpenClaw process: readiness, judged by the production HTTP endpoint,
 // drops and returns only when the new process serves with the new credential
 // and plugin result, and the new process re-acknowledges the workspace node.
-// The launcher passes the readiness command and the credential derivation domain.
-const execute = promisify(execFile);
-const readinessSource = process.env.OCC_TEST_GATEWAY_READINESS;
+// The launcher passes the credential derivation domain.
 const tokenDomain = process.env.OCC_TEST_TOKEN_DOMAIN;
 const revisionId = process.env.OPENCLAW_AGENT_REVISION_ID;
 const statusPort = Number(process.env.OPENCLAW_PLUGIN_STATUS_PORT);
@@ -25,6 +21,7 @@ const linear = "codex-plugin:linear@openai-curated-remote";
 const workspaceNodeId = process.env.OCC_TEST_WORKSPACE_NODE_ID;
 const outageExit = process.env.OCC_TEST_GATEWAY_SCENARIO === "peer-outage-exit";
 const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replacement";
+const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "true";
 let initialGateway;
 let replacementPeerReads = 0;
 let trackSamePeerOutage = false;
@@ -109,8 +106,11 @@ function appServerToken(startupId) {
 
 async function ready() {
   try {
-    await execute(process.execPath, ["-e", readinessSource], { timeout: 5_000 });
-    return true;
+    const response = await fetch(`http://127.0.0.1:${statusPort}/readyz`, {
+      signal: AbortSignal.timeout(5_000),
+      redirect: "error",
+    });
+    return response.status === 200;
   } catch {
     return false;
   }
@@ -277,6 +277,12 @@ try {
   assert.equal(afterOutage[0].startTicks, before.startTicks);
   assert.equal(afterOutage[0].token, before.token);
 
+  if (writableInitialConfig) {
+    const edited = JSON.parse(await readFile(configPath, "utf8"));
+    edited.messages = { ...edited.messages, responsePrefix: "Native admin edit" };
+    await writeFile(configPath, JSON.stringify(edited));
+  }
+
   await waitFor("the first workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const assetsBefore = (await stat("/home/node/openclaw-runtime-assets/bundled-skills")).mtimeMs;
 
@@ -312,6 +318,12 @@ try {
   }
   assert.equal(after.token, appServerToken("harness-startup-2"));
   assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), true);
+  if (writableInitialConfig) {
+    assert.equal(
+      JSON.parse(await readFile(configPath, "utf8")).messages.responsePrefix,
+      "Native admin edit",
+    );
+  }
   // The new process loaded the node binding again and acknowledged it itself.
   await waitFor("the respawned workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const ackAt = Date.now() - changedAt;

@@ -271,6 +271,20 @@ function repositoryPolicyDriver(repositories) {
   );
 }
 
+// Back, in-app navigation and reloads can first restore an inert copy of the old view with its
+// controls disabled, until revalidation re-enables it or replaces it with a rebuilt view. Only a
+// live control shows the current view, including any draft it restored.
+export async function waitForLiveControls(page, ids) {
+  await page.waitForFunction(
+    (controlIds) =>
+      controlIds.every((id) => {
+        const control = globalThis.document.getElementById(id);
+        return control && !control.disabled && !control.closest("[inert]");
+      }),
+    ids,
+  );
+}
+
 export function nativeAdminValues(marker, origin) {
   const values = nativeValues(marker);
   return {

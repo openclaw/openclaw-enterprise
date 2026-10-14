@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -53,6 +53,8 @@ test("Installation startup validates the optional external observability URL", a
   assert.equal(loaded.installation.observability.url, configuration.observability.url);
 
   const url = configuration.observability.url;
+  const rewrittenIpv4ObservabilityUrl =
+    /observability\.url IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
   for (const [observability, message] of [
     ...[
       "javascript:alert(1)",
@@ -73,9 +75,139 @@ test("Installation startup validates the optional external observability URL", a
         mode: "development",
         environment: { OCC_CONFIG_PATH: path },
       }),
-      message,
+      (error) => {
+        assert.match(error.message, message);
+        assert.doesNotMatch(error.message, rewrittenIpv4ObservabilityUrl);
+        return true;
+      },
     );
   }
+  // URL parsing drops an empty user info and keeps the host alone; profile preflight refuses
+  // any @ before the host, and so does startup.
+  for (const userinfo of [
+    "http://@grafana.example.internal/d",
+    "https://:@grafana.example.internal/d",
+    "http:@grafana.example.internal/d",
+    "http:\t//@grafana.example.internal/d",
+    "http://@192.0.2.10:3000/d",
+  ]) {
+    configuration.observability = { url: userinfo };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain user info or an @ before the host\./,
+      JSON.stringify(userinfo),
+    );
+  }
+  for (const shorthand of ["http://192.168.1", "http://2130706433"]) {
+    configuration.observability = { url: shorthand };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      (error) => {
+        assert.match(error.message, rewrittenIpv4ObservabilityUrl);
+        assert.doesNotMatch(error.message, /must be an absolute HTTP or HTTPS URL/);
+        return true;
+      },
+    );
+  }
+  configuration.observability = { url: "http://192.168.1.1" };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const canonical = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(canonical.installation.observability.url, "http://192.168.1.1/");
+  assert.equal(new URL(canonical.installation.observability.url).hostname, "192.168.1.1");
+});
+
+test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
+  const configuration = installation();
+  configuration.occ.cluster = "production-west";
+  const path = await fixture(t, configuration);
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const processes = [
+    [
+      "apps/controller/src/server.mjs",
+      "startup-error",
+      {
+        ...shared,
+        OCC_HOST: "192.0.2.10",
+        OCC_PORT: "8080",
+        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+        OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
+      },
+    ],
+    ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
+  ];
+  const boot = (script, event, env) => {
+    const result = spawnSync(process.execPath, [script], {
+      cwd: process.cwd(),
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(result.status, 1, script);
+    assert.ok(!result.stderr.includes(path), result.stderr);
+    return startupDiagnostic(result.stderr, event);
+  };
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://@192.168.1.1",
+    "http://@grafana.example.internal/d",
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    "javascript:alert(1)",
+  ]) {
+    configuration.observability = { url: shorthand };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    for (const [script, event, env] of processes) {
+      const diagnostic = boot(script, event, env);
+      assert.equal(diagnostic.code, "OBSERVABILITY_URL_INVALID", `${script} ${shorthand}`);
+      assert.equal(diagnostic.message, undefined);
+    }
+  }
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path.
+  configuration.observability = { url: "http://192.168.1.1" };
+  const images = configuration.drivers.compute.configuration.images;
+  for (const role of ["gateway", "agent"]) {
+    const original = images[role];
+    for (const refused of [
+      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
+      original.replace(/^([^/]*\/)/, "$1re..po/"),
+    ]) {
+      assert.notEqual(refused, original);
+      images[role] = refused;
+      await writeFile(path, JSON.stringify(configuration), "utf8");
+      for (const [script, event, env] of processes) {
+        const diagnostic = boot(script, event, env);
+        assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
+        assert.equal(diagnostic.message, undefined);
+      }
+    }
+    images[role] = original;
+  }
+  configuration.observability = { url: "http://192.168.1.1" };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  for (const [script, event, env] of processes) {
+    const diagnostic = boot(script, event, env);
+    assert.equal(diagnostic.code, "PERSISTENCE_UNAVAILABLE", script);
+  }
+  const corrected = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(corrected.occ.cluster, "production-west");
+  assert.equal(corrected.observability.url, "http://192.168.1.1");
 });
 
 test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
@@ -356,6 +488,18 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [
       (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghu_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghs_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghr_notarealtoken123456"),
       /plaintext credential/,
     ],
   ]) {
@@ -1148,9 +1292,27 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
   });
   assert.equal(absoluteRuntime.defaultPresets[0].name, "absolute-file");
 
+  // Editors on Windows often save JSON with a UTF-8 byte order mark. Like Driver package
+  // manifests and the startup YAML, a Preset file may carry one leading mark.
+  const markedConfiguration = installation();
+  const markedPreset = join(relativeDirectory, "marked.json");
+  markedConfiguration.presets = { includeDefaults: false, files: [markedPreset] };
+  await writeFile(markedPreset, `\uFEFF${JSON.stringify({ ...validPreset, name: "marked-file" })}`);
+  const markedRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, markedConfiguration) },
+  });
+  assert.equal(markedRuntime.defaultPresets[0].name, "marked-file");
+
   for (const [filename, contents, expected] of [
     ["missing.json", undefined, /Preset file .* is unavailable/],
     ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
+    // Only one leading mark is stripped; a second is not JSON.
+    [
+      "double-mark.json",
+      `\uFEFF\uFEFF${JSON.stringify(validPreset)}`,
+      /Preset file .* must contain valid JSON/,
+    ],
     [
       "missing-name.json",
       JSON.stringify({ template: {} }),

@@ -126,11 +126,16 @@ issue a credential for a new account.
   deleting an account:** the Installation has no ChatGPT Backend (`GET /backends`
   lists none). Complete step 1, then retry. Deleting an account that holds an
   issued token needs the same Backend (same `backendId`) to revoke that token.
+  If that Backend is gone for good and no ChatGPT Backend is configured,
+  [force the delete](../../reference/service-accounts.md#force-delete-when-the-backend-is-gone)
+  and revoke the token at the provider.
 - **`503 DEPENDENCY_UNAVAILABLE` when issuing:** the selected ServiceAccount
   Driver failed or does not match its Backend. Have the network operator check
   API Pod DNS and the destination allowed by the NetworkPolicy; also check the
   mounted admin key's workspace and scope, and whether Kubernetes Compute can
-  store the credential. Keep the OCC request ID; do not share the key or token.
+  store the credential. Keep the OCC request ID: the API log's WARN
+  `http.dependency_unavailable` record for it names the cause. Do not share the
+  key or token.
 - **An existing credential stopped working:** expired credentials do not refresh
   automatically; issuing a second credential on the same account returns `409`.
   Create a replacement account, issue its credential, rebind and redeploy

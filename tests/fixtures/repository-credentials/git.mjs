@@ -22,6 +22,10 @@ export async function startGitSmartHttpFixture(
   const seed = join(directory, "seed");
   await mkdir(join(bare, ".."), { recursive: true });
   await run("git", ["init", "--bare", "--initial-branch=main", bare]);
+  // Git starts the receiving side of a local push without GIT_CONFIG_COUNT, so
+  // cleanEnvironment()'s maintenance.auto=false never reaches this repository's
+  // receive-pack; only its own configuration stops the detached maintenance.
+  await run("git", ["config", "maintenance.auto", "false"], { cwd: bare });
   await run("git", ["init", "--initial-branch=main", seed]);
   await run("git", ["config", "user.name", "Fixture"], { cwd: seed });
   await run("git", ["config", "user.email", "fixture@example.test"], { cwd: seed });

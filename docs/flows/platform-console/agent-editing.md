@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-29
-last_updated_session: 01a0eb0e-dbc1-78d1-91b0-ea91ee87c00f
+updated: 2026-10-10
+last_updated_session: public-pr/2000
 ---
 
 # Console Agent editing and runtime requests
@@ -56,6 +56,7 @@ graph TD
     G -->|accepted or uncertain| H["Refresh exact Agent"]
     G -->|denied| I["Show access denied"]
     H -->|exists| J["Show current Agent state"]
+    J -->|known deleting and manual request| E
     H -->|not found| K["Return to Agents list"]
   end
 ```
@@ -246,19 +247,21 @@ Pickers switch references; rotating shared Secret values is separate.
 ### 6. Read and replace live workspace files
 
 `apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens from
-`tab=workspace` after an exact Agent read. It bypasses Configuration and revision
-history reads: workspace contents belong to the live Agent. Without an active
-revision, the Agent gets an unavailable explanation without file requests.
+`tab=workspace` after an exact Agent read. It skips Configuration and revision history. Contents belong to the live Agent.
+With no active revision, files stay unavailable and no file request is sent.
 
-The editor GETs each supported filename. A successful response reauthorizes file
-access before restoring retained text,
-including empty edits. Drafts keep their original baseline; Reload replaces them
-with the current file. `404` permits an explicit create attempt, and other
-failures leave it disabled. Save sends `{ content }` to the same exact-Agent PUT
-route. It neither patches Configuration nor admits a revision. The existing
-[workspace flow](../workspace-files.md) owns authorization and native file transport.
-Results are per file. Unknown write outcomes require a successful reload before
-another save; the editor never retries a write automatically.
+The editor GETs each supported filename and normalizes textareas to LF. An
+untouched CRLF file stays clean and is not rewritten. Only an edit enables Save.
+The response reauthorizes access before restoring retained text, including empty
+edits. Drafts keep their baseline; Reload replaces them. A 404 without an unknown
+write permits an explicit create, including an empty file; other failures disable
+Save. Save PUTs `{ content }` on the exact-Agent route. It neither patches
+Configuration nor admits a revision. The [workspace flow](../workspace-files.md)
+owns authorization and native transport. Results are per file. An unknown write
+waits for explicit Reload. Current contents, or the formal missing-file 404,
+settle it and open an empty editor for a deliberate create. Another 404, a
+denial, or an unavailable read stays guarded. The editor never retries or creates
+a file.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
@@ -276,7 +279,11 @@ composed by `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`. C
 bodyless `POST` to the exact Agent's `/stop` route. OCC's
 `packages/occ/src/index.ts:stopAgent` checks exact-Agent `operate`, persists the
 requested stopped state, and queues reconciliation. The response proves
-admission, not completed Compute shutdown.
+admission, not completed Compute shutdown. When stopped,
+**Request Stop again** confirms a new stop intent through the same authorized route.
+It remains available without a selected revision because history/candidate cleanup
+is not exposed, and an uncertain write blocks it until readback succeeds.
+Cancelling confirmation restores its invoking button; submitted requests focus status refresh.
 
 **Refresh stop status** reads the exact Agent again. It displays desired runtime
 state and selected revision without inferring live health or completion from a
@@ -299,8 +306,17 @@ detail page in a deleting state. The page rereads the exact Agent every few
 seconds until it is gone; **Refresh deletion status** reads it on demand, and
 a read error stops the polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An uncertain deletion
-blocks writes until a successful read; the browser never retries it.
+returns to the Agents list in the selected Namespace. An already deleting Agent
+keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
+and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
+work stays unchanged; terminal work can restart under the controller's existing
+current-permission and retry-ownership checks. The view does not infer a worker
+outcome from the Agent's deleting state or add a separate status contract.
+
+An uncertain initial or repeated deletion blocks writes until a successful exact
+Agent read. A deleting read clears that guard even when the view was already deleting;
+a failed read does not. Cancel returns focus to the repeat-request button, and
+successful writes retain status refresh. The browser never retries DELETE automatically.
 
 `packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
 [Agent deletion reference](../../reference/agents.md#deletion) covers
@@ -317,8 +333,9 @@ worker cleanup and the Namespace-owned resources it preserves.
 - Compare saved `Agent.plugins` with the viewed revision's plugin snapshot after
   a plugin edit. A successful Agent update does not install or activate plugins;
   deploy and inspect startup status separately.
-- On `403`, check `delete` permission on the exact Agent; Agent `read` and
-  `operate` do not authorize deletion. Use the displayed request ID when present.
+- On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
+  denials, check `delete` on the exact Agent; Agent `read` and
+  `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
 - An accepted deletion remains in progress until the exact Agent read reports
   not found. A failed refresh does not establish whether cleanup finished.
 - See [console failures](../../reference/console.md#failures-and-logout) for
@@ -337,6 +354,12 @@ worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
+- 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)
+- 2026-10-10 02:44: Trace explicit missing-file readback after an uncertain workspace create in the accompanying change. (authoring-run/16c725e2-438f-46bf-a31c-305458ac49d8 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
+- 2026-10-10 01:41: Trace confirmed manual deletion recovery and uncertain repeat readback in the accompanying change. (authoring-run/da61175b-df1b-4e96-b202-94e9e82538f9 - 243b38ba6d951240065e5061e1e4abccdb44410c)
+- 2026-10-10 00:08: Trace explicit repeated Stop recovery in the accompanying change. (authoring-run/52a975bb-0283-40ba-9126-2c2f6eb8992c - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
 
 - 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)
 

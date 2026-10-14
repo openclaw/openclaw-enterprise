@@ -131,6 +131,17 @@ the Agent Gateway. Exact workload identity, approved mounts and privileges,
 source withdrawal, denied egress, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+After the tool-source turns, the Codex scenario deploys a second Agent that
+attaches one of the tool sources. When the first Agent withdraws that source,
+the second Agent still receives its token. The scenario then checks that:
+
+- no Pod of the Agent mounts or references the stored source Secret;
+- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
+  files hold no upstream credential. Files are matched outside the Pod, so no
+  credential-derived value enters it;
+- deployment diagnostics, runtime status and logs, and the Namespace's audit
+  events hold neither a credential nor an OpenShell placeholder.
+
 The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
@@ -197,9 +208,9 @@ and the OpenShell development profile disables projected workload identity.
 Explicitly requesting that identity fails before provisioning.
 
 The fixture gives that gateway its own scoped DNS/API access. Ordinary Harness
-DNS comes from Compute. Workspace-node policies select the OpenShell supervisor
-label (`openshell.ai/boundary-role=supervisor`) and the tenant's Agent Gateway
-Service in both directions, because the supervisor originates the proxied call.
+DNS comes from Compute. The supervisor originates the proxied node call, so each
+Agent Gateway admits only its own Sandbox's supervisor (`openshell.ai/sandbox-id`
+from the Driver's `workspaceNodePeerLabels`); supervisor egress is OpenShell's own.
 The test requires the provider Harness Pod to carry `provider-fenced-v1`; it
 receives no ordinary Compute model or authentication egress. Older fixtures
 may retain broad policies or Sandbox templates without the profile. Inspect
@@ -227,6 +238,14 @@ It checks that the Gateway uses the advertised WebSocket origin, maps its exact
 hostname to the installed OpenShell Gateway Service, and leaves the direct Agent
 Service inactive.
 
+The Codex case also proves OAuth2 refresh sources. It starts a disposable
+Keycloak that serves HTTPS with a private CA, mounts a bundle of Node's public
+roots plus that CA over the Namespace gateway's `SSL_CERT_FILE` through the
+chart's extra-volume values, and admits only the gateway Pod to the issuer. An in-cluster echo service verifies each delivered token's
+Keycloak signature, so tokens never reach test output. The case covers
+background re-minting in a running Harness, forced rotation, reauthorization
+after revoking the user's sessions, and deletion.
+
 Both first-Agent topologies also provision dedicated native OpenClaw through the
 guided-provisioning API with the ready credential source and pinned runtime.
 The case changes `USER.md` through the workspace API, verifies its marker through
@@ -240,21 +259,7 @@ For the exact Compose-plus-k3d startup, repeatable first-Agent command, current
 checkpoint, and symptom-based recovery notes, see
 [Resume the OpenShell first-Agent proof](openshell-first-agent.md).
 
-The native OpenClaw selector retains its verification-only bootstrap Job and
-PVC bridge. It is a separate containment experiment, not a supported
-first-Agent path. The pinned Kubernetes driver chooses workload identity independently
-of `policy.process`: this k3d fixture uses its default UID/GID `10001:10001`.
-The bridge prepares private storage for that identity and verifies the resulting
-workload Pod identity. Preparing it for the image or policy UID `1000` leaves
-foreign-owned ancestors that fs-safe rejects, even when Kubernetes grants group
-write access. The supervisor launches with `TMPDIR=/tmp`; the bridge switches the
-native worker to its private temporary mount before running its entrypoint.
-It places bootstrap code inside the compressed program, preserving the Driver's
-fixed-loader contract. Readiness retries reuse the completed bootstrap Job because
-deleting its Pod invalidates the copied ServiceAccount token. The Job remains until
-the token's admitted lifetime ends or the test cleans it up. See the
-[qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
-and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
+The separate native selector retains its verification-only Job/PVC bridge. The pinned driver resolves identity independently of `policy.process`; this fixture uses `10001:10001`. The bridge prepares and verifies storage for that identity. UID `1000` leaves foreign-owned ancestors that fs-safe rejects despite group write permission. The supervisor starts with `TMPDIR=/tmp`; compressed bootstrap switches the worker to its private temporary mount, preserving the fixed-loader contract. Readiness reuses the completed Job: deleting its Pod invalidates the copied ServiceAccount token. The Job remains through that token's admitted lifetime or test cleanup. See [qualification](../reference/drivers/openshell-sandbox.md#qualification-contract) and the [pre.5 handoff](openshell-pre5-local-experiment.md).
 
 Local `sandbox-driver-startup`, `controller-lifecycle`, and
 `postgres-platform-state` integration tests cover driver selection and Backend
@@ -266,17 +271,7 @@ OpenShell tools.
 
 ### Development profile
 
-The opt-in development-profile integration installs PostgreSQL and OCE with
-Helm in the owned k3d cluster, installs the checksum-pinned OpenShell assets,
-and verifies the bootstrap Namespace, RuntimeClass, Agent Sandbox API,
-deployment Gateway, operator label, workspace ServiceAccount, and actual
-matching Workspace through the Gateway API. It then creates another
-OCC Namespace and verifies that the Driver applies the same ServiceAccount and
-creates its matching Workspace without another Helm release. In that
-Namespace it uses the checkout-local `occ` CLI to register a synthetic `openai`
-credential source, reads its live `ready` status, finds the matching provider in
-the Namespace's OpenShell Workspace, creates a `credential_source` IAM Role, and
-deletes the source, which removes the provider:
+The development-profile integration Helm-installs PostgreSQL/OCE and checksum-pinned OpenShell in owned k3d. It verifies Namespace, RuntimeClass, Agent Sandbox API, Gateway, operator label, ServiceAccount and matching Workspace. A second Namespace checks Driver-owned ServiceAccount/Workspace reconciliation without another Helm release. The local `occ` CLI registers a synthetic `openai` source, verifies live `ready` status and its Workspace provider, creates a `credential_source` IAM Role, then deletes the source and provider:
 
 ```sh
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
@@ -291,13 +286,7 @@ network access to the pinned sources and images. Set
 It creates unique cluster, state, API, and Kubernetes port names and removes
 only those resources. Missing selected prerequisites fail.
 
-This case proves development orchestration, the two real charts, Driver-owned
-operator resource reconciliation, Gateway Workspace creation, and the
-credential-source CLI and API path. The synthetic key proves no model
-authentication. It does not create an Agent or Sandbox; for the manual Agent
-walkthrough, see [Use a credential source on the local OpenShell profile](../guides/deploy/openshell-credential-sources.md). The
-The real Sandbox Driver case is the Agent-level proof for the ordinary
-plugin-free dedicated Codex workflow.
+This case covers charts, operator reconciliation, Workspace creation and source CLI/API lifecycle. Its synthetic key proves no model authentication, and it creates no Agent or Sandbox. See the [local Agent walkthrough](../guides/deploy/openshell-credential-sources.md); the real Sandbox Driver case covers plugin-free dedicated Codex.
 
 ## OpenShell test environment
 
@@ -313,6 +302,7 @@ scoped environment file for this suite.
 | `OPENAI_API_KEY`                          | Existing authorized provider credential, registered as a credential source for the required real model turn.                                        |
 | `OCC_TEST_OPENSHELL_HARNESS`              | `codex` (default) selects the app-server proof; `openclaw` selects the dedicated native worker without an inbound Harness exposure.                 |
 | `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                               |
+| `OCC_TEST_OPENSHELL_MODEL_BASE_URL`       | Optional HTTPS `/v1` endpoint for the Codex credential source; requires Responses API compatibility.                                                |
 | `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                  |
 | `OCC_TEST_KUBERNETES_CONTEXT`             | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                        |
 | `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`       | Imported immutable real OpenClaw gateway image; `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` is accepted as a fallback.                                      |
@@ -325,6 +315,7 @@ scoped environment file for this suite.
 | `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`        | Imported immutable OpenShell sandbox runtime image pinned by SHA-256 digest.                                                                        |
 | `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`     | Imported immutable OpenShell supervisor image pinned by SHA-256 digest.                                                                             |
 | `OCC_TEST_OPENSHELL_CHART_VERSION`        | Optional OpenShell chart version; defaults to `0.1.3-pre.2`.                                                                                        |
+| `OCC_TEST_KEYCLOAK_IMAGE`                 | Optional digest-pinned Keycloak image for the OAuth2 refresh proof; defaults to `tests/fixtures/keycloak/image.json`. CI imports it into k3d.       |
 | `OCC_TEST_OPENSHELL_RUNTIME_CLASS`        | Existing RuntimeClass used by Agent Sandbox Pods; CI creates the selected RuntimeClass, defaulting to `openshell-sandbox`, with the `runc` handler. |
 
 The selected cluster must already expose the Agent Sandbox CRD and a ready Agent

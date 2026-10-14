@@ -832,9 +832,14 @@ test(
     );
     assert.ok(longSessionAttempt);
     const admittedDeadline = recoveredAfterCrash.revision.repositoryCredentials.deadlineWallMs;
-    assert.equal(
-      admittedDeadline,
-      Date.parse(recoveredAfterCrash.revision.createdAt) + 24 * 60 * 60 * 1000,
+    // The controller's clock starts the 24-hour deadline when it admits the deployment;
+    // PostgreSQL's stamps the revision's createdAt a moment later, after runtime credentials are
+    // provisioned (finding 1195). Both clocks are this host's here.
+    const admittedAtMs = Date.parse(recoveredAfterCrash.revision.createdAt);
+    const deadlineBaseMs = admittedDeadline - 24 * 60 * 60 * 1000;
+    assert.ok(
+      deadlineBaseMs <= admittedAtMs && deadlineBaseMs > admittedAtMs - 60_000,
+      `deadline base ${deadlineBaseMs}, admitted ${admittedAtMs}`,
     );
     assert.equal(Number(longSessionAttempt.deadline_wall_ms), admittedDeadline);
     assert.ok(Number(longSessionAttempt.duration_seconds) > 13 * 60 * 60 + 1);
