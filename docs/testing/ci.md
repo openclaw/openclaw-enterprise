@@ -61,8 +61,8 @@ sandbox, so it needs no cluster.
 
 Full Integration uses immutable event commits. Lanes require `main` except
 `k3d-model`/`openshell` with exact protected-environment branch rules, and explicit
-credential-free `dev-up-k3d`. Main-only `provider-account` needs no per-run approval;
-other credentialed environments require approval. `helper-timeout` and standalone
+credential-free `dev-up-k3d`. Maintainers dispatch credentialed lanes without
+a separate environment approval. `helper-timeout` and standalone
 `logging-collector` have no environment gate. Missing inputs fail; targeted runs
 prove only their selected lane.
 
@@ -218,18 +218,17 @@ authenticate from the hosted runner.
 ### Run protected model tests before merge
 
 An administrator adds the exact branch to `integration-model` for `k3d-model` or
-`integration-openshell` for `openshell`, retaining `main`, required reviewers,
-and self-review prevention. Wildcards fail preflight. Credentials become
-available only after approval.
+`integration-openshell` for `openshell`, retaining `main` and no required reviewers.
+Wildcards fail preflight. The exact branch grant permits credentialed execution.
 
 ```sh
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=k3d-model
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=openshell
 ```
 
-The reviewer inspects the commit before approval. Jobs check out immutable
-`github.sha`; moving the branch does not change the run. The dispatcher cannot
-self-approve. Remove the branch rule after proof completes.
+The maintainer inspects the commit before dispatch. Jobs check out immutable
+`github.sha`; moving the branch does not change the run. No separate approval
+is needed. Remove the branch rule after proof completes.
 Other credentialed lanes, `all`, and `provider-account` remain main-only. The
 `k3d-model` lane runs real Kubernetes topology tests, including embedded
 invalid-credential cutover and recovery. The `openshell` lane runs the
