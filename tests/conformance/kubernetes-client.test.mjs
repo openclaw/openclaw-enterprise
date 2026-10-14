@@ -9,12 +9,14 @@ import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   createKubernetesClientConfiguration,
   KUBERNETES_KEEP_ALIVE_LIMITS,
   reuseRequestDispatcher,
 } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 function selfSignedCertificate(directory, name, subjectAltName) {
@@ -434,6 +436,55 @@ for (const [target, location] of [
       { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" },
     ]);
     assert.deepEqual(otherRequests, []);
+    t.diagnostic(
+      `API requests: ${api.requests.length}; other-origin requests: ${otherRequests.length}`,
+    );
+  });
+}
+
+for (const body of ["truncated", "held open"]) {
+  test(`runtime status readback stops at a redirect with a ${body} body`, async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    let resolveClosed;
+    const closed = new Promise((resolve) => {
+      resolveClosed = resolve;
+    });
+    const api = await recordingApiServer(directory, (request, response) => {
+      if (request.url !== STATUS_PROXY_PATH) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"kind":"Secret"}');
+        return;
+      }
+      response.writeHead(302, {
+        location: "/api/v1/namespaces/occ-system/secrets/x",
+        "content-length": "100",
+      });
+      response.once("close", resolveClosed);
+      response.flushHeaders();
+      if (body === "truncated") {
+        response.write("partial");
+        const timer = setTimeout(() => response.destroy(), 25);
+        response.once("close", () => clearTimeout(timer));
+      }
+    });
+    t.after(() => api.close());
+
+    // An unfinished body must neither delay the redirect result nor cause a retry.
+    const authentication = await writeTokenKubeconfig(directory, api);
+    const outcome = await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
+      statusReadback(authentication),
+    );
+    assert.equal(api.requests.length, 1, "a redirect must not trigger another request");
+    assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
+    assert.deepEqual(api.requests, [
+      { path: STATUS_PROXY_PATH, authorization: "Bearer fixture-token" },
+    ]);
+    assert.equal(
+      await Promise.race([closed.then(() => true), delay(2_000, false, { ref: false })]),
+      true,
+      "the redirect response is cancelled",
+    );
   });
 }
 
@@ -453,6 +504,7 @@ test("runtime status readback through the production client keeps 200 and 404 an
   // 404 means the status port is not serving yet: no status, no error.
   status = 404;
   assert.deepEqual(await statusReadback(authentication), { value: undefined });
+  t.diagnostic("200 returned parsed status; 404 returned no status");
 });
 
 test("Kubernetes API clients do not follow a redirect from the API server (finding 1347)", async (t) => {

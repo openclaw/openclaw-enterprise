@@ -1158,6 +1158,7 @@ const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
 const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
 
 class RuntimeStatusOversized extends Error {}
+class RuntimeStatusRedirected extends Error {}
 
 /**
  * Reads a Pod proxy response up to the status limit instead of buffering all of it.
@@ -1165,6 +1166,17 @@ class RuntimeStatusOversized extends Error {}
  */
 async function limitRuntimeStatusBody(response: ResponseContext): Promise<ResponseContext> {
   const stream = response.body.stream();
+  if (response.httpStatusCode >= 300 && response.httpStatusCode <= 399) {
+    // The status is already decisive; do not wait for an untrusted redirect body.
+    try {
+      if (stream !== null) {
+        void stream.cancel().catch(() => {});
+      }
+    } catch {
+      // A cancellation failure must not make this redirect retryable.
+    }
+    throw new RuntimeStatusRedirected();
+  }
   if (stream !== null) {
     let bytes = await readCappedBody(stream, MAX_RUNTIME_STATUS_RESPONSE_BYTES);
     if (bytes === undefined) {
@@ -8860,6 +8872,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // An oversized 2xx is not retried: the next read would be just as large.
         if (error instanceof RuntimeStatusOversized) {
           return oversized;
+        }
+        if (error instanceof RuntimeStatusRedirected) {
+          return redirected;
         }
         if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
           return notServing;
