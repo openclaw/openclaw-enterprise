@@ -1621,18 +1621,22 @@ export class ControllerWorker {
     claim: ClaimedWork,
     earlier: readonly Readonly<AgentRevisionMetadata>[],
     drain: "yield" | "wait" = "yield",
+    load: (
+      listed: Readonly<AgentRevisionMetadata>,
+    ) => Promise<Readonly<AgentRevision> | undefined> = (listed) =>
+      this.state.read((view) =>
+        view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
+      ),
   ): Promise<void> {
     for (const listed of earlier) {
       const record = this.stoppedPredecessors.get(listed.id);
       if (record !== undefined && Date.now() - record.stoppedAt < record.restopAfterMs) {
         continue;
       }
-      // Decode only a predecessor this pass stops; a recently stopped one is skipped unread
-      // (finding 1323). One that is gone went with its Agent or Namespace, whose own teardown
-      // stops it.
-      const previous = await this.state.read((view) =>
-        view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
-      );
+      // By default, decode only a predecessor this pass stops; a recently stopped one is skipped
+      // unread (finding 1323). One that is gone went with its Agent or Namespace, whose own
+      // teardown stops it.
+      const previous = await load(listed);
       if (previous === undefined) {
         continue;
       }
@@ -4754,14 +4758,12 @@ export class ControllerWorker {
     ) {
       return {};
     }
-    const { revisions, revision } = await this.state.read(async (view) => ({
-      revisions: await view.revisions.listRevisionMetadata(claim.namespaceId, claim.agentId!),
-      revision: await view.revisions.findRevision(
-        claim.namespaceId,
-        claim.agentId!,
-        claim.revisionId!,
-      ),
-    }));
+    // This rare recovery decodes every revision up front, outside the try below: an unreadable
+    // one fails the pass rather than being logged as a predecessor stop failure.
+    const revisions = await this.state.read((view) =>
+      view.revisions.listRevisions(claim.namespaceId, claim.agentId!),
+    );
+    const revision = revisions.find((candidate) => candidate.id === claim.revisionId);
     if (revision === undefined || this.compute.requiresStoppedPredecessors?.(revision) !== true) {
       return {};
     }
@@ -4770,6 +4772,7 @@ export class ControllerWorker {
         claim,
         revisions.filter((candidate) => candidate.revision < revision.revision),
         drain,
+        async (listed) => revisions.find((candidate) => candidate.id === listed.id),
       );
       return {};
     } catch (error) {

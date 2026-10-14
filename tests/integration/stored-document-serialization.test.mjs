@@ -323,12 +323,19 @@ test("Preset and revision lists of 64 documents near 1 MiB serialize in bounded 
       { data: Array.from({ length: 64 }, (_, i) => revision(values, i + 1)), meta },
     ],
   ]) {
-    let started = performance.now();
-    const baselineBytes = JSON.stringify(payload).length;
-    const baseline = performance.now() - started;
-    started = performance.now();
-    const bytes = routes[operationId].passthrough(payload);
-    const elapsed = performance.now() - started;
+    // Best of three interleaved runs, so one garbage-collection pause cannot decide the result.
+    let baseline = Infinity;
+    let elapsed = Infinity;
+    let baselineBytes;
+    let bytes;
+    for (let run = 0; run < 3; run += 1) {
+      let started = performance.now();
+      baselineBytes = JSON.stringify(payload).length;
+      baseline = Math.min(baseline, performance.now() - started);
+      started = performance.now();
+      bytes = routes[operationId].passthrough(payload);
+      elapsed = Math.min(elapsed, performance.now() - started);
+    }
     assert.equal(bytes.length, baselineBytes, operationId);
     assert.ok(bytes.length > 50_000_000, `${operationId}: ${bytes.length} bytes`);
     assert.ok(
