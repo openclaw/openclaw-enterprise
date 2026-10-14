@@ -3057,6 +3057,17 @@ export const scenarios = {
     description:
       "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
   },
+  deploymentSuperseded: {
+    group: "Pages/Agent detail",
+    name: "Deployment superseded by a newer version",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSuperseded: true,
+    description:
+      "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
+    gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
+  },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",

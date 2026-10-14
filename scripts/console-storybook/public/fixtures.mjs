@@ -7,6 +7,7 @@ const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const currentRevisionId = "rev_00000000-0000-4000-8000-000000000006";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
+const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
@@ -114,6 +115,12 @@ function candidateDeploymentError(scenario, checkedAt) {
           ],
         },
       },
+    };
+  }
+  if (scenario.candidateSuperseded) {
+    return {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
     };
   }
   if (scenario.candidateModelProbeCause) {
@@ -259,7 +266,10 @@ export function installFixture(scenario, evidence) {
               ? { method: "oauth", source: secretRef("sec_demo_oauth_deployed") }
               : auth;
   let selectedRevisionId = null;
-  if (scenario.candidateDeploymentStatus) {
+  if (scenario.candidateSuperseded) {
+    // A newer v8 the viewer cannot read superseded v7 and is now selected.
+    selectedRevisionId = hiddenRevisionId;
+  } else if (scenario.candidateDeploymentStatus) {
     selectedRevisionId =
       scenario.candidateDeploymentStatus === "succeeded" || scenario.candidateSelected
         ? candidateRevisionId
