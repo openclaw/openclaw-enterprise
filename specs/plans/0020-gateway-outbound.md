@@ -30,7 +30,7 @@ implementation, embedded networking and remote plugin hosting are excluded.
    and model-credential placement. Freeze admitted address exclusions and reconcile
    tightened Installation ceilings on existing proxies; prove old tunnels close
    before the replacement policy is applied and loosening cannot broaden a revision.
-4. Expose Agent controls and requested/deployed state in Console, updating
+4. Expose Agent controls and draft/admitted state in Console, updating
    Storybook scenarios and capturing screenshots plus a short walkthrough.
 5. Update architecture, living reference, operator procedures and source-backed
    flows; regenerate API references and update affected cheat sheets.
@@ -41,17 +41,31 @@ implementation, embedded networking and remote plugin hosting are excluded.
 
 | Outcome | Required proof | Current result |
 | --- | --- | --- |
-| Authorized save/deploy and denied widening | Actual API/controller integration | Not run |
-| Persisted selection and immutable revision | PostgreSQL integration with migrated disposable database | Not run |
-| DNS/IP denial and pinned CONNECT transport | Real local proxy request integration | Not run |
-| Gateway HTTPS, Agent isolation and lifecycle | Enforcing disposable Kubernetes cluster with actual native runtime | Not run |
-| Slack management/runtime coexistence | Actual Driver transport and native Slack client; live provider requires authorized Secrets | Not run |
-| Console workflow | Rebuilt Storybook, screenshots and walkthrough; real API behavior checked separately | Not run |
+| Authorized save/deploy and denied widening | Actual API/controller integration | 11 Console/API workflow cases passed; exact Agent authorization and deploy admission exercised |
+| Persisted selection and immutable revision | PostgreSQL integration with migrated disposable database | Feature case passed with limited application role; all 148 migration-history cases passed |
+| DNS/IP denial and pinned CONNECT transport | Real local proxy request integration | Nine real proxy cases passed, including the explicitly selected public-HTTPS lane; mixed-answer/rebinding fixture proof remains pending |
+| Gateway HTTPS, Agent isolation and lifecycle | Enforcing disposable Kubernetes cluster with actual native runtime | Four real-cluster fixture cases passed without skips; native case in progress; 577 Compute conformance cases passed with one existing platform skip |
+| Slack management/runtime coexistence | Actual Driver transport and native Slack client; live provider requires authorized Secrets | 80 Driver/profile and 121 real Helm packaging/parity cases passed; live Slack, Teams and Composio provider proof not run |
+| Console workflow | Rebuilt Storybook, screenshots and walkthrough; real API behavior checked separately | Nine Network stories inspected; native GitHub screenshot and 18-second captured-frame walkthrough attachments uploaded for the PR |
 
 ## Delivery record
 
-The earlier external-route draft was discarded. This implementation starts from
-the source baseline above. No implementation or runtime success is claimed yet.
+The earlier external-route draft was discarded. Implementation commit
+`27562ebf5` starts from the source baseline above. The draft PR is
+[raw-labs/openclaw-enterprise#18](https://github.com/raw-labs/openclaw-enterprise/pull/18),
+against a comparison branch at that upstream baseline, since the fork main is
+behind upstream. RFC status remains Proposed pending human review.
+
+TypeScript, lint, workspace, OpenAPI, format, documentation/link and specification
+checks passed. Console captures use simulated API/runtime fixtures on macOS arm64
+at 1400 × 900; they establish the visible workflow only. Backend and native
+networking proof are separate. Required final-head CI, both native image
+architectures and full Helm-installed production proof remain merge requirements.
+Independent P2 review completed with one policy-withdrawal finding: terminal
+maintenance could leave a live proxy after deployer revocation. The fix adds
+durable removal-only withdrawal; its regression proof and refinement review are
+in progress. The broad local conformance attempt also encountered host
+prerequisite failures; targeted passing suites do not imply all local suites passed.
 
 ## Changelog
 

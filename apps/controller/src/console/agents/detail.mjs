@@ -1928,14 +1928,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       element(
         "ol",
         { className: "draft-steps" },
-        element("li", {}, "Edit and save Configuration, plugins, or Channels"),
+        element("li", {}, "Edit and save Configuration, plugins, Channels, or Network access"),
         element("li", {}, "Check authentication and credentials"),
         element("li", {}, "Deploy the saved draft"),
       ),
       element(
         "p",
         { className: "muted" },
-        "Deployment creates an immutable version from the saved Configuration and plugin selections. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
+        "Deployment creates an immutable version from the saved Configuration, plugin selections, and Gateway network access. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
       ),
       draft ? element("div", { className: "form-actions" }, deploy, setupCredentials) : deploy,
       deployStatus,

@@ -2252,6 +2252,24 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   return resource;
 }
 
+async function prepareK3dControllerImage(statePath, state, cluster, env) {
+  let source =
+    env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE ?? process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+  if (source === undefined) {
+    const built = await timedPreparation(state.lane, "controller-proxy-image-build", () =>
+      buildRuntimeImages(statePath, state, {
+        controller: true,
+        nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+      }),
+    );
+    source = built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+  }
+  const imported = await timedPreparation(state.lane, "controller-proxy-image-import", () =>
+    registerImageInK3d(statePath, state, cluster, source, "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"),
+  );
+  env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = imported.reference;
+}
+
 async function prepareK3dRuntimeImages(
   statePath,
   state,
@@ -2679,6 +2697,9 @@ async function prepareLane({ lane, statePath }) {
           },
         ]),
       );
+      if (lanePrepare(name).controllerImage) {
+        await prepareK3dControllerImage(resolvedStatePath, state, cluster, env);
+      }
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
@@ -3130,6 +3151,17 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       execFile,
     });
     return { env: { ...env, ...prepared.env }, cleanup: prepared.cleanup };
+  }
+
+  if (prepare.controllerImage) {
+    const cluster = effectiveState.resources.find(
+      (resource) => resource.kind === "k3d-cluster" && resource.status === "ready",
+    );
+    if (cluster === undefined) {
+      throw new Error("Controller image preparation requires the lane's owned ready k3d cluster.");
+    }
+    await prepareK3dControllerImage(resolvedStatePath, effectiveState, cluster, env);
+    await saveLaneEnv(resolvedStatePath, effectiveState, env);
   }
 
   if (prepare.postgres) {

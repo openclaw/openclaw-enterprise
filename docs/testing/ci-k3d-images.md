@@ -19,6 +19,15 @@ inspect and tag before the import, times out after 30 seconds
 inspects in lanes without k3d). A timeout fails preparation; it never counts as a
 missing image, so nothing is pulled for it.
 
+The `k3d-fixture-state` lane also requires the actual controller image for enabled
+Slack provisioning through the managed Gateway proxy. Preparation builds only
+the controller (`buildRuntimeImages` with `runtime: false`), imports its immutable
+reference with `registerImageInK3d`, and records
+`OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`. File preparation reuses that recorded
+image or prepares it once for an existing owned lane state. The fixture Gateway
+and Slack HTTP responses remain simulated; this dependency proves actual proxy
+resource lifecycle and Secret projection, not native provider connectivity.
+
 ## Select immutable images for local preparation
 
 Ordinary Kubernetes lanes default to the digest-pinned K3s 1.35 image in

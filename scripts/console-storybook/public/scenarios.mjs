@@ -2527,6 +2527,14 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof. API persistence, proxy deployment, and native networking require integration tests.",
   },
+  gatewayNetworkAdmitted: {
+    group: "Pages/Agent detail",
+    name: "Admitted Gateway network snapshot",
+    path: `${revision}&tab=network`,
+    deployed: true,
+    slack: true,
+    gatewayOutbound: { mode: "restricted", hosts: ["backend.composio.dev"] },
+  },
   gatewayNetworkRestricted: {
     group: "Pages/Agent detail",
     name: "Restricted Gateway access",

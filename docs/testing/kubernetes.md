@@ -1,7 +1,7 @@
 # Kubernetes tests
 
-Prepare [shared prerequisites](README.md#requirements-and-credentials) for
-Kubernetes HTTP fixtures or real-runtime gateway, Codex, model, and Secret tests.
+Prepare [shared prerequisites](README.md#requirements-and-credentials) for fixture
+and native-runtime Kubernetes tests.
 
 ## Local Kubernetes installation
 
@@ -25,31 +25,20 @@ Cleanup failure keeps state for `occ dev down`. See
 
 ## Kubernetes HTTP fixture
 
-Requires Docker, k3d, `kubectl`, and the migrated `openclaw_k8s_local` database
-from [PostgreSQL](postgresql.md#other-postgresql-suites). Create a new disposable cluster; if `oce` already exists,
-use a new name throughout these commands.
+Requires Docker, k3d and `kubectl`. The CI preparer supplies an enforcing
+owned cluster, fixture image, controller proxy image and limited-role PostgreSQL
+databases. It preserves the default kubeconfig and unrelated clusters.
 
 ```sh
-mkdir -m 700 -p /tmp/oce-k3d
-k3d cluster create oce \
-  --image +v1.35 \
-  --api-port 127.0.0.1:6443 \
-  --kubeconfig-update-default=false \
-  --kubeconfig-switch-context=false
-k3d kubeconfig get oce > /tmp/oce-k3d/kubeconfig
-chmod 600 /tmp/oce-k3d/kubeconfig
-
-docker build --pull=false -t oce-fixture:local tests/fixtures/kubernetes
-k3d image import oce-fixture:local -c oce
-
-OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
-OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
-OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local \
-  node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.mjs \
-    tests/integration/kubernetes-compute-provisioning-real.test.mjs \
-    tests/integration/kubernetes-compute-driver-real.test.mjs \
-    tests/integration/kubernetes-oauth-bootstrap-real.test.mjs
+node scripts/ci/prepare.mjs --lane k3d-fixture-state \
+  --state /tmp/oce-fixture/state.json --github-env /tmp/oce-fixture/lane.env
+for case_file in kubernetes-compute-real kubernetes-compute-provisioning-real kubernetes-compute-driver-real; do
+  node scripts/ci/prepare.mjs --lane k3d-fixture-state \
+    --file "tests/integration/$case_file.test.mjs" \
+    --state /tmp/oce-fixture/state.json --github-env /tmp/oce-fixture/file.env || break
+  node --env-file=/tmp/oce-fixture/file.env --test "tests/integration/$case_file.test.mjs" || break
+done
+node scripts/ci/cleanup.mjs --state /tmp/oce-fixture/state.json
 ```
 
 All baseline fixture cases must run: Driver lifecycle/isolation (in the
@@ -59,8 +48,8 @@ externally managed namespace preservation and provisioning handoff (in
 API-plus-worker reconciliation. The files share
 `tests/helpers/kubernetes-compute-real.mjs`. No model key is needed. Missing all
 cluster selectors skips the suite; partial selectors fail, and a missing
-database skips PostgreSQL-backed cases. Those files share one database here; run them one at a time
-(`--test-concurrency=1`); CI gives each file its own database.
+database skips PostgreSQL-backed cases. The commands above give each file its own
+database; partial or skipped baseline coverage is insufficient.
 
 The OAuth Job case uses authenticated device-login, Agent-create, and Deploy
 routes, Kubernetes Secret storage, and PostgreSQL in `k3d-fixture-oauth`.
@@ -77,12 +66,12 @@ not live OAuth, native refresh, or model execution.
 An imported immutable `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` extends the
 API-plus-worker case through real runtime credential Secret and private-state
 claim deletion. The case uses synthetic, nonfunctional
-fixture credentials and performs no model turn. Channel runtime needs the
-real-runtime images and credentials below.
+fixture credentials and performs no model turn. Enabled Slack provisioning uses
+the actual controller proxy with simulated provider/runtime responses; it proves
+policy and Secret delivery, not native Slack connectivity. See [CI image preparation](ci-k3d-images.md).
 
-The tests require an explicit loopback `k3d-*` context and enforcing
-NetworkPolicies. They create scoped RBAC and resources and use the stock
-local-path provisioner for RWO Harness workspaces. The API-plus-worker case
+Tests use explicit loopback `k3d-*` contexts, enforcing NetworkPolicies, scoped
+RBAC and resources, and stock local-path RWO Harness storage. The API-plus-worker case
 verifies that replacement retains the PVC UID and a file written by the old
 Harness. The HTTP fixture can fail native readiness using a workspace marker;
 a later deployment must retain both earlier files and writes from the failed

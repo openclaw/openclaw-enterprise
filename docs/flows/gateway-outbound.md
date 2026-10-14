@@ -27,25 +27,34 @@ Gateway. This flow ends when the route is ready, withdrawn, or removed after dra
 
 ```mermaid
 graph TD
-  A["Agent network edit"] --> B["OCC authorizes update and administer"]
-  B --> C["Persist desired Agent selection"]
-  C --> D["Deploy reads saved Configuration"]
-  D --> E["Channel Driver declares required destinations"]
-  E --> F["Compute admits against Installation ceiling"]
-  F --> G["Freeze revision selection, requirements and exclusions"]
-  G --> H["Compute prepares exact revision proxy"]
+  A["<b>Agent network edit</b>"] --> B["<b>OCC approval</b><br/>Update and administer"]
+  B --> C["<b>Save draft</b><br/>Agent selection"]
+  C --> D["<b>Deploy</b><br/>Read Configuration"]
+  D --> E["<b>Channel Driver</b><br/>Required destinations"]
+  E --> F["<b>Compute admission</b><br/>Installation ceiling"]
+  F --> G["<b>Admitted revision</b><br/>Selection and exclusions"]
+  G --> H["<b>Prepare proxy</b><br/>Exact revision resources"]
   H --> I{"Proxy ready?"}
-  I -->|No| J["Keep Gateway unready"]
-  I -->|Yes| K["Start Gateway with managed proxy route"]
-  K --> L["CONNECT vets hostname and all DNS answers"]
-  L --> M{"Permitted public IPv4 destination?"}
-  M -->|No| N["Deny connection"]
-  M -->|Yes| O["Pin address and tunnel end-to-end TLS"]
-  K --> P["Maintenance rechecks Installation ceiling"]
+  I -->|No| J["<b>Gateway waits</b><br/>No fallback route"]
+  I -->|Yes| K["<b>Start Gateway</b><br/>Managed proxy route"]
+  K --> L["<b>CONNECT request</b><br/>Vet host and DNS answers"]
+  L --> M{"Public IPv4 allowed?"}
+  M -->|No| N["<b>Deny connection</b>"]
+  M -->|Yes| O["<b>Pin address</b><br/>End-to-end TLS tunnel"]
+  K --> P["<b>Maintenance</b><br/>Recheck ceiling"]
   P --> Q{"Ceiling tightened?"}
-  Q -->|Yes| R["Stop old proxy Pods before replacing or refusing route"]
+  Q -->|Yes| R["<b>Replace or withdraw</b><br/>Await old proxy Pods"]
   Q -->|No| K
-  K --> S["Stop drains Gateway before proxy teardown"]
+  K --> S["<b>Stop Agent</b><br/>Drain, then remove proxy"]
+  K --> T["<b>Terminal refusal</b><br/>Active maintenance"]
+  T --> U["<b>Persist withdrawal</b><br/>Before removal effects"]
+  U --> V["<b>Remove exact proxy</b><br/>Retry, then publish refusal"]
+  classDef state fill:#e9eff5,stroke:#657a91,color:#24384b,stroke-width:1px;
+  classDef operation fill:#e6efed,stroke:#668780,color:#243b37,stroke-width:1px;
+  classDef gate fill:#f4eddf,stroke:#a18c62,color:#4e422b,stroke-width:1px;
+  class A,B,C,D,E,F,G,U state;
+  class H,K,L,O,P,R,S,V operation;
+  class I,J,M,N,Q,T gate;
 ```
 
 ## Execution Trace
@@ -74,7 +83,8 @@ native settings cannot supply this trusted declaration.
 and produces the snapshot. OCC validates it and `freezeAgentRevision` copies
 selection, requirements and exclusions into the immutable revision. Missing
 support refuses extra authority. A default selection with no channel requirements
-needs no proxy. Persisted admission keeps the same snapshot across retries.
+needs no proxy. A snapshot requires Compute’s removal-only
+`withdrawGatewayOutbound` hook. Persisted admission keeps the same snapshot across retries.
 
 ### 3. Prepare an isolated route before starting the Gateway
 
@@ -106,7 +116,17 @@ restricted policy from trusted Driver composition. The Helm instance admits
 only OCC API clients; Agent selections never broaden it. See the
 [channel directory flow](agent-channel-directory.md) for management requests.
 
-### 5. Reconcile tightening and tear down after drain
+### 5. Persist withdrawal before terminal maintenance
+
+`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision` defers a terminal
+active-version result as `GATEWAY_OUTBOUND_WITHDRAWAL_PENDING` before any removal.
+Work-bound audit evidence preserves the refusal. The next pass finishes only
+`KubernetesComputeDriver.withdrawGatewayOutbound`, validating ownership and waiting
+for exact proxy Pods and tunnels to terminate. Restored permissions cannot repair
+the old route during this wait; a new authorized revision restores service.
+Queue retries and stale-lease recovery preserve the pending withdrawal.
+
+### 6. Reconcile tightening and tear down after drain
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.reconcileGatewayOutbound` combines current exclusions
 with admitted exclusions. A changed immutable policy stops old proxy Pods before
@@ -140,4 +160,5 @@ compatibility with every native plugin transport or provider.
 
 ## Changelog
 
+- 2026-10-14 17:45: Add durable terminal-maintenance withdrawal (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - 27562ebf56a8315a663583731a303ca362cbfc5d)
 - 2026-10-14 16:16: Document accompanying Gateway outbound implementation (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - bd8fe1f7b0b798dca84d6f90b7377ddda79d88a6)

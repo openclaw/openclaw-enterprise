@@ -102,3 +102,5 @@ export const GatewayNetworkDisabled = story("gatewayNetworkDisabled");
 export const GatewayNetworkEmbedded = story("gatewayNetworkEmbedded");
 export const GatewayNetworkLoading = story("gatewayNetworkLoading");
 export const GatewayNetworkError = story("gatewayNetworkError");
+
+export const GatewayNetworkAdmitted = story("gatewayNetworkAdmitted");

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-11
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-14
+last_updated_session: authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3
 ---
 
 # Controller Worker Flow
@@ -38,7 +38,7 @@ graph TD
         D --> E["Reload exact resources and current IAM state"]
         E --> F{"Authorized and valid?"}
         F -->|yes| G["Invoke Compute while renewing the claim lease"]
-        F -->|no| H["Persist permanent failure under the live claim"]
+        F -->|no| H["Persist failure after required cleanup"]
         G --> I{"Observed result"}
         G -->|rejected| R["Emit bounded Driver diagnostic"]
     end
@@ -343,11 +343,12 @@ public explanations. Memory State has no attempt.
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
 
-If Compute declares maintenance, activation schedules exact-revision observations.
-Incomplete observations, Compute bindings, and dependency retries or expired claims
-exhausting attempts close the item and schedule another while the revision stays
-active and running within its credential deadline; outages never retire it. Each
-claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+Compute maintenance schedules exact-revision observations. Incomplete observations,
+binding failures and exhausted dependency retries schedule another pass while the
+revision stays active and running within its credential deadline. Claims reauthorize
+the actor; successor time buckets increase despite clock skew. Terminal maintenance
+[withdraws managed Gateway access](gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance)
+before ending its chain.
 
 `worker.completed` reports the target, outcome, and code; polling continues.
 A Namespace pass that observes the same pending state this worker last audited,
@@ -418,6 +419,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 17:45: Persist removal-only Gateway withdrawal before terminal maintenance (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - 27562ebf56a8315a663583731a303ca362cbfc5d)
 
 - 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 

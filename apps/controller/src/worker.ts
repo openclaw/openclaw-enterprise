@@ -158,6 +158,8 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
+const GATEWAY_OUTBOUND_WITHDRAWAL_PENDING = "GATEWAY_OUTBOUND_WITHDRAWAL_PENDING";
+const GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS = 1000;
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -372,6 +374,8 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
+  /** Removal-only maintenance already confirmed that this revision's outbound route is gone. */
+  readonly gatewayOutboundWithdrawn?: true;
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
   /** A transient dependency failure, retried until the convergence deadline. */
@@ -3360,6 +3364,7 @@ export class ControllerWorker {
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
+    let outboundWaitRead = false;
     let claimAgent: Readonly<Agent> | undefined;
     try {
       if (
@@ -3371,6 +3376,21 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, { outcome: "permanent", code: "INVALID_TARGET" });
         return;
       }
+      // This committed decision precedes all removal effects. Once it exists, restored
+      // actor authority cannot turn a retry or recovered lease into workload repair.
+      const outboundWait = await this.queue.findWorkAttempt(
+        claim.idempotencyKey,
+        GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+      );
+      if (outboundWait?.refusal !== undefined) {
+        await this.finishGatewayOutboundWithdrawal(
+          claim,
+          outboundWait.refusal,
+          outboundWait.refusalData,
+        );
+        return;
+      }
+      outboundWaitRead = true;
       const resources = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
@@ -3763,6 +3783,11 @@ export class ControllerWorker {
       );
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      if (!outboundWaitRead) {
+        // An unavailable decision read or unfinished removal pass cannot become
+        // a repair retry. Leave this claim to its removal-aware lease recovery.
         throw error;
       }
       if (!refusalWaitRead && !(error instanceof RefusedCandidateStopError)) {
@@ -4502,6 +4527,14 @@ export class ControllerWorker {
     ) {
       return;
     }
+    if (
+      resolved.gatewayOutboundWithdrawn !== true &&
+      (resolved.outcome === "permanent" ||
+        (resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts)) &&
+      (await this.beginGatewayOutboundWithdrawal(claim, resolved))
+    ) {
+      return;
+    }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
@@ -4784,6 +4817,144 @@ export class ControllerWorker {
         throw error;
       }
       return { predecessorStop: revisionFailureLogFields(error).cause ?? "Error" };
+    }
+  }
+
+  private async beginGatewayOutboundWithdrawal(
+    claim: ClaimedWork,
+    result: RevisionDispatchResult,
+  ): Promise<boolean> {
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      (claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile` &&
+        !new RegExp(`^agent_revision:${claim.revisionId}:maintenance:(0|[1-9][0-9]*)$`).test(
+          claim.idempotencyKey,
+        ))
+    ) {
+      return false;
+    }
+    let recorded = false;
+    await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      const agent = await this.lockClaimAgent(unit, claim);
+      const revision = await unit.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      );
+      if (
+        agent === undefined ||
+        agent.activeRevisionId !== revision?.id ||
+        revision === undefined ||
+        revision.gatewayOutbound === undefined ||
+        revision.namespaceId !== claim.namespaceId ||
+        revision.agentId !== agent.id ||
+        revision.servicePrincipalId !== agent.servicePrincipalId
+      ) {
+        return;
+      }
+      if (result.decision !== undefined) {
+        await this.appendRevisionDenial(unit, claim, result);
+      }
+      // Commit the irreversible removal decision before attempting deletion. Deferral
+      // refunds the claim's attempt; withdrawal has neither a deployment deadline nor
+      // an attempt limit while its old authority may still be live.
+      await queue.defer(
+        claim,
+        {
+          code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+          refusal: result.code,
+          ...(result.data === undefined ? {} : { refusalData: result.data }),
+        },
+        { delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS, repeatEvidence: true },
+      );
+      recorded = true;
+    }, this.queueOptions);
+    if (recorded) {
+      this.emitGatewayOutboundWithdrawalWait(claim, result.code);
+    }
+    return recorded;
+  }
+
+  private emitGatewayOutboundWithdrawalWait(
+    claim: ClaimedWork,
+    refusal: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
+  ): void {
+    this.passOutcome = "pending";
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      outcome: "pending",
+      result: "pending",
+      code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+      refusal,
+      ...failureLogFields,
+    });
+  }
+
+  private async finishGatewayOutboundWithdrawal(
+    claim: ClaimedWork,
+    refusal: string,
+    refusalData?: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    try {
+      const { namespace, agent, revision } = await this.state.read(async (view) => ({
+        namespace: await view.namespaces.findNamespace(claim.namespaceId),
+        agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
+        revision: await view.revisions.findRevision(
+          claim.namespaceId,
+          claim.agentId!,
+          claim.revisionId!,
+        ),
+      }));
+      if (
+        namespace === undefined ||
+        agent === undefined ||
+        revision === undefined ||
+        revision.namespaceId !== namespace.id ||
+        revision.agentId !== agent.id ||
+        revision.servicePrincipalId !== agent.servicePrincipalId ||
+        revision.compute.id !== this.compute.id ||
+        revision.compute.implementation !== this.compute.implementation ||
+        revision.gatewayOutbound === undefined ||
+        this.compute.withdrawGatewayOutbound === undefined
+      ) {
+        throw new ScopeViolationError(
+          "The pending Gateway outbound withdrawal owner is unavailable.",
+        );
+      }
+      await this.withClaimHeartbeat(claim, () => this.compute.withdrawGatewayOutbound!(revision));
+      await this.finalizeRevision(claim, {
+        outcome: "permanent",
+        code: refusal,
+        ...(refusalData === undefined ? {} : { data: refusalData }),
+        gatewayOutboundWithdrawn: true,
+      });
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      await this.state.transactWithQueue(async (_unit, queue) => {
+        if ((await queue.heartbeat(claim)) === undefined) {
+          throw new WorkClaimLostError();
+        }
+        await queue.defer(
+          claim,
+          {
+            code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+            refusal,
+            ...(refusalData === undefined ? {} : { refusalData }),
+          },
+          { delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS, repeatEvidence: true },
+        );
+      }, this.queueOptions);
+      this.emitGatewayOutboundWithdrawalWait(claim, refusal, revisionFailureLogFields(error));
     }
   }
 

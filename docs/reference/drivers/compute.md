@@ -82,12 +82,11 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 
 ### Optional Gateway outbound admission
 
-`gatewayOutboundCapabilities`, `validateGatewayOutbound` and `admitGatewayOutbound`
-let the selected Compute Driver enforce Installation limits on Agent-approved
-additional connectivity and trusted Channel Driver requirements. Admission returns
-an immutable snapshot or omits it when no external route is needed. Save/deploy
-refusals use bounded platform conflict errors. Infrastructure rendering and route
-lifecycle remain inside Compute. See [Gateway outbound](../gateway-outbound.md).
+Optional `gatewayOutboundCapabilities`, `validateGatewayOutbound`, and
+`admitGatewayOutbound` enforce Installation limits and freeze Agent selection,
+trusted Channel requirements, and exclusions. Snapshots require removal-only
+`withdrawGatewayOutbound` lifecycle support.
+See [Gateway outbound](../gateway-outbound.md).
 
 ### Optional startup preflight
 

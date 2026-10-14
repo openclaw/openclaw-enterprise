@@ -194,7 +194,7 @@ export function renderGatewayOutbound(
         ? "Enabled supported channels add their required HTTPS destinations automatically. Additional access applies to every trusted plugin in the dedicated Gateway. Private networks and metadata endpoints remain blocked."
         : "Embedded Agents keep their existing Compute networking. Additional Gateway outbound access applies to dedicated execution.",
     ),
-    element("p", {}, `${draft ? "Saved draft" : "Deployed selection"}: ${labels[shown.mode]}`),
+    element("p", {}, `${draft ? "Saved draft" : "Admitted selection"}: ${labels[shown.mode]}`),
     required,
   );
   if (!draft) {

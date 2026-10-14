@@ -1832,6 +1832,8 @@ export interface ComputeDriver extends Driver {
     readonly executionMode: HarnessExecutionMode;
     readonly requirements: readonly GatewayOutboundRequirement[];
   }): GatewayOutboundSnapshot | undefined;
+  /** Remove this revision's proxy and live tunnels without starting or repairing workloads. */
+  withdrawGatewayOutbound?(revision: AgentRevision): Promise<void>;
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
   /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */

@@ -12187,22 +12187,42 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     try {
       this.validateAdmittedGatewayOutbound(revision);
     } catch (error) {
-      const { name: harnessNamespace } = await this.resolveNamespace(revision.namespaceId);
+      await this.withdrawGatewayOutbound(revision);
+      throw error;
+    }
+  }
+
+  async withdrawGatewayOutbound(revision: AgentRevision): Promise<void> {
+    this.lifecycleStarted = true;
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new OwnershipFailure("Refusing to withdraw another Compute Driver's Gateway route.");
+    }
+    if (revision.gatewayOutbound === undefined) {
+      return;
+    }
+    required(revision.agentId, "Agent ID");
+    required(revision.id, "AgentRevision ID");
+    required(revision.servicePrincipalId, "Agent ServicePrincipal ID");
+    try {
+      const { name: harnessNamespace, external } = await this.resolveNamespace(
+        revision.namespaceId,
+      );
       const namespace = this.gatewayNamespace(revision, harnessNamespace);
       const observed = await this.getNamespace(namespace);
-      if (observed !== undefined) {
-        if (this.options.executionCluster !== undefined) {
-          this.verifyGatewayNamespace(observed, { namespaceId: revision.namespaceId });
-        } else {
-          this.verifyNamespaceOwnership(
-            observed,
-            { namespaceId: revision.namespaceId },
-            observed.metadata.annotations?.["openclaw.dev/namespace-lifecycle"] === "external",
-          );
-        }
-        await this.removeGatewayOutbound(revision, namespace);
+      if (observed === undefined) {
+        return;
       }
-      throw error;
+      if (this.options.executionCluster !== undefined) {
+        this.verifyGatewayNamespace(observed, { namespaceId: revision.namespaceId });
+      } else {
+        this.verifyNamespaceOwnership(observed, { namespaceId: revision.namespaceId }, external);
+      }
+      await this.removeGatewayOutbound(revision, namespace);
+    } catch (error) {
+      throw transientKubernetesFailure(error);
     }
   }
 

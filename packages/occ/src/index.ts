@@ -7083,6 +7083,11 @@ export class OpenClawController {
           "The Compute Driver returned invalid Gateway outbound admission.",
         );
       }
+      if (gatewayOutbound !== undefined && compute.withdrawGatewayOutbound === undefined) {
+        throw new ResourceStateConflictError(
+          "The selected Compute Driver cannot withdraw Gateway outbound access.",
+        );
+      }
       if (selection.mode !== "channelsOnly" && gatewayOutbound === undefined) {
         throw new ResourceStateConflictError(
           "The selected Compute Driver cannot admit Gateway outbound access.",

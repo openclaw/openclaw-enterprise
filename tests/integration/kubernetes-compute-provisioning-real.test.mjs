@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { kubernetesConfigurationName } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -494,6 +495,37 @@ test(
     const nodeEnrollment = createGatewayNodeEnrollment(
       async () => "fixture-node-enrollment-api-key",
     );
+    const controllerImage = process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+    assert.match(
+      controllerImage ?? "",
+      /^\S+@sha256:[a-f0-9]{64}$/i,
+      "provisioning requires the actual imported controller image for its Gateway proxy",
+    );
+    const kubernetesService = JSON.parse(
+      await kubectl("get", "service", "kubernetes", "--namespace", "default", "-o", "json"),
+    );
+    const kubernetesEndpoints = JSON.parse(
+      await kubectl("get", "endpoints", "kubernetes", "--namespace", "default", "-o", "json"),
+    );
+    const infrastructureAddresses = [
+      ...(kubernetesService.spec.clusterIPs ?? [kubernetesService.spec.clusterIP]),
+      ...(kubernetesEndpoints.subsets ?? []).flatMap(({ addresses = [] }) =>
+        addresses.map(({ ip }) => ip),
+      ),
+    ];
+    const denyCidrs = [
+      ...new Set(
+        infrastructureAddresses.map((address) => {
+          const family = isIP(address);
+          assert.notEqual(
+            family,
+            0,
+            "the selected cluster must report literal infrastructure addresses",
+          );
+          return `${address}/${family === 4 ? 32 : 128}`;
+        }),
+      ),
+    ];
     const { driver, kubernetesNamespaceName } = await createDriver(
       {
         authentication: controller.authentication,
@@ -506,8 +538,13 @@ test(
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
-          // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
-          channels: { proxyUrl: "http://10.42.0.15:3128" },
+          // The real proxy serves the admitted Slack requirements; fixture credentials
+          // and the fixture runtime establish projection, not a Slack connection.
+          gatewayOutbound: {
+            enabled: true,
+            image: controllerImage,
+            denyCidrs,
+          },
           gatewayNodeSelector: {
             "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
               .items[0].metadata.name,

@@ -473,6 +473,7 @@ export function createWorkerRevisionFixtures(
         repositoryCredentials,
         actorId = actor.id,
         plugins,
+        gatewayOutbound,
         workAge,
         // How far the controller clock that stamps the admission runs ahead of PostgreSQL's
         // (negative: behind). The store restamps admission on its own clock (finding 1195).
@@ -536,6 +537,7 @@ export function createWorkerRevisionFixtures(
         harness: approvedHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(plugins === undefined ? {} : { plugins }),
+        ...(gatewayOutbound === undefined ? {} : { gatewayOutbound }),
         harnessAuth,
         ...(credentialSources.length === 0 ? {} : { credentialSources }),
         servicePrincipalId: owner.servicePrincipalId,

@@ -317,7 +317,15 @@ export function installFixture(scenario, evidence) {
       gatewayOutbound: {
         selection: structuredClone(owner.gatewayOutbound ?? { mode: "channelsOnly" }),
         requirements: scenario.slack
-          ? [{ source: "slack", destinations: [{ host: "slack.com", includeSubdomains: true }] }]
+          ? [
+              {
+                source: "slack",
+                destinations: [
+                  { host: "slack.com", includeSubdomains: true },
+                  { host: "slack-edge.com", includeSubdomains: true },
+                ],
+              },
+            ]
           : [],
         denyCidrs: ["10.0.0.0/8"],
       },
@@ -1090,7 +1098,8 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/gateway-outbound/capabilities" && method === "GET") {
           return response({
             restricted: scenario.gatewayDisabled !== true,
-            publicHttps: scenario.gatewayPublicAllowed !== false,
+            publicHttps:
+              scenario.gatewayDisabled !== true && scenario.gatewayPublicAllowed !== false,
             canConfigure: scenario.gatewayReadOnly !== true,
             requirements: scenario.slack
               ? [

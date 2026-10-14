@@ -45,7 +45,16 @@ also reviewed in source; do not label that inspection as runtime rebinding proof
 Use the existing [production topology prerequisites](kubernetes.md) with a
 fresh controller image containing this change, the explicitly pinned stock native
 runtime, an enforcing owned k3d cluster, and a dedicated migrated `openclaw_k8s_*`
-database. Record image IDs, the source revision, allowed/denied requests and
+database. Prepare ownership with the existing gateway-routing or k3d-model lane
+and allocate this file’s database through `prepare.mjs --file`. Then select:
+
+```sh
+OCC_TEST_GATEWAY_OUTBOUND_K3D=1 node --env-file=<prepared-file-env> --test \
+  --test-name-pattern="production dedicated Gateway outbound" \
+  tests/integration/harness-topology-k3d-real.test.mjs
+```
+
+The existing `k3d-model` lane requires this case. Record image IDs, the source revision, allowed/denied requests and
 lifecycle results. Fixture manifests or SDK client doubles do not prove actual
 network isolation or native plugin execution.
 

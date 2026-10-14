@@ -1,5 +1,6 @@
 {
   "id": "oce-outbound-proof",
+  "activation": { "onStartup": true },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

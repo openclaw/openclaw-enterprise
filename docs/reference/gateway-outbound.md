@@ -93,7 +93,8 @@ The stock native Gateway uses the generated `HTTP_PROXY`, `HTTPS_PROXY`,
 24.5 or newer; managed-proxy Gateway startup refuses older versions. Native
 plugins using ordinary global fetch can use the approved route. Libraries with
 their own transports must honor these settings or use an explicit proxy agent.
-Direct connections remain blocked; proxy configuration alone is not proof of
+Approved loopback/internal transports retain their existing access. Other direct
+external connections remain blocked; proxy configuration alone is not proof of
 compatibility with every plugin or provider.
 
 Public mode trusts all Gateway-hosted plugin code with public TCP/443 access.
@@ -106,6 +107,13 @@ The OCC API uses a separate restricted instance for trusted Driver management
 requests made before a Gateway exists. Its destinations are not the union of
 Agent permissions. See [Slack setup](../guides/integrations/slack.md) for that
 Driver's management and Gateway consumers.
+
+If terminal active-version maintenance loses deployer or credential authority,
+OCC persists Gateway withdrawal before deleting its exact proxy. Failed cleanup
+stays pending across retries and worker restarts. Restoring permissions does not
+repair that version’s route: restore authority and deploy a new version. Existing
+Harness behavior is unchanged, but channels and Gateway integrations lose their
+external route once withdrawal completes.
 
 ## Verification and troubleshooting
 

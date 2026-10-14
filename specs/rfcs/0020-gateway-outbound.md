@@ -116,6 +116,13 @@ reporting the new policy applied. The maintenance interval is not a total
 revocation deadline; queue and shutdown delay also count. Test tightening with an
 already established tunnel and prove a successor remains intact.
 
+Terminal active-version maintenance must not abandon a live proxy when deployer,
+credential or backend authority is refused. Persist a removal-only withdrawal
+before effects; retries and restarts finish it even if authority returns. Publish
+the terminal maintenance result only after proxy Pods and tunnels are gone.
+Restoration requires a new authorized revision. Preserve the Harness’s existing
+behavior; withdrawing the route interrupts channel and integration connectivity.
+
 Saving changes updates desired state. Deployment prepares the revision proxy
 before starting the Gateway with its exact route. Failed preparation grants no
 fallback. During stop, retain the proxy while the Gateway drains, then remove it
@@ -127,8 +134,8 @@ Installation tightening withdraws forbidden access before it is reported applied
 loosening cannot broaden existing revisions. The immutable admitted selection
 remains evidence of the requested authority even if enforcement revokes it.
 
-The Console presents channel-required access, the additional selection, requested
-versus deployed state, and bounded readiness/denial evidence. It does not expose
+The Console presents channel-required access, the additional selection, draft
+versus admitted state, and bounded readiness/denial evidence. It does not expose
 proxy URLs or Kubernetes object settings. Non-administrators can inspect but
 cannot change additional access. Diagnostics exclude credentials, HTTP bodies
 and unbounded provider output.
