@@ -2204,6 +2204,138 @@ test(
 );
 
 test(
+  "PostgreSQL deployment refuses with 503 and creates nothing when an earlier revision is unreadable",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createTestConfigurationDriver },
+      { createTestSecretDriver },
+      { requestFailure },
+    ] = await Promise.all([
+      import("pg"),
+      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/secret-driver.mjs"),
+      import("../../apps/controller/src/http/errors.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    await startController(context);
+    const actor = await pool.query(
+      `SELECT identity.id
+       FROM occ.iam_identities AS identity
+       JOIN occ."user" AS auth_user ON auth_user.id = identity.subject
+       WHERE auth_user.email = $1`,
+      [adminEmail],
+    );
+    assert.equal(actor.rowCount, 1);
+    const principalId = actor.rows[0].id;
+    const { controller, resolveHarness } = await createDurableController(pool);
+    for (const driver of [
+      createTestConfigurationDriver({ id: `configuration-unreadable-${randomUUID()}` }),
+      createTestSecretDriver(),
+    ]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+
+    const namespace = await controller.createNamespace(principalId, {
+      name: `unreadable-history-${randomUUID()}`,
+    });
+    await controller.handleNamespaceLifecycle(principalId, namespace.id, "ready");
+    const configuration = await controller.createConfiguration(principalId, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {},
+    });
+    const agent = await controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: `unreadable-history-agent-${randomUUID()}`,
+      configurationId: configuration.id,
+    });
+    const harnessSecret = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: `unreadable-history-harness-${randomUUID()}`,
+      value: "synthetic-persistence-key",
+    });
+    await controller.updateAgent(principalId, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+      harnessAuth: {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: namespace.id, id: harnessSecret.id },
+      },
+    });
+    const harnessRoleId = `role-${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_roles(id, namespace_id, name, permissions) VALUES($1, $2, $3, $4::jsonb)",
+      [
+        harnessRoleId,
+        namespace.id,
+        "Harness Secret consumer",
+        JSON.stringify([{ action: "operate", resourceKind: "secret" }]),
+      ],
+    );
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings(id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id) VALUES($1, $2, $3, $4, 'secret', $5)",
+      [
+        `binding-${randomUUID()}`,
+        namespace.id,
+        agent.servicePrincipalId,
+        harnessRoleId,
+        harnessSecret.id,
+      ],
+    );
+    const deploy = () =>
+      controller.deployAgent(
+        principalId,
+        { namespaceId: namespace.id, agentId: agent.id },
+        resolveHarness,
+      );
+    const first = await deploy();
+    assert.equal(first.revision, 1);
+
+    // Revisions are immutable to the application role, so seed the unreadable one as a copy
+    // carrying a previously accepted plugin approval enum the current contract no longer decodes.
+    await pool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT $1, namespace_id, agent_id, 2, backend_id,
+              jsonb_set(admitted_spec, '{plugins}', $2::jsonb, true), admitted_at
+       FROM occ.agent_revisions WHERE id = $3`,
+      [
+        `rev_${randomUUID()}`,
+        JSON.stringify({
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } } },
+        }),
+        first.id,
+      ],
+    );
+    const counts = () =>
+      pool
+        .query(
+          `SELECT (SELECT count(*)::integer FROM occ.agent_revisions WHERE agent_id = $1) AS revisions,
+                  (SELECT count(*)::integer FROM occ.controller_work WHERE agent_id = $1) AS work`,
+          [agent.id],
+        )
+        .then(({ rows }) => rows[0]);
+    const before = await counts();
+    assert.equal(before.revisions, 2);
+
+    // The worker decodes every earlier revision to stop or retire it, so admission must too.
+    const refusal = await deploy().then(
+      () => assert.fail("deployment was admitted"),
+      (error) => error,
+    );
+    assert.equal(refusal.name, "DependencyUnavailableError");
+    assert.equal(requestFailure(refusal).status, 503);
+    assert.deepEqual(await counts(), before);
+  },
+);
+
+test(
   "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
   requiresPostgres,
   async (context) => {

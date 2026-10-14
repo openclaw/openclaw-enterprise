@@ -30,12 +30,12 @@ async function scratch(t) {
   return dir;
 }
 
-/** Sends `bytes` of body after a 200 and never ends the response. */
-async function holdingServer(t, listenOn, bytes, contentType) {
+/** Sends `bytes` of body after `status` (200 by default) and never ends the response. */
+async function holdingServer(t, listenOn, bytes, contentType, status = 200) {
   const server = createServer((request, response) => {
     request.resume();
     response.on("error", () => {});
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(status, { "content-type": contentType });
     const chunk = Buffer.alloc(64 * 1024, 0x20);
     let sent = 0;
     const pump = () => {
@@ -199,6 +199,18 @@ test("runtime status readback stops reading past its size limit (finding 1327)",
   assert.equal(outcome.error?.message, "Runtime status returned oversized data.");
   assert.ok(performance.now() - started < 5_000, "rejected at the limit, not the deadline");
 });
+
+for (const status of [404, 503]) {
+  test(`an oversized ${status} from the status port still reads as not serving (finding 1339)`, async (t) => {
+    const server = await holdingServer(t, 0, 1024 * 1024, "text/plain", status);
+    const started = performance.now();
+    const outcome = await settled(statusReadback(server.address().port), 8_000);
+    assert.equal(outcome.pending, undefined, "the readback settles");
+    assert.equal(outcome.error, undefined);
+    assert.equal(outcome.value, undefined);
+    assert.ok(performance.now() - started < 5_000, "answered at the limit, not the deadline");
+  });
+}
 
 test("runtime status readback still parses an in-limit status", async (t) => {
   const server = createServer((request, response) => {
