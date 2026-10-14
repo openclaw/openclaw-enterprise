@@ -16018,6 +16018,17 @@ for (const harnessId of ["codex", "openclaw"]) {
     );
     assert.equal(provisions.length, 1);
     const requirements = provisions[0].requirements;
+    for (const name of [
+      "OPENCLAW_AGENT_REVISION_ID",
+      "OPENCLAW_RUNTIME_STATUS_CONTAINER",
+      "OPENCLAW_RUNTIME_STATUS_PORT",
+      "OPENCLAW_POD_UID",
+    ]) {
+      assert.equal(
+        requirements.environment.some((entry) => entry.name === name),
+        false,
+      );
+    }
     assert.equal(
       requirements.workspaceMounts.find(({ subPath }) => subPath === "workspace").claimName,
       pod.volumes.find(({ name }) => name === "openclaw-workspace").persistentVolumeClaim.claimName,

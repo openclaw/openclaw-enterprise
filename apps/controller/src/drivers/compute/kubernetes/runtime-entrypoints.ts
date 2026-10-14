@@ -4110,7 +4110,11 @@ function nativeWorkerReady() {
   });
 }
 
-startRuntimeReadinessServer(nativeWorkerReady);
+// Compute-owned Pods use this private probe; Sandbox providers own their readiness
+// and intentionally receive no Compute status endpoint configuration.
+if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
+  startRuntimeReadinessServer(nativeWorkerReady);
+}
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
