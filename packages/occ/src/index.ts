@@ -14,6 +14,7 @@ import {
 } from "./device-authorization.ts";
 import type {
   Agent,
+  GatewayOutboundSelection,
   AgentCredentialSourceBinding,
   AgentRead,
   AgentRevisionSummary,
@@ -110,6 +111,8 @@ import type {
   HarnessAuthSnapshot,
 } from "@openclaw-enterprise/contracts";
 import {
+  validGatewayOutboundSelection,
+  validGatewayOutboundSnapshot,
   isName,
   NAME_RULE,
   normalizeInitialWorkspaceFiles,
@@ -650,6 +653,7 @@ export interface CreateAgentInput {
 }
 
 export interface UpdateAgentInput {
+  readonly gatewayOutbound?: GatewayOutboundSelection;
   readonly namespaceId: string;
   readonly agentId: string;
   readonly configurationId: string;
@@ -1622,12 +1626,19 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
+    const outbound = (this.selections.get("compute")?.driver as ComputeDriver | undefined)
+      ?.gatewayOutboundCapabilities;
+    const gatewayOutbound = outbound === undefined ? {} : { gatewayOutbound: outbound };
     const nativeWorkers =
       this.nativeWorkers === undefined ? {} : { nativeWorkers: { support: this.nativeWorkers } };
     if (!this.selections.has("plugin")) {
-      return this.nativeWorkers === undefined
-        ? this.installation
-        : immutableCopy({ ...this.installation, capabilities: nativeWorkers });
+      if (this.nativeWorkers === undefined && outbound === undefined) {
+        return this.installation;
+      }
+      return immutableCopy({
+        ...this.installation,
+        capabilities: { ...this.installation.capabilities, ...nativeWorkers, ...gatewayOutbound },
+      });
     }
     const driver = this.pluginDriver();
     return immutableCopy({
@@ -1635,6 +1646,7 @@ export class OpenClawController {
       capabilities: {
         ...this.installation.capabilities,
         ...nativeWorkers,
+        ...gatewayOutbound,
         ...(driver.discoverCatalog && driver.getCatalogPlugin
           ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
           : {}),
@@ -6555,7 +6567,41 @@ export class OpenClawController {
     });
   }
 
-  /** `resolveHarness` as in createAgent. */
+  async getAgentGatewayOutboundCapabilities(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ) {
+    const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+    await this.authorize(principalId, "read", target);
+    const agent = await this.read((state) => state.agents.findAgent(namespaceId, agentId));
+    if (agent === undefined) {
+      throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+    }
+    const capabilities = (this.selections.get("compute")?.driver as ComputeDriver | undefined)
+      ?.gatewayOutboundCapabilities;
+    const update = await this.authorizationDecision(principalId, "update", target);
+    const administer = await this.authorizationDecision(principalId, "administer", target);
+    const readable = await this.canRead(principalId, {
+      kind: "configuration",
+      id: agent.configurationId,
+      namespaceId,
+    });
+    const configuration = readable
+      ? await this.getConfiguration(principalId, namespaceId, agent.configurationId)
+      : undefined;
+    const channel = this.selections.get("channel")?.driver as ChannelDriver | undefined;
+    return {
+      ...(configuration === undefined
+        ? {}
+        : { requirements: channel?.gatewayNetworkRequirements?.(configuration.values) ?? [] }),
+      restricted: capabilities?.restricted === true,
+      publicHttps: capabilities?.publicHttps === true,
+      canConfigure:
+        update.decision.allowed && administer.decision.allowed && agent.status === "active",
+    };
+  }
+
   async updateAgent(
     principalId: string,
     input: UpdateAgentInput,
@@ -6566,6 +6612,12 @@ export class OpenClawController {
     }
     if (!isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
+    }
+    if (
+      input.gatewayOutbound !== undefined &&
+      !validGatewayOutboundSelection(input.gatewayOutbound)
+    ) {
+      throw new ScopeViolationError("The Gateway outbound selection is invalid.");
     }
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : this.harnessAuthBinding(input.harnessAuth);
@@ -6583,6 +6635,13 @@ export class OpenClawController {
         id: input.agentId,
         namespaceId: input.namespaceId,
       });
+      if (input.gatewayOutbound !== undefined) {
+        await this.authorize(principalId, "administer", {
+          kind: "agent",
+          id: input.agentId,
+          namespaceId: input.namespaceId,
+        });
+      }
       const namespace = await this.lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
       if (!agent) {
@@ -6609,6 +6668,20 @@ export class OpenClawController {
       }
       await this.guardAgentProvisioning(state, namespace.id, agent.id);
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
+      const outbound = input.gatewayOutbound ?? agent.gatewayOutbound ?? { mode: "channelsOnly" };
+      if (
+        outbound.mode !== "channelsOnly" &&
+        (input.gatewayOutbound !== undefined ||
+          (input.executionMode !== undefined && input.executionMode !== agent.executionMode))
+      ) {
+        const compute = this.selectedDriver("compute") as ComputeDriver;
+        if (compute.validateGatewayOutbound === undefined) {
+          throw new ResourceStateConflictError(
+            "The selected Compute Driver does not support Gateway outbound access.",
+          );
+        }
+        compute.validateGatewayOutbound(outbound, input.executionMode ?? agent.executionMode);
+      }
       const previousAuth = this.harnessAuthBinding(agent.harnessAuth);
       // Every update needs the caller's grant on each source the Agent binds now, but not a
       // usable record: after a Secret Driver or Credential Gateway change, an update must still
@@ -6683,6 +6756,7 @@ export class OpenClawController {
         pluginApprovers,
         repositoryAccess,
         requestedSources,
+        input.gatewayOutbound,
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
@@ -6996,6 +7070,24 @@ export class OpenClawController {
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
+      const channelDriver = this.selections.get("channel")?.driver as ChannelDriver | undefined;
+      const requirements = channelDriver?.gatewayNetworkRequirements?.(admittedConfiguration) ?? [];
+      const selection = lockedAgent.gatewayOutbound ?? { mode: "channelsOnly" as const };
+      const gatewayOutbound = compute.admitGatewayOutbound?.({
+        selection,
+        executionMode: lockedAgent.executionMode,
+        requirements,
+      });
+      if (gatewayOutbound !== undefined && !validGatewayOutboundSnapshot(gatewayOutbound)) {
+        throw new ResourceStateConflictError(
+          "The Compute Driver returned invalid Gateway outbound admission.",
+        );
+      }
+      if (selection.mode !== "channelsOnly" && gatewayOutbound === undefined) {
+        throw new ResourceStateConflictError(
+          "The selected Compute Driver cannot admit Gateway outbound access.",
+        );
+      }
       const previous = await state.revisions.listRevisionMetadata(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
       const repositoryCredentials = this.admitRepositoryCredentials(
@@ -7059,6 +7151,7 @@ export class OpenClawController {
           configurationKind: configuration.kind,
           configurationGeneration: configuration.generation,
           configuration: admittedConfiguration,
+          ...(gatewayOutbound === undefined ? {} : { gatewayOutbound }),
           harness: revisionHarness,
           compute: { id: compute.id, implementation: compute.implementation },
           ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),

@@ -1,22 +1,52 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import net from "node:net";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import {
-  connectThroughProxy,
-  requestThroughProxy,
-  startSlackProxy,
-} from "../helpers/slack-proxy.mjs";
 
 const { Agent, fetch: undiciFetch } = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 )("undici");
 
 const token = "xoxb-fixture";
+
+test("Slack contributes Gateway destinations only for an enabled native account", () => {
+  const driver = new SlackChannelDriver();
+  for (const configuration of [
+    {},
+    { channels: { slack: { enabled: false, accounts: { default: { enabled: true } } } } },
+    { channels: { slack: { accounts: { disabled: { enabled: false } } } } },
+  ]) {
+    assert.deepEqual(driver.gatewayNetworkRequirements(configuration), []);
+  }
+  const expected = [
+    {
+      source: "slack",
+      destinations: [
+        { host: "slack.com", includeSubdomains: true },
+        { host: "slack-edge.com", includeSubdomains: true },
+        { host: "slack-msgs.com", includeSubdomains: true },
+      ],
+    },
+  ];
+  for (const configuration of [
+    { channels: { slack: { enabled: true } } },
+    { channels: { slack: { accounts: { enabled: {} } } } },
+    // Named disabled accounts do not remove OpenClaw's implicit top-level default.
+    {
+      channels: {
+        slack: { botToken: "bound", appToken: "bound", accounts: { disabled: { enabled: false } } },
+      },
+    },
+  ]) {
+    assert.deepEqual(driver.gatewayNetworkRequirements(configuration), expected);
+  }
+  assert.deepEqual(driver.controlPlaneNetworkRequirements(), [
+    { source: "slack/management", destinations: [{ host: "slack.com", includeSubdomains: false }] },
+  ]);
+});
 
 test("Slack directory sends HTTPS requests through its selected CONNECT proxy", async (t) => {
   const targets = [];
@@ -46,23 +76,23 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
     () =>
       new SlackChannelDriver(
         globalThis.fetch,
-        "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
-        { managedProxyHosts: ["openclaw-enterprise-slack-proxy.openclaw-system.svc"] },
+        "http://openclaw-enterprise-outbound-proxy.openclaw-system.svc:3128",
+        { managedProxyHosts: ["openclaw-enterprise-outbound-proxy.openclaw-system.svc"] },
       ),
   );
   for (const proxyUrl of [
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
-    "http://slack-proxy:3128",
-    "http://slack-proxy.openclaw-system.svc.cluster.local:3128",
+    "http://openclaw-enterprise-outbound-proxy.openclaw-system.svc:3128",
+    "http://outbound-proxy:3128",
+    "http://outbound-proxy.openclaw-system.svc.cluster.local:3128",
     syntheticCredentialUrl({
       protocol: "http",
       username: "user",
       password: "pass",
-      host: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+      host: "openclaw-enterprise-outbound-proxy.openclaw-system.svc",
       port: 3128,
     }),
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128/path",
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:65536",
+    "http://openclaw-enterprise-outbound-proxy.openclaw-system.svc:3128/path",
+    "http://openclaw-enterprise-outbound-proxy.openclaw-system.svc:65536",
   ]) {
     assert.throws(() => new SlackChannelDriver(globalThis.fetch, proxyUrl), /managed Kubernetes/);
   }
@@ -70,92 +100,9 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
   for (const proxyUrl of ["http://0.0.0.0:3128", "https://0.0.0.0:8443"]) {
     assert.throws(
       () => new SlackChannelDriver(globalThis.fetch, proxyUrl),
-      /^Error: Slack directory proxy must not use host 0\.0\.0\.0, which names no proxy address\.$/,
+      /^Error: Control-plane outbound proxy must not use host 0\.0\.0\.0, which names no proxy address\.$/,
     );
   }
-});
-
-test("bundled Slack proxy process restricts methods and CONNECT targets", async (t) => {
-  const upstream = net.createServer((socket) => {
-    socket.on("error", () => {});
-    socket.write("fixture-upstream");
-  });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
-  // A fixed proxy port, so the test proves the proxy honours OCC_SLACK_PROXY_PORT.
-  const { port: proxyPort } = await startSlackProxy(t, {
-    fixedPort: true,
-    upstreamPort: upstream.address().port,
-  });
-
-  assert.match(
-    await requestThroughProxy(proxyPort, "GET / HTTP/1.1\r\nHost: slack.com\r\n\r\n"),
-    /^HTTP\/1\.1 405 Method Not Allowed/,
-  );
-  assert.match(
-    await connectThroughProxy(proxyPort, "example.com:443"),
-    /^HTTP\/1\.1 403 Forbidden/,
-  );
-  assert.match(await connectThroughProxy(proxyPort, "slack.com:80"), /^HTTP\/1\.1 403 Forbidden/);
-  assert.match(
-    await connectThroughProxy(proxyPort, "slack.com.evil.example:443"),
-    /^HTTP\/1\.1 403 Forbidden/,
-  );
-  assert.match(
-    await connectThroughProxy(proxyPort, "slack.com:443"),
-    /^HTTP\/1\.1 200 Connection Established/,
-  );
-});
-
-test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", async (t) => {
-  // In its Pod the proxy is PID 1 (ENTRYPOINT node, no init), where the kernel drops a
-  // SIGTERM that has no handler: the Pod would wait out its grace period for SIGKILL.
-  const upstream = net.createServer((socket) => {
-    socket.on("error", () => {});
-  });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
-  const { child, port: proxyPort } = await startSlackProxy(t, {
-    upstreamPort: upstream.address().port,
-  });
-  t.after(() => child.kill("SIGKILL"));
-  const exited = new Promise((resolve) =>
-    child.once("exit", (code, signal) => resolve({ code, signal })),
-  );
-
-  const tunnel = net.connect({ host: "127.0.0.1", port: proxyPort });
-  tunnel.on("error", () => {});
-  t.after(() => tunnel.destroy());
-  const tunnelClosed = new Promise((resolve) => tunnel.once("close", resolve));
-  await new Promise((resolve, reject) => {
-    let response = "";
-    tunnel.once("connect", () =>
-      tunnel.write("CONNECT slack.com:443 HTTP/1.1\r\nHost: slack.com:443\r\n\r\n"),
-    );
-    tunnel.on("data", (chunk) => {
-      response += chunk;
-      if (response.includes("\r\n\r\n")) {
-        if (response.startsWith("HTTP/1.1 200 Connection Established")) {
-          resolve();
-        } else {
-          reject(new Error(`CONNECT was refused: ${response}`));
-        }
-      }
-    });
-    tunnel.once("close", () => reject(new Error("tunnel closed before it was established")));
-  });
-
-  child.kill("SIGTERM");
-  const bound = (promise, what) =>
-    Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        const timer = setTimeout(() => reject(new Error(`${what} within 5 s`)), 5_000);
-        timer.unref();
-      }),
-    ]);
-  assert.deepEqual(await bound(exited, "proxy exit"), { code: 0, signal: null });
-  await bound(tunnelClosed, "tunnel close");
 });
 
 function auth() {

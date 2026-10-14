@@ -6,12 +6,16 @@
  * SandboxDriver carry the provider-fenced profile: they receive Compute's
  * ingress grants (Gateway transport and plugin status) and only the exact
  * workspace-node enrollment egress grant. The provider owns every other egress
- * decision. */
+ * decision. Revision-owned Gateway outbound proxies use a separate profile;
+ * their grants admit only the owning Gateway and public HTTPS destinations. */
 export const NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile";
 export const ORDINARY_NETWORK_PROFILE = "broad-egress-v1";
 export const PROVIDER_FENCED_NETWORK_PROFILE = "provider-fenced-v1";
+export const GATEWAY_OUTBOUND_NETWORK_PROFILE = "gateway-outbound-v1";
 export type NetworkProfile =
-  typeof ORDINARY_NETWORK_PROFILE | typeof PROVIDER_FENCED_NETWORK_PROFILE;
+  | typeof ORDINARY_NETWORK_PROFILE
+  | typeof PROVIDER_FENCED_NETWORK_PROFILE
+  | typeof GATEWAY_OUTBOUND_NETWORK_PROFILE;
 
 /** Grants require their exact profile. Scope labels cannot override it. */
 export function profileNetworkPolicySelector(

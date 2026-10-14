@@ -1,3 +1,21 @@
+import type {
+  GatewayOutboundSelection,
+  GatewayOutboundSnapshot,
+  GatewayOutboundRequirement,
+} from "./gateway-outbound.ts";
+
+export type {
+  GatewayOutboundSelection,
+  GatewayOutboundSnapshot,
+  GatewayOutboundRequirement,
+  GatewayOutboundDestination,
+} from "./gateway-outbound.ts";
+export {
+  validGatewayOutboundSelection,
+  validGatewayOutboundSnapshot,
+  GATEWAY_OUTBOUND_HOST_PATTERN,
+} from "./gateway-outbound.ts";
+
 import type { WorkspaceSetup } from "./workspace-setup.ts";
 
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
@@ -165,6 +183,7 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  readonly gatewayOutbound?: { readonly restricted: boolean; readonly publicHttps: boolean };
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
   readonly pluginDiscovery?: { readonly credential: "required" | "none" };
@@ -715,6 +734,7 @@ export interface Agent extends Scope {
   readonly harnessAuth: HarnessAuthBinding | null;
   readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode: HarnessExecutionMode;
+  readonly gatewayOutbound?: GatewayOutboundSelection;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingSelection[];
@@ -728,6 +748,7 @@ export interface Agent extends Scope {
 export interface ConfigurationReadError {
   readonly code: "SAVED_CONFIGURATION_UNREADABLE";
   readonly field:
+    | "gatewayOutbound"
     | "plugins"
     | "pluginApprovers"
     | "repositoryBindings"
@@ -741,6 +762,7 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
+  | "gatewayOutbound"
   | "plugins"
   | "pluginApprovers"
   | "repositoryBindings"
@@ -791,6 +813,7 @@ export interface AgentRevision extends Scope {
   readonly configurationKind: ConfigurationKind;
   readonly configurationGeneration: number;
   readonly configuration: OpenClawConfigurationDocument;
+  readonly gatewayOutbound?: GatewayOutboundSnapshot;
   readonly harness: RevisionHarnessDescriptor;
   readonly compute: {
     readonly id: string;
@@ -835,6 +858,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
   return Object.freeze({
     ...revision,
     configuration: immutableCopy(revision.configuration),
+    ...(revision.gatewayOutbound === undefined
+      ? {}
+      : { gatewayOutbound: immutableCopy(revision.gatewayOutbound) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
@@ -1603,6 +1629,12 @@ export type ChannelCredentialReader = (
 ) => Promise<void>;
 
 export interface ChannelDriver extends Driver {
+  /** Side-effect-free requirements of supported enabled native channels. */
+  gatewayNetworkRequirements?(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): readonly GatewayOutboundRequirement[];
+  /** Installation-local provider management transport; independent of Agent revisions. */
+  controlPlaneNetworkRequirements?(): readonly GatewayOutboundRequirement[];
   readonly capability: "channel";
   validateCredentials?(
     values: Readonly<Record<string, unknown>>,
@@ -1787,6 +1819,19 @@ export interface ConfigurationValidationOptions {
 }
 
 export interface ComputeDriver extends Driver {
+  readonly gatewayOutboundCapabilities?: {
+    readonly restricted: boolean;
+    readonly publicHttps: boolean;
+  };
+  validateGatewayOutbound?(
+    selection: GatewayOutboundSelection,
+    executionMode: HarnessExecutionMode,
+  ): void;
+  admitGatewayOutbound?(input: {
+    readonly selection: GatewayOutboundSelection;
+    readonly executionMode: HarnessExecutionMode;
+    readonly requirements: readonly GatewayOutboundRequirement[];
+  }): GatewayOutboundSnapshot | undefined;
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
   /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */

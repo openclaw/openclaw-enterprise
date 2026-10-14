@@ -2426,3 +2426,131 @@ test(
     ]);
   },
 );
+
+test(
+  "PostgreSQL preserves Gateway approvals and immutable outbound snapshots",
+  requiresPostgres,
+  async (context) => {
+    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const installation = await ensureInstallation(state, "Gateway outbound persistence");
+    const fixture = await verifyPlatformStateStoreContract(state, { installation });
+    const selection = { mode: "restricted", hosts: ["backend.composio.dev"] };
+    // The database boundary independently rejects grants on embedded execution and
+    // malformed hosts, even when an application caller bypasses OCC admission.
+    await assert.rejects(
+      pool.query("UPDATE occ.agents SET gateway_outbound = $1 WHERE id = $2", [
+        JSON.stringify(selection),
+        fixture.agent.id,
+      ]),
+      ({ code, constraint }) =>
+        code === "23514" && constraint === "agents_gateway_outbound_topology",
+    );
+    await state.transact((unit) =>
+      unit.agents.updateConfiguration(
+        fixture.namespace.id,
+        fixture.agent.id,
+        fixture.configuration.id,
+        "dedicated",
+      ),
+    );
+    for (const invalid of [
+      { mode: "restricted", hosts: ["127.0.0.1"] },
+      { mode: "restricted", hosts: ["example.com", "example.com"] },
+      { mode: "publicHttps", extra: true },
+    ]) {
+      await assert.rejects(
+        pool.query("UPDATE occ.agents SET gateway_outbound = $1 WHERE id = $2", [
+          JSON.stringify(invalid),
+          fixture.agent.id,
+        ]),
+        ({ code, constraint }) =>
+          code === "23514" && constraint === "agents_gateway_outbound_valid",
+      );
+    }
+    const saved = await state.transact((unit) =>
+      unit.agents.updateConfiguration(
+        fixture.namespace.id,
+        fixture.agent.id,
+        fixture.configuration.id,
+        "dedicated",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        selection,
+      ),
+    );
+    assert.deepEqual(saved.gatewayOutbound, selection);
+    assert.deepEqual(
+      (await state.read((view) => view.agents.findAgent(fixture.namespace.id, fixture.agent.id)))
+        .gatewayOutbound,
+      selection,
+    );
+    const nextNumber = Number(
+      (
+        await pool.query(
+          "SELECT max(revision_number)+1 AS n FROM occ.agent_revisions WHERE agent_id=$1",
+          [fixture.agent.id],
+        )
+      ).rows[0].n,
+    );
+    const gatewayOutbound = {
+      selection,
+      requirements: [
+        { source: "slack", destinations: [{ host: "slack.com", includeSubdomains: true }] },
+      ],
+      denyCidrs: ["10.42.0.0/16"],
+    };
+    const revision = await state.transact((unit) =>
+      unit.revisions.createRevision({
+        ...fixture.revision,
+        id: `rev_${randomUUID()}`,
+        revision: nextNumber,
+        harness: { ...fixture.revision.harness, mode: "dedicated" },
+        gatewayOutbound,
+      }),
+    );
+    await state.transact((unit) =>
+      unit.agents.updateConfiguration(
+        fixture.namespace.id,
+        fixture.agent.id,
+        fixture.configuration.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { mode: "channelsOnly" },
+      ),
+    );
+    const reloaded = await state.read((view) =>
+      view.revisions.findRevision(fixture.namespace.id, fixture.agent.id, revision.id),
+    );
+    assert.deepEqual(
+      reloaded.gatewayOutbound,
+      gatewayOutbound,
+      "draft tightening cannot rewrite an admitted version",
+    );
+    assert.equal(Object.isFrozen(reloaded.gatewayOutbound), true);
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.agent_revisions SET admitted_spec=jsonb_set(admitted_spec,'{gateway_outbound}', $1::jsonb) WHERE id=$2",
+        [JSON.stringify({ ...gatewayOutbound, denyCidrs: undefined }), revision.id],
+      ),
+      ({ code }) => code === "23514" || code === "42501",
+      "immutable admitted state is not writable through the application role",
+    );
+  },
+);

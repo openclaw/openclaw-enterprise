@@ -80,6 +80,15 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 | `activationOrder`, `maintenanceIntervalMs`                                                          | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                          |
 | `requiresStoppedPredecessors(revision)`                                                             | A side-effect-free declaration, derived from the admitted revision, that opts into [exclusive replacement](#production-revision-stages).                                            |
 
+### Optional Gateway outbound admission
+
+`gatewayOutboundCapabilities`, `validateGatewayOutbound` and `admitGatewayOutbound`
+let the selected Compute Driver enforce Installation limits on Agent-approved
+additional connectivity and trusted Channel Driver requirements. Admission returns
+an immutable snapshot or omits it when no external route is needed. Save/deploy
+refusals use bounded platform conflict errors. Infrastructure rendering and route
+lifecycle remain inside Compute. See [Gateway outbound](../gateway-outbound.md).
+
 ### Optional startup preflight
 
 `preflight()` checks dependencies before production startup completes; a thrown

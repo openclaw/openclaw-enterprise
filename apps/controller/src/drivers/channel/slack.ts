@@ -2,6 +2,8 @@ import type {
   ChannelCredentialReader,
   ChannelDirectoryResult,
   ChannelDriver,
+  GatewayOutboundRequirement,
+  OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ChannelCredentialError, ChannelDirectoryError } from "@openclaw-enterprise/occ";
 import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
@@ -13,6 +15,10 @@ const PAGE_SIZE = 100;
 const SEARCH_PAGES = 3;
 const REQUEST_TIMEOUT_MS = 8_000;
 const INFO_BATCH_SIZE = 5;
+const GATEWAY_DESTINATIONS = ["slack.com", "slack-edge.com", "slack-msgs.com"].map((host) => ({
+  host,
+  includeSubdomains: true,
+}));
 const PROXY_ENDPOINT =
   /^https?:\/\/((?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}):([1-9][0-9]{0,4})$/;
 const MANAGED_SERVICE_PROXY_ENDPOINT =
@@ -24,6 +30,28 @@ function configuredValue(value: unknown): boolean {
   return typeof value === "string"
     ? value.trim().length > 0
     : value !== undefined && value !== null;
+}
+
+function enabledAccounts(values: Readonly<Record<string, unknown>>) {
+  const slack = asRecord(asRecord(values.channels)?.slack);
+  if (slack === undefined || slack.enabled === false) {
+    return [];
+  }
+  const accounts = asRecord(slack.accounts);
+  const named = accounts === undefined ? [] : Object.entries(accounts);
+  // Native OpenClaw retains a top-level default unless a named default replaces it.
+  const implicitDefault =
+    named.length === 0 ||
+    (!Object.hasOwn(accounts ?? {}, "default") &&
+      configuredValue(slack.botToken) &&
+      (slack.mode === "http" || configuredValue(slack.appToken)));
+  return [
+    ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
+    ...named.map(([id, value]) => ({
+      config: { ...slack, ...asRecord(value) },
+      path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+    })),
+  ].filter(({ config }) => config.enabled !== false);
 }
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
@@ -93,53 +121,47 @@ export class SlackChannelDriver implements ChannelDriver {
       const port = endpoint?.[2] ?? managedEndpoint?.[4];
       if (port === undefined || Number(port) > 65535) {
         throw new Error(
-          "Slack directory proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
+          "Control-plane outbound proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
         );
       }
       if (!managedService && (address === undefined || isIP(address) !== 4)) {
         throw new Error(
-          "Slack directory proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
+          "Control-plane outbound proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
         );
       }
-      // Like Compute's channel proxy rule: the unspecified address names no proxy.
+      // The unspecified address cannot identify a proxy.
       if (address === "0.0.0.0") {
         throw new Error(
-          "Slack directory proxy must not use host 0.0.0.0, which names no proxy address.",
+          "Control-plane outbound proxy must not use host 0.0.0.0, which names no proxy address.",
         );
       }
       this.proxy = new ProxyAgent(proxyUrl);
     }
   }
 
+  gatewayNetworkRequirements(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): readonly GatewayOutboundRequirement[] {
+    return enabledAccounts(configuration).length === 0
+      ? []
+      : [{ source: "slack", destinations: structuredClone(GATEWAY_DESTINATIONS) }];
+  }
+
+  controlPlaneNetworkRequirements(): readonly GatewayOutboundRequirement[] {
+    return [
+      {
+        source: "slack/management",
+        destinations: [{ host: new URL(SLACK_API).hostname, includeSubdomains: false }],
+      },
+    ];
+  }
+
   async validateCredentials(
     values: Readonly<Record<string, unknown>>,
     withSecret: ChannelCredentialReader,
   ): Promise<void> {
-    const slack = asRecord(asRecord(values.channels)?.slack);
-    if (slack === undefined || slack.enabled === false) {
-      return;
-    }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const accounts = asRecord(slack.accounts);
-    const named = accounts === undefined ? [] : Object.entries(accounts);
-    // OpenClaw still starts an implicit "default" account from the top-level bot and app
-    // tokens when named accounts exist, unless one of them is named "default".
-    const implicitDefault =
-      named.length === 0 ||
-      (!Object.hasOwn(accounts ?? {}, "default") &&
-        configuredValue(slack.botToken) &&
-        (slack.mode === "http" || configuredValue(slack.appToken)));
-    const targets = [
-      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
-      ...named.map(([id, value]) => ({
-        config: { ...slack, ...asRecord(value) },
-        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-      })),
-    ];
-    for (const { config, path } of targets) {
-      if (config.enabled === false) {
-        continue;
-      }
+    for (const { config, path } of enabledAccounts(values)) {
       for (const role of ["appToken", "botToken"] as const) {
         if (role === "appToken" && config.mode === "http") {
           continue;

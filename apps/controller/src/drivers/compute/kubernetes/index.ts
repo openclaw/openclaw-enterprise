@@ -42,9 +42,17 @@ import type {
   V1Volume,
   V1VolumeMount,
 } from "@kubernetes/client-node";
+import {
+  validGatewayOutboundSelection,
+  validGatewayOutboundSnapshot,
+} from "@openclaw-enterprise/contracts";
 import type {
   AgentDeploymentDiagnostics,
   AgentRevision,
+  GatewayOutboundSelection,
+  GatewayOutboundSnapshot,
+  GatewayOutboundRequirement,
+  HarnessExecutionMode,
   AgentRuntimeContainerStatus,
   AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
@@ -226,6 +234,7 @@ import {
   ORDINARY_NETWORK_PROFILE,
   PROVIDER_FENCED_NETWORK_PROFILE,
   type NetworkProfile,
+  GATEWAY_OUTBOUND_NETWORK_PROFILE,
   ordinaryNetworkPolicySelector,
   profileNetworkPolicySelector,
   withoutNetworkProfile,
@@ -284,18 +293,7 @@ function bootstrapSpecMatches(observed: unknown, desired: unknown, path = ""): b
   return Object.is(observed, desired);
 }
 
-const CHANNEL_REQUIREMENTS = {
-  slack: {
-    egress: "https-proxy",
-  },
-  msteams: {
-    egress: "https-proxy",
-  },
-} as const;
-
-type ChannelRequirements = (typeof CHANNEL_REQUIREMENTS)[keyof typeof CHANNEL_REQUIREMENTS];
-
-const CHANNEL_PROVIDERS = Object.keys(CHANNEL_REQUIREMENTS);
+const CHANNEL_PROVIDERS = ["slack", "msteams"] as const;
 
 // A Configuration setting the caller owns, refused at save or admission: HTTP returns the
 // message, which names the setting and what is accepted.
@@ -505,12 +503,12 @@ export interface KubernetesComputeDriverOptions {
     readonly codexSeccompProfile?: string;
     /** HTTPS OpenAI-compatible Responses endpoint for dedicated Codex API-key auth. */
     readonly codexModelBaseUrl?: string;
-    readonly channels?: {
-      readonly proxyUrl: string;
-      readonly managedProxy?: KubernetesWorkloadPeer & {
-        readonly hostname: string;
-        readonly port: number;
-      };
+    readonly gatewayOutbound?: {
+      readonly enabled: boolean;
+      readonly allowPublicHttps?: boolean;
+      readonly image?: string;
+      readonly resources?: V1ResourceRequirements;
+      readonly denyCidrs?: readonly string[];
     };
   };
   readonly gatewayRouting?: KubernetesGatewayRoutingOptions;
@@ -1701,17 +1699,6 @@ function providerHarnessUrl(
   return url;
 }
 
-// Checked per family: BlockList matches every IPv4 address against ::ffff:0:0/96.
-const unspecifiedOrIpv4MappedIpv6 = new BlockList();
-unspecifiedOrIpv4MappedIpv6.addAddress("::", "ipv6");
-unspecifiedOrIpv4MappedIpv6.addSubnet("::ffff:0:0", 96, "ipv6");
-function unspecifiedOrIpv4MappedHost(address: string): boolean {
-  if (isIP(address) === 4) {
-    return address === "0.0.0.0";
-  }
-  return unspecifiedOrIpv4MappedIpv6.check(address, "ipv6");
-}
-
 function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
   if (cidr.prefix === 0) {
     return true;
@@ -1840,108 +1827,29 @@ function labelsToSelector(labels: Readonly<Record<string, string>>): string {
     .join(",");
 }
 
-type ChannelProxy =
-  | { readonly kind: "ip"; readonly address: string; readonly port: number }
-  | { readonly kind: "managed"; readonly peer: KubernetesWorkloadPeer; readonly port: number };
-
-function channelProxy(
-  value: unknown,
-  managedProxy?: KubernetesWorkloadPeer & { readonly hostname: string; readonly port: number },
-): ChannelProxy {
-  const raw = required(value, "Channel proxy URL");
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new ConfigurationFailure(
-      "Channel proxy URL must identify one exact HTTP(S) IP endpoint.",
-    );
-  }
-  const address = parsed.hostname.replace(/^\[|\]$/g, "");
-  // URL.port drops explicit HTTP :80 and HTTPS :443; retain the raw authority's port.
-  const explicitPort = raw.match(/^https?:\/\/(?:\[[^\]]+\]|[^:/?#\\]+):([0-9]+)(?=[/?#]|$)/i)?.[1];
-  const port = Number(parsed.port || explicitPort);
-  if (managedProxy !== undefined) {
-    validatePeer(managedProxy, "Managed channel proxy");
-    required(managedProxy.hostname, "Managed channel proxy hostname");
-    if (
-      !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc$/.test(
-        managedProxy.hostname,
-      )
-    ) {
-      throw new ConfigurationFailure(
-        "Managed channel proxy hostname must be the exact namespace-qualified Service DNS name.",
-      );
-    }
-    if (
-      !Number.isInteger(managedProxy.port) ||
-      managedProxy.port < 1 ||
-      managedProxy.port > 65535
-    ) {
-      throw new ConfigurationFailure("Managed channel proxy port must be a valid TCP port.");
-    }
-    if (
-      !["http:", "https:"].includes(parsed.protocol) ||
-      parsed.hostname !== managedProxy.hostname ||
-      port !== managedProxy.port ||
-      parsed.username ||
-      parsed.password ||
-      parsed.pathname !== "/" ||
-      parsed.search ||
-      parsed.hash
-    ) {
-      throw new ConfigurationFailure(
-        "Managed channel proxy URL must match the exact configured Service host and port.",
-      );
-    }
-    return { kind: "managed", peer: managedProxy, port };
-  }
-  if (
-    !["http:", "https:"].includes(parsed.protocol) ||
-    isIP(address) === 0 ||
-    (!parsed.port && explicitPort === undefined) ||
-    parsed.username ||
-    parsed.password ||
-    parsed.pathname !== "/" ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new ConfigurationFailure(
-      "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
-    );
-  }
-  // The URL parser rewrites octal, shorthand, integer, and hex IPv4 hosts.
-  // Egress must name the host that was written, so only four decimal octets
-  // with no leading zeros are accepted. IPv6 is unchanged. Leading C0
-  // controls and spaces are not part of that host; new URL strips them.
-  if (isIP(address) === 4) {
-    let hostSource = raw;
-    while (hostSource.charCodeAt(0) <= 0x20) {
-      hostSource = hostSource.slice(1);
-    }
-    const writtenHost = /^https?:\/\/([^:/?#\\]+)/i.exec(hostSource)?.[1];
-    if (
-      writtenHost === undefined ||
-      writtenHost !== parsed.hostname ||
-      !/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(writtenHost) ||
-      writtenHost.split(".").some((octet) => Number(octet) > 255)
-    ) {
-      throw new ConfigurationFailure(
-        "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
-      );
-    }
-  }
-  // An unspecified host (0.0.0.0, ::) names no destination, and an IPv4-mapped
-  // host (::ffff:0:0/96) leaves as IPv4 traffic that its IPv6 egress ipBlock
-  // never matches. Neither reaches a proxy.
-  if (unspecifiedOrIpv4MappedHost(address)) {
-    throw new ConfigurationFailure(
-      "Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.",
-    );
-  }
-  validatePort(port, "Channel proxy port");
-  return { kind: "ip", address, port };
+interface GatewayOutboundTransport {
+  readonly proxyUrl: string;
+  readonly noProxy: string;
 }
+
+const GATEWAY_OUTBOUND_PORT = 3128;
+const GATEWAY_OUTBOUND_POLICY_DIRECTORY = "/etc/oce-gateway-outbound";
+const GATEWAY_OUTBOUND_PUBLIC_IPV4_EXCLUSIONS = [
+  "0.0.0.0/8",
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "169.254.0.0/16",
+  "172.16.0.0/12",
+  "192.0.0.0/24",
+  "192.0.2.0/24",
+  "192.168.0.0/16",
+  "198.18.0.0/15",
+  "198.51.100.0/24",
+  "203.0.113.0/24",
+  "224.0.0.0/4",
+  "240.0.0.0/4",
+] as const;
 
 export function kubernetesNamespaceName(namespaceId: string): string {
   const id = required(namespaceId, "Platform Namespace ID");
@@ -2763,6 +2671,59 @@ function gatewayDocumentBeforeLanBind(
 }
 
 export class KubernetesComputeDriver implements ComputeDriver {
+  readonly maintenanceIntervalMs = 30_000;
+
+  get gatewayOutboundCapabilities() {
+    return {
+      restricted: this.options.runtime?.gatewayOutbound?.enabled === true,
+      publicHttps:
+        this.options.runtime?.gatewayOutbound?.enabled === true &&
+        this.options.runtime.gatewayOutbound.allowPublicHttps === true,
+    };
+  }
+
+  validateGatewayOutbound(
+    selection: GatewayOutboundSelection,
+    executionMode: HarnessExecutionMode,
+  ): void {
+    if (!validGatewayOutboundSelection(selection)) {
+      throw new ResourceConflictError("Gateway outbound selection is invalid.");
+    }
+    if (selection.mode !== "channelsOnly" && executionMode !== "dedicated") {
+      throw new ResourceConflictError("Additional Gateway outbound requires dedicated execution.");
+    }
+    if (selection.mode !== "channelsOnly" && !this.gatewayOutboundCapabilities.restricted) {
+      throw new ResourceConflictError("Managed Gateway outbound is disabled in this Installation.");
+    }
+    if (selection.mode === "publicHttps" && !this.gatewayOutboundCapabilities.publicHttps) {
+      throw new ResourceConflictError("Public Gateway HTTPS is disabled in this Installation.");
+    }
+  }
+
+  admitGatewayOutbound(input: {
+    selection: GatewayOutboundSelection;
+    executionMode: HarnessExecutionMode;
+    requirements: readonly GatewayOutboundRequirement[];
+  }): GatewayOutboundSnapshot | undefined {
+    this.validateGatewayOutbound(input.selection, input.executionMode);
+    if (input.selection.mode === "channelsOnly" && input.requirements.length === 0) {
+      return undefined;
+    }
+    if (input.executionMode !== "dedicated" || !this.gatewayOutboundCapabilities.restricted) {
+      throw new ResourceConflictError(
+        "Gateway requirements need dedicated execution and enabled managed outbound.",
+      );
+    }
+    const snapshot = structuredClone({
+      selection: input.selection,
+      requirements: input.requirements,
+      denyCidrs: this.options.runtime!.gatewayOutbound!.denyCidrs!,
+    });
+    if (!validGatewayOutboundSnapshot(snapshot)) {
+      throw new ResourceConflictError("Gateway outbound requirements are invalid.");
+    }
+    return snapshot;
+  }
   readonly discoverHarnessModels = discoverHarnessModels;
   readonly startHarnessDeviceAuthorization = startHarnessDeviceAuthorization;
   readonly pollHarnessDeviceAuthorization = pollHarnessDeviceAuthorization;
@@ -2917,23 +2878,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
           gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
           codexSeccompProfile: { type: "string", minLength: 1 },
           codexModelBaseUrl: { type: "string", minLength: 1 },
-          channels: {
+          gatewayOutbound: {
             type: "object",
-            required: ["proxyUrl"],
+            required: ["enabled"],
             additionalProperties: false,
             properties: {
-              proxyUrl: { type: "string" },
-              managedProxy: {
-                type: "object",
-                required: ["hostname", "namespace", "podLabels", "port"],
-                additionalProperties: false,
-                properties: {
-                  hostname: { type: "string" },
-                  namespace: { type: "string" },
-                  podLabels: POD_LABELS_SCHEMA,
-                  port: { type: "integer" },
-                },
-              },
+              enabled: { type: "boolean" },
+              allowPublicHttps: { type: "boolean" },
+              image: { type: "string", minLength: 1 },
+              resources: RESOURCE_REQUIREMENTS_SCHEMA,
+              denyCidrs: { type: "array", minItems: 1, maxItems: 64, items: { type: "string" } },
             },
           },
         },
@@ -3161,7 +3115,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (options.runtime !== undefined) {
-      const { transportSecretPrefix, channels } = options.runtime;
+      const { transportSecretPrefix, gatewayOutbound } = options.runtime;
       const runtimeProperties = asRecord(
         KubernetesComputeDriver.configurationSchema.properties.runtime.properties,
       );
@@ -3226,11 +3180,52 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (options.runtime.codexSeccompProfile !== undefined) {
         validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
       }
-      if (channels !== undefined) {
-        if (asRecord(channels) === undefined) {
-          throw new ConfigurationFailure("Channel runtime proxy must be explicitly configured.");
+      if (gatewayOutbound !== undefined) {
+        if (
+          asRecord(gatewayOutbound) === undefined ||
+          typeof gatewayOutbound.enabled !== "boolean" ||
+          (gatewayOutbound.allowPublicHttps !== undefined &&
+            typeof gatewayOutbound.allowPublicHttps !== "boolean")
+        ) {
+          throw new ConfigurationFailure(
+            "Gateway outbound must configure an explicit enabled policy.",
+          );
         }
-        channelProxy(channels.proxyUrl, channels.managedProxy);
+        for (const key of Object.keys(gatewayOutbound)) {
+          if (!["enabled", "allowPublicHttps", "image", "resources", "denyCidrs"].includes(key)) {
+            throw new ConfigurationFailure(`Gateway outbound contains unsupported option ${key}.`);
+          }
+        }
+        if (gatewayOutbound.enabled) {
+          const image = required(gatewayOutbound.image, "Gateway outbound proxy image");
+          if (
+            imageReferenceProblem(image) !== undefined ||
+            (options.images.requireImmutableDigest && !/@sha256:[a-f0-9]{64}$/.test(image))
+          ) {
+            throw new ConfigurationFailure(
+              "Gateway outbound proxy image must satisfy the Installation image policy.",
+            );
+          }
+          if (
+            !Array.isArray(gatewayOutbound.denyCidrs) ||
+            gatewayOutbound.denyCidrs.length === 0 ||
+            gatewayOutbound.denyCidrs.length > 64
+          ) {
+            throw new ConfigurationFailure(
+              "Gateway outbound requires one to 64 explicit infrastructure exclusion CIDRs.",
+            );
+          }
+          gatewayOutbound.denyCidrs.forEach((cidr) =>
+            parseCidr(cidr, "Gateway outbound exclusion"),
+          );
+        }
+        if (gatewayOutbound.resources !== undefined) {
+          validateResources(
+            gatewayOutbound.resources,
+            "Gateway outbound proxy",
+            "runtime.gatewayOutbound.resources",
+          );
+        }
       }
     }
     if (options.executionCluster !== undefined) {
@@ -3807,12 +3802,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       requireWorkspaceNodePlugins(configuration, callerSettingError);
     }
     // Not a Configuration save rule: it depends on the Agent's execution mode and on the
-    // Installation's channel runtime (runtime.channels), which an operator may add later.
+    // Installation's channel runtime (runtime.gatewayOutbound), which an operator may add later.
     requireChannelTopology(
       enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
       {
         embedded: harness.mode === "embedded",
-        channelRuntime: agentSave || this.options.runtime?.channels !== undefined,
+        channelRuntime: agentSave || this.options.runtime?.gatewayOutbound?.enabled === true,
       },
       callerSettingError,
     );
@@ -3859,6 +3854,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     options?: ConfigurationValidationOptions,
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
+    const env = asRecord(configuration.env);
+    for (const values of [env, asRecord(env?.vars)]) {
+      if (
+        Object.keys(values ?? {}).some((key) =>
+          /^(?:https?_proxy|all_proxy|no_proxy|node_use_env_proxy)$/i.test(key),
+        )
+      ) {
+        throw callerSettingError(
+          "env",
+          "proxy transport is owned by Kubernetes Compute; use Agent gatewayOutbound",
+        );
+      }
+    }
+
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
   }
 
@@ -5125,6 +5134,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
+    await this.enforceGatewayOutboundCeiling(revision);
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
@@ -5194,6 +5204,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return result;
     }
     this.verifyNamespaceOwnership(observed, tenantOwnership, external);
+    const outboundTransport = this.gatewayOutboundTransport(revision, gatewayNamespace, namespace);
+    if (!(await this.reconcileGatewayOutbound(revision, gatewayNamespace))) {
+      return result;
+    }
+    if (channels.length > 0 && outboundTransport === undefined) {
+      throw new ConfigurationFailure(
+        "Enabled channels require admitted Gateway outbound requirements.",
+      );
+    }
+
     if (observed.status?.phase !== "Active") {
       return result;
     }
@@ -5607,9 +5627,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         environment: Record<string, string>,
         providerEndpoint?: SandboxHarnessEndpoint,
       ) => {
-        await this.prepareRevisionStage("gateway_channel_network_policy", () =>
-          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
-        );
         await this.prepareRevisionStage("gateway_workspace_node_binding", () =>
           this.deliverWorkspaceNodeBinding(
             revision,
@@ -5633,7 +5650,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               embedded,
               embedded ? revision.servicePrincipalId : undefined,
               embedded ? deliveredHarnessAuth : undefined,
-              channels,
+              outboundTransport,
               gatewaySecretEnvironment,
               pluginRuntime,
               [],
@@ -5796,7 +5813,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         deliveredHarnessAuth,
-        [],
+        undefined,
         [],
         pluginRuntime,
         [],
@@ -6126,6 +6143,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<void> {
+    await this.enforceGatewayOutboundCeiling(revision);
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
@@ -6163,6 +6181,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const secretEnvironment = this.secretEnvironmentForRevision(revision, context, sourceNamespace);
     const harnessAuth = this.harnessAuthForRevision(admittedRevision, context, sourceNamespace);
     const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
+    const outboundTransport = this.gatewayOutboundTransport(revision, gatewayNamespace, namespace);
+    if (!(await this.reconcileGatewayOutbound(revision, gatewayNamespace))) {
+      throw new DependencyUnavailableError("Gateway outbound proxy is not ready.");
+    }
+    if (channels.length > 0 && outboundTransport === undefined) {
+      throw new ConfigurationFailure(
+        "Enabled channels require admitted Gateway outbound requirements.",
+      );
+    }
+
     const nativeRuntime = nativeRuntimeSnapshot(admittedRevision);
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
     const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
@@ -6237,7 +6265,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayOwnership,
             namespace,
           );
-          await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
           await this.reconcile(
             this.deployment(
               gatewayName,
@@ -6252,7 +6279,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               true,
               revision.servicePrincipalId,
               deliveredHarnessAuth,
-              channels,
+              outboundTransport,
               gatewaySecretEnvironment,
               pluginRuntime,
               [],
@@ -6364,7 +6391,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         activatedHarnessAuth,
-        [],
+        undefined,
         [],
         pluginRuntime,
         [],
@@ -6471,7 +6498,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       secretEnvironment,
     );
-    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace);
     await this.reconcile(
       this.harnessWorkspaceClaim(revision.agentId, gatewayOwnership, namespace),
       gatewayOwnership,
@@ -6504,7 +6530,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         undefined,
-        channels,
+        outboundTransport,
         gatewaySecretEnvironment,
         pluginRuntime,
         [],
@@ -6771,6 +6797,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      await this.removeGatewayOutbound(revision, gatewayNamespace);
       return;
     }
     this.verifyNamespaceOwnership(
@@ -6802,6 +6829,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.removeStoppedGateway(revision, namespace);
       await this.shutdownRevisionRuntime(revision, namespace);
     }
+    await this.removeGatewayOutbound(revision, gatewayNamespace);
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
@@ -6833,6 +6861,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
+      await this.removeGatewayOutbound(revision, gatewayNamespace);
       return;
     }
     this.verifyNamespaceOwnership(
@@ -6850,6 +6879,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
+    await this.removeGatewayOutbound(revision, gatewayNamespace);
     if (revision.repositoryCredentials !== undefined) {
       await this.waitForRevisionPodsToTerminate(
         revision,
@@ -6914,7 +6944,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async waitForRevisionPodsToTerminate(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-    role: "agent" | "gateway",
+    role: "agent" | "gateway" | "gateway-outbound",
     workloadName?: string,
   ): Promise<void> {
     const clients = await this.clients(namespace.plane);
@@ -6991,7 +7021,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         Date.now() - yieldCheckedAt >= WORKLOAD_TERMINATION_YIELD_CHECK_MS
       ) {
         yieldCheckedAt = Date.now();
-        if (await computeStopShouldYield(role)) {
+        if (role !== "gateway-outbound" && (await computeStopShouldYield(role))) {
           throw new ComputeStopYieldedError(
             "The AgentRevision workload Pods are still terminating; other work is waiting.",
           );
@@ -7230,7 +7260,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
-      "allow-gateway-channels",
       "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
@@ -12151,7 +12180,344 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private enabledChannels(revision: AgentRevision): readonly ChannelRequirements[] {
+  private async enforceGatewayOutboundCeiling(revision: AgentRevision): Promise<void> {
+    if (revision.gatewayOutbound === undefined) {
+      return;
+    }
+    try {
+      this.validateAdmittedGatewayOutbound(revision);
+    } catch (error) {
+      const { name: harnessNamespace } = await this.resolveNamespace(revision.namespaceId);
+      const namespace = this.gatewayNamespace(revision, harnessNamespace);
+      const observed = await this.getNamespace(namespace);
+      if (observed !== undefined) {
+        if (this.options.executionCluster !== undefined) {
+          this.verifyGatewayNamespace(observed, { namespaceId: revision.namespaceId });
+        } else {
+          this.verifyNamespaceOwnership(
+            observed,
+            { namespaceId: revision.namespaceId },
+            observed.metadata.annotations?.["openclaw.dev/namespace-lifecycle"] === "external",
+          );
+        }
+        await this.removeGatewayOutbound(revision, namespace);
+      }
+      throw error;
+    }
+  }
+
+  private validateAdmittedGatewayOutbound(revision: AgentRevision): void {
+    const snapshot = revision.gatewayOutbound;
+    if (!validGatewayOutboundSnapshot(snapshot)) {
+      throw new ConfigurationFailure("Admitted Gateway outbound snapshot is invalid.");
+    }
+    snapshot.denyCidrs.forEach((cidr) => parseCidr(cidr, "Admitted Gateway outbound exclusion"));
+    try {
+      this.admitGatewayOutbound({ ...snapshot, executionMode: revision.harness.mode });
+    } catch (error) {
+      if (error instanceof ResourceConflictError) {
+        throw new ConfigurationFailure(error.message, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  private gatewayOutboundName(revision: AgentRevision): string {
+    return `gateway-outbound-${sha256Hex(revision.agentId, 12)}-${sha256Hex(revision.id, 12)}`;
+  }
+
+  private gatewayOutboundOwnership(revision: AgentRevision): Ownership {
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+  }
+
+  private gatewayOutboundTransport(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    harnessNamespace: KubernetesNamespaceAddress = namespace,
+  ): GatewayOutboundTransport | undefined {
+    if (revision.gatewayOutbound === undefined) {
+      return undefined;
+    }
+    const agentHost = `agent-${sha256Hex(revision.agentId, 12)}.${harnessNamespace.name}.svc`;
+    const internalHosts = [
+      "localhost",
+      "127.0.0.1",
+      "::1",
+      agentHost,
+      `${agentHost}.cluster.local`,
+    ];
+    if (this.options.executionCluster !== undefined) {
+      internalHosts.push(this.options.executionCluster.harnessRouting.hostname!);
+    }
+    const provider = this.options.network.providerHarness;
+    if (provider !== undefined) {
+      internalHosts.push(provider.address);
+    }
+    // Only declared internal endpoints bypass the proxy; no wildcard or caller environment is imported.
+    return {
+      proxyUrl: `http://${this.gatewayOutboundName(revision)}.${namespace.name}.svc:${GATEWAY_OUTBOUND_PORT}`,
+      noProxy: [...new Set(internalHosts)].join(","),
+    };
+  }
+
+  private async reconcileGatewayOutbound(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<boolean> {
+    const snapshot = revision.gatewayOutbound;
+    if (snapshot === undefined) {
+      return true;
+    }
+    try {
+      this.validateAdmittedGatewayOutbound(revision);
+    } catch (error) {
+      // Withdraw actual proxy Pods, including existing CONNECT tunnels, before reporting policy refusal.
+      await this.removeGatewayOutbound(revision, namespace);
+      throw error;
+    }
+    const options = this.options.runtime!.gatewayOutbound!;
+    const name = this.gatewayOutboundName(revision);
+    const ownership = this.gatewayOutboundOwnership(revision);
+    const labels = {
+      ...this.ownershipMetadata(ownership).labels,
+      "openclaw.dev/network-profile": GATEWAY_OUTBOUND_NETWORK_PROFILE,
+      "openclaw.dev/workload-role": "gateway-outbound",
+    };
+    const destinations = new Map<string, { host: string; includeSubdomains: boolean }>();
+    for (const requirement of snapshot.requirements) {
+      for (const destination of requirement.destinations) {
+        const previous = destinations.get(destination.host);
+        destinations.set(destination.host, {
+          host: destination.host,
+          includeSubdomains: destination.includeSubdomains || previous?.includeSubdomains === true,
+        });
+      }
+    }
+    if (snapshot.selection.mode === "restricted") {
+      for (const host of snapshot.selection.hosts) {
+        if (!destinations.has(host)) {
+          destinations.set(host, { host, includeSubdomains: false });
+        }
+      }
+    }
+    const denyCidrs = [...new Set([...snapshot.denyCidrs, ...options.denyCidrs!])].sort();
+    const policy = JSON.stringify({
+      mode: snapshot.selection.mode === "publicHttps" ? "publicHttps" : "restricted",
+      destinations: [...destinations.values()].sort((a, b) => a.host.localeCompare(b.host)),
+      denyCidrs,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    });
+    const current = await this.getOwned("ConfigMap", name, namespace, ownership);
+    if (current !== undefined && current.data?.["policy.json"] !== policy) {
+      // A tightened installation exclusion requires a new immutable policy and closes old sockets first.
+      await this.removeGatewayOutbound(revision, namespace);
+    }
+    await this.reconcile(
+      {
+        ...this.manifest("v1", "ConfigMap", name, ownership, namespace),
+        immutable: true,
+        data: { "policy.json": policy },
+      },
+      ownership,
+      namespace,
+    );
+    await this.reconcile(
+      {
+        ...this.manifest("v1", "ServiceAccount", name, ownership, namespace),
+        automountServiceAccountToken: false,
+      },
+      ownership,
+      namespace,
+    );
+    const gatewayLabels = ordinaryNetworkPolicySelector({
+      "openclaw.dev/namespace": revision.namespaceId,
+      "openclaw.dev/agent": revision.agentId,
+      "openclaw.dev/revision": revision.id,
+      "openclaw.dev/workload-role": "gateway",
+    }).matchLabels;
+    const proxyPeer = this.peer({ namespace: namespace.name, podLabels: labels });
+    const ipv4Exclusions = denyCidrs
+      .map((cidr) => parseCidr(cidr, "Gateway outbound exclusion"))
+      .filter((cidr) => cidr.family === 4);
+    // A full IPv4 exclusion leaves DNS only; Kubernetes requires each except to be a strict subset.
+    const publicHttpsEgress = ipv4Exclusions.some((cidr) => cidr.prefix === 0)
+      ? []
+      : [
+          {
+            to: [
+              {
+                ipBlock: {
+                  cidr: "0.0.0.0/0",
+                  except: [
+                    ...new Set([
+                      ...GATEWAY_OUTBOUND_PUBLIC_IPV4_EXCLUSIONS,
+                      ...ipv4Exclusions.map((cidr) => cidr.value),
+                    ]),
+                  ],
+                },
+              },
+            ],
+            ports: [{ protocol: "TCP", port: 443 }],
+          },
+        ];
+    const proxyRule = {
+      ...this.manifest("networking.k8s.io/v1", "NetworkPolicy", name, ownership, namespace),
+      spec: {
+        podSelector: { matchLabels: labels },
+        policyTypes: ["Ingress", "Egress"],
+        ingress: [
+          {
+            from: [this.peer({ namespace: namespace.name, podLabels: gatewayLabels })],
+            ports: [{ protocol: "TCP", port: GATEWAY_OUTBOUND_PORT }],
+          },
+        ],
+        egress: [
+          {
+            to: [this.peer(this.options.network.dns)],
+            ports: [
+              { protocol: "UDP", port: 53 },
+              { protocol: "TCP", port: 53 },
+              { protocol: "UDP", port: 5353 },
+              { protocol: "TCP", port: 5353 },
+            ],
+          },
+          // The current proxy qualifies IPv4 only. No IPv6 egress rule is emitted.
+          ...publicHttpsEgress,
+        ],
+      },
+    };
+    await this.reconcile(proxyRule, ownership, namespace);
+    await this.reconcile(
+      {
+        ...this.manifest(
+          "networking.k8s.io/v1",
+          "NetworkPolicy",
+          `${name}-gateway`,
+          ownership,
+          namespace,
+        ),
+        spec: {
+          podSelector: { matchLabels: gatewayLabels },
+          policyTypes: ["Egress"],
+          egress: [{ to: [proxyPeer], ports: [{ protocol: "TCP", port: GATEWAY_OUTBOUND_PORT }] }],
+        },
+      },
+      ownership,
+      namespace,
+    );
+    await this.reconcile(
+      {
+        ...this.manifest("apps/v1", "Deployment", name, ownership, namespace),
+        spec: {
+          replicas: 1,
+          strategy: { type: "Recreate" },
+          selector: { matchLabels: labels },
+          template: {
+            metadata: { labels },
+            spec: {
+              serviceAccountName: name,
+              automountServiceAccountToken: false,
+              enableServiceLinks: false,
+              nodeSelector: this.options.runtime!.gatewayNodeSelector,
+              terminationGracePeriodSeconds: 5,
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                runAsGroup: 1000,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [
+                {
+                  name: "gateway-outbound",
+                  image: required(options.image, "Gateway outbound proxy image"),
+                  command: ["node", "apps/controller/src/gateway/outbound-proxy.mjs"],
+                  env: [
+                    {
+                      name: "OCC_OUTBOUND_PROXY_POLICY_PATH",
+                      value: `${GATEWAY_OUTBOUND_POLICY_DIRECTORY}/policy.json`,
+                    },
+                  ],
+                  ports: [{ name: "proxy", containerPort: GATEWAY_OUTBOUND_PORT }],
+                  readinessProbe: {
+                    httpGet: { path: "/readyz", port: GATEWAY_OUTBOUND_PORT },
+                    periodSeconds: 2,
+                  },
+                  securityContext: {
+                    allowPrivilegeEscalation: false,
+                    readOnlyRootFilesystem: true,
+                    capabilities: { drop: ["ALL"] },
+                  },
+                  resources: options.resources ?? {
+                    requests: { cpu: "25m", memory: "64Mi" },
+                    limits: { cpu: "250m", memory: "256Mi" },
+                  },
+                  volumeMounts: [
+                    {
+                      name: "policy",
+                      mountPath: GATEWAY_OUTBOUND_POLICY_DIRECTORY,
+                      readOnly: true,
+                    },
+                  ],
+                },
+              ],
+              volumes: [{ name: "policy", configMap: { name, defaultMode: 0o444 } }],
+            },
+          },
+        },
+      },
+      ownership,
+      namespace,
+    );
+    await this.reconcile(
+      {
+        ...this.manifest("v1", "Service", name, ownership, namespace),
+        spec: {
+          type: "ClusterIP",
+          selector: labels,
+          ports: [
+            {
+              name: "proxy",
+              protocol: "TCP",
+              port: GATEWAY_OUTBOUND_PORT,
+              targetPort: GATEWAY_OUTBOUND_PORT,
+            },
+          ],
+        },
+      },
+      ownership,
+      namespace,
+    );
+    const deployment = await this.getOwned("Deployment", name, namespace, ownership);
+    return deployment !== undefined && this.deploymentReady(deployment, false);
+  }
+
+  private async removeGatewayOutbound(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    if (revision.gatewayOutbound === undefined) {
+      return;
+    }
+    const name = this.gatewayOutboundName(revision);
+    const ownership = this.gatewayOutboundOwnership(revision);
+    await this.deleteNamedRuntimeResources(name, ownership, namespace);
+    await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway-outbound", name);
+    await this.deleteOwnedNamespacedResource(
+      "NetworkPolicy",
+      `${name}-gateway`,
+      ownership,
+      namespace,
+    );
+    await this.deleteOwnedNamespacedResource("NetworkPolicy", name, ownership, namespace);
+    await this.deleteOwnedNamespacedResource("ConfigMap", name, ownership, namespace);
+  }
+
+  private enabledChannels(revision: AgentRevision): readonly string[] {
     const providers = enabledChannelProviders(
       revision.configuration,
       CHANNEL_PROVIDERS,
@@ -12161,13 +12527,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       providers,
       {
         embedded: revision.harness.mode === "embedded",
-        channelRuntime: this.options.runtime?.channels !== undefined,
+        channelRuntime: this.options.runtime?.gatewayOutbound?.enabled === true,
       },
       preparationSettingError,
     );
-    return providers.map(
-      (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
-    );
+    return providers;
   }
 
   // Each enabled channel's credential references (`${NAME}` or an env SecretRef) need a
@@ -12228,74 +12592,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     for (const item of Object.values(record)) {
       this.collectChannelSecretBindingIds(item, ids);
     }
-  }
-
-  private channelNetworkPolicy(
-    revision: AgentRevision,
-    enabled: readonly ChannelRequirements[],
-    namespace: KubernetesNamespaceAddress,
-  ): ManagedKubernetesObject {
-    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    const proxy = enabled.some(({ egress }) => egress === "https-proxy")
-      ? channelProxy(
-          this.options.runtime?.channels?.proxyUrl,
-          this.options.runtime?.channels?.managedProxy,
-        )
-      : undefined;
-    return {
-      ...this.manifest(
-        "networking.k8s.io/v1",
-        "NetworkPolicy",
-        `allow-gateway-channels-${sha256Hex(revision.agentId, 12)}`,
-        ownership,
-        namespace,
-      ),
-      spec: {
-        podSelector: ordinaryNetworkPolicySelector({
-          "openclaw.dev/workload-role": "gateway",
-          "openclaw.dev/agent": revision.agentId,
-        }),
-        policyTypes: ["Egress"],
-        egress:
-          proxy !== undefined
-            ? [
-                {
-                  to: [
-                    proxy.kind === "managed"
-                      ? this.peer(proxy.peer)
-                      : {
-                          ipBlock: {
-                            cidr: `${proxy.address}/${isIP(proxy.address) === 4 ? 32 : 128}`,
-                          },
-                        },
-                  ],
-                  ports: [{ protocol: "TCP", port: proxy.port }],
-                },
-              ]
-            : [],
-      },
-    };
-  }
-
-  private async reconcileChannelNetworkPolicy(
-    revision: AgentRevision,
-    enabled: readonly ChannelRequirements[],
-    namespace: KubernetesNamespaceAddress,
-  ): Promise<void> {
-    const policy = this.channelNetworkPolicy(revision, enabled, namespace);
-    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    if (this.options.runtime?.channels === undefined) {
-      const existing = await this.getOwned(
-        "NetworkPolicy",
-        policy.metadata.name,
-        namespace,
-        ownership,
-      );
-      if (existing === undefined) {
-        return;
-      }
-    }
-    await this.reconcile(policy, ownership, namespace);
   }
 
   /** Only preparation passes `preparation`, while a Gateway of another revision
@@ -13733,7 +14029,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     embedded = false,
     workloadServicePrincipalId?: string,
     harnessAuth?: PreparedHarnessAuth,
-    enabledChannels: readonly ChannelRequirements[] = [],
+    outboundTransport?: GatewayOutboundTransport,
     secretEnvironment: readonly SecretEnvironmentProjection[] = [],
     pluginRuntime?: PluginRuntimeSnapshot,
     pluginWarnings: readonly PluginDeploymentWarning[] = [],
@@ -14153,12 +14449,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
           { name: "OPENCLAW_GATEWAY_PORT", value: String(this.options.network.gatewayPort) },
         );
-        if (enabledChannels.length > 0) {
-          const channels = runtime.channels;
-          if (channels === undefined) {
-            throw new ConfigurationFailure("Gateway channel credentials are not configured.");
-          }
-          variables.push({ name: "HTTPS_PROXY", value: channels.proxyUrl });
+        if (outboundTransport !== undefined) {
+          const appServerUrl = variables.find((entry) => entry.name === "APP_SERVER_URL")?.value;
+          const noProxy =
+            appServerUrl === undefined
+              ? outboundTransport.noProxy
+              : [
+                  ...new Set([
+                    ...outboundTransport.noProxy.split(","),
+                    new URL(appServerUrl).hostname,
+                  ]),
+                ].join(",");
+          variables.push(
+            { name: "HTTPS_PROXY", value: outboundTransport.proxyUrl },
+            { name: "NODE_USE_ENV_PROXY", value: "1" },
+            { name: "NO_PROXY", value: noProxy },
+          );
         }
       } else {
         variables.push(

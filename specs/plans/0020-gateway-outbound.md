@@ -27,7 +27,9 @@ implementation, embedded networking and remote plugin hosting are excluded.
    management transport independently of Agent lifecycle.
 3. Integrate revision proxy preparation, readiness, exact peers, runtime
    environment and teardown with Kubernetes Compute. Preserve Harness networking
-   and model-credential placement.
+   and model-credential placement. Freeze admitted address exclusions and reconcile
+   tightened Installation ceilings on existing proxies; prove old tunnels close
+   before the replacement policy is applied and loosening cannot broaden a revision.
 4. Expose Agent controls and requested/deployed state in Console, updating
    Storybook scenarios and capturing screenshots plus a short walkthrough.
 5. Update architecture, living reference, operator procedures and source-backed

@@ -53,7 +53,9 @@
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README"
+            ]
           },
           {
             "tab": "Topics",
@@ -280,6 +282,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
+                          },
+                          {
+                            "page": "reference/gateway-outbound",
+                            "label": "Gateway Outbound"
                           },
                           {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
@@ -703,7 +709,9 @@
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": [
+              "reference/postgres-auth-binding"
+            ]
           },
           {
             "tab": "Contribute",
@@ -1014,7 +1022,9 @@
               "testing/repository-credentials",
               "testing/repository-credentials-artifacts",
               "testing/repository-credentials-platform",
-              "flows/agent-presets"
+              "flows/agent-presets",
+              "flows/gateway-outbound",
+              "testing/gateway-outbound"
             ]
           }
         ]

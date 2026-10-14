@@ -16,6 +16,7 @@ import {
 import type {
   AccessBinding,
   Agent,
+  GatewayOutboundSelection,
   AgentRead,
   AgentRevisionMetadata,
   AgentRevisionSummaryPage,
@@ -55,6 +56,8 @@ import type {
 import {
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
+  validGatewayOutboundSelection,
+  validGatewayOutboundSnapshot,
   normalizePluginDesiredState,
   normalizePluginApprovers,
   normalizeHarnessAuthBinding,
@@ -186,6 +189,7 @@ export interface AgentRepository extends AgentReadRepository {
     pluginApprovers?: PluginApprovers | null,
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
+    gatewayOutbound?: GatewayOutboundSelection,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -783,6 +787,9 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
+    (revision.gatewayOutbound !== undefined &&
+      (!validGatewayOutboundSnapshot(revision.gatewayOutbound) ||
+        revision.harness.mode !== "dedicated")) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&
@@ -2294,6 +2301,13 @@ function repositories(
         agent.credentialSources,
       );
       assertHarnessCredentialSourceListed(agent.harnessAuth, agent.credentialSources);
+      const gatewayOutbound = agent.gatewayOutbound ?? { mode: "channelsOnly" as const };
+      if (
+        !validGatewayOutboundSelection(gatewayOutbound) ||
+        (gatewayOutbound.mode !== "channelsOnly" && agent.executionMode !== "dedicated")
+      ) {
+        throw new ScopeViolationError("The Agent Gateway outbound selection is invalid.");
+      }
       const key = agentKey(agent.namespaceId, agent.id);
       if (snapshot.agents.has(key)) {
         throw new ResourceConflictError("The server generated an existing Agent identity.");
@@ -2323,6 +2337,7 @@ function repositories(
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
+        gatewayOutbound,
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -2384,6 +2399,7 @@ function repositories(
       nextPluginApprovers,
       nextRepositoryAccess,
       nextCredentialSources,
+      gatewayOutbound,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -2409,6 +2425,26 @@ function repositories(
           { secrets, serviceAccounts, credentialSources },
           namespaceId,
           harnessAuth,
+        );
+      }
+      if (
+        gatewayOutbound !== undefined &&
+        (!validGatewayOutboundSelection(gatewayOutbound) ||
+          (gatewayOutbound.mode !== "channelsOnly" &&
+            (executionMode ?? current.executionMode) !== "dedicated"))
+      ) {
+        throw new ScopeViolationError(
+          "The Gateway outbound selection is invalid for this topology.",
+        );
+      }
+      if (
+        gatewayOutbound === undefined &&
+        current.gatewayOutbound?.mode !== undefined &&
+        current.gatewayOutbound.mode !== "channelsOnly" &&
+        (executionMode ?? current.executionMode) !== "dedicated"
+      ) {
+        throw new ScopeViolationError(
+          "The Gateway outbound selection requires dedicated execution.",
         );
       }
       const association = harnessAuth === undefined ? current.harnessAuth : harnessAuth;
@@ -2453,6 +2489,7 @@ function repositories(
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
+        ...(gatewayOutbound === undefined ? {} : { gatewayOutbound }),
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
           ? {}

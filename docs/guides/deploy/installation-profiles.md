@@ -130,8 +130,13 @@ one `@` and a dotted domain.
     "gatewayNodeSelector": { "oce-role": "control" },
     "transportSecretPrefix": "openclaw-agent-transport"
   },
-  "channels": {
-    "managedSlackProxy": true
+  "gatewayOutbound": {
+    "enabled": true,
+    "denyCidrs": ["10.42.0.0/16", "10.43.0.0/16"]
+  },
+  "controlPlaneOutbound": {
+    "managedProxy": true,
+    "denyCidrs": ["10.42.0.0/16", "10.43.0.0/16"]
   }
 }
 ```
@@ -376,17 +381,14 @@ the install as ready:
   `runtime.gatewayStorageClassName` for gateway state.
 - For Codex, the configured localhost seccomp profile installed and verified on
   every node selected by `runtime.nodeSelector`.
-- For Slack, a proxy route for both gateway runtime traffic and Console
-  directory lookup. The managed proxy serves both; external proxies need both
-  URLs. Rendering proxy wiring does not enable a Slack consumer. Either profile
-  can install the managed
-  proxy for API directory lookup and dedicated gateway use, but Slack-enabled
-  Agents require dedicated Codex execution. The example input sets
-  `managedSlackProxy: true` to use the chart-managed proxy Service. Its network
-  policy allows public IPv4 HTTPS, excluding private and reserved ranges, and the
-  proxy authorizes Slack hostnames, so connectivity survives Slack DNS rotation.
-  For an external proxy, omit `managedSlackProxy` and provide literal IPv4
-  `runtimeProxyUrl` and `directoryProxyUrl` inputs.
+- For Slack, enable `gatewayOutbound` with actual infrastructure exclusions;
+  Compute creates the Agent's revision proxy. Enable
+  `controlPlaneOutbound.managedProxy` with its own exclusions for API directory
+  lookup and credential validation, or supply an approved `proxyUrl`. The two
+  instances have separate clients and policy. Enabling network support does not
+  enable Slack itself; Slack-enabled Agents require dedicated execution.
+  See [Gateway outbound](../../reference/gateway-outbound.md) and
+  [Slack setup](../integrations/slack.md#configure-both-slack-proxies).
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
   See [discovery egress](#hosted-discovery-egress).

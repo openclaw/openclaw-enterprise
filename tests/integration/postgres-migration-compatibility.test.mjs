@@ -1550,6 +1550,7 @@ async function canonicalData(db) {
           ? [
               "repository_bindings",
               "repository_access",
+              "gateway_outbound",
               "harness_auth_credential_source_id",
               "plugin_approvers",
               "credential_sources",
@@ -1633,6 +1634,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preGatewayOutbound"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1894,6 +1896,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preGatewayOutbound"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1975,6 +1978,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preGatewayOutbound"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

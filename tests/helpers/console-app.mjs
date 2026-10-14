@@ -39,11 +39,13 @@ export const backendFixtures = Object.freeze([
 function computeDriver({
   repositoryCredentials = false,
   channelRuntime = false,
+  gatewayOutbound,
   discoverHarnessModels = async () => [],
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     repositoryCredentials,
     channelRuntime,
+    ...(gatewayOutbound === undefined ? {} : { gatewayOutbound }),
   });
 
   return Object.assign(driver, {
@@ -307,10 +309,12 @@ export async function createConsoleAppFixture(t, options = {}) {
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
         channelRuntime: options.channelRuntime === true,
+        gatewayOutbound: options.gatewayOutbound,
         discoverHarnessModels: options.discoverHarnessModels,
       }),
     configurationDriver:
       configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
+    ...(options.channelDriver === undefined ? {} : { channelDriver: options.channelDriver }),
     ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
     ...(secretDriver === undefined || secretDriver === null ? {} : { secretDriver }),
     ...(publicOrigin === undefined ? {} : { publicOrigin }),
@@ -537,13 +541,15 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   function grantAgentSecretOperate(agent, source) {
-    const roleId = `auth-${agent.id}`;
-    policy.identities.push({
-      id: agent.servicePrincipalId,
-      kind: "service_principal",
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-    });
+    const roleId = `auth-${agent.id}-${source.id}`;
+    if (!policy.identities.some((identity) => identity.id === agent.servicePrincipalId)) {
+      policy.identities.push({
+        id: agent.servicePrincipalId,
+        kind: "service_principal",
+        namespaceId: agent.namespaceId,
+        agentId: agent.id,
+      });
+    }
     policy.roles.push({
       id: roleId,
       namespaceId: agent.namespaceId,

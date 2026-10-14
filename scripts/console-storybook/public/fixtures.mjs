@@ -274,7 +274,8 @@ export function installFixture(scenario, evidence) {
     status: scenario.deleting ? "deleting" : "active",
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
-    executionMode: "dedicated",
+    executionMode: scenario.gatewayEmbedded ? "embedded" : "dedicated",
+    gatewayOutbound: scenario.gatewayOutbound ?? { mode: "channelsOnly" },
     harnessAuth: selectedAuth,
     ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
     ...(scenario.agentPluginApprovers !== undefined
@@ -313,6 +314,13 @@ export function installFixture(scenario, evidence) {
       configurationKind: configuration.kind,
       configurationGeneration: configuration.generation,
       createdAt,
+      gatewayOutbound: {
+        selection: structuredClone(owner.gatewayOutbound ?? { mode: "channelsOnly" }),
+        requirements: scenario.slack
+          ? [{ source: "slack", destinations: [{ host: "slack.com", includeSubdomains: true }] }]
+          : [],
+        denyCidrs: ["10.0.0.0/8"],
+      },
       configuration: structuredClone(configuration.values),
       secretBindings: structuredClone(configuration.secretBindings),
       harnessAuth: structuredClone(owner.harnessAuth),
@@ -1078,6 +1086,24 @@ export function installFixture(scenario, evidence) {
         const saved = agents.get(id);
         if (!saved) {
           return error(404);
+        }
+        if (suffix === "/gateway-outbound/capabilities" && method === "GET") {
+          return response({
+            restricted: scenario.gatewayDisabled !== true,
+            publicHttps: scenario.gatewayPublicAllowed !== false,
+            canConfigure: scenario.gatewayReadOnly !== true,
+            requirements: scenario.slack
+              ? [
+                  {
+                    source: "slack",
+                    destinations: [
+                      { host: "slack.com", includeSubdomains: true },
+                      { host: "slack-edge.com", includeSubdomains: true },
+                    ],
+                  },
+                ]
+              : [],
+          });
         }
         if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
           return response({

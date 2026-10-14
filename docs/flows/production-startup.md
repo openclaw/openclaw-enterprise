@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-13"
-last_updated_session: "authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93"
+updated: "2026-10-14"
+last_updated_session: "authoring-run/7bd4f79c-2e3a-40b6-b2e9-5e51b495a8f0"
 ---
 
 # Production Startup Flow
@@ -45,6 +45,7 @@ graph TD
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
         G --> H["Start private API Deployment"]
         G --> I["Start independent worker Deployment"]
+        G -->|Outbound proxy enabled| V["Start API-only proxy"]
         I --> R{"Repository credentials enabled?"}
         R -->|Yes| S["Sidecar copies protected inputs and starts private control"]
         S --> Q["Sidecar probe gates worker Pod readiness"]
@@ -184,21 +185,17 @@ on reviewed control-plane nodes; empty defaults omit it.
 to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
 proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
 
-`database.caSecretName` selects read-only CA mounts at `database.caMountPath`
-for all four database clients.
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` rejects equality with
-another active client mount, including bootstrap output. Disabled optional
-features reserve no paths; disabling the CA leaves its path unused. Kubernetes
-requires unique mount paths within each container.
+`database.caSecretName` mounts read-only CA files at `database.caMountPath`
+for the four database clients. The chart's `_helpers.tpl` rejects overlaps with
+active client mounts, including bootstrap output; disabled features reserve no
+paths.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-selects only `api`, `worker`, and `initialization` Pods with the release identity.
-It allows DNS, database egress to every `database.cidrs` host, and
-Kubernetes API egress to every `cluster.cidrs` host. Collectors use their separate
-DNS, API, and exporter policy; unknown or missing component labels retain
-default-deny. Pre-install initialization has only its hook DNS/database grants.
-Each configured database or API destination must be an explicit IPv4 `/32`; operators must refresh the values when a managed database
-or API endpoint resolves to a different address set.
+selects release-local `api`, `worker`, and `initialization` Pods. It grants DNS,
+database egress to `database.cidrs`, and Kubernetes API egress to `cluster.cidrs`.
+Each endpoint must be an explicit IPv4 `/32`; refresh changed addresses.
+Collectors have their own DNS/API/exporter policy; hook initialization has its
+own DNS/database grants. Unknown component labels retain default-deny.
 
 `deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
 an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains
@@ -207,11 +204,19 @@ maintain those addresses for the optional
 [model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
 Console model selection and Harness egress do not depend on this policy.
 
-When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
-literal IPv4 address and port, the chart passes it to the API and grants only
-that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
-CONNECT to `slack.com:443`. The empty default renders no rule and leaves
-production Slack directory lookup unavailable with manual exact-ID entry.
+Helm `outboundProxy.enabled` starts the API-only proxy with infrastructure
+`denyCidrs` and no credentials.
+`apps/controller/src/gateway/control-plane-outbound-proxy.mjs:controlPlaneOutboundPolicy`
+derives management destinations from trusted Driver composition and starts
+restricted `runOutboundProxy`. Slack requires exact `slack.com:443`;
+resolved private, reserved, and infrastructure addresses are denied.
+`outbound_proxy.listening` and `/readyz` report startup.
+
+The chart grants release-local API-to-proxy traffic and sets
+`OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` with its managed host. External
+`api.controlPlaneOutboundProxyUrl` grants an exact IPv4 `/32` and port instead.
+This route works before any Agent exists; [Gateway outbound access](../reference/gateway-outbound.md)
+is revision-owned.
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Kubernetes 1.35 or later is the supported
@@ -298,6 +303,8 @@ until tenant deployment/TUI procedures run.
   from the retrieved key file.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
+- `control_plane_outbound_proxy.startup_failed`: inspect proxy ConfigMap exclusions
+  and listener port. Check proxy readiness separately from API/worker readiness.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
   chart; it does not prove deployment or model execution.
 
@@ -318,6 +325,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 16:02: Trace accompanying API-only proxy startup. (authoring-run/7bd4f79c-2e3a-40b6-b2e9-5e51b495a8f0 - bd8fe1f7b0b798dca84d6f90b7377ddda79d88a6)
 
 - 2026-10-13: Trace OIDC CA assembly and the database trust preload.
 - 2026-10-11 18:29: Validate database URL Secret keys. (authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93 - 19304cadb9a8b8c6473a22b183055ff7b5852e02)

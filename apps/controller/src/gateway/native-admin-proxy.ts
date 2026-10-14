@@ -437,7 +437,7 @@ function cutClient(socket: Socket): void {
 // a close with unread browser bytes makes the kernel reset the connection and drop the tail.
 // So linger: discard what the browser sends, keep the socket until it has read everything and
 // closed its side, and cut it at `drainTimeoutMs`. Otherwise close it now. Same logic as
-// closeClientWhenDrained in slack-proxy.mjs, which runs standalone and cannot share it.
+// closeClientWhenDrained in gateway/outbound-proxy.mjs, which runs standalone and cannot share it.
 function closeClientWhenDrained(socket: Socket, drainTimeoutMs: number): void {
   if (socket.destroyed) {
     return;

@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: miguelbranco80
 ---
 
@@ -107,6 +107,14 @@ contract, but its credentials, inbound callback, native configuration and runtim
 qualification are separate delivery work.
 
 ## Lifecycle and user experience
+
+Each admitted revision retains the Installation exclusion CIDRs. Runtime policy
+combines those exclusions with current exclusions, so loosening cannot broaden an
+old revision. Compute maintenance reconciles running proxies after a ceiling
+tightens and waits for old proxy Pods to stop, closing established tunnels before
+reporting the new policy applied. The maintenance interval is not a total
+revocation deadline; queue and shutdown delay also count. Test tightening with an
+already established tunnel and prove a successor remains intact.
 
 Saving changes updates desired state. Deployment prepares the revision proxy
 before starting the Gateway with its exact route. Failed preparation grants no

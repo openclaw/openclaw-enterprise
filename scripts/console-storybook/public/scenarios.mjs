@@ -2514,6 +2514,61 @@ export const scenarios = {
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
   },
+  gatewayNetwork: {
+    group: "Pages/Agent detail",
+    name: "Gateway network access",
+    path: `${draft}&tab=network`,
+    slack: true,
+    steps: [
+      "Review required Slack destinations.",
+      "Choose selected hosts and enter backend.composio.dev.",
+      "Save network access, reload, and verify the saved draft.",
+      "Deploy and inspect its immutable network selection.",
+    ],
+    gap: "Simulated UI proof. API persistence, proxy deployment, and native networking require integration tests.",
+  },
+  gatewayNetworkRestricted: {
+    group: "Pages/Agent detail",
+    name: "Restricted Gateway access",
+    path: `${draft}&tab=network`,
+    gatewayPublicAllowed: false,
+    gatewayOutbound: { mode: "restricted", hosts: ["backend.composio.dev"] },
+  },
+  gatewayNetworkEmpty: {
+    group: "Pages/Agent detail",
+    name: "No required destinations",
+    path: `${draft}&tab=network`,
+  },
+  gatewayNetworkReadOnly: {
+    group: "Pages/Agent detail",
+    name: "Gateway network reader",
+    path: `${draft}&tab=network`,
+    gatewayReadOnly: true,
+  },
+  gatewayNetworkDisabled: {
+    group: "Pages/Agent detail",
+    name: "Gateway outbound disabled",
+    path: `${draft}&tab=network`,
+    gatewayDisabled: true,
+  },
+  gatewayNetworkEmbedded: {
+    group: "Pages/Agent detail",
+    name: "Embedded Gateway networking",
+    path: `${draft}&tab=network`,
+    gatewayEmbedded: true,
+  },
+  gatewayNetworkLoading: {
+    group: "Pages/Agent detail",
+    name: "Loading network capabilities",
+    path: `${draft}&tab=network`,
+    rules: [{ suffix: "/gateway-outbound/capabilities", delayMs: 60000 }],
+  },
+  gatewayNetworkError: {
+    group: "Pages/Agent detail",
+    name: "Network capabilities unavailable",
+    path: `${draft}&tab=network`,
+    rules: [{ suffix: "/gateway-outbound/capabilities", status: 503 }],
+  },
   newVersion: {
     group: "Pages/Agent detail",
     name: "Create new version",
