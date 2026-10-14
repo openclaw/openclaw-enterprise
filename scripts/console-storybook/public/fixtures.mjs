@@ -123,6 +123,12 @@ function candidateDeploymentError(scenario, checkedAt) {
       message: "Deployment was superseded by a newer revision.",
     };
   }
+  if (scenario.candidateStopped) {
+    return {
+      code: "REVISION_STOPPED",
+      message: "Deployment ended because the Agent was stopped.",
+    };
+  }
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
@@ -975,29 +981,37 @@ export function installFixture(scenario, evidence) {
         for (const [filename, content] of Object.entries(initialWorkspaceFiles)) {
           files.set(`${saved.id}/${filename}`, content);
         }
-        const revision = snapshot(saved, nextId("rev"), 1);
-        revisions.set(revision.id, revision);
-        if (scenario.provisionedDeploymentStopped) {
+        // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
+        const revision = scenario.provisioningCancelledByStop
+          ? null
+          : snapshot(saved, nextId("rev"), 1);
+        if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
           saved.desiredRuntimeState = "stopped";
         }
-        deployments.set(revision.id, {
-          deploymentId: revision.id,
-          namespaceId,
-          agentId: saved.id,
-          status: scenario.provisionedDeploymentStatus ?? "queued",
-          progress: initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued"),
-          reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
-          error:
-            scenario.provisionedDeploymentStatus !== "failed"
-              ? null
-              : scenario.provisionedDeploymentStopped
-                ? {
-                    code: "REVISION_STOPPED",
-                    message: "Deployment ended because the Agent was stopped.",
-                  }
-                : { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." },
-          warnings: [],
-        });
+        if (revision) {
+          revisions.set(revision.id, revision);
+          deployments.set(revision.id, {
+            deploymentId: revision.id,
+            namespaceId,
+            agentId: saved.id,
+            status: scenario.provisionedDeploymentStatus ?? "queued",
+            progress: initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued"),
+            reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
+            error:
+              scenario.provisionedDeploymentStatus !== "failed"
+                ? null
+                : scenario.provisionedDeploymentStopped
+                  ? {
+                      code: "REVISION_STOPPED",
+                      message: "Deployment ended because the Agent was stopped.",
+                    }
+                  : {
+                      code: "DEPENDENCY_UNAVAILABLE",
+                      message: "Deployment reconciliation failed.",
+                    },
+            warnings: [],
+          });
+        }
         provisioning.set(saved.id, {
           requestId,
           workId,
@@ -1005,7 +1019,7 @@ export function installFixture(scenario, evidence) {
           status: scenario.provisioningStatus ?? "queued",
           agentId: saved.id,
           configurationId: savedConfig.id,
-          revisionId: revision.id,
+          revisionId: revision?.id,
           url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
         });
         provisioning.set(workId, provisioning.get(saved.id));
@@ -1054,7 +1068,8 @@ export function installFixture(scenario, evidence) {
               scenario.provisionedDeploymentStatus === "running"
                 ? "running"
                 : current.reads > 1
-                  ? scenario.provisionedDeploymentStatus === "failed"
+                  ? scenario.provisionedDeploymentStatus === "failed" ||
+                    scenario.provisioningCancelledByStop
                     ? "failed"
                     : "succeeded"
                   : "running";
@@ -1069,21 +1084,26 @@ export function installFixture(scenario, evidence) {
               url: current.url,
               ...(current.status === "failed"
                 ? {
-                    error: scenario.provisionedDeploymentStopped
+                    error: scenario.provisioningCancelledByStop
                       ? {
-                          code: "REVISION_STOPPED",
-                          message: "The Agent was stopped before its first deployment finished.",
+                          code: "PROVISIONING_CANCELLED",
+                          message: "Provisioning was cancelled because the Agent was stopped.",
                         }
-                      : {
-                          code:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                              : "PROVISIONING_FAILED",
-                          message:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? "Harness credential initialization failed. Correct the cause and deploy again."
-                              : "The worker could not finish provisioning.",
-                        },
+                      : scenario.provisionedDeploymentStopped
+                        ? {
+                            code: "REVISION_STOPPED",
+                            message: "The Agent was stopped before its first deployment finished.",
+                          }
+                        : {
+                            code:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
+                                : "PROVISIONING_FAILED",
+                            message:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? "Harness credential initialization failed. Correct the cause and deploy again."
+                                : "The worker could not finish provisioning.",
+                          },
                   }
                 : {}),
               ...(current.status === "succeeded" || current.reads > 1

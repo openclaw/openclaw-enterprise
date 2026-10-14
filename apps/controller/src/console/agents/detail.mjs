@@ -25,9 +25,9 @@ import {
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
-  SUPERSEDED_DEPLOYMENT_NOTE,
+  NEUTRAL_DEPLOYMENT_NOTES,
   deploymentOutcome,
-  supersededDeployment,
+  neutralDeploymentOutcome,
 } from "./list.mjs";
 import {
   createChannelSecretsPanel,
@@ -287,13 +287,22 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
   );
 }
 
-// A recorded result: the failure, or a neutral note when a newer version superseded this one.
+// A recorded result: the failure, or a neutral note when a newer version superseded this one
+// or the owner stopped the Agent during its deployment.
 function deploymentResult(record, hrefs = {}, logsLink = null) {
-  if (supersededDeployment(record)) {
+  const neutral = neutralDeploymentOutcome(record);
+  if (neutral === "superseded") {
     return element(
       "p",
       { className: "muted deployment-superseded" },
-      `${SUPERSEDED_DEPLOYMENT_NOTE} before this one became current (${record.error.code}). This version did not fail; no action is needed.`,
+      `${NEUTRAL_DEPLOYMENT_NOTES.superseded} before this one became current (${record.error.code}). This version did not fail; no action is needed.`,
+    );
+  }
+  if (neutral === "stopped") {
+    return element(
+      "p",
+      { className: "muted deployment-stopped" },
+      `The Agent was stopped before this deployment finished (${record.error.code}). This version did not fail; deploy a new version when you want it running.`,
     );
   }
   return deploymentFailure(record.error, hrefs, logsLink);
@@ -309,6 +318,7 @@ function deploymentProgress(record) {
     running: "A worker claim is active.",
     failed: "Deployment work failed; check the recorded error and current version.",
     superseded: "Deployment work stopped because a newer version superseded this one.",
+    stopped: "Deployment work ended because the Agent was stopped.",
     succeeded: "Work completed or the version was already active.",
   };
   const stages = [
@@ -322,8 +332,8 @@ function deploymentProgress(record) {
           ? "active"
           : status === "succeeded"
             ? "complete"
-            : status === "superseded"
-              ? "superseded"
+            : status === "superseded" || status === "stopped"
+              ? status
               : "failed",
     ],
     [
@@ -332,10 +342,16 @@ function deploymentProgress(record) {
         ? "This deployment completed activation or was already active."
         : status === "superseded"
           ? "Not needed: this version did not become current."
-          : status === "failed"
-            ? "Successful completion was not recorded for this deployment."
-            : "Successful completion is not recorded yet.",
-      status === "succeeded" ? "complete" : status === "superseded" ? "superseded" : "waiting",
+          : status === "stopped"
+            ? "Not recorded: the Agent was stopped first. Deploy a new version when you want it running."
+            : status === "failed"
+              ? "Successful completion was not recorded for this deployment."
+              : "Successful completion is not recorded yet.",
+      status === "succeeded"
+        ? "complete"
+        : status === "superseded" || status === "stopped"
+          ? status
+          : "waiting",
     ],
   ];
   return element(
@@ -778,7 +794,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
     );
     const recorded = recordedStatus();
     const failure =
-      recorded?.status === "failed" && !supersededDeployment(recorded) ? recorded.error : null;
+      recorded?.status === "failed" && !neutralDeploymentOutcome(recorded) ? recorded.error : null;
     const hints = [];
     if (unreachable) {
       hints.push(
@@ -1368,12 +1384,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       succeeded: "Succeeded",
       failed: "Failed",
       superseded: "Superseded",
+      stopped: "Stopped",
     }[latestDeploymentStatus];
-    // A superseded deployment is neutral: it raises no banner and says nothing about serving.
-    const superseded = latestDeploymentStatus === "superseded";
+    // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
+    // serving.
+    const neutral = latestDeploymentStatus === "superseded" || latestDeploymentStatus === "stopped";
     latestDeploymentValue.textContent = `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`;
-    latestDeploymentNote.textContent = superseded
-      ? `${SUPERSEDED_DEPLOYMENT_NOTE}.`
+    latestDeploymentNote.textContent = neutral
+      ? latestDeploymentStatus === "stopped"
+        ? `${NEUTRAL_DEPLOYMENT_NOTES.stopped}. Deploy a new version when you want it running.`
+        : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`
       : latestDeploymentStatus
         ? `Recorded status: ${latestDeploymentStatus}`
         : latestDeploymentError
@@ -1412,7 +1432,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       liveServingValue.textContent = "Not verified";
       liveServingNote.textContent = "Serving version and model access are unknown.";
     }
-    statusLine.hidden = (!latestDeploymentStatus || superseded) && !requestedHidden;
+    statusLine.hidden = (!latestDeploymentStatus || neutral) && !requestedHidden;
     if (requestedHidden || newerHidden) {
       statusLine.textContent = [
         requestedHidden
@@ -1429,7 +1449,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       statusLine.textContent = `v${latest.revision} deployment failed. ${currentLabel} is still recorded as current, but deploying a dedicated Agent stops the previous version first, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`;
     } else if (selectedFailed) {
       statusLine.textContent = `${currentLabel} deployment failed. ${currentLabel} is still selected because its runtime already replaced the previous version, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`;
-    } else if (latestDeploymentStatus && !superseded) {
+    } else if (latestDeploymentStatus && !neutral) {
       const selection = currentRevisionId
         ? `${currentLabel} is selected.`
         : "No version is selected.";

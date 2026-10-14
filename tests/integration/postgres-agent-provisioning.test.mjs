@@ -3610,6 +3610,12 @@ test(
     assert.equal(stoppedProvisioning.status, 200, JSON.stringify(stoppedProvisioning.body));
     assert.equal(stoppedProvisioning.data.status, "failed");
     assert.equal(stoppedProvisioning.data.error?.code, "PROVISIONING_CANCELLED");
+    // The status names the Stop: the stopped Agent keeps its name, so it must not say to
+    // create a new Agent (finding 1376).
+    assert.equal(
+      stoppedProvisioning.data.error?.message,
+      "Provisioning was cancelled because the Agent was stopped.",
+    );
 
     await settleLateTransport(stopFixture, stopTarget);
     reportStoredCredentials = true;
@@ -3636,6 +3642,10 @@ test(
     assert.equal(deletedProvisioning.status, 200, JSON.stringify(deletedProvisioning.body));
     assert.equal(deletedProvisioning.data.status, "failed");
     assert.equal(deletedProvisioning.data.error?.code, "PROVISIONING_CANCELLED");
+    assert.equal(
+      deletedProvisioning.data.error?.message,
+      "Provisioning was cancelled because the Agent was deleted.",
+    );
 
     await settleLateTransport(deleteFixture, deleteTarget);
     const deletedAgent = await deleteFixture.request(

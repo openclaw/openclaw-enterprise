@@ -43,6 +43,7 @@ export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
+export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
 export const DeploymentSucceeded = story("deploymentSucceeded");
 export const DeploymentUnavailable = story("deploymentUnavailable");
